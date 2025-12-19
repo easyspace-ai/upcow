@@ -36,21 +36,41 @@ func (s *GridStrategy) calculateOrderSize(price domain.Price) (orderAmount float
 // OnOrderUpdate 处理订单更新事件（实现 OrderHandler 接口）
 // 将订单更新转换为 OrderFilledEvent 并调用 OnOrderFilled
 func (s *GridStrategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
-	log.Debugf("📥 [订单更新] OnOrderUpdate收到订单更新: orderID=%s, status=%s, filledAt=%v",
+	// 策略内部单线程循环处理订单更新；这里仅入队（不做任何业务逻辑）
+	if order == nil {
+		return nil
+	}
+
+	select {
+	case s.orderC <- orderUpdate{ctx: ctx, order: order}:
+		return nil
+	default:
+		// 极端情况下队列满了：记录错误并丢弃（避免阻塞 Session 分发）
+		log.Errorf("❌ [订单更新] 内部队列已满，丢弃订单更新: orderID=%s, status=%s", order.OrderID, order.Status)
+		return nil
+	}
+}
+
+// handleOrderUpdateInternal 在策略单线程 loop 中处理订单更新
+func (s *GridStrategy) handleOrderUpdateInternal(loopCtx context.Context, ctx context.Context, order *domain.Order) error {
+	if order == nil {
+		return nil
+	}
+
+	log.Debugf("📥 [订单更新] 收到订单更新: orderID=%s, status=%s, filledAt=%v",
 		order.OrderID, order.Status, order.FilledAt != nil)
-	
+
 	// 如果订单已成交，调用策略的OnOrderFilled方法
 	if order.Status == domain.OrderStatusFilled && order.FilledAt != nil {
 		log.Debugf("📥 [订单更新] 订单已成交，准备调用OnOrderFilled: orderID=%s, filledAt=%v",
 			order.OrderID, order.FilledAt)
-		
+
 		// 获取当前市场（从策略保存的市场引用中获取）
 		s.mu.RLock()
 		market := s.currentMarket
 		s.mu.RUnlock()
 
 		if market == nil {
-			// 如果策略中没有保存市场信息，记录警告并跳过
 			log.Warnf("⚠️ [订单更新] 无法获取市场信息，跳过订单更新处理: orderID=%s", order.OrderID)
 			return nil
 		}
@@ -62,16 +82,17 @@ func (s *GridStrategy) OnOrderUpdate(ctx context.Context, order *domain.Order) e
 			Timestamp: *order.FilledAt,
 		}
 
-		log.Debugf("📥 [订单更新] 创建OrderFilledEvent，调用OnOrderFilled: orderID=%s", order.OrderID)
-		// 调用 OnOrderFilled 处理订单成交
-		if err := s.OnOrderFilled(ctx, event); err != nil {
+		// 优先使用传入的 ctx；如果已取消则降级用 loopCtx，避免整条链路丢事件
+		callCtx := ctx
+		if callCtx == nil || callCtx.Err() != nil {
+			callCtx = loopCtx
+		}
+
+		if err := s.OnOrderFilled(callCtx, event); err != nil {
 			log.Errorf("❌ [订单更新] OnOrderFilled处理失败: orderID=%s, error=%v", order.OrderID, err)
 			return err
 		}
 		log.Debugf("✅ [订单更新] OnOrderFilled处理成功: orderID=%s", order.OrderID)
-	} else {
-		log.Debugf("📥 [订单更新] 订单未成交或FilledAt为空，跳过处理: orderID=%s, status=%s, filledAt=%v",
-			order.OrderID, order.Status, order.FilledAt != nil)
 	}
 	return nil
 }
@@ -912,8 +933,8 @@ func (s *GridStrategy) OnOrderFilled(ctx context.Context, event *events.OrderFil
 		return nil
 	}
 
-	// 第二步：在锁外异步处理复杂业务逻辑（避免阻塞价格更新）
-	go func() {
+	// 第二步：在锁外处理复杂业务逻辑（在策略单线程 loop 内执行，避免并发竞态）
+	{
 		// 风险13修复：确保 isPlacingOrder 标志在订单成交处理开始时重置
 		// 这可以防止订单立即成交后，标志未重置导致后续价格更新被阻塞
 		s.placeOrderMu.Lock()
@@ -925,17 +946,17 @@ func (s *GridStrategy) OnOrderFilled(ctx context.Context, event *events.OrderFil
 		s.placeOrderMu.Unlock()
 		
 		defer func() {
-			// 风险13修复：确保在 goroutine 结束时再次检查并重置标志
+			// 风险13修复：确保在处理结束时再次检查并重置标志
 			s.placeOrderMu.Lock()
 			if s.isPlacingOrder {
-				log.Warnf("⚠️ [订单成交处理] goroutine结束时检测到 isPlacingOrder=true，强制重置")
+				log.Warnf("⚠️ [订单成交处理] 结束时检测到 isPlacingOrder=true，强制重置")
 				s.isPlacingOrder = false
 				s.isPlacingOrderSetTime = time.Time{}
 			}
 			s.placeOrderMu.Unlock()
 			
 			if r := recover(); r != nil {
-				log.Errorf("❌ [订单成交处理] goroutine发生panic: %v", r)
+				log.Errorf("❌ [订单成交处理] 发生panic: %v", r)
 				log.Errorf("   堆栈信息: %s", string(debug.Stack()))
 			}
 		}()
@@ -1067,7 +1088,7 @@ func (s *GridStrategy) OnOrderFilled(ctx context.Context, event *events.OrderFil
 				if len(s.pendingHedgeOrders) == 0 {
 					s.hedgeOrderSubmitMu.Unlock()
 					log.Debugf("📋 [订单顺序] 锁内检查：对冲订单已不在待提交列表中，可能已被其他goroutine提交，跳过")
-					return
+					return nil
 				}
 
 				// 重构后：activeOrders 由 OrderEngine 管理，无需手动添加
@@ -1092,7 +1113,8 @@ func (s *GridStrategy) OnOrderFilled(ctx context.Context, event *events.OrderFil
 					if s.tradingService == nil {
 						log.Errorf("❌ [%s对冲] 交易服务未设置，无法提交对冲订单", hedgeType)
 						// 重构后：activeOrders 由 OrderEngine 管理
-						return
+						s.hedgeOrderSubmitMu.Unlock()
+						return nil
 					}
 					
 					if isManualHedge {
@@ -1353,7 +1375,7 @@ func (s *GridStrategy) OnOrderFilled(ctx context.Context, event *events.OrderFil
 				// 不创建仓位，不更新仓位状态，因为对冲单不应该先成交
 				// 等待主单成交后，会通过 checkAndSupplementHedge 重新提交对冲单
 				log.Warnf("⏳ [订单顺序] 等待主单成交后，将重新提交对冲单")
-				return // 从goroutine返回，不是从OnOrderFilled返回
+				return nil
 			}
 
 			// 主单已成交，正常处理对冲单
@@ -1559,7 +1581,7 @@ func (s *GridStrategy) OnOrderFilled(ctx context.Context, event *events.OrderFil
 			s.displayHoldingsAndProfit()
 			s.displayStrategyStatus()
 		}()
-	}() // goroutine结束
+	}
 	
 	log.Debugf("📥 [订单成交] OnOrderFilled处理完成: orderID=%s", event.Order.OrderID)
 
