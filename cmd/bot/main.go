@@ -107,7 +107,7 @@ func main() {
 		MaxAge:        30,
 		Compress:      true,
 		LogByCycle:    cfg.LogByCycle,
-		CycleDuration: 1 * time.Minute, // 测试模式：1分钟周期
+		CycleDuration: 15 * time.Minute,
 	}
 	if err := logger.Init(logConfig); err != nil {
 		logrus.Errorf("重新初始化日志失败: %v", err)

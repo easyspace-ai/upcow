@@ -783,20 +783,21 @@ func (c *PolymarketClient) handleBookMessage(msg BookMessage) {
 			hourStart.Format("15:04"), open, current, movement)
 	}
 
-	log.Println("\nBids (Buy Orders):")
+	log.Println("Bids (Buy Orders):")
 	for i, bid := range msg.Bids {
 		if i < 5 { // Show top 5 levels
 			log.Printf("  Price: %s, Size: %s", bid.Price, bid.Size)
 		}
 	}
 
-	log.Println("\nAsks (Sell Orders):")
+	log.Println("")
+	log.Println("Asks (Sell Orders):")
 	for i, ask := range msg.Asks {
 		if i < 5 { // Show top 5 levels
 			log.Printf("  Price: %s, Size: %s", ask.Price, ask.Size)
 		}
 	}
-	log.Println("=======================================\n")
+	log.Println("=======================================")
 
 	// Determine token type (YES/NO) from assetID
 	tokenType, ok := c.tokenTypeMap[msg.AssetID]
@@ -825,7 +826,7 @@ func (c *PolymarketClient) handlePriceChangeMessage(msg PriceChangeMessage) {
 		log.Printf("  Price: %s, Size: %s", change.Price, change.Size)
 		log.Printf("  Best Bid: %s, Best Ask: %s", change.BestBid, change.BestAsk)
 	}
-	log.Println("----------------------------------\n")
+	log.Println("----------------------------------")
 
 	// Storage disabled for price changes
 }
@@ -837,7 +838,7 @@ func (c *PolymarketClient) handleTickSizeChangeMessage(msg TickSizeChangeMessage
 	log.Printf("Market: %s", msg.Market)
 	log.Printf("Old Tick Size: %s -> New Tick Size: %s", msg.OldTickSize, msg.NewTickSize)
 	log.Printf("Timestamp: %s", msg.Timestamp)
-	log.Println("--------------------------------------\n")
+	log.Println("--------------------------------------")
 
 	// Determine token type (YES/NO) from assetID
 	tokenType, ok := c.tokenTypeMap[msg.AssetID]
@@ -863,7 +864,7 @@ func (c *PolymarketClient) handleLastTradePriceMessage(msg LastTradePriceMessage
 	log.Printf("Price: %s, Size: %s", msg.Price, msg.Size)
 	log.Printf("Fee Rate (bps): %s", msg.FeeRateBps)
 	log.Printf("Timestamp: %s", msg.Timestamp)
-	log.Println("------------------------------------\n")
+	log.Println("------------------------------------")
 
 	// Determine token type (YES/NO) from assetID
 	tokenType, ok := c.tokenTypeMap[msg.AssetID]
