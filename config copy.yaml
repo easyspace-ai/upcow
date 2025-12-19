@@ -1,0 +1,63 @@
+# Gobet 交易机器人配置文件示例
+# 复制此文件为 config.yaml 并修改相应的配置
+#
+# 注意：钱包配置（private_key, funder_address）会自动从 data/user.json 加载
+# 无需在此配置文件中设置钱包信息
+
+# 代理配置（可选，如果不设置会从 data/user.json 加载）
+proxy:
+  host: "127.0.0.1"
+  port: 15236
+
+# 策略配置
+strategies:
+  # 启用的策略列表（grid, threshold, arbitrage）
+  enabled:
+    - grid
+  
+  # 网格策略配置
+  grid:
+    grid_levels: [62, 65, 71, 77, 81]  # 网格层级列表（分），移除85和87分以确保利润平衡
+    order_size: 7          # 订单大小（share数量），每次买入的share数量
+    min_order_size: 1.1      # 最小下单金额（USDC，默认1.1，交易所要求不能小于1）
+    enable_rebuy: true       # 允许重新买入
+    enable_double_side: true # 双向交易
+    profit_target: 3         # 止盈目标（分），用于对冲锁定利润
+    max_unhedged_loss: 10    # 最大未对冲损失（分）
+    hard_stop_price: 50      # 硬止损价格（分）
+    elastic_stop_price: 40   # 弹性止损价格（分）
+    max_rounds_per_period: 1 # 每个周期最大轮数（50 USDC资金支持5轮，每轮成本6.79 USDC）
+  
+  # 价格阈值策略配置
+  threshold:
+    buy_threshold: 0.62      # 买入阈值（小数，例如 0.62 表示 62 cents）
+    sell_threshold: 0        # 卖出阈值（小数，0 表示不卖出）
+    order_size: 3.0          # 订单大小
+    token_type: ""           # Token 类型：YES、NO 或空字符串（监控所有）
+    profit_target_cents: 3   # 止盈目标（分），例如 3 表示 +3 cents（价格比买入价高 3 cents 时卖出）
+    stop_loss_cents: 10      # 止损目标（分），例如 10 表示 -10 cents（价格比买入价低 10 cents 时卖出）
+  
+  # 套利策略配置（适用于 btc-updown-15m-* 市场）
+  # 当前配置适用于 40 USDC 资金量测试
+  arbitrage:
+    lock_start_minutes: 10    # 锁盈阶段起始时间（分钟，从10分钟开始进入锁定阶段）
+    early_lock_price_threshold: 0.85  # 提前锁盈价格阈值（默认0.85，当UP或DOWN价格达到此阈值时提前进入锁盈阶段）
+    target_up_base: 2.0       # UP胜目标利润（USDC，适合40 USDC资金量，目标5%收益率）
+    target_down_base: 2.0      # DOWN胜目标利润（USDC，适合40 USDC资金量，目标5%收益率）
+    base_target: 30.0          # 基础建仓目标持仓量（从1500降至30，适合40 USDC资金量）
+    build_lot_size: 3.0       # 建仓阶段单次下单量（从18降至3，适合40 USDC资金量）
+    max_up_increment: 3.0      # 锁盈阶段单次最大UP加仓量（从100降至3，适合40 USDC资金量）
+    max_down_increment: 3.0   # 锁盈阶段单次最大DOWN加仓量（从100降至3，适合40 USDC资金量）
+    small_increment: 1.5       # 反向保险小额加仓量（从20降至1.5，适合40 USDC资金量）
+    min_order_size: 1.1       # 最小下单金额（USDC，默认1.1，交易所要求不能小于1）
+  
+  # 数据记录策略配置（不交易，只记录数据）
+  datarecorder:
+    output_dir: "data/recordings"  # CSV 文件保存目录
+    use_rtds_fallback: true        # 是否使用 RTDS 作为目标价备选方案
+
+# 日志配置
+log_level: "info"      # 日志级别：debug, info, warn, error
+log_file: "logs/bot.log"  # 日志文件路径
+log_by_cycle: true      # 是否按周期命名日志文件（一个周期一个日志文件）
+

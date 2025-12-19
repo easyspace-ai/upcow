@@ -1,0 +1,281 @@
+package grid
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/events"
+)
+
+// displayGridPosition 显示网格位置信息
+func (s *GridStrategy) displayGridPosition(event *events.PriceChangedEvent) {
+	if s.grid == nil {
+		log.Debugf("网格未初始化，跳过显示")
+		return
+	}
+
+	// 更新价格后，显示两个币种的完整信息
+	var lines []string
+
+	// UP 币信息（如果价格已更新）
+	if s.currentPriceUp > 0 {
+		// 如果是 UP 币价格变化，显示价格变化；否则只显示当前价格
+		isUpChanged := event.TokenType == domain.TokenTypeUp
+		upEvent := event
+		if !isUpChanged {
+			// 创建一个只包含当前价格的事件（不显示价格变化）
+			upEvent = &events.PriceChangedEvent{
+				Market:    event.Market,
+				TokenType: domain.TokenTypeUp,
+				OldPrice:  nil, // 不显示变化
+				NewPrice:  domain.Price{Cents: s.currentPriceUp},
+				Timestamp: event.Timestamp,
+			}
+		}
+		upLine := s.formatGridPosition("UP", s.currentPriceUp, isUpChanged, upEvent)
+		lines = append(lines, upLine)
+	} else {
+		// 即使价格未更新，也显示等待状态
+		lines = append(lines, "UP:   等待价格更新...")
+	}
+
+	// DOWN 币信息（如果价格已更新）
+	if s.currentPriceDown > 0 {
+		// 如果是 DOWN 币价格变化，显示价格变化；否则只显示当前价格
+		isDownChanged := event.TokenType == domain.TokenTypeDown
+		downEvent := event
+		if !isDownChanged {
+			// 创建一个只包含当前价格的事件（不显示价格变化）
+			downEvent = &events.PriceChangedEvent{
+				Market:    event.Market,
+				TokenType: domain.TokenTypeDown,
+				OldPrice:  nil, // 不显示变化
+				NewPrice:  domain.Price{Cents: s.currentPriceDown},
+				Timestamp: event.Timestamp,
+			}
+		}
+		downLine := s.formatGridPosition("DOWN", s.currentPriceDown, isDownChanged, downEvent)
+		lines = append(lines, downLine)
+	} else {
+		// 即使价格未更新，也显示等待状态
+		lines = append(lines, "DOWN: 等待价格更新...")
+	}
+
+	// 输出到终端
+	fmt.Printf("✅ Price updated:\n")
+	for _, line := range lines {
+		fmt.Printf("   %s\n", line)
+	}
+	// 显示双向持仓和利润信息
+	s.displayHoldingsAndProfit()
+	// 显示策略状态信息到终端
+	s.displayStrategyStatus()
+
+	// 仓位和订单信息写入日志文件（交易相关信息）
+	if s.activePosition != nil {
+		posInfo := s.formatPositionInfo()
+		log.Infof("💼 %s", posInfo)
+	}
+
+	// 重构后：从 TradingService 查询活跃订单
+	activeOrders := s.getActiveOrders()
+	if len(activeOrders) > 0 {
+		ordersInfo := s.formatOrdersInfo()
+		if ordersInfo != "" {
+			log.Infof("📋 %s", ordersInfo)
+		}
+	}
+}
+
+// displayStrategyStatus 在终端显示策略状态信息
+func (s *GridStrategy) displayStrategyStatus() {
+	// 显示轮数信息
+	roundInfo := fmt.Sprintf("📊 轮数: %d/%d", s.roundsThisPeriod, s.config.MaxRoundsPerPeriod)
+
+	// 判断当前状态
+	var statusInfo string
+	var statusEmoji string
+
+	if s.isPlacingOrder {
+		statusInfo = "正在下单中..."
+		statusEmoji = "⏳"
+	} else if s.activePosition != nil {
+		// 有仓位，检查是否已对冲
+		if s.activePosition.IsHedged() {
+			statusInfo = "已对冲完成，等待清仓"
+			statusEmoji = "✅"
+		} else {
+			// 检查是否有待成交订单
+			hasEntryOrder := false
+			hasHedgeOrder := false
+			// 重构后：从 TradingService 查询活跃订单
+			activeOrders := s.getActiveOrders()
+			for _, order := range activeOrders {
+				if order.IsEntryOrder && (order.Status == domain.OrderStatusPending || order.Status == domain.OrderStatusOpen) {
+					hasEntryOrder = true
+				}
+				if !order.IsEntryOrder && (order.Status == domain.OrderStatusPending || order.Status == domain.OrderStatusOpen) {
+					hasHedgeOrder = true
+				}
+			}
+
+			if hasEntryOrder && !hasHedgeOrder {
+				statusInfo = "入场订单待成交，等待对冲"
+				statusEmoji = "⏳"
+			} else if !hasEntryOrder && hasHedgeOrder {
+				statusInfo = "对冲订单待成交"
+				statusEmoji = "⏳"
+			} else if hasEntryOrder && hasHedgeOrder {
+				statusInfo = "入场和对冲订单均待成交"
+				statusEmoji = "⏳"
+			} else {
+				statusInfo = "仓位已建立，待对冲"
+				statusEmoji = "⚠️"
+			}
+		}
+	} else if s.hasActiveOrders() {
+		// 有订单但没有仓位
+		statusInfo = "订单待成交中..."
+		statusEmoji = "⏳"
+	} else {
+		// 没有仓位和订单
+		if s.roundsThisPeriod >= s.config.MaxRoundsPerPeriod {
+			statusInfo = "已达到最大轮数限制"
+			statusEmoji = "🔒"
+		} else {
+			statusInfo = "等待网格触发，可开启新一轮"
+			statusEmoji = "🟢"
+		}
+	}
+
+	// 显示订单状态
+	var orderStatusLines []string
+	activeOrders := s.getActiveOrders()
+	if len(activeOrders) > 0 {
+		for _, order := range activeOrders {
+			if order.Status == domain.OrderStatusPending || order.Status == domain.OrderStatusOpen {
+				orderType := "入场"
+				if !order.IsEntryOrder {
+					orderType = "对冲"
+				}
+				orderStatusLines = append(orderStatusLines, fmt.Sprintf("%s订单: %s币 @ %dc [%s]",
+					orderType, order.TokenType, order.Price.Cents, order.Status))
+			}
+		}
+	} else {
+		orderStatusLines = append(orderStatusLines, "无待成交订单")
+	}
+
+	// 显示持仓状态
+	var positionStatus string
+	if s.activePosition != nil {
+		pos := s.activePosition
+		hedgeStatus := "⚠️ 未对冲"
+		if pos.IsHedged() {
+			hedgeStatus = "✅ 已对冲"
+		}
+
+		// 计算盈亏（如果有当前价格）
+		profitInfo := ""
+		if pos.TokenType == domain.TokenTypeUp && s.currentPriceUp > 0 {
+			currentPrice := domain.Price{Cents: s.currentPriceUp}
+			profit := pos.CalculateProfit(currentPrice)
+			if profit > 0 {
+				profitInfo = fmt.Sprintf(" | 利润: +%dc", profit)
+			} else if profit < 0 {
+				profitInfo = fmt.Sprintf(" | 亏损: %dc", profit)
+			}
+		} else if pos.TokenType == domain.TokenTypeDown && s.currentPriceDown > 0 {
+			currentPrice := domain.Price{Cents: s.currentPriceDown}
+			profit := pos.CalculateProfit(currentPrice)
+			if profit > 0 {
+				profitInfo = fmt.Sprintf(" | 利润: +%dc", profit)
+			} else if profit < 0 {
+				profitInfo = fmt.Sprintf(" | 亏损: %dc", profit)
+			}
+		}
+
+		positionStatus = fmt.Sprintf("%s币 @ %dc, 数量=%.2f | %s%s",
+			pos.TokenType, pos.EntryPrice.Cents, pos.Size, hedgeStatus, profitInfo)
+	} else {
+		positionStatus = "无持仓"
+	}
+
+	// 输出到终端
+	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	fmt.Printf("   %s %s\n", statusEmoji, statusInfo)
+	fmt.Printf("   %s\n", roundInfo)
+	fmt.Printf("   📋 订单: %s\n", strings.Join(orderStatusLines, " | "))
+	fmt.Printf("   💼 持仓: %s\n", positionStatus)
+
+	// 显示双向持仓和利润信息
+	s.displayHoldingsAndProfit()
+
+	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+}
+
+// displayHoldingsAndProfit 显示双向持仓和利润信息
+func (s *GridStrategy) displayHoldingsAndProfit() {
+	s.mu.RLock()
+	upTotalCost := s.upTotalCost
+	upHoldings := s.upHoldings
+	downTotalCost := s.downTotalCost
+	downHoldings := s.downHoldings
+	s.mu.RUnlock()
+
+	// 计算均价
+	var upAvgPrice float64
+	if upHoldings > 0 {
+		upAvgPrice = upTotalCost / upHoldings
+	}
+
+	var downAvgPrice float64
+	if downHoldings > 0 {
+		downAvgPrice = downTotalCost / downHoldings
+	}
+
+	// 计算利润
+	// UP胜利润 = UP持仓量 * 1 USDC - UP总成本 - DOWN总成本
+	upWinProfit := upHoldings*1.0 - upTotalCost - downTotalCost
+
+	// DOWN胜利润 = DOWN持仓量 * 1 USDC - UP总成本 - DOWN总成本
+	downWinProfit := downHoldings*1.0 - upTotalCost - downTotalCost
+
+	// 输出到终端
+	fmt.Printf("   📊 双向持仓:\n")
+	fmt.Printf("      UP:   总成本=%.8f USDC, 持仓=%.8f, 均价=%.8f\n", upTotalCost, upHoldings, upAvgPrice)
+	fmt.Printf("      DOWN: 总成本=%.8f USDC, 持仓=%.8f, 均价=%.8f\n", downTotalCost, downHoldings, downAvgPrice)
+	fmt.Printf("      💰 利润: UP胜=%.8f USDC, DOWN胜=%.8f USDC\n", upWinProfit, downWinProfit)
+}
+
+// formatOrdersInfo 格式化待成交订单信息
+func (s *GridStrategy) formatOrdersInfo() string {
+	// 重构后：从 TradingService 查询活跃订单
+	activeOrders := s.getActiveOrders()
+	if len(activeOrders) == 0 {
+		return ""
+	}
+
+	var orderLines []string
+	for _, order := range activeOrders {
+		if order.Status == domain.OrderStatusPending || order.Status == domain.OrderStatusOpen {
+			orderType := "入场"
+			if !order.IsEntryOrder {
+				orderType = "对冲"
+			}
+			orderLines = append(orderLines, fmt.Sprintf("%s订单: %s币 @ %dc, 数量=%.2f [%s]",
+				orderType, order.TokenType, order.Price.Cents, order.Size, order.Status))
+		}
+	}
+
+	if len(orderLines) > 0 {
+		return fmt.Sprintf("📋 待成交订单: %s", strings.Join(orderLines, " | "))
+	}
+
+	return ""
+}
+
+// 其他显示和日志方法（logPriceUpdate, logTokenPriceUpdate, logPositionAndProfit, 
+// formatGridPosition, formatPositionInfo）保留在 strategy.go 中，稍后可以继续拆分
+

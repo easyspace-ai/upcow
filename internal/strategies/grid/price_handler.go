@@ -1,0 +1,380 @@
+package grid
+
+import (
+	"context"
+	"time"
+
+	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/events"
+)
+
+// OnPriceChanged 处理价格变化事件
+// 网格策略规则：
+// 1. 同时监控 UP 币和 DOWN 币的价格变化
+// 2. 不论 UP 还是 DOWN，只要价格达到 62分（网格层级）就买入该币
+// 3. 因为只有涨的币（价格高的币），代表周期结束后才大概率胜出
+// 4. 如果买了 UP 币，对冲买入 DOWN 币
+// 5. 如果买了 DOWN 币，对冲买入 UP 币
+func (s *GridStrategy) OnPriceChanged(ctx context.Context, event *events.PriceChangedEvent) error {
+	// BBGO风格：直接回调模式，带防抖
+	s.lastDirectProcessMu.Lock()
+	lastTime := s.lastDirectProcessTime
+	debounceDuration := time.Duration(s.directModeDebounce) * time.Millisecond
+	s.lastDirectProcessMu.Unlock()
+
+	// 防抖检查：如果距离上次处理时间太短，跳过
+	if time.Since(lastTime) < debounceDuration {
+		log.Debugf("📊 [价格更新] 防抖跳过: %s @ %dc (距离上次处理时间=%v < 防抖间隔=%v)",
+			event.TokenType, event.NewPrice.Cents, time.Since(lastTime), debounceDuration)
+		return nil
+	}
+
+	// 更新处理时间
+	s.lastDirectProcessMu.Lock()
+	s.lastDirectProcessTime = time.Now()
+	s.lastDirectProcessMu.Unlock()
+
+	// 诊断：检查 isPlacingOrder 状态
+	s.placeOrderMu.Lock()
+	isPlacingOrder := s.isPlacingOrder
+	s.placeOrderMu.Unlock()
+	
+	if isPlacingOrder {
+		log.Warnf("⚠️ [价格更新诊断] OnPriceChanged收到价格变化但 isPlacingOrder=true，可能影响处理: %s @ %dc, market=%s",
+			event.TokenType, event.NewPrice.Cents, event.Market.Slug)
+	} else {
+		log.Debugf("📊 [价格更新] OnPriceChanged收到价格变化: %s @ %dc, market=%s",
+			event.TokenType, event.NewPrice.Cents, event.Market.Slug)
+	}
+
+	// 直接处理（异步，避免阻塞 WebSocket）
+	go func() {
+		processStartTime := time.Now()
+		if err := s.onPriceChangedInternal(context.Background(), event); err != nil {
+			log.Errorf("❌ [价格更新] onPriceChangedInternal处理失败: %s @ %dc, error=%v, 耗时=%v",
+				event.TokenType, event.NewPrice.Cents, err, time.Since(processStartTime))
+		} else {
+			processDuration := time.Since(processStartTime)
+			if processDuration > 100*time.Millisecond {
+				log.Warnf("⚠️ [价格更新诊断] onPriceChangedInternal处理耗时较长: %s @ %dc, 耗时=%v",
+					event.TokenType, event.NewPrice.Cents, processDuration)
+			}
+		}
+	}()
+
+	return nil
+}
+
+// onPriceChangedInternal 内部价格变化处理逻辑（直接回调模式）
+func (s *GridStrategy) onPriceChangedInternal(ctx context.Context, event *events.PriceChangedEvent) error {
+	startTime := time.Now()
+	
+	// 诊断：检查 isPlacingOrder 状态
+	s.placeOrderMu.Lock()
+	isPlacingOrder := s.isPlacingOrder
+	setTime := s.isPlacingOrderSetTime
+	s.placeOrderMu.Unlock()
+	
+	if isPlacingOrder {
+		// 风险13修复：检查是否超时
+		const maxPlacingOrderTimeout = 60 * time.Second
+		if !setTime.IsZero() {
+			timeSinceSet := time.Since(setTime)
+			if timeSinceSet > maxPlacingOrderTimeout {
+				log.Warnf("⚠️ [价格更新诊断] isPlacingOrder标志已持续%v（超过%v），强制重置: %s @ %dc",
+					timeSinceSet, maxPlacingOrderTimeout, event.TokenType, event.NewPrice.Cents)
+				s.placeOrderMu.Lock()
+				s.isPlacingOrder = false
+				s.isPlacingOrderSetTime = time.Time{}
+				s.placeOrderMu.Unlock()
+			} else {
+				log.Warnf("⚠️ [价格更新诊断] onPriceChangedInternal开始处理但 isPlacingOrder=true (已持续%v): %s @ %dc, market=%s",
+					timeSinceSet, event.TokenType, event.NewPrice.Cents, event.Market.Slug)
+			}
+		} else {
+			log.Warnf("⚠️ [价格更新诊断] onPriceChangedInternal开始处理但 isPlacingOrder=true (SetTime未设置): %s @ %dc, market=%s",
+				event.TokenType, event.NewPrice.Cents, event.Market.Slug)
+		}
+	} else {
+		log.Debugf("📊 [价格更新] onPriceChangedInternal开始处理: %s @ %dc, market=%s",
+			event.TokenType, event.NewPrice.Cents, event.Market.Slug)
+	}
+	
+	// 添加诊断日志：记录价格更新频率（每10次记录一次）
+	s.mu.Lock()
+	if s.priceUpdateCount == 0 {
+		s.priceUpdateCount = 1
+		s.lastPriceUpdateLogTime = time.Now()
+	} else {
+		s.priceUpdateCount++
+		if s.priceUpdateCount%10 == 0 {
+			elapsed := time.Since(s.lastPriceUpdateLogTime)
+			log.Debugf("📊 [价格更新] 已处理%d次价格更新，最近10次耗时=%v", s.priceUpdateCount, elapsed)
+			s.lastPriceUpdateLogTime = time.Now()
+		}
+	}
+	s.mu.Unlock()
+
+	s.mu.Lock()
+
+	// 检测周期切换：如果市场 Slug 变化，说明切换到新周期
+	if s.currentMarketSlug != event.Market.Slug {
+		oldSlug := s.currentMarketSlug
+		s.currentMarketSlug = event.Market.Slug
+		s.mu.Unlock() // 先解锁，避免在 ResetStateForNewCycle 中再次加锁
+
+		if oldSlug != "" {
+			log.Infof("🔄 [周期切换] 检测到新周期: %s → %s", oldSlug, event.Market.Slug)
+			// 重置所有状态，与上一个周期完全无关
+			s.ResetStateForNewCycle()
+		} else {
+			// 首次设置，不需要重置
+			log.Debugf("📋 [周期切换] 首次设置市场周期: %s", event.Market.Slug)
+		}
+
+		// 重新加锁继续处理
+		s.mu.Lock()
+	}
+
+	// 保存市场信息，用于后续对冲检查
+	market := event.Market
+
+	s.mu.Unlock()
+
+	// 风险14修复：优化异步处理逻辑，减少锁竞争
+	// 在价格变化时，异步检查并补充对冲订单（不阻塞价格处理）
+	// 使用独立的goroutine，避免阻塞主流程
+	go func() {
+		// 使用独立的context，避免使用已取消的ctx
+		hedgeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		s.checkAndSupplementHedge(hedgeCtx, market)
+	}()
+
+	// 实时计算利润并检查是否需要自动对冲
+	// 使用独立的goroutine，避免阻塞主流程
+	go func() {
+		// 使用独立的context，避免使用已取消的ctx
+		autoHedgeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		s.checkAndAutoHedge(autoHedgeCtx, market)
+	}()
+
+	// 先更新价格（需要锁保护）
+	s.mu.Lock()
+	now := time.Now()
+	oldPriceUp := s.currentPriceUp
+	oldPriceDown := s.currentPriceDown
+	
+	// 判断是否为首次价格更新（启动时）
+	// 如果旧价格为 0，说明是首次更新（启动时）
+	isFirstUpdateUp := (event.TokenType == domain.TokenTypeUp && oldPriceUp == 0)
+	isFirstUpdateDown := (event.TokenType == domain.TokenTypeDown && oldPriceDown == 0)
+
+	// 更新当前价格
+	if event.TokenType == domain.TokenTypeUp {
+		s.currentPriceUp = event.NewPrice.Cents
+		s.lastPriceUpdateUp = now
+	} else if event.TokenType == domain.TokenTypeDown {
+		s.currentPriceDown = event.NewPrice.Cents
+		s.lastPriceUpdateDown = now
+	}
+
+	// 保存需要的信息（在锁内）
+	grid := s.grid
+	activePosition := s.activePosition
+	lastDisplayTime := s.lastDisplayTime
+	s.mu.Unlock() // 尽快释放锁，避免阻塞
+	
+	// 重构后：从 TradingService 查询活跃订单数量（不需要锁）
+	activeOrdersCount := len(s.getActiveOrders())
+
+	// 显示格式化的价格更新信息（不需要锁）
+	s.logPriceUpdate(event, oldPriceUp, oldPriceDown)
+
+	// 检测价格更新异常（需要锁，但快速检查）
+	s.checkPriceUpdateAnomaly(ctx, now)
+	
+	// 诊断：记录价格更新处理完成时间
+	processDuration := time.Since(startTime)
+	if processDuration > 50*time.Millisecond {
+		log.Debugf("📊 [价格更新诊断] onPriceChangedInternal处理完成: %s @ %dc, 耗时=%v",
+			event.TokenType, event.NewPrice.Cents, processDuration)
+	}
+
+	// 显示价格更新（使用防抖机制）
+	const minDisplayInterval = 100 * time.Millisecond
+	shouldDisplay := now.Sub(lastDisplayTime) >= minDisplayInterval
+	if shouldDisplay {
+		s.mu.Lock()
+		s.lastDisplayTime = now
+		s.mu.Unlock()
+		// 实时显示网格位置信息（不需要锁）
+		s.displayGridPosition(event)
+	}
+
+	// 网格策略同时监控 UP 币和 DOWN 币
+	// 不论哪个币，只要价格达到网格层级就买入该币
+	if event.TokenType == domain.TokenTypeUp {
+		// UP 币价格变化：检查是否达到或超过网格层级
+		// 找到价格达到或超过的最高网格层级（因为层级已排序，从后往前找）
+		var targetLevel *int
+		for i := len(grid.Levels) - 1; i >= 0; i-- {
+			level := grid.Levels[i]
+			if event.NewPrice.Cents >= level {
+				targetLevel = &level
+				break // 找到最高的层级
+			}
+		}
+
+		if targetLevel == nil {
+			// 价格低于所有网格层级，不触发
+			log.Debugf("UP币价格 %dc (%.4f) 低于所有网格层级，网格层级: %v",
+				event.NewPrice.Cents, event.NewPrice.ToDecimal(), grid.Levels)
+			return nil
+		}
+
+		// 重要：如果当前价格已经高于网格层级，不买入
+		// 只有当价格从低于网格层级上涨到网格层级时，才买入
+		if event.NewPrice.Cents > *targetLevel {
+			log.Debugf("UP币价格 %dc 已高于网格层级 %dc，不买入（价格大于网格层级时不交易）",
+				event.NewPrice.Cents, *targetLevel)
+			return nil
+		}
+
+		// 检查方向（价格从下向上穿越网格层级）
+		// 只触发价格变化时的情况，启动时不触发（避免启动时立即下单）
+		shouldTrigger := false
+		if isFirstUpdateUp {
+			// 首次价格更新（启动时）：只记录价格，不触发交易
+			// 等待价格变化后再触发，避免启动时立即下单
+			log.Infof("🚀 [启动] UP币当前价格: %dc (%.4f)，网格层级: %v，等待价格变化触发交易",
+				event.NewPrice.Cents, event.NewPrice.ToDecimal(), grid.Levels)
+			return nil
+		} else if oldPriceUp > 0 {
+			// 有旧价格：检查是否从下向上穿越目标层级
+			// 条件：旧价格 < 目标层级 且 新价格 == 目标层级（价格刚好到达网格层级）
+			// 这意味着价格从低于层级的位置上涨到了网格层级
+			if oldPriceUp < *targetLevel && event.NewPrice.Cents == *targetLevel {
+				shouldTrigger = true
+				log.Infof("UP币网格层级到达: %dc → %dc (网格层级: %dc)，买入UP币",
+					oldPriceUp, event.NewPrice.Cents, *targetLevel)
+			}
+		}
+
+		if shouldTrigger {
+			return s.handleGridLevelReached(ctx, event.Market, domain.TokenTypeUp, *targetLevel, event.NewPrice)
+		} else {
+			// 价格在网格层级上但没有触发，记录调试信息
+			log.Debugf("UP币价格在网格层级 %dc 上，但未触发买入 (OldPrice=%dc, NewPrice=%dc, 已有仓位/订单=%v)",
+				*targetLevel, oldPriceUp, event.NewPrice.Cents, activePosition != nil || activeOrdersCount > 0)
+		}
+	} else if event.TokenType == domain.TokenTypeDown {
+		// DOWN 币价格变化：检查是否达到或超过网格层级
+		// 如果 DOWN 币价格达到网格层级，说明 DOWN 币在涨，买入 DOWN 币
+		// 找到价格达到或超过的最高网格层级（因为层级已排序，从后往前找）
+		var targetLevel *int
+		for i := len(grid.Levels) - 1; i >= 0; i-- {
+			level := grid.Levels[i]
+			if event.NewPrice.Cents >= level {
+				targetLevel = &level
+				break // 找到最高的层级
+			}
+		}
+
+		if targetLevel == nil {
+			// 价格低于所有网格层级，不触发
+			log.Debugf("DOWN币价格 %dc (%.4f) 低于所有网格层级，网格层级: %v",
+				event.NewPrice.Cents, event.NewPrice.ToDecimal(), grid.Levels)
+			return nil
+		}
+
+		// 重要：如果当前价格已经高于网格层级，不买入
+		// 只有当价格从低于网格层级上涨到网格层级时，才买入
+		if event.NewPrice.Cents > *targetLevel {
+			log.Debugf("DOWN币价格 %dc 已高于网格层级 %dc，不买入（价格大于网格层级时不交易）",
+				event.NewPrice.Cents, *targetLevel)
+			return nil
+		}
+
+		// 检查方向（价格从下向上穿越网格层级）
+		// DOWN 币价格上涨 = DOWN 币在涨，买入 DOWN 币
+		// 只触发价格变化时的情况，启动时不触发（避免启动时立即下单）
+		shouldTrigger := false
+		if isFirstUpdateDown {
+			// 首次价格更新（启动时）：只记录价格，不触发交易
+			// 等待价格变化后再触发，避免启动时立即下单
+			log.Infof("🚀 [启动] DOWN币当前价格: %dc (%.4f)，网格层级: %v，等待价格变化触发交易",
+				event.NewPrice.Cents, event.NewPrice.ToDecimal(), grid.Levels)
+			return nil
+		} else if oldPriceDown > 0 {
+			// 有旧价格：检查是否从下向上穿越目标层级
+			// 条件：旧价格 < 目标层级 且 新价格 == 目标层级（价格刚好到达网格层级）
+			// 这意味着价格从低于层级的位置上涨到了网格层级
+			if oldPriceDown < *targetLevel && event.NewPrice.Cents == *targetLevel {
+				shouldTrigger = true
+				log.Infof("DOWN币网格层级到达: %dc → %dc (网格层级: %dc)，买入DOWN币",
+					oldPriceDown, event.NewPrice.Cents, *targetLevel)
+			}
+		}
+
+		if shouldTrigger {
+			return s.handleGridLevelReached(ctx, event.Market, domain.TokenTypeDown, *targetLevel, event.NewPrice)
+		} else {
+			// 价格在网格层级上但没有触发，记录调试信息
+			log.Debugf("DOWN币价格在网格层级 %dc 上，但未触发买入 (OldPrice=%dc, NewPrice=%dc, 已有仓位/订单=%v)",
+				*targetLevel, oldPriceDown, event.NewPrice.Cents, activePosition != nil || activeOrdersCount > 0)
+		}
+	}
+
+	// 记录处理时间（用于性能监控）
+	processingTime := time.Since(startTime)
+	if processingTime > 100*time.Millisecond {
+		log.Warnf("⚠️ [价格更新] 处理时间较长: %s @ %dc, 耗时=%v",
+			event.TokenType, event.NewPrice.Cents, processingTime)
+	} else {
+		log.Debugf("✅ [价格更新] onPriceChangedInternal处理完成: %s @ %dc, 耗时=%v",
+			event.TokenType, event.NewPrice.Cents, processingTime)
+	}
+
+	return nil
+}
+
+// checkPriceUpdateAnomaly 检测价格更新异常
+// 如果只有一个币的价格更新，另一个币超过30秒未更新，触发严重错误
+func (s *GridStrategy) checkPriceUpdateAnomaly(ctx context.Context, now time.Time) {
+	const maxStaleDuration = 30 * time.Second // 最大过期时间：30秒
+
+	// 检查 UP 币和 DOWN 币的更新状态
+	upUpdated := !s.lastPriceUpdateUp.IsZero()
+	downUpdated := !s.lastPriceUpdateDown.IsZero()
+
+	// 如果两个币都已更新，检查是否过期
+	if upUpdated && downUpdated {
+		upStale := now.Sub(s.lastPriceUpdateUp) > maxStaleDuration
+		downStale := now.Sub(s.lastPriceUpdateDown) > maxStaleDuration
+
+		if upStale && downStale {
+			// 两个币都过期，严重错误
+			log.Errorf("🚨 [价格更新异常] UP币和DOWN币价格都已过期: UP=%v前更新, DOWN=%v前更新",
+				now.Sub(s.lastPriceUpdateUp), now.Sub(s.lastPriceUpdateDown))
+		} else if upStale {
+			// 只有 UP 币过期
+			log.Errorf("🚨 [价格更新异常] UP币价格已过期: %v前更新", now.Sub(s.lastPriceUpdateUp))
+		} else if downStale {
+			// 只有 DOWN 币过期
+			log.Errorf("🚨 [价格更新异常] DOWN币价格已过期: %v前更新", now.Sub(s.lastPriceUpdateDown))
+		}
+	} else if upUpdated && !downUpdated {
+		// 只有 UP 币更新，DOWN 币未更新
+		if now.Sub(s.lastPriceUpdateUp) > maxStaleDuration {
+			log.Errorf("🚨 [价格更新异常] 只有UP币更新，DOWN币超过%v未更新", maxStaleDuration)
+		}
+	} else if !upUpdated && downUpdated {
+		// 只有 DOWN 币更新，UP 币未更新
+		if now.Sub(s.lastPriceUpdateDown) > maxStaleDuration {
+			log.Errorf("🚨 [价格更新异常] 只有DOWN币更新，UP币超过%v未更新", maxStaleDuration)
+		}
+	}
+}
+

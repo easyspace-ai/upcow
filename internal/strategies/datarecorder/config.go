@@ -1,0 +1,34 @@
+package datarecorder
+
+import (
+	"fmt"
+)
+
+// DataRecorderStrategyConfig 数据记录策略配置
+type DataRecorderStrategyConfig struct {
+	OutputDir       string // CSV 文件保存目录
+	UseRTDSFallback bool   // 是否使用 RTDS 作为目标价备选方案
+	ProxyURL        string // 代理 URL（格式：http://host:port）
+}
+
+// GetName 实现 StrategyConfig 接口
+func (c *DataRecorderStrategyConfig) GetName() string {
+	return "datarecorder"
+}
+
+// Validate 验证配置
+func (c *DataRecorderStrategyConfig) Validate() error {
+	if c.OutputDir == "" {
+		return fmt.Errorf("输出目录不能为空")
+	}
+	return nil
+}
+
+// DefaultDataRecorderStrategyConfig 返回默认配置
+func DefaultDataRecorderStrategyConfig() *DataRecorderStrategyConfig {
+	return &DataRecorderStrategyConfig{
+		OutputDir:       "data/recordings",
+		UseRTDSFallback: true,
+	}
+}
+

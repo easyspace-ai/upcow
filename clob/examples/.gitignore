@@ -1,0 +1,12 @@
+# 编译后的二进制文件
+create_api_key
+get_markets
+fetch_gamma_market
+get_orderbook
+get_price
+get_open_orders
+cancel_order
+
+# 测试文件
+*.test
+

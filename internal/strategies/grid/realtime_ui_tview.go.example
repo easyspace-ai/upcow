@@ -1,0 +1,403 @@
+// 这是一个使用 tview 实现的实时UI示例
+// 使用方法：
+// 1. 安装依赖: go get github.com/rivo/tview
+// 2. 将此文件重命名为 realtime_ui_tview.go
+// 3. 替换 strategy.go 中的 updateRealtimeUI 实现
+
+package grid
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/rivo/tview"
+	"github.com/sirupsen/logrus"
+
+	"github.com/betbot/gobet/internal/domain"
+)
+
+var log = logrus.WithField("strategy", "grid")
+
+// RealtimeUITView 使用tview实现的实时UI
+type RealtimeUITView struct {
+	app          *tview.Application
+	grid         *tview.Grid
+	priceView    *tview.TextView
+	positionView *tview.TextView
+	orderView    *tview.Table
+	holdingView  *tview.TextView
+	roundView    *tview.TextView
+	
+	// 数据缓存
+	mu                sync.RWMutex
+	currentMarketSlug string
+	currentPriceUp    int
+	currentPriceDown  int
+	activePosition    *domain.Position
+	activeOrders      []*domain.Order
+	upTotalCost       float64
+	upHoldings        float64
+	downTotalCost     float64
+	downHoldings      float64
+	roundsThisPeriod  int
+	maxRounds         int
+	isPlacingOrder    bool
+}
+
+// NewRealtimeUITView 创建新的tview UI实例
+func NewRealtimeUITView() *RealtimeUITView {
+	app := tview.NewApplication()
+	
+	// 创建价格显示组件
+	priceView := tview.NewTextView().
+		SetDynamicColors(true).
+		SetBorder(true).
+		SetTitle("💰 当前价格").
+		SetTitleAlign(tview.AlignLeft)
+	
+	// 创建持仓显示组件
+	positionView := tview.NewTextView().
+		SetDynamicColors(true).
+		SetBorder(true).
+		SetTitle("💼 持仓情况").
+		SetTitleAlign(tview.AlignLeft)
+	
+	// 创建订单表格
+	orderView := tview.NewTable().
+		SetBorders(true).
+		SetTitle("📋 订单状态").
+		SetTitleAlign(tview.AlignLeft).
+		SetSelectable(false, false)
+	
+	// 创建双向持仓显示组件
+	holdingView := tview.NewTextView().
+		SetDynamicColors(true).
+		SetBorder(true).
+		SetTitle("📊 双向持仓").
+		SetTitleAlign(tview.AlignLeft)
+	
+	// 创建轮数显示组件
+	roundView := tview.NewTextView().
+		SetDynamicColors(true).
+		SetBorder(true).
+		SetTitle("📊 轮数信息").
+		SetTitleAlign(tview.AlignLeft)
+	
+	// 创建布局
+	grid := tview.NewGrid().
+		SetRows(3, 0, 0, 3).
+		SetColumns(0, 0).
+		SetBorders(false).
+		// 标题行（跨2列）
+		AddItem(createTitleView(), 0, 0, 1, 2, 0, 0, false).
+		// 价格和持仓（第一行）
+		AddItem(priceView, 1, 0, 1, 1, 0, 0, false).
+		AddItem(positionView, 1, 1, 1, 1, 0, 0, false).
+		// 订单和双向持仓（第二行）
+		AddItem(orderView, 2, 0, 1, 1, 0, 0, false).
+		AddItem(holdingView, 2, 1, 1, 1, 0, 0, false).
+		// 轮数信息（底部）
+		AddItem(roundView, 3, 0, 1, 2, 0, 0, false)
+	
+	app.SetRoot(grid, true)
+	
+	return &RealtimeUITView{
+		app:          app,
+		grid:         grid,
+		priceView:    priceView,
+		positionView: positionView,
+		orderView:    orderView,
+		holdingView:  holdingView,
+		roundView:    roundView,
+	}
+}
+
+// createTitleView 创建标题视图
+func createTitleView() *tview.TextView {
+	title := tview.NewTextView().
+		SetDynamicColors(true).
+		SetTextAlign(tview.AlignCenter).
+		SetText("╔════════════════════════════════════════════════════════════════╗\n" +
+			"║              网格交易策略 - 实时监控面板                      ║\n" +
+			"╚════════════════════════════════════════════════════════════════╝")
+	return title
+}
+
+// Update 更新UI数据（线程安全）
+func (ui *RealtimeUITView) Update(data *UIUpdateData) {
+	ui.mu.Lock()
+	defer ui.mu.Unlock()
+	
+	ui.currentMarketSlug = data.CurrentMarketSlug
+	ui.currentPriceUp = data.CurrentPriceUp
+	ui.currentPriceDown = data.CurrentPriceDown
+	ui.activePosition = data.ActivePosition
+	ui.activeOrders = data.ActiveOrders
+	ui.upTotalCost = data.UpTotalCost
+	ui.upHoldings = data.UpHoldings
+	ui.downTotalCost = data.DownTotalCost
+	ui.downHoldings = data.DownHoldings
+	ui.roundsThisPeriod = data.RoundsThisPeriod
+	ui.maxRounds = data.MaxRounds
+	ui.isPlacingOrder = data.IsPlacingOrder
+	
+	// 使用 QueueUpdateDraw 确保在主线程更新UI
+	ui.app.QueueUpdateDraw(func() {
+		ui.render()
+	})
+}
+
+// render 渲染UI（在主线程调用）
+func (ui *RealtimeUITView) render() {
+	ui.mu.RLock()
+	defer ui.mu.RUnlock()
+	
+	// 更新价格显示
+	ui.updatePriceView()
+	
+	// 更新持仓显示
+	ui.updatePositionView()
+	
+	// 更新订单表格
+	ui.updateOrderView()
+	
+	// 更新双向持仓显示
+	ui.updateHoldingView()
+	
+	// 更新轮数显示
+	ui.updateRoundView()
+}
+
+// updatePriceView 更新价格显示
+func (ui *RealtimeUITView) updatePriceView() {
+	var text string
+	
+	if ui.currentPriceUp > 0 {
+		text += fmt.Sprintf("[green]UP:   [white]%dc (%.4f)\n", ui.currentPriceUp, float64(ui.currentPriceUp)/100.0)
+	} else {
+		text += "[yellow]UP:   等待价格更新...\n"
+	}
+	
+	if ui.currentPriceDown > 0 {
+		text += fmt.Sprintf("[green]DOWN: [white]%dc (%.4f)", ui.currentPriceDown, float64(ui.currentPriceDown)/100.0)
+	} else {
+		text += "[yellow]DOWN: 等待价格更新..."
+	}
+	
+	ui.priceView.SetText(text)
+}
+
+// updatePositionView 更新持仓显示
+func (ui *RealtimeUITView) updatePositionView() {
+	var text string
+	
+	if ui.activePosition != nil {
+		hedgeStatus := "[yellow]⚠️ 未对冲"
+		if ui.activePosition.IsHedged() {
+			hedgeStatus = "[green]✅ 已对冲"
+		}
+		
+		// 计算盈亏
+		profitInfo := ""
+		if ui.activePosition.TokenType == domain.TokenTypeUp && ui.currentPriceUp > 0 {
+			currentPrice := domain.Price{Cents: ui.currentPriceUp}
+			profit := ui.activePosition.CalculateProfit(currentPrice)
+			if profit > 0 {
+				profitInfo = fmt.Sprintf(" | [green]利润: +%dc", profit)
+			} else if profit < 0 {
+				profitInfo = fmt.Sprintf(" | [red]亏损: %dc", profit)
+			}
+		} else if ui.activePosition.TokenType == domain.TokenTypeDown && ui.currentPriceDown > 0 {
+			currentPrice := domain.Price{Cents: ui.currentPriceDown}
+			profit := ui.activePosition.CalculateProfit(currentPrice)
+			if profit > 0 {
+				profitInfo = fmt.Sprintf(" | [green]利润: +%dc", profit)
+			} else if profit < 0 {
+				profitInfo = fmt.Sprintf(" | [red]亏损: %dc", profit)
+			}
+		}
+		
+		text = fmt.Sprintf("[white]%s币 @ %dc, 数量=%.2f | %s%s",
+			ui.activePosition.TokenType, ui.activePosition.EntryPrice.Cents, ui.activePosition.Size, hedgeStatus, profitInfo)
+	} else {
+		text = "[gray]无持仓"
+	}
+	
+	ui.positionView.SetText(text)
+}
+
+// updateOrderView 更新订单表格
+func (ui *RealtimeUITView) updateOrderView() {
+	ui.orderView.Clear()
+	
+	if ui.isPlacingOrder {
+		ui.orderView.SetCell(0, 0, tview.NewTableCell("[yellow]⏳ 正在下单中..."))
+	} else if len(ui.activeOrders) > 0 {
+		// 表头
+		ui.orderView.SetCell(0, 0, tview.NewTableCell("[yellow]类型").SetAlign(tview.AlignCenter))
+		ui.orderView.SetCell(0, 1, tview.NewTableCell("[yellow]币种").SetAlign(tview.AlignCenter))
+		ui.orderView.SetCell(0, 2, tview.NewTableCell("[yellow]价格").SetAlign(tview.AlignCenter))
+		ui.orderView.SetCell(0, 3, tview.NewTableCell("[yellow]数量").SetAlign(tview.AlignCenter))
+		ui.orderView.SetCell(0, 4, tview.NewTableCell("[yellow]状态").SetAlign(tview.AlignCenter))
+		
+		// 订单数据
+		for i, order := range ui.activeOrders {
+			row := i + 1
+			orderType := "[green]入场"
+			if !order.IsEntryOrder {
+				orderType = "[cyan]对冲"
+			}
+			
+			ui.orderView.SetCell(row, 0, tview.NewTableCell(orderType))
+			ui.orderView.SetCell(row, 1, tview.NewTableCell(order.TokenType))
+			ui.orderView.SetCell(row, 2, tview.NewTableCell(fmt.Sprintf("%dc", order.Price.Cents)))
+			ui.orderView.SetCell(row, 3, tview.NewTableCell(fmt.Sprintf("%.2f", order.Size)))
+			ui.orderView.SetCell(row, 4, tview.NewTableCell(order.Status))
+		}
+	} else {
+		ui.orderView.SetCell(0, 0, tview.NewTableCell("[gray]无待成交订单"))
+	}
+}
+
+// updateHoldingView 更新双向持仓显示
+func (ui *RealtimeUITView) updateHoldingView() {
+	var upAvgPrice, downAvgPrice float64
+	if ui.upHoldings > 0 {
+		upAvgPrice = ui.upTotalCost / ui.upHoldings
+	}
+	if ui.downHoldings > 0 {
+		downAvgPrice = ui.downTotalCost / ui.downHoldings
+	}
+	
+	// 计算利润
+	upWinProfit := ui.upHoldings*1.0 - ui.upTotalCost - ui.downTotalCost
+	downWinProfit := ui.downHoldings*1.0 - ui.upTotalCost - ui.downTotalCost
+	upWinColor := "[green]"
+	if upWinProfit < 0 {
+		upWinColor = "[red]"
+	}
+	downWinColor := "[green]"
+	if downWinProfit < 0 {
+		downWinColor = "[red]"
+	}
+	
+	text := fmt.Sprintf("[white]UP:   总成本=%.8f USDC, 持仓=%.8f, 均价=%.8f\n",
+		ui.upTotalCost, ui.upHoldings, upAvgPrice)
+	text += fmt.Sprintf("[white]DOWN: 总成本=%.8f USDC, 持仓=%.8f, 均价=%.8f\n",
+		ui.downTotalCost, ui.downHoldings, downAvgPrice)
+	text += fmt.Sprintf("[yellow]💰 利润: UP胜=%s%.8f[white] USDC, DOWN胜=%s%.8f[white] USDC",
+		upWinColor, upWinProfit, downWinColor, downWinProfit)
+	
+	ui.holdingView.SetText(text)
+}
+
+// updateRoundView 更新轮数显示
+func (ui *RealtimeUITView) updateRoundView() {
+	text := fmt.Sprintf("[white]📊 轮数: %d/%d", ui.roundsThisPeriod, ui.maxRounds)
+	if ui.currentMarketSlug != "" {
+		text += fmt.Sprintf(" | [cyan]周期: %s", ui.currentMarketSlug)
+	}
+	text += fmt.Sprintf(" | [gray]更新时间: %s", time.Now().Format("2006-01-02 15:04:05"))
+	
+	ui.roundView.SetText(text)
+}
+
+// Run 运行UI（阻塞调用）
+func (ui *RealtimeUITView) Run() error {
+	return ui.app.Run()
+}
+
+// Stop 停止UI
+func (ui *RealtimeUITView) Stop() {
+	ui.app.Stop()
+}
+
+// UIUpdateData UI更新数据结构
+type UIUpdateData struct {
+	CurrentMarketSlug string
+	CurrentPriceUp    int
+	CurrentPriceDown  int
+	ActivePosition    *domain.Position
+	ActiveOrders      []*domain.Order
+	UpTotalCost       float64
+	UpHoldings        float64
+	DownTotalCost     float64
+	DownHoldings      float64
+	RoundsThisPeriod  int
+	MaxRounds         int
+	IsPlacingOrder    bool
+}
+
+// 在 strategy.go 中的使用示例：
+/*
+func (s *GridStrategy) startRealtimeUI(ctx context.Context) {
+	// ... 现有代码 ...
+	
+	// 创建tview UI
+	ui := NewRealtimeUITView()
+	
+	// 在goroutine中运行UI
+	go func() {
+		if err := ui.Run(); err != nil {
+			log.Errorf("UI运行失败: %v", err)
+		}
+	}()
+	
+	// 定期更新UI
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		
+		for {
+			select {
+			case <-ctx.Done():
+				ui.Stop()
+				return
+			case <-ticker.C:
+				// 读取数据
+				data := s.getUIUpdateData()
+				// 更新UI
+				ui.Update(data)
+			}
+		}
+	}()
+}
+
+func (s *GridStrategy) getUIUpdateData() *UIUpdateData {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	
+	data := &UIUpdateData{
+		CurrentMarketSlug: s.currentMarketSlug,
+		CurrentPriceUp:    s.currentPriceUp,
+		CurrentPriceDown:  s.currentPriceDown,
+		UpTotalCost:       s.upTotalCost,
+		UpHoldings:        s.upHoldings,
+		DownTotalCost:     s.downTotalCost,
+		DownHoldings:      s.downHoldings,
+		RoundsThisPeriod:  s.roundsThisPeriod,
+		MaxRounds:         s.config.MaxRoundsPerPeriod,
+		IsPlacingOrder:   s.isPlacingOrder,
+	}
+	
+	// 复制仓位
+	if s.activePosition != nil {
+		posCopy := *s.activePosition
+		data.ActivePosition = &posCopy
+	}
+	
+	// 复制订单
+	data.ActiveOrders = make([]*domain.Order, 0, len(s.activeOrders))
+	for _, order := range s.activeOrders {
+		if order.Status == domain.OrderStatusPending || order.Status == domain.OrderStatusOpen {
+			orderCopy := *order
+			data.ActiveOrders = append(data.ActiveOrders, &orderCopy)
+		}
+	}
+	
+	return data
+}
+*/
+
