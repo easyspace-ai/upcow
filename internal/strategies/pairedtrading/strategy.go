@@ -656,14 +656,45 @@ func (s *PairedTradingStrategy) placeBuyOrder(ctx context.Context, market *domai
 			return fmt.Errorf("获取订单簿失败: %w", err)
 		}
 
-		orderAmount := size * bestAskPrice.ToDecimal()
+		// 检查并调整数量以满足最小金额要求
+		adjustedSize := size
+		orderAmount := adjustedSize * bestAskPrice.ToDecimal()
+		
 		if orderAmount < minOrderUSDC {
-			log.Warnf("成对交易策略: %s - 订单金额 %.2f USDC 小于最小要求 %.2f USDC，跳过下单（数量=%.2f, 价格=%.4f）",
-				reason, orderAmount, minOrderUSDC, size, bestAskPrice.ToDecimal())
-			return nil
+			if !s.config.AutoAdjustSize {
+				// 不自动调整，跳过订单
+				log.Warnf("成对交易策略: %s - 订单金额 %.4f USDC < 最小要求 %.2f USDC，跳过下单（数量=%.2f, 价格=%.4f）",
+					reason, orderAmount, minOrderUSDC, size, bestAskPrice.ToDecimal())
+				return nil
+			}
+			
+			// 计算满足最小金额所需的数量
+			requiredSize := minOrderUSDC / bestAskPrice.ToDecimal()
+			
+			// 检查调整倍数
+			adjustRatio := requiredSize / size
+			if adjustRatio > s.config.MaxSizeAdjustRatio {
+				log.Warnf("成对交易策略: %s - 所需调整倍数 %.2f > 最大允许 %.2f，跳过下单（原数量=%.2f, 需要数量=%.2f, 价格=%.4f）",
+					reason, adjustRatio, s.config.MaxSizeAdjustRatio, size, requiredSize, bestAskPrice.ToDecimal())
+				return nil
+			}
+			
+			adjustedSize = requiredSize
+			newOrderAmount := adjustedSize * bestAskPrice.ToDecimal()
+			
+			log.Infof("成对交易策略: %s - ⚠️ 自动调整数量以满足最小金额：%.2f → %.2f shares (%.2fx), 原金额=%.4f → 新金额=%.4f USDC (价格=%.4f)",
+				reason, size, adjustedSize, adjustRatio, orderAmount, newOrderAmount, bestAskPrice.ToDecimal())
+			
+			// 二次检查：如果调整后仍然不满足（由于浮点精度），再加一点
+			if newOrderAmount < minOrderUSDC {
+				adjustedSize = adjustedSize * 1.01 // 增加1%确保满足
+				finalAmount := adjustedSize * bestAskPrice.ToDecimal()
+				log.Debugf("成对交易策略: %s - 二次调整数量到 %.2f shares (金额=%.4f USDC) 以确保满足最小金额", 
+					reason, adjustedSize, finalAmount)
+			}
 		}
 
-		order := orderutil.NewOrder(market.Slug, assetID, types.SideBuy, bestAskPrice, size, tokenType, true, types.OrderTypeFAK)
+		order := orderutil.NewOrder(market.Slug, assetID, types.SideBuy, bestAskPrice, adjustedSize, tokenType, true, types.OrderTypeFAK)
 		_, err = ts.PlaceOrder(ctx, order)
 		return err
 	}
@@ -683,20 +714,55 @@ func (s *PairedTradingStrategy) placeBuyOrder(ctx context.Context, market *domai
 				return
 			}
 
-			orderAmount := size * bestAskPrice.ToDecimal()
+			// 检查并调整数量以满足最小金额要求
+			adjustedSize := size
+			orderAmount := adjustedSize * bestAskPrice.ToDecimal()
+			
 			if orderAmount < minOrderUSDC {
-				select {
-				case s.cmdResultC <- pairedTradingCmdResult{tokenType: tokenType, reason: reason, skipped: true}:
-				default:
+				if !s.config.AutoAdjustSize {
+					// 不自动调整，跳过订单
+					select {
+					case s.cmdResultC <- pairedTradingCmdResult{tokenType: tokenType, reason: reason, skipped: true}:
+					default:
+					}
+					return
 				}
-				return
+				
+				// 计算满足最小金额所需的数量
+				requiredSize := minOrderUSDC / bestAskPrice.ToDecimal()
+				
+				// 检查调整倍数
+				adjustRatio := requiredSize / size
+				if adjustRatio > s.config.MaxSizeAdjustRatio {
+					log.Warnf("成对交易策略: %s - 所需调整倍数 %.2f > 最大允许 %.2f，跳过下单（原数量=%.2f, 需要数量=%.2f, 价格=%.4f）",
+						reason, adjustRatio, s.config.MaxSizeAdjustRatio, size, requiredSize, bestAskPrice.ToDecimal())
+					select {
+					case s.cmdResultC <- pairedTradingCmdResult{tokenType: tokenType, reason: reason, skipped: true}:
+					default:
+					}
+					return
+				}
+				
+				adjustedSize = requiredSize
+				newOrderAmount := adjustedSize * bestAskPrice.ToDecimal()
+				
+				log.Infof("成对交易策略: %s - ⚠️ 自动调整数量以满足最小金额：%.2f → %.2f shares (%.2fx), 原金额=%.4f → 新金额=%.4f USDC (价格=%.4f)",
+					reason, size, adjustedSize, adjustRatio, orderAmount, newOrderAmount, bestAskPrice.ToDecimal())
+				
+				// 二次检查：如果调整后仍然不满足（由于浮点精度），再加一点
+				if newOrderAmount < minOrderUSDC {
+					adjustedSize = adjustedSize * 1.01
+					finalAmount := adjustedSize * bestAskPrice.ToDecimal()
+					log.Debugf("成对交易策略: %s - 二次调整数量到 %.2f shares (金额=%.4f USDC) 以确保满足最小金额", 
+						reason, adjustedSize, finalAmount)
+				}
 			}
 
 			mSlug := ""
 			if s.currentMarket != nil {
 				mSlug = s.currentMarket.Slug
 			}
-			order := orderutil.NewOrder(mSlug, assetID, types.SideBuy, bestAskPrice, size, tokenType, true, types.OrderTypeFAK)
+			order := orderutil.NewOrder(mSlug, assetID, types.SideBuy, bestAskPrice, adjustedSize, tokenType, true, types.OrderTypeFAK)
 
 			created, err := ts.PlaceOrder(runCtx, order)
 			select {

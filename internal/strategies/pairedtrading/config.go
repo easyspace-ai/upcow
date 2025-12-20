@@ -38,6 +38,8 @@ type PairedTradingConfig struct {
 	// 通用参数
 	MinOrderSize         float64 `yaml:"min_order_size"`          // 最小下单金额（USDC）
 	MaxBuySlippageCents  int     `yaml:"max_buy_slippage_cents"`  // 最大买入滑点（分）
+	AutoAdjustSize       bool    `yaml:"auto_adjust_size"`        // 是否自动调整数量以满足最小金额（默认true）
+	MaxSizeAdjustRatio   float64 `yaml:"max_size_adjust_ratio"`   // 最大数量调整倍数（默认5.0）
 }
 
 // Validate 验证配置
@@ -122,6 +124,11 @@ func (c *PairedTradingConfig) Validate() error {
 	if c.MinOrderSize <= 0 {
 		return fmt.Errorf("min_order_size 必须大于 0")
 	}
+	
+	// 验证数量调整参数
+	if c.MaxSizeAdjustRatio <= 0 {
+		return fmt.Errorf("max_size_adjust_ratio 必须大于 0")
+	}
 
 	return nil
 }
@@ -160,6 +167,8 @@ func DefaultPairedTradingConfig() *PairedTradingConfig {
 		// 通用参数
 		MinOrderSize:        1.1, // 最小下单1.1 USDC
 		MaxBuySlippageCents: 3,   // 最大滑点3分
+		AutoAdjustSize:      true, // 自动调整数量
+		MaxSizeAdjustRatio:  5.0,  // 最大调整5倍
 	}
 }
 
@@ -289,6 +298,16 @@ func (a *PairedTradingConfigAdapter) AdaptFromMap(m map[string]interface{}) (int
 			config.MaxBuySlippageCents = i
 		} else if f, ok := v.(float64); ok {
 			config.MaxBuySlippageCents = int(f)
+		}
+	}
+	if v, ok := m["auto_adjust_size"]; ok {
+		if b, ok := v.(bool); ok {
+			config.AutoAdjustSize = b
+		}
+	}
+	if v, ok := m["max_size_adjust_ratio"]; ok {
+		if f, ok := v.(float64); ok {
+			config.MaxSizeAdjustRatio = f
 		}
 	}
 
