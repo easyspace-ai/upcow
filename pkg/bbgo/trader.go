@@ -198,6 +198,13 @@ func (t *Trader) injectServicesIntoStrategy(ctx context.Context, strategy interf
 			traderLog.Debugf("failed to inject directModeDebounce into %s: %v", strategyID, err)
 		}
 
+	// 注入全局命令执行器（串行 IO）
+	if t.environment.Executor != nil {
+		if err := t.injectField(strategy, "Executor", t.environment.Executor); err != nil {
+			traderLog.Debugf("failed to inject Executor into %s: %v", strategyID, err)
+		}
+	}
+
 	return nil
 }
 

@@ -3,6 +3,7 @@ package bbgo
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/persistence"
@@ -15,6 +16,7 @@ type Environment struct {
 	TradingService    *services.TradingService
 	MarketDataService *services.MarketDataService
 	PersistenceService persistence.Service
+	Executor          CommandExecutor
 
 	// 会话管理
 	sessions map[string]*ExchangeSession
@@ -56,6 +58,11 @@ func (e *Environment) SetMarketDataService(mds *services.MarketDataService) {
 // SetPersistenceService 设置持久化服务
 func (e *Environment) SetPersistenceService(ps persistence.Service) {
 	e.PersistenceService = ps
+}
+
+// SetExecutor 设置全局命令执行器（用于串行执行网络/交易 IO）
+func (e *Environment) SetExecutor(executor CommandExecutor) {
+	e.Executor = executor
 }
 
 // AddSession 添加交易所会话
@@ -104,6 +111,11 @@ func (e *Environment) Start(ctx context.Context) error {
 		}
 	}
 
+	// 启动命令执行器（如果配置）
+	if e.Executor != nil {
+		e.Executor.Start(ctx)
+	}
+
 	return nil
 }
 
@@ -125,6 +137,13 @@ func (e *Environment) Connect(ctx context.Context) error {
 func (e *Environment) Close() error {
 	e.sessionsMu.RLock()
 	defer e.sessionsMu.RUnlock()
+
+	// 停止命令执行器（不阻塞关闭）
+	if e.Executor != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = e.Executor.Stop(stopCtx)
+		cancel()
+	}
 
 	for _, session := range e.sessions {
 		if err := session.Close(); err != nil {

@@ -26,6 +26,8 @@ func init() {
 
 // GridStrategy 网格策略实现
 type GridStrategy struct {
+	// Executor 串行 IO 执行器（由 Environment 注入）
+	Executor              bbgo.CommandExecutor
 	config                *GridStrategyConfig
 	grid                  *domain.Grid
 	tradingService        TradingServiceInterface // 交易服务接口
@@ -77,6 +79,12 @@ type GridStrategy struct {
 	priceMu      sync.Mutex
 	latestPrice  map[domain.TokenType]*events.PriceChangedEvent
 	orderC       chan orderUpdate
+
+	// 命令执行结果（由全局 Executor 回传到策略 loop）
+	cmdResultC chan gridCmdResult
+
+	// HedgePlan：统一的入场/对冲状态机（下一阶段工程化）
+	plan *HedgePlan
 }
 
 type orderUpdate struct {
@@ -110,6 +118,7 @@ func NewGridStrategy() *GridStrategy {
 		priceSignalC:          make(chan struct{}, 1),
 		latestPrice:           make(map[domain.TokenType]*events.PriceChangedEvent),
 		orderC:                make(chan orderUpdate, 4096),
+		cmdResultC:            make(chan gridCmdResult, 4096),
 	}
 }
 

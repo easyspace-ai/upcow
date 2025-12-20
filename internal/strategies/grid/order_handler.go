@@ -103,6 +103,9 @@ func (s *GridStrategy) handleGridLevelReached(
 	gridLevel int, // 网格层级价格（例如 62分）
 	currentPrice domain.Price,
 ) error {
+	// 下一阶段工程化：统一走 HedgePlan + Executor（单线程 loop，不直接阻塞网络 IO）
+	return s.handleGridLevelReachedWithPlan(ctx, market, tokenType, gridLevel, currentPrice)
+
 	log.Infof("🎯 [网格下单] handleGridLevelReached开始处理: %s币, 网格层级=%dc, 当前价格=%dc (%.4f), market=%s",
 		tokenType, gridLevel, currentPrice.Cents, currentPrice.ToDecimal(), market.Slug)
 	
@@ -1137,6 +1140,26 @@ func (s *GridStrategy) OnOrderFilled(ctx context.Context, event *events.OrderFil
 					hedgeOrderStartTime := time.Now()
 					log.Debugf("📤 [对冲订单提交] 开始提交对冲订单: orderID=%s, 开始时间=%v", 
 						hedgeOrderToSubmit.OrderID, hedgeOrderStartTime)
+
+					// 下一阶段工程化：对冲下单通过 Executor 串行执行，策略 loop 不直接阻塞网络 IO
+					planID := fmt.Sprintf("grid-hedge-%d", time.Now().UnixNano())
+					if s.plan != nil {
+						planID = s.plan.ID
+						s.plan.State = PlanHedgeSubmitting
+					}
+					if err := s.submitPlaceOrderCmd(context.Background(), planID, gridCmdPlaceHedge, hedgeOrderToSubmit); err != nil {
+						log.Errorf("❌ [网格下单] %s币对冲买入订单提交失败（执行器）: %v", hedgeOrderToSubmit.TokenType, err)
+						s.mu.Lock()
+						if s.activePosition != nil {
+							s.activePosition.Unhedged = true
+						}
+						s.mu.Unlock()
+						s.hedgeOrderSubmitMu.Unlock()
+						return nil
+					}
+					// 提交成功：等待 cmdResult + 订单更新驱动后续状态
+					s.hedgeOrderSubmitMu.Unlock()
+					return nil
 					
 					createdHedgeOrder, err := s.tradingService.PlaceOrder(hedgeCtx, hedgeOrderToSubmit)
 					

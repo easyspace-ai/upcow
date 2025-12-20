@@ -8,6 +8,7 @@ import (
 
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/pkg/bbgo"
 )
 
 // hedgeLockWindowSeconds 周期末进入“强对冲”窗口：优先把 minProfit 拉回 >= 0
@@ -131,17 +132,38 @@ func (s *GridStrategy) ensureMinProfitLocked(ctx context.Context, market *domain
 		CreatedAt:    time.Now(),
 	}
 
-	orderCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	if _, err := s.tradingService.PlaceOrder(orderCtx, order); err != nil {
-		log.Warnf("🛡️ [对冲] 补仓下单失败: token=%s price=%dc size=%.4f err=%v", tokenType, bestPrice.Cents, dQ, err)
+	// 提交到全局执行器（串行执行 IO，避免策略 loop 直接阻塞网络调用）
+	s.lastHedgeOrderSubmitTime = time.Now()
+	if s.Executor == nil {
+		// 兜底：没有执行器时直接同步下单（不推荐）
+		orderCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		if _, err := s.tradingService.PlaceOrder(orderCtx, order); err != nil {
+			log.Warnf("🛡️ [对冲] 补仓下单失败: token=%s price=%dc size=%.4f err=%v", tokenType, bestPrice.Cents, dQ, err)
+			return
+		}
+		log.Infof("🛡️ [对冲] 已提交补仓: token=%s price=%dc size=%.4f | P(up)=%.4f P(down)=%.4f target=%.4f",
+			tokenType, bestPrice.Cents, dQ, upWin, downWin, target)
 		return
 	}
 
-	s.lastHedgeOrderSubmitTime = time.Now()
-
-	log.Infof("🛡️ [对冲] 已提交补仓: token=%s price=%dc size=%.4f | P(up)=%.4f P(down)=%.4f target=%.4f",
-		tokenType, bestPrice.Cents, dQ, upWin, downWin, target)
+	ok := s.Executor.Submit(bbgo.Command{
+		Name:    fmt.Sprintf("grid_hedge_lock_%s_%dc", tokenType, bestPrice.Cents),
+		Timeout: 25 * time.Second,
+		Do: func(runCtx context.Context) {
+			created, err := s.tradingService.PlaceOrder(runCtx, order)
+			if err != nil {
+				log.Warnf("🛡️ [对冲] 补仓下单失败: token=%s price=%dc size=%.4f err=%v", tokenType, bestPrice.Cents, dQ, err)
+				return
+			}
+			_ = created
+			log.Infof("🛡️ [对冲] 补仓下单成功: token=%s price=%dc size=%.4f | P(up)=%.4f P(down)=%.4f target=%.4f",
+				tokenType, bestPrice.Cents, dQ, upWin, downWin, target)
+		},
+	})
+	if !ok {
+		log.Warnf("🛡️ [对冲] 执行器队列已满，丢弃补仓命令: token=%s price=%dc size=%.4f", tokenType, bestPrice.Cents, dQ)
+	}
 }
 
 func (s *GridStrategy) profitsUSDC() (upWin float64, downWin float64) {

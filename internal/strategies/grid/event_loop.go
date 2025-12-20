@@ -16,6 +16,8 @@ func (s *GridStrategy) startLoop(ctx context.Context) {
 		s.loopCancel = cancel
 
 		go func() {
+			ticker := time.NewTicker(1 * time.Second)
+			defer ticker.Stop()
 			for {
 				select {
 				case <-loopCtx.Done():
@@ -44,8 +46,11 @@ func (s *GridStrategy) startLoop(ctx context.Context) {
 					}
 					_ = s.handleOrderUpdateInternal(loopCtx, upd.ctx, upd.order)
 
-				case <-time.After(1 * time.Second):
-					// 保留心跳点位，后续可加健康检查/周期末强对冲窗口 tick
+				case res := <-s.cmdResultC:
+					_ = s.handleCmdResultInternal(loopCtx, res)
+
+				case <-ticker.C:
+					// 周期性 tick：预留做 HedgePlan 超时/自愈、周期末强对冲窗口等
 				}
 			}
 		}()
