@@ -61,7 +61,7 @@ func (s *GridStrategy) planTick(ctx context.Context) {
 	}
 
 	// 重试窗口：到点就重试 hedge（entry 重试由网格触发控制）
-	if p.State == PlanRetryWait && !p.NextRetryAt.IsZero() && now.After(p.NextRetryAt) {
+	if p.retryDue(now) {
 		if p.HedgeTemplate == nil {
 			s.planDone()
 			return
