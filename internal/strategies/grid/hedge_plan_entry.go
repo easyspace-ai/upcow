@@ -7,6 +7,7 @@ import (
 
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/strategies/orderutil"
 )
 
 func (s *GridStrategy) handleGridLevelReachedWithPlan(
@@ -65,68 +66,24 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 
 	now := time.Now()
 	if tokenType == domain.TokenTypeUp {
-		entryOrder = &domain.Order{
-			OrderID:      fmt.Sprintf("plan-entry-up-%d-%d", gridLevel, now.UnixNano()),
-			MarketSlug:   market.Slug,
-			AssetID:      market.YesAssetID,
-			Side:         types.SideBuy,
-			Price:        entryPrice,
-			Size:         entryShare,
-			GridLevel:    gridLevel,
-			TokenType:    domain.TokenTypeUp,
-			IsEntryOrder: true,
-			Status:       domain.OrderStatusPending,
-			CreatedAt:    now,
-			OrderType:    types.OrderTypeFAK,
-		}
+		entryOrder = orderutil.NewOrder(market.Slug, market.YesAssetID, types.SideBuy, entryPrice, entryShare, domain.TokenTypeUp, true, types.OrderTypeFAK)
+		entryOrder.OrderID = fmt.Sprintf("plan-entry-up-%d-%d", gridLevel, now.UnixNano())
+		entryOrder.GridLevel = gridLevel
 		if s.config.EnableDoubleSide {
 			_, hedgeShare := s.calculateOrderSize(hedgePrice)
-			hedgeOrder = &domain.Order{
-				OrderID:      fmt.Sprintf("plan-hedge-down-%d-%d", gridLevel, now.UnixNano()),
-				MarketSlug:   market.Slug,
-				AssetID:      market.NoAssetID,
-				Side:         types.SideBuy,
-				Price:        hedgePrice,
-				Size:         hedgeShare,
-				GridLevel:    gridLevel,
-				TokenType:    domain.TokenTypeDown,
-				IsEntryOrder: false,
-				Status:       domain.OrderStatusPending,
-				CreatedAt:    now,
-				OrderType:    types.OrderTypeFAK,
-			}
+			hedgeOrder = orderutil.NewOrder(market.Slug, market.NoAssetID, types.SideBuy, hedgePrice, hedgeShare, domain.TokenTypeDown, false, types.OrderTypeFAK)
+			hedgeOrder.OrderID = fmt.Sprintf("plan-hedge-down-%d-%d", gridLevel, now.UnixNano())
+			hedgeOrder.GridLevel = gridLevel
 		}
 	} else if tokenType == domain.TokenTypeDown {
-		entryOrder = &domain.Order{
-			OrderID:      fmt.Sprintf("plan-entry-down-%d-%d", gridLevel, now.UnixNano()),
-			MarketSlug:   market.Slug,
-			AssetID:      market.NoAssetID,
-			Side:         types.SideBuy,
-			Price:        entryPrice,
-			Size:         entryShare,
-			GridLevel:    hedgePriceCents, // 维持原有语义：记录对冲层级
-			TokenType:    domain.TokenTypeDown,
-			IsEntryOrder: true,
-			Status:       domain.OrderStatusPending,
-			CreatedAt:    now,
-			OrderType:    types.OrderTypeFAK,
-		}
+		entryOrder = orderutil.NewOrder(market.Slug, market.NoAssetID, types.SideBuy, entryPrice, entryShare, domain.TokenTypeDown, true, types.OrderTypeFAK)
+		entryOrder.OrderID = fmt.Sprintf("plan-entry-down-%d-%d", gridLevel, now.UnixNano())
+		entryOrder.GridLevel = hedgePriceCents // 维持原有语义：记录对冲层级
 		if s.config.EnableDoubleSide {
 			_, hedgeShare := s.calculateOrderSize(hedgePrice)
-			hedgeOrder = &domain.Order{
-				OrderID:      fmt.Sprintf("plan-hedge-up-%d-%d", gridLevel, now.UnixNano()),
-				MarketSlug:   market.Slug,
-				AssetID:      market.YesAssetID,
-				Side:         types.SideBuy,
-				Price:        hedgePrice,
-				Size:         hedgeShare,
-				GridLevel:    hedgePriceCents,
-				TokenType:    domain.TokenTypeUp,
-				IsEntryOrder: false,
-				Status:       domain.OrderStatusPending,
-				CreatedAt:    now,
-				OrderType:    types.OrderTypeFAK,
-			}
+			hedgeOrder = orderutil.NewOrder(market.Slug, market.YesAssetID, types.SideBuy, hedgePrice, hedgeShare, domain.TokenTypeUp, false, types.OrderTypeFAK)
+			hedgeOrder.OrderID = fmt.Sprintf("plan-hedge-up-%d-%d", gridLevel, now.UnixNano())
+			hedgeOrder.GridLevel = hedgePriceCents
 		}
 	} else {
 		return nil

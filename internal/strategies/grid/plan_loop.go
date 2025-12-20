@@ -8,6 +8,7 @@ import (
 
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/strategies/orderutil"
 )
 
 // planTick 在策略 loop 的 tick 中调用，负责超时自愈/重试/强对冲（补仓）等。
@@ -174,18 +175,21 @@ func (s *GridStrategy) planRefreshHedgePrice(ctx context.Context) {
 	}
 
 	assetID := p.HedgeTemplate.AssetID
-	bestAskCents := maxHedgeCents
-	if _, ask, err := s.tradingService.GetBestPrice(ctx, assetID); err == nil && ask > 0 {
-		bestAskCents = int(ask*100 + 0.5)
+	askPrice, err := orderutil.QuoteBuyPrice(ctx, s.tradingService, assetID, 0)
+	if err != nil {
+		// 取不到盘口时，退化为 maxHedgeCents（保证不破坏锁盈/不亏目标）
+		p.HedgeTemplate.Price = domain.Price{Cents: maxHedgeCents}
+		return
 	}
-	// 买入更容易成交：price 取 min(bestAsk, maxHedge)
-	if bestAskCents > maxHedgeCents {
-		bestAskCents = maxHedgeCents
+
+	// 锁盈约束：hedge 价格不能超过 maxHedgeCents，否则锁亏
+	if askPrice.Cents > maxHedgeCents {
+		askPrice.Cents = maxHedgeCents
 	}
-	if bestAskCents < 0 {
-		bestAskCents = 0
+	if askPrice.Cents < 0 {
+		askPrice.Cents = 0
 	}
-	p.HedgeTemplate.Price = domain.Price{Cents: bestAskCents}
+	p.HedgeTemplate.Price = askPrice
 }
 
 func (s *GridStrategy) planStrongHedge(ctx context.Context) {
@@ -263,24 +267,14 @@ func (s *GridStrategy) planStrongHedge(ctx context.Context) {
 	}
 
 	// 取 bestAsk，优先成交
-	bestPrice := price
-	if _, ask, err := s.tradingService.GetBestPrice(ctx, assetID); err == nil && ask > 0 {
-		bestPrice = domain.PriceFromDecimal(ask)
+	bestPrice, err := orderutil.QuoteBuyPrice(ctx, s.tradingService, assetID, 0)
+	if err != nil {
+		// 盘口不可用则用当前价格兜底（避免完全停摆）
+		bestPrice = price
 	}
 
-	order := &domain.Order{
-		OrderID:      fmt.Sprintf("plan-supp-%s-%d-%d", tokenType, bestPrice.Cents, time.Now().UnixNano()),
-		MarketSlug:   s.currentMarket.Slug,
-		AssetID:      assetID,
-		Side:         types.SideBuy,
-		Price:        bestPrice,
-		Size:         dQ,
-		TokenType:    tokenType,
-		IsEntryOrder: false,
-		Status:       domain.OrderStatusPending,
-		CreatedAt:    time.Now(),
-		OrderType:    types.OrderTypeFAK,
-	}
+	order := orderutil.NewOrder(s.currentMarket.Slug, assetID, types.SideBuy, bestPrice, dQ, tokenType, false, types.OrderTypeFAK)
+	order.OrderID = fmt.Sprintf("plan-supp-%s-%d-%d", tokenType, bestPrice.Cents, time.Now().UnixNano())
 
 	p.SupplementInFlight = true
 	p.StateAt = time.Now()
