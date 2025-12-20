@@ -1,3 +1,10 @@
+//go:build ignore
+// +build ignore
+
+// 说明：此文件用于文档/参考实现，不属于本仓库的可编译模块。
+// 由于依赖外部项目（polymarket-analyzer/*），为避免影响 `go test ./...`，
+// 使用 build tag 将其从默认构建中排除。
+
 package syncer
 
 import (
