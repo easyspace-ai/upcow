@@ -53,6 +53,10 @@ type MarketStream struct {
 	// 健康检查
 	lastPong      time.Time
 	healthCheckMu sync.RWMutex
+
+	// 诊断：最近一次收到消息的时间（用于判断“订阅成功但没数据”）
+	lastMessageAt time.Time
+	lastMsgMu     sync.RWMutex
 }
 
 // NewMarketStream 创建新的市场数据流
@@ -64,7 +68,27 @@ func NewMarketStream() *MarketStream {
 		sg:         syncgroup.NewSyncGroup(), // 长期运行的 goroutine
 		connSg:     syncgroup.NewSyncGroup(), // 连接相关的 goroutine
 		lastPong:   time.Now(),
+		lastMessageAt: time.Now(),
 	}
+}
+
+// markMessageReceived 记录最近收到消息的时间（用于诊断）
+func (m *MarketStream) markMessageReceived() {
+	m.lastMsgMu.Lock()
+	m.lastMessageAt = time.Now()
+	m.lastMsgMu.Unlock()
+}
+
+// writeTextMessage 向 WS 写入文本消息（用于兼容服务器的应用层 PING/PONG）
+func (m *MarketStream) writeTextMessage(msg string) error {
+	m.connMu.Lock()
+	conn := m.conn
+	m.connMu.Unlock()
+	if conn == nil {
+		return fmt.Errorf("连接未建立")
+	}
+	_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
+	return conn.WriteMessage(websocket.TextMessage, []byte(msg))
 }
 
 // OnPriceChanged 注册价格变化回调
@@ -312,6 +336,7 @@ func (m *MarketStream) Read(ctx context.Context, conn *websocket.Conn, cancel co
 			}
 
 			// 处理消息
+			m.markMessageReceived()
 			m.handleMessage(ctx, result.message)
 		}
 	}
@@ -366,11 +391,37 @@ func (m *MarketStream) subscribe(market *domain.Market) error {
 
 // handleMessage 处理消息
 func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
+	// 兼容：服务器可能发送纯文本 PING/PONG（旧实现 MarketWebSocket 就是这么处理的）
+	// 注意：这里不能假设一定是 JSON
+	if len(message) > 0 {
+		switch string(message) {
+		case "PING":
+			// 回复 PONG，保持连接
+			if err := m.writeTextMessage("PONG"); err != nil {
+				marketLog.Warnf("回复 PONG 失败: %v", err)
+			}
+			m.healthCheckMu.Lock()
+			m.lastPong = time.Now()
+			m.healthCheckMu.Unlock()
+			return
+		case "PONG":
+			m.healthCheckMu.Lock()
+			m.lastPong = time.Now()
+			m.healthCheckMu.Unlock()
+			return
+		}
+	}
+
 	var msgType struct {
 		EventType string `json:"event_type"`
 	}
 	if err := json.Unmarshal(message, &msgType); err != nil {
-		marketLog.Debugf("解析消息类型失败: %v", err)
+		// 非 JSON 消息：只在 debug 记录，避免刷屏
+		msgPreview := message
+		if len(msgPreview) > 200 {
+			msgPreview = msgPreview[:200]
+		}
+		marketLog.Debugf("解析消息类型失败(可能是非JSON): %v, msg=%q", err, string(msgPreview))
 		return
 	}
 
@@ -391,16 +442,20 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 		m.handlePriceChange(ctx, msg)
 	case "subscribed":
 		marketLog.Infof("✅ MarketStream 收到订阅成功消息")
+		// 订阅成功但长时间没任何数据时，给出更明确的诊断提示
+		m.lastMsgMu.RLock()
+		last := m.lastMessageAt
+		m.lastMsgMu.RUnlock()
+		_ = last // 预留：后续可在此处启动定时诊断（不在这里启动 goroutine，避免重复启动）
 	case "pong":
 		m.healthCheckMu.Lock()
 		m.lastPong = time.Now()
 		m.healthCheckMu.Unlock()
 		marketLog.Debugf("收到 PONG 响应")
 	case "book":
-		// 订单簿快照消息（可选处理）
-		// 订单簿消息可能包含价格信息，但通常价格变化会通过 price_change 事件发送
-		// 这里只记录 Debug 级别日志，避免日志过多
-		marketLog.Debugf("📚 收到订单簿快照消息（价格变化应通过 price_change 事件发送）")
+		// 兼容：某些情况下服务器只推 book（快照/增量），未推 price_change。
+		// 为了不让策略“完全看不到实时 up/down”，这里从 book 中提取 best_ask/best_bid 并发出 PriceChangedEvent。
+		m.handleBookAsPrice(ctx, message)
 	case "tick_size_change":
 		// Tick size 变化（可选处理）
 		marketLog.Debugf("收到 tick size 变化消息")
@@ -414,6 +469,84 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 		}
 		marketLog.Infof("收到未知消息类型: %s (消息内容: %s)", msgType.EventType, string(msgPreview))
 	}
+}
+
+type orderLevel struct {
+	Price string `json:"price"`
+	Size  string `json:"size"`
+}
+
+// handleBookAsPrice 从 book 消息提取价格并触发 PriceChangedEvent（用于兼容“没有 price_change 但有 book”的情况）
+func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
+	if m.market == nil {
+		return
+	}
+
+	type bookMessage struct {
+		EventType string `json:"event_type"`
+		AssetID   string `json:"asset_id"`
+		BestBid   string `json:"best_bid"`
+		BestAsk   string `json:"best_ask"`
+		Price     string `json:"price"`
+		Bids      []orderLevel `json:"bids"`
+		Asks      []orderLevel `json:"asks"`
+	}
+
+	var bm bookMessage
+	if err := json.Unmarshal(message, &bm); err != nil {
+		marketLog.Debugf("解析 book 消息失败: %v", err)
+		return
+	}
+	if bm.AssetID == "" {
+		return
+	}
+
+	// 选择价格来源：best_ask > best_bid > price > asks[0] > bids[0]
+	priceStr := ""
+	source := ""
+	if bm.BestAsk != "" {
+		priceStr = bm.BestAsk
+		source = "book.best_ask"
+	} else if bm.BestBid != "" {
+		priceStr = bm.BestBid
+		source = "book.best_bid"
+	} else if bm.Price != "" {
+		priceStr = bm.Price
+		source = "book.price"
+	} else if len(bm.Asks) > 0 && bm.Asks[0].Price != "" {
+		priceStr = bm.Asks[0].Price
+		source = "book.asks[0]"
+	} else if len(bm.Bids) > 0 && bm.Bids[0].Price != "" {
+		priceStr = bm.Bids[0].Price
+		source = "book.bids[0]"
+	} else {
+		return
+	}
+
+	newPrice, err := parsePriceString(priceStr)
+	if err != nil {
+		marketLog.Debugf("解析 book 价格失败: source=%s value=%s err=%v", source, priceStr, err)
+		return
+	}
+
+	var tokenType domain.TokenType
+	if bm.AssetID == m.market.YesAssetID {
+		tokenType = domain.TokenTypeUp
+	} else if bm.AssetID == m.market.NoAssetID {
+		tokenType = domain.TokenTypeDown
+	} else {
+		return
+	}
+
+	event := &events.PriceChangedEvent{
+		Market:    m.market,
+		TokenType: tokenType,
+		OldPrice:  nil,
+		NewPrice:  newPrice,
+		Timestamp: time.Now(),
+	}
+	marketLog.Debugf("📤 [book->price] 触发价格变化回调: %s @ %dc (source=%s, 市场=%s)", tokenType, newPrice.Cents, source, m.market.Slug)
+	m.handlers.Emit(ctx, event)
 }
 
 // handlePriceChange 处理价格变化（直接回调，不使用事件总线）
