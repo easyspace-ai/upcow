@@ -100,4 +100,3 @@ func (s *TradeStore) Add(trade *domain.Trade) {
 func (s *TradeStore) Remove(tradeID string) {
 	// 已废弃：待处理的交易现在由 OrderEngine 管理
 }
-

@@ -181,4 +181,3 @@ func convertOrderResponseToDomain(orderResp *types.OrderResponse, originalOrder 
 
 	return order
 }
-

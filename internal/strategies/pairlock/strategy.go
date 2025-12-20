@@ -15,6 +15,7 @@ import (
 	"github.com/betbot/gobet/internal/strategies"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
+	strategyports "github.com/betbot/gobet/internal/strategies/ports"
 	"github.com/betbot/gobet/pkg/bbgo"
 )
 
@@ -61,14 +62,6 @@ type cmdResult struct {
 	err     error
 }
 
-// TradingServiceInterface 交易服务接口（避免循环依赖）
-type TradingServiceInterface interface {
-	PlaceOrder(ctx context.Context, order *domain.Order) (*domain.Order, error)
-	CancelOrder(ctx context.Context, orderID string) error
-	GetActiveOrders() []*domain.Order
-	GetBestPrice(ctx context.Context, assetID string) (bestBid float64, bestAsk float64, err error)
-}
-
 // PairLockStrategy 周期内多轮“成对锁定”策略
 //
 // 核心：
@@ -79,7 +72,7 @@ type PairLockStrategy struct {
 	Executor bbgo.CommandExecutor
 
 	config         *PairLockStrategyConfig
-	tradingService TradingServiceInterface
+	tradingService strategyports.PairLockTradingService
 
 	// 单线程 loop
 	loopOnce     sync.Once
@@ -122,7 +115,9 @@ type PairLockStrategy struct {
 	lastCountedFilled map[string]float64
 }
 
-func (s *PairLockStrategy) SetTradingService(ts TradingServiceInterface) { s.tradingService = ts }
+func (s *PairLockStrategy) SetTradingService(ts strategyports.PairLockTradingService) {
+	s.tradingService = ts
+}
 
 func (s *PairLockStrategy) ID() string   { return ID }
 func (s *PairLockStrategy) Name() string { return ID }

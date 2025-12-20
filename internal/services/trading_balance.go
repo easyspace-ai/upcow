@@ -14,7 +14,8 @@ import (
 )
 
 // initializeBalance 初始化余额（优先从链上查询，然后从 API 获取授权）
-func (s *TradingService) initializeBalance(ctx context.Context) {
+func (b *BalanceService) initializeBalance(ctx context.Context) {
+	s := b.s
 	// 等待一小段时间，确保 OrderEngine 已启动
 	time.Sleep(100 * time.Millisecond)
 
@@ -36,7 +37,7 @@ func (s *TradingService) initializeBalance(ctx context.Context) {
 	var balanceInfo *types.BalanceAllowanceResponse // 用于存储 API 响应，避免重复调用
 
 	if accountAddress != "" && accountAddress != "未设置（无法获取地址）" {
-		onChainBalance, err := s.getOnChainUSDCBalance(ctx, accountAddress)
+		onChainBalance, err := b.getOnChainUSDCBalance(ctx, accountAddress)
 		if err != nil {
 			log.Warnf("⚠️ [余额初始化] 链上余额查询失败: %v，将尝试从 API 获取", err)
 		} else {
@@ -171,7 +172,7 @@ func (s *TradingService) initializeBalance(ctx context.Context) {
 
 // getOnChainUSDCBalance 从 Polygon 链上查询 USDC 余额（参考 test/clob.go）
 // 直接查询指定地址的链上余额，不需要认证
-func (s *TradingService) getOnChainUSDCBalance(ctx context.Context, walletAddress string) (float64, error) {
+func (b *BalanceService) getOnChainUSDCBalance(ctx context.Context, walletAddress string) (float64, error) {
 	const USDCContractPolygon = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 
 	walletAddress = strings.ToLower(strings.TrimSpace(walletAddress))
@@ -234,4 +235,3 @@ func (s *TradingService) getOnChainUSDCBalance(ctx context.Context, walletAddres
 	result64, _ := balanceFloat.Float64()
 	return result64, nil
 }
-

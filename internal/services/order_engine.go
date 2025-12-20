@@ -44,7 +44,7 @@ type PlaceOrderCommand struct {
 }
 
 func (c *PlaceOrderCommand) CommandType() OrderCommandType { return CmdPlaceOrder }
-func (c *PlaceOrderCommand) ID() string                     { return c.id }
+func (c *PlaceOrderCommand) ID() string                    { return c.id }
 
 // PlaceOrderResult 下单结果
 type PlaceOrderResult struct {
@@ -71,7 +71,7 @@ type UpdateOrderCommand struct {
 }
 
 func (c *UpdateOrderCommand) CommandType() OrderCommandType { return CmdUpdateOrder }
-func (c *UpdateOrderCommand) ID() string                       { return c.id }
+func (c *UpdateOrderCommand) ID() string                    { return c.id }
 
 // ProcessTradeCommand 处理交易命令
 type ProcessTradeCommand struct {
@@ -80,7 +80,7 @@ type ProcessTradeCommand struct {
 }
 
 func (c *ProcessTradeCommand) CommandType() OrderCommandType { return CmdProcessTrade }
-func (c *ProcessTradeCommand) ID() string                     { return c.id }
+func (c *ProcessTradeCommand) ID() string                    { return c.id }
 
 // UpdateBalanceCommand 更新余额命令
 type UpdateBalanceCommand struct {
@@ -90,7 +90,7 @@ type UpdateBalanceCommand struct {
 }
 
 func (c *UpdateBalanceCommand) CommandType() OrderCommandType { return CmdUpdateBalance }
-func (c *UpdateBalanceCommand) ID() string                     { return c.id }
+func (c *UpdateBalanceCommand) ID() string                    { return c.id }
 
 // CreatePositionCommand 创建仓位命令
 type CreatePositionCommand struct {
@@ -100,14 +100,14 @@ type CreatePositionCommand struct {
 }
 
 func (c *CreatePositionCommand) CommandType() OrderCommandType { return CmdCreatePosition }
-func (c *CreatePositionCommand) ID() string                     { return c.id }
+func (c *CreatePositionCommand) ID() string                    { return c.id }
 
 // UpdatePositionCommand 更新仓位命令
 type UpdatePositionCommand struct {
-	id        string
+	id         string
 	PositionID string
-	Updater   func(*domain.Position)
-	Reply     chan error
+	Updater    func(*domain.Position)
+	Reply      chan error
 }
 
 func (c *UpdatePositionCommand) CommandType() OrderCommandType { return CmdUpdatePosition }
@@ -115,11 +115,11 @@ func (c *UpdatePositionCommand) ID() string                    { return c.id }
 
 // ClosePositionCommand 关闭仓位命令
 type ClosePositionCommand struct {
-	id        string
+	id         string
 	PositionID string
-	ExitPrice domain.Price
-	ExitOrder *domain.Order
-	Reply     chan error
+	ExitPrice  domain.Price
+	ExitOrder  *domain.Order
+	Reply      chan error
 }
 
 func (c *ClosePositionCommand) CommandType() OrderCommandType { return CmdClosePosition }
@@ -127,25 +127,25 @@ func (c *ClosePositionCommand) ID() string                    { return c.id }
 
 // QueryStateCommand 查询状态命令
 type QueryStateCommand struct {
-	id      string
-	Query   QueryType
-	Reply   chan *StateSnapshot
+	id    string
+	Query QueryType
+	Reply chan *StateSnapshot
 }
 
 func (c *QueryStateCommand) CommandType() OrderCommandType { return CmdQueryState }
-func (c *QueryStateCommand) ID() string                     { return c.id }
+func (c *QueryStateCommand) ID() string                    { return c.id }
 
 // QueryType 查询类型
 type QueryType string
 
 const (
-	QueryAllOrders    QueryType = "all_orders"
-	QueryOpenOrders   QueryType = "open_orders"
-	QueryAllPositions QueryType = "all_positions"
+	QueryAllOrders     QueryType = "all_orders"
+	QueryOpenOrders    QueryType = "open_orders"
+	QueryAllPositions  QueryType = "all_positions"
 	QueryOpenPositions QueryType = "open_positions"
-	QueryBalance      QueryType = "balance"
-	QueryOrder        QueryType = "order"
-	QueryPosition     QueryType = "position"
+	QueryBalance       QueryType = "balance"
+	QueryOrder         QueryType = "order"
+	QueryPosition      QueryType = "position"
 )
 
 // StateSnapshot 状态快照
@@ -173,7 +173,7 @@ type OrderEngine struct {
 	cmdChan chan OrderCommand
 
 	// 状态（在单一 goroutine 中维护，无锁）
-	balance       float64                      // 可用资金（USDC）
+	balance       float64                     // 可用资金（USDC）
 	positions     map[string]*domain.Position // 当前仓位
 	openOrders    map[string]*domain.Order    // 未完成订单
 	orderStore    map[string]*domain.Order    // 所有订单（包括已成交的）
@@ -299,7 +299,7 @@ type RegisterHandlerCommand struct {
 }
 
 func (c *RegisterHandlerCommand) CommandType() OrderCommandType { return CmdRegisterHandler }
-func (c *RegisterHandlerCommand) ID() string                     { return c.id }
+func (c *RegisterHandlerCommand) ID() string                    { return c.id }
 
 const CmdRegisterHandler OrderCommandType = "register_handler"
 
@@ -495,10 +495,10 @@ func (e *OrderEngine) handleUpdateOrder(cmd *UpdateOrderCommand) {
 			orderEngineLog.Errorf("订单IO操作失败，但订单为nil: %v", cmd.Error)
 			return
 		}
-		
+
 		// 标记订单为失败状态
 		order.Status = domain.OrderStatusFailed
-		
+
 		// 从活跃订单中查找并更新
 		if existingOrder, exists := e.openOrders[order.OrderID]; exists {
 			existingOrder.Status = domain.OrderStatusFailed
@@ -509,13 +509,13 @@ func (e *OrderEngine) handleUpdateOrder(cmd *UpdateOrderCommand) {
 			delete(e.openOrders, order.OrderID)
 			order = existingOrder
 		}
-		
+
 		// 更新订单存储（保存失败状态）
 		e.orderStore[order.OrderID] = order
-		
+
 		// 触发回调，通知策略订单已失败
 		e.emitOrderUpdate(order)
-		
+
 		orderEngineLog.Errorf("订单IO操作失败: orderID=%s, error=%v", order.OrderID, cmd.Error)
 		return
 	}
@@ -609,15 +609,15 @@ func (e *OrderEngine) updatePositionFromTrade(trade *domain.Trade, order *domain
 	} else {
 		// 创建新仓位
 		position = &domain.Position{
-			ID:        positionID,
+			ID:         positionID,
 			MarketSlug: order.MarketSlug,
-			Market:    trade.Market,
+			Market:     trade.Market,
 			EntryOrder: order,
 			EntryPrice: trade.Price,
 			EntryTime:  trade.Time,
-			Size:      0,
-			TokenType: trade.TokenType,
-			Status:    domain.PositionStatusOpen,
+			Size:       0,
+			TokenType:  trade.TokenType,
+			Status:     domain.PositionStatusOpen,
 		}
 		e.positions[positionID] = position
 	}
@@ -863,4 +863,3 @@ func (e *OrderEngine) emitOrderUpdate(order *domain.Order) {
 		}(h)
 	}
 }
-

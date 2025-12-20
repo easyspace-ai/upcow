@@ -13,6 +13,7 @@ import (
 	"github.com/betbot/gobet/internal/strategies"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
+	strategyports "github.com/betbot/gobet/internal/strategies/ports"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
 )
@@ -42,12 +43,6 @@ type MomentumSignal struct {
 	Threshold int
 }
 
-// TradingServiceInterface 交易服务接口（避免循环依赖）
-type TradingServiceInterface interface {
-	PlaceOrder(ctx context.Context, order *domain.Order) (*domain.Order, error)
-	GetBestPrice(ctx context.Context, assetID string) (bestBid float64, bestAsk float64, err error)
-}
-
 // MomentumStrategy 动量策略（基于外部快行情信号触发快速下单）。
 //
 // 说明：
@@ -56,7 +51,7 @@ type TradingServiceInterface interface {
 // - 执行使用 FAK，尽量减少挂单风险。
 type MomentumStrategy struct {
 	Executor       bbgo.CommandExecutor
-	tradingService TradingServiceInterface
+	tradingService strategyports.MomentumTradingService
 	config         *MomentumStrategyConfig
 
 	loopOnce   sync.Once
@@ -73,7 +68,7 @@ type MomentumStrategy struct {
 func (s *MomentumStrategy) ID() string   { return ID }
 func (s *MomentumStrategy) Name() string { return ID }
 
-func (s *MomentumStrategy) SetTradingService(ts TradingServiceInterface) {
+func (s *MomentumStrategy) SetTradingService(ts strategyports.MomentumTradingService) {
 	s.mu.Lock()
 	s.tradingService = ts
 	s.mu.Unlock()
@@ -263,7 +258,7 @@ func (s *MomentumStrategy) handleSignal(ctx context.Context, sig MomentumSignal)
 	return nil
 }
 
-func (s *MomentumStrategy) placeFAK(ctx context.Context, ts TradingServiceInterface, market *domain.Market, tokenType domain.TokenType, assetID string, sizeUSDC float64, maxPayCents int, sig MomentumSignal) error {
+func (s *MomentumStrategy) placeFAK(ctx context.Context, ts strategyports.MomentumTradingService, market *domain.Market, tokenType domain.TokenType, assetID string, sizeUSDC float64, maxPayCents int, sig MomentumSignal) error {
 	// 价格取 bestAsk，并用 maxPayCents 做上限保护
 	price, err := orderutil.QuoteBuyPrice(ctx, ts, assetID, maxPayCents)
 	if err != nil {

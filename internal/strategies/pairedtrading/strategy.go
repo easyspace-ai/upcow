@@ -13,6 +13,7 @@ import (
 	"github.com/betbot/gobet/internal/strategies"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
+	strategyports "github.com/betbot/gobet/internal/strategies/ports"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
 )
@@ -52,7 +53,7 @@ func (p Phase) String() string {
 type PairedTradingStrategy struct {
 	Executor       bbgo.CommandExecutor
 	config         *PairedTradingConfig
-	tradingService TradingServiceInterface
+	tradingService strategyports.BasicTradingService
 
 	// 状态管理
 	positionState *domain.ArbitragePositionState
@@ -88,14 +89,6 @@ type pairedTradingCmdResult struct {
 	err       error
 }
 
-// TradingServiceInterface 交易服务接口（避免循环依赖）
-type TradingServiceInterface interface {
-	PlaceOrder(ctx context.Context, order *domain.Order) (*domain.Order, error)
-	CancelOrder(ctx context.Context, orderID string) error
-	GetOpenPositions() []*domain.Position
-	GetBestPrice(ctx context.Context, assetID string) (bestBid float64, bestAsk float64, err error)
-}
-
 // NewPairedTradingStrategy 创建新的成对交易策略
 func NewPairedTradingStrategy() *PairedTradingStrategy {
 	return &PairedTradingStrategy{
@@ -105,7 +98,7 @@ func NewPairedTradingStrategy() *PairedTradingStrategy {
 }
 
 // SetTradingService 设置交易服务（在初始化后调用）
-func (s *PairedTradingStrategy) SetTradingService(ts TradingServiceInterface) {
+func (s *PairedTradingStrategy) SetTradingService(ts strategyports.BasicTradingService) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tradingService = ts
@@ -660,18 +653,19 @@ func (s *PairedTradingStrategy) placeBuyOrder(ctx context.Context, market *domai
 			defer s.inFlightLimiter.Release()
 		}
 
-		bestAskPrice, err := orderutil.QuoteBuyPrice(ctx, ts, assetID, maxCents)
-		if err != nil {
-			return fmt.Errorf("获取订单簿失败: %w", err)
-		}
-
-		adjustedSize, skipped, adjusted, adjustRatio, orderAmount, newOrderAmount := common.AdjustSizeForMinOrderUSDC(
+		bestAskPrice, adjustedSize, skipped, adjusted, adjustRatio, orderAmount, newOrderAmount, err := common.QuoteAndAdjustBuy(
+			ctx,
+			ts,
+			assetID,
+			maxCents,
 			size,
-			bestAskPrice,
 			minOrderUSDC,
 			s.config.AutoAdjustSize,
 			s.config.MaxSizeAdjustRatio,
 		)
+		if err != nil {
+			return err
+		}
 		if skipped {
 			// 不自动调整：直接跳过
 			if !s.config.AutoAdjustSize {
@@ -703,7 +697,16 @@ func (s *PairedTradingStrategy) placeBuyOrder(ctx context.Context, market *domai
 		Name:    fmt.Sprintf("paired_trading_buy_%s_%s", tokenType, reason),
 		Timeout: 25 * time.Second,
 		Do: func(runCtx context.Context) {
-			bestAskPrice, err := orderutil.QuoteBuyPrice(runCtx, ts, assetID, maxCents)
+			bestAskPrice, adjustedSize, skipped, _, _, _, _, err := common.QuoteAndAdjustBuy(
+				runCtx,
+				ts,
+				assetID,
+				maxCents,
+				size,
+				minOrderUSDC,
+				s.config.AutoAdjustSize,
+				s.config.MaxSizeAdjustRatio,
+			)
 			if err != nil {
 				select {
 				case s.cmdResultC <- pairedTradingCmdResult{tokenType: tokenType, reason: reason, err: err}:
@@ -711,14 +714,6 @@ func (s *PairedTradingStrategy) placeBuyOrder(ctx context.Context, market *domai
 				}
 				return
 			}
-
-			adjustedSize, skipped, _, _, _, _ := common.AdjustSizeForMinOrderUSDC(
-				size,
-				bestAskPrice,
-				minOrderUSDC,
-				s.config.AutoAdjustSize,
-				s.config.MaxSizeAdjustRatio,
-			)
 			if skipped {
 				select {
 				case s.cmdResultC <- pairedTradingCmdResult{tokenType: tokenType, reason: reason, skipped: true}:

@@ -15,7 +15,8 @@ import (
 
 // startOrderStatusSync 定期同步订单状态（通过 API 查询）
 // 如果 WebSocket 失败，会自动缩短同步间隔
-func (s *TradingService) startOrderStatusSyncImpl(ctx context.Context) {
+func (os *OrderSyncService) startOrderStatusSyncImpl(ctx context.Context) {
+	s := os.s
 	// 获取配置的同步间隔（用于日志）
 	withOrdersSeconds := s.orderStatusSyncIntervalWithOrders
 	withoutOrdersSeconds := s.orderStatusSyncIntervalWithoutOrders
@@ -24,7 +25,7 @@ func (s *TradingService) startOrderStatusSyncImpl(ctx context.Context) {
 		withOrdersSeconds, withoutOrdersSeconds)
 
 	// 立即执行一次（不等待）
-	s.syncAllOrderStatusImpl(ctx)
+	os.syncAllOrderStatusImpl(ctx)
 
 	// 使用 ticker 来定期同步，但需要动态调整间隔
 	// 使用较短的 ticker 间隔（1秒），然后根据条件决定是否执行同步
@@ -58,7 +59,7 @@ func (s *TradingService) startOrderStatusSyncImpl(ctx context.Context) {
 
 			// 检查是否到了同步时间
 			if time.Since(lastSyncTime) >= syncInterval {
-				s.syncAllOrderStatusImpl(ctx)
+				os.syncAllOrderStatusImpl(ctx)
 				lastSyncTime = time.Now()
 			}
 		}
@@ -66,7 +67,8 @@ func (s *TradingService) startOrderStatusSyncImpl(ctx context.Context) {
 }
 
 // syncAllOrderStatus 同步所有活跃订单的状态
-func (s *TradingService) syncAllOrderStatusImpl(ctx context.Context) {
+func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
+	s := os.s
 	metrics.ReconcileRuns.Add(1)
 	// 通过 OrderEngine 获取活跃订单
 	openOrders := s.GetActiveOrders()
@@ -374,7 +376,8 @@ func (s *TradingService) syncAllOrderStatusImpl(ctx context.Context) {
 	}
 }
 
-func (s *TradingService) syncOrderStatusImpl(ctx context.Context, orderID string) error {
+func (os *OrderSyncService) syncOrderStatusImpl(ctx context.Context, orderID string) error {
+	s := os.s
 	order, err := s.clobClient.GetOrder(ctx, orderID)
 	if err != nil {
 		return fmt.Errorf("获取订单详情失败: %w", err)
@@ -438,7 +441,7 @@ func (s *TradingService) syncOrderStatusImpl(ctx context.Context, orderID string
 
 // startOrderConfirmationTimeoutCheck 启动订单确认超时检测
 // 如果订单提交后30秒内未收到WebSocket确认，则通过API拉取持仓来校正
-func (s *TradingService) startOrderConfirmationTimeoutCheckImpl(ctx context.Context) {
+func (os *OrderSyncService) startOrderConfirmationTimeoutCheckImpl(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
@@ -447,18 +450,19 @@ func (s *TradingService) startOrderConfirmationTimeoutCheckImpl(ctx context.Cont
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.checkOrderConfirmationTimeout(ctx)
+			os.checkOrderConfirmationTimeoutImpl(ctx)
 		}
 	}
 }
 
 // checkOrderConfirmationTimeout 检查订单确认超时（已简化，不再使用锁）
-func (s *TradingService) checkOrderConfirmationTimeoutImpl(ctx context.Context) {
+func (os *OrderSyncService) checkOrderConfirmationTimeoutImpl(ctx context.Context) {
 	log.Debugf("订单确认超时检测已简化，现在通过 OrderEngine 管理")
 }
 
 // FetchUserPositionsFromAPI 从Polymarket Data API拉取用户持仓并校正本地状态
-func (s *TradingService) fetchUserPositionsFromAPIImpl(ctx context.Context) error {
+func (os *OrderSyncService) fetchUserPositionsFromAPIImpl(ctx context.Context) error {
+	s := os.s
 	if s.funderAddress == "" {
 		return fmt.Errorf("funder地址未设置，无法拉取持仓")
 	}

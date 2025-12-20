@@ -12,6 +12,7 @@ import (
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/strategies"
 	"github.com/betbot/gobet/internal/strategies/common"
+	strategyports "github.com/betbot/gobet/internal/strategies/ports"
 	"github.com/betbot/gobet/pkg/bbgo"
 )
 
@@ -31,8 +32,8 @@ type GridStrategy struct {
 	Executor           bbgo.CommandExecutor
 	config             *GridStrategyConfig
 	grid               *domain.Grid
-	tradingService     TradingServiceInterface // 交易服务接口
-	directModeDebounce int                     // 直接回调模式的防抖间隔（毫秒），默认100ms
+	tradingService     strategyports.GridTradingService // 交易服务接口
+	directModeDebounce int                              // 直接回调模式的防抖间隔（毫秒），默认100ms
 	// activeOrders 已移除：现在由 OrderEngine 管理，通过 tradingService.GetActiveOrders() 查询
 	activePosition        *domain.Position
 	roundsThisPeriod      int
@@ -92,19 +93,6 @@ type orderUpdate struct {
 	order *domain.Order
 }
 
-// TradingServiceInterface 交易服务接口（避免循环依赖）
-type TradingServiceInterface interface {
-	PlaceOrder(ctx context.Context, order *domain.Order) (*domain.Order, error)
-	CancelOrder(ctx context.Context, orderID string) error
-	CreatePosition(ctx context.Context, position *domain.Position) error
-	UpdatePosition(ctx context.Context, positionID string, updater func(*domain.Position)) error
-	ClosePosition(ctx context.Context, positionID string, exitPrice domain.Price, exitOrder *domain.Order) error
-	GetOpenPositions() []*domain.Position
-	GetActiveOrders() []*domain.Order // 重构后：添加此方法用于查询活跃订单
-	GetBestPrice(ctx context.Context, assetID string) (bestBid float64, bestAsk float64, err error)
-	SyncOrderStatus(ctx context.Context, orderID string) error // 同步订单状态（通过 API 查询）
-}
-
 // NewGridStrategy 创建新的网格策略
 func NewGridStrategy() *GridStrategy {
 	return &GridStrategy{
@@ -124,7 +112,7 @@ func NewGridStrategy() *GridStrategy {
 
 // SetTradingService 设置交易服务（在初始化后调用）
 // 重构后：移除锁，因为设置交易服务只在初始化时调用一次
-func (s *GridStrategy) SetTradingService(ts TradingServiceInterface) {
+func (s *GridStrategy) SetTradingService(ts strategyports.GridTradingService) {
 	s.tradingService = ts
 }
 

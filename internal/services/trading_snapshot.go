@@ -13,10 +13,10 @@ import (
 )
 
 type tradingSnapshot struct {
-	UpdatedAt time.Time          `json:"updated_at"`
-	Balance   float64            `json:"balance"`
+	UpdatedAt  time.Time          `json:"updated_at"`
+	Balance    float64            `json:"balance"`
 	OpenOrders []*domain.Order    `json:"open_orders"`
-	Positions []*domain.Position `json:"positions"`
+	Positions  []*domain.Position `json:"positions"`
 }
 
 func (s *TradingService) SetPersistence(ps persistence.Service, id string) {
@@ -27,7 +27,8 @@ func (s *TradingService) SetPersistence(ps persistence.Service, id string) {
 	}
 }
 
-func (s *TradingService) loadSnapshot() {
+func (ss *SnapshotService) loadSnapshot() {
+	s := ss.s
 	if s.persistence == nil {
 		return
 	}
@@ -73,7 +74,8 @@ func (s *TradingService) loadSnapshot() {
 	}
 }
 
-func (s *TradingService) saveSnapshot() {
+func (ss *SnapshotService) saveSnapshot() {
+	s := ss.s
 	if s.persistence == nil {
 		return
 	}
@@ -110,15 +112,16 @@ func (s *TradingService) saveSnapshot() {
 
 	store := s.persistence.NewStore("trading", s.persistenceID, "snapshot")
 	_ = store.Save(&tradingSnapshot{
-		UpdatedAt: time.Now(),
-		Balance:   balance,
+		UpdatedAt:  time.Now(),
+		Balance:    balance,
 		OpenOrders: openOrders,
-		Positions: positions,
+		Positions:  positions,
 	})
 	metrics.SnapshotSaves.Add(1)
 }
 
-func (s *TradingService) bootstrapOpenOrdersFromExchange(ctx context.Context) {
+func (ss *SnapshotService) bootstrapOpenOrdersFromExchange(ctx context.Context) {
+	s := ss.s
 	if s.dryRun {
 		return
 	}
@@ -143,7 +146,8 @@ func (s *TradingService) bootstrapOpenOrdersFromExchange(ctx context.Context) {
 	}
 }
 
-func (s *TradingService) startSnapshotLoop(ctx context.Context) {
+func (ss *SnapshotService) startSnapshotLoop(ctx context.Context) {
+	s := ss.s
 	// 每次订单更新触发一次保存（2s debounce）
 	trigger := make(chan struct{}, 1)
 	s.OnOrderUpdate(OrderUpdateHandlerFunc(func(_ context.Context, _ *domain.Order) error {
@@ -175,7 +179,7 @@ func (s *TradingService) startSnapshotLoop(ctx context.Context) {
 				return timer.C
 			}():
 				pending = false
-				s.saveSnapshot()
+				ss.saveSnapshot()
 			}
 		}
 	}()
@@ -232,4 +236,3 @@ func openOrderToDomain(o types.OpenOrder) *domain.Order {
 
 	return d
 }
-

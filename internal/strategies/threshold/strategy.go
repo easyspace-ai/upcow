@@ -12,6 +12,7 @@ import (
 	"github.com/betbot/gobet/internal/strategies"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
+	strategyports "github.com/betbot/gobet/internal/strategies/ports"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/logger"
 	"github.com/sirupsen/logrus"
@@ -32,7 +33,7 @@ func init() {
 type ThresholdStrategy struct {
 	Executor       bbgo.CommandExecutor
 	config         *ThresholdStrategyConfig
-	tradingService TradingServiceInterface
+	tradingService strategyports.BasicTradingService
 	hasPosition    bool             // 是否已有仓位
 	entryPrice     *domain.Price    // 买入价格（用于计算止盈止损）
 	entryTokenType domain.TokenType // 买入的 Token 类型
@@ -55,21 +56,13 @@ type ThresholdStrategy struct {
 	placeOrderMu   sync.Mutex
 }
 
-// TradingServiceInterface 交易服务接口（避免循环依赖）
-type TradingServiceInterface interface {
-	PlaceOrder(ctx context.Context, order *domain.Order) (*domain.Order, error)
-	CancelOrder(ctx context.Context, orderID string) error
-	GetOpenPositions() []*domain.Position
-	GetBestPrice(ctx context.Context, assetID string) (bestBid float64, bestAsk float64, err error)
-}
-
 // NewThresholdStrategy 创建新的价格阈值策略
 func NewThresholdStrategy() *ThresholdStrategy {
 	return &ThresholdStrategy{}
 }
 
 // SetTradingService 设置交易服务（在初始化后调用）
-func (s *ThresholdStrategy) SetTradingService(ts TradingServiceInterface) {
+func (s *ThresholdStrategy) SetTradingService(ts strategyports.BasicTradingService) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tradingService = ts
@@ -362,7 +355,7 @@ func (s *ThresholdStrategy) onPriceChangedInternal(ctx context.Context, event *e
 }
 
 // placeOrder 下单（带锁保护，避免并发下单）
-func (s *ThresholdStrategy) placeOrder(ctx context.Context, tradingService TradingServiceInterface, order *domain.Order) error {
+func (s *ThresholdStrategy) placeOrder(ctx context.Context, tradingService strategyports.BasicTradingService, order *domain.Order) error {
 	// 统一工程化：策略 loop 不直接做网络 IO；优先把下单投递到全局 Executor。
 	if s.Executor == nil {
 		_, err := tradingService.PlaceOrder(ctx, order)
@@ -388,7 +381,7 @@ func (s *ThresholdStrategy) placeOrder(ctx context.Context, tradingService Tradi
 }
 
 // createSellOrder 创建卖出订单
-func (s *ThresholdStrategy) createSellOrder(ctx context.Context, tradingService TradingServiceInterface, market *domain.Market, tokenType domain.TokenType, price domain.Price, size float64) error {
+func (s *ThresholdStrategy) createSellOrder(ctx context.Context, tradingService strategyports.BasicTradingService, market *domain.Market, tokenType domain.TokenType, price domain.Price, size float64) error {
 	order := orderutil.NewOrder(market.Slug, market.GetAssetID(tokenType), types.SideSell, price, size, tokenType, false, types.OrderTypeFAK)
 
 	return s.placeOrder(ctx, tradingService, order)

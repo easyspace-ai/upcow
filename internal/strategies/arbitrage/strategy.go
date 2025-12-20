@@ -13,6 +13,7 @@ import (
 	"github.com/betbot/gobet/internal/strategies"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
+	strategyports "github.com/betbot/gobet/internal/strategies/ports"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/logger"
 	"github.com/sirupsen/logrus"
@@ -31,7 +32,7 @@ func init() {
 type ArbitrageStrategy struct {
 	Executor       bbgo.CommandExecutor
 	config         *ArbitrageStrategyConfig
-	tradingService TradingServiceInterface
+	tradingService strategyports.BasicTradingService
 	positionState  *domain.ArbitragePositionState
 	currentMarket  *domain.Market
 	marketGuard    common.MarketSlugGuard
@@ -54,21 +55,13 @@ type ArbitrageStrategy struct {
 	placeOrderMu   sync.Mutex
 }
 
-// TradingServiceInterface 交易服务接口（避免循环依赖）
-type TradingServiceInterface interface {
-	PlaceOrder(ctx context.Context, order *domain.Order) (*domain.Order, error)
-	CancelOrder(ctx context.Context, orderID string) error
-	GetOpenPositions() []*domain.Position
-	GetBestPrice(ctx context.Context, assetID string) (bestBid float64, bestAsk float64, err error)
-}
-
 // NewArbitrageStrategy 创建新的套利策略
 func NewArbitrageStrategy() *ArbitrageStrategy {
 	return &ArbitrageStrategy{}
 }
 
 // SetTradingService 设置交易服务（在初始化后调用）
-func (s *ArbitrageStrategy) SetTradingService(ts TradingServiceInterface) {
+func (s *ArbitrageStrategy) SetTradingService(ts strategyports.BasicTradingService) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tradingService = ts
@@ -787,18 +780,19 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 			defer s.inFlightLimiter.Release()
 		}
 
-		bestAskPrice, err := orderutil.QuoteBuyPrice(ctx, ts, assetID, maxCents)
-		if err != nil {
-			return fmt.Errorf("获取订单簿失败: %w", err)
-		}
-
-		adjustedSize, skipped, _, _, orderAmount, _ := common.AdjustSizeForMinOrderUSDC(
+		bestAskPrice, adjustedSize, skipped, _, _, orderAmount, _, err := common.QuoteAndAdjustBuy(
+			ctx,
+			ts,
+			assetID,
+			maxCents,
 			size,
-			bestAskPrice,
 			minOrderUSDC,
 			false,
 			0,
 		)
+		if err != nil {
+			return err
+		}
 		if skipped {
 			logger.Warnf("套利策略: %s - 订单金额 %.2f USDC 小于最小要求 %.2f USDC，跳过下单（数量=%.2f, 价格=%.4f）",
 				reason, orderAmount, minOrderUSDC, size, bestAskPrice.ToDecimal())
@@ -818,7 +812,16 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 		Name:    fmt.Sprintf("arbitrage_buy_%s_%s", tokenType, reason),
 		Timeout: 25 * time.Second,
 		Do: func(runCtx context.Context) {
-			bestAskPrice, err := orderutil.QuoteBuyPrice(runCtx, ts, assetID, maxCents)
+			bestAskPrice, adjustedSize, skipped, _, _, _, _, err := common.QuoteAndAdjustBuy(
+				runCtx,
+				ts,
+				assetID,
+				maxCents,
+				size,
+				minOrderUSDC,
+				false,
+				0,
+			)
 			if err != nil {
 				select {
 				case s.cmdResultC <- arbitrageCmdResult{tokenType: tokenType, reason: reason, err: err}:
@@ -826,14 +829,6 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 				}
 				return
 			}
-
-			adjustedSize, skipped, _, _, _, _ := common.AdjustSizeForMinOrderUSDC(
-				size,
-				bestAskPrice,
-				minOrderUSDC,
-				false,
-				0,
-			)
 			if skipped {
 				select {
 				case s.cmdResultC <- arbitrageCmdResult{tokenType: tokenType, reason: reason, skipped: true}:

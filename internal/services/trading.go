@@ -32,6 +32,14 @@ type TradingService struct {
 	ioExecutor  *IOExecutor
 	clobClient  *client.Client
 
+	// 组件化子服务（对外 API 仍由 TradingService 承载）
+	orders       *OrdersService
+	positions    *PositionsService
+	ordersManage *OrdersManageService
+	balances     *BalanceService
+	snapshots    *SnapshotService
+	syncer       *OrderSyncService
+
 	// 配置
 	funderAddress string
 	signatureType types.SignatureType
@@ -91,6 +99,14 @@ func NewTradingService(clobClient *client.Client, dryRun bool) *TradingService {
 		}),
 	}
 
+	// 初始化组件（按职责拆分，但保持 TradingService 对外方法不变）
+	service.orders = &OrdersService{s: service}
+	service.positions = &PositionsService{s: service}
+	service.ordersManage = &OrdersManageService{s: service}
+	service.balances = &BalanceService{s: service}
+	service.snapshots = &SnapshotService{s: service}
+	service.syncer = &OrderSyncService{s: service}
+
 	if dryRun {
 		log.Warnf("📝 纸交易模式已启用：不会进行真实交易，订单信息仅记录在日志中")
 	}
@@ -135,21 +151,29 @@ func (s *TradingService) Start(ctx context.Context) error {
 	go s.orderEngine.Run(s.ctx)
 
 	// 重启恢复：先加载快照（热启动），后续再用交易所 open orders 对账纠偏
-	s.loadSnapshot()
+	if s.snapshots != nil {
+		s.snapshots.loadSnapshot()
+	}
 	go func() {
 		// 等待 OrderEngine 就绪
 		time.Sleep(200 * time.Millisecond)
-		s.bootstrapOpenOrdersFromExchange(s.ctx)
+		if s.snapshots != nil {
+			s.snapshots.bootstrapOpenOrdersFromExchange(s.ctx)
+		}
 	}()
 
 	// 快照持久化：订单/仓位有变化时做一次 debounce 保存
 	if s.persistence != nil {
-		s.startSnapshotLoop(s.ctx)
+		if s.snapshots != nil {
+			s.snapshots.startSnapshotLoop(s.ctx)
+		}
 	}
 
 	// 初始化余额（从 API 获取）
 	if !s.dryRun {
-		go s.initializeBalance(ctx)
+		if s.balances != nil {
+			go s.balances.initializeBalance(ctx)
+		}
 	} else {
 		// 纸交易模式：设置一个很大的初始余额
 		updateCmd := &UpdateBalanceCommand{

@@ -9,7 +9,8 @@ import (
 )
 
 // GetPosition 获取仓位（通过 OrderEngine 查询）
-func (s *TradingService) GetPosition(positionID string) (*domain.Position, error) {
+func (p *PositionsService) GetPosition(positionID string) (*domain.Position, error) {
+	s := p.s
 	reply := make(chan *StateSnapshot, 1)
 	cmd := &QueryStateCommand{
 		id:    fmt.Sprintf("query_position_%d", time.Now().UnixNano()),
@@ -31,7 +32,8 @@ func (s *TradingService) GetPosition(positionID string) (*domain.Position, error
 }
 
 // CreatePosition 创建仓位（通过 OrderEngine）
-func (s *TradingService) CreatePosition(ctx context.Context, position *domain.Position) error {
+func (p *PositionsService) CreatePosition(ctx context.Context, position *domain.Position) error {
+	s := p.s
 	reply := make(chan error, 1)
 	cmd := &CreatePositionCommand{
 		id:       fmt.Sprintf("create_position_%d", time.Now().UnixNano()),
@@ -50,7 +52,8 @@ func (s *TradingService) CreatePosition(ctx context.Context, position *domain.Po
 }
 
 // UpdatePosition 更新仓位（通过 OrderEngine）
-func (s *TradingService) UpdatePosition(ctx context.Context, positionID string, updater func(*domain.Position)) error {
+func (p *PositionsService) UpdatePosition(ctx context.Context, positionID string, updater func(*domain.Position)) error {
+	s := p.s
 	reply := make(chan error, 1)
 	cmd := &UpdatePositionCommand{
 		id:         fmt.Sprintf("update_position_%d", time.Now().UnixNano()),
@@ -70,7 +73,8 @@ func (s *TradingService) UpdatePosition(ctx context.Context, positionID string, 
 }
 
 // ClosePosition 关闭仓位（通过 OrderEngine）
-func (s *TradingService) ClosePosition(ctx context.Context, positionID string, exitPrice domain.Price, exitOrder *domain.Order) error {
+func (p *PositionsService) ClosePosition(ctx context.Context, positionID string, exitPrice domain.Price, exitOrder *domain.Order) error {
+	s := p.s
 	reply := make(chan error, 1)
 	cmd := &ClosePositionCommand{
 		id:         fmt.Sprintf("close_position_%d", time.Now().UnixNano()),
@@ -91,7 +95,8 @@ func (s *TradingService) ClosePosition(ctx context.Context, positionID string, e
 }
 
 // GetAllPositions 获取所有仓位（通过 OrderEngine 查询）
-func (s *TradingService) GetAllPositions() []*domain.Position {
+func (p *PositionsService) GetAllPositions() []*domain.Position {
+	s := p.s
 	reply := make(chan *StateSnapshot, 1)
 	cmd := &QueryStateCommand{
 		id:    fmt.Sprintf("query_all_positions_%d", time.Now().UnixNano()),
@@ -110,7 +115,8 @@ func (s *TradingService) GetAllPositions() []*domain.Position {
 }
 
 // GetOpenPositions 获取开放仓位（通过 OrderEngine 查询）
-func (s *TradingService) GetOpenPositions() []*domain.Position {
+func (p *PositionsService) GetOpenPositions() []*domain.Position {
+	s := p.s
 	reply := make(chan *StateSnapshot, 1)
 	cmd := &QueryStateCommand{
 		id:    fmt.Sprintf("query_open_positions_%d", time.Now().UnixNano()),
@@ -129,8 +135,8 @@ func (s *TradingService) GetOpenPositions() []*domain.Position {
 }
 
 // GetOpenPositionsForMarket 只返回指定 marketSlug 的开放仓位
-func (s *TradingService) GetOpenPositionsForMarket(marketSlug string) []*domain.Position {
-	positions := s.GetOpenPositions()
+func (p *PositionsService) GetOpenPositionsForMarket(marketSlug string) []*domain.Position {
+	positions := p.GetOpenPositions()
 	if marketSlug == "" {
 		return positions
 	}

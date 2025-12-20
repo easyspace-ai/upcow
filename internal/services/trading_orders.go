@@ -18,7 +18,8 @@ func boolPtr(b bool) *bool {
 }
 
 // PlaceOrder 下单（通过 OrderEngine 发送命令）
-func (s *TradingService) PlaceOrder(ctx context.Context, order *domain.Order) (created *domain.Order, err error) {
+func (o *OrdersService) PlaceOrder(ctx context.Context, order *domain.Order) (created *domain.Order, err error) {
+	s := o.s
 	start := time.Now()
 	metrics.PlaceOrderRuns.Add(1)
 
@@ -67,7 +68,7 @@ func (s *TradingService) PlaceOrder(ctx context.Context, order *domain.Order) (c
 	}
 
 	// 调整订单大小（在发送命令前）
-	order = s.adjustOrderSize(order)
+	order = o.adjustOrderSize(order)
 
 	// 发送下单命令到 OrderEngine
 	reply := make(chan *PlaceOrderResult, 1)
@@ -114,7 +115,8 @@ func (s *TradingService) PlaceOrder(ctx context.Context, order *domain.Order) (c
 }
 
 // adjustOrderSize 调整订单大小（确保满足最小要求）
-func (s *TradingService) adjustOrderSize(order *domain.Order) *domain.Order {
+func (o *OrdersService) adjustOrderSize(order *domain.Order) *domain.Order {
+	s := o.s
 	// 创建订单副本
 	adjustedOrder := *order
 
@@ -170,7 +172,8 @@ func (s *TradingService) adjustOrderSize(order *domain.Order) *domain.Order {
 }
 
 // CancelOrder 取消订单（通过 OrderEngine）
-func (s *TradingService) CancelOrder(ctx context.Context, orderID string) error {
+func (o *OrdersService) CancelOrder(ctx context.Context, orderID string) error {
+	s := o.s
 	reply := make(chan error, 1)
 	cmd := &CancelOrderCommand{
 		id:      fmt.Sprintf("cancel_%d", time.Now().UnixNano()),
@@ -190,7 +193,8 @@ func (s *TradingService) CancelOrder(ctx context.Context, orderID string) error 
 }
 
 // GetBestPrice 获取订单簿的最佳买卖价格（买一价和卖一价）
-func (s *TradingService) GetBestPrice(ctx context.Context, assetID string) (bestBid float64, bestAsk float64, err error) {
+func (o *OrdersService) GetBestPrice(ctx context.Context, assetID string) (bestBid float64, bestAsk float64, err error) {
+	s := o.s
 	// 获取订单簿
 	book, err := s.clobClient.GetOrderBook(ctx, assetID, nil)
 	if err != nil {
@@ -218,7 +222,8 @@ func (s *TradingService) GetBestPrice(ctx context.Context, assetID string) (best
 
 // checkOrderBookLiquidity 检查订单簿是否有足够的流动性来匹配订单
 // 返回: (是否有流动性, 实际可用价格)
-func (s *TradingService) checkOrderBookLiquidity(ctx context.Context, assetID string, side types.Side, price float64, size float64) (bool, float64) {
+func (o *OrdersService) checkOrderBookLiquidity(ctx context.Context, assetID string, side types.Side, price float64, size float64) (bool, float64) {
+	s := o.s
 	// 获取订单簿
 	book, err := s.clobClient.GetOrderBook(ctx, assetID, nil)
 	if err != nil {

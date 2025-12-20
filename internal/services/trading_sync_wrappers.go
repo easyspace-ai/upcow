@@ -6,25 +6,43 @@ import "context"
 // 但实现已迁移到更小的文件中，避免 trading.go 继续膨胀。
 
 func (s *TradingService) startOrderStatusSync(ctx context.Context) {
-	s.startOrderStatusSyncImpl(ctx)
+	if s.syncer == nil {
+		return
+	}
+	s.syncer.startOrderStatusSyncImpl(ctx)
 }
 
 func (s *TradingService) syncAllOrderStatus(ctx context.Context) {
-	s.syncAllOrderStatusImpl(ctx)
+	if s.syncer == nil {
+		return
+	}
+	s.syncer.syncAllOrderStatusImpl(ctx)
 }
 
 func (s *TradingService) SyncOrderStatus(ctx context.Context, orderID string) error {
-	return s.syncOrderStatusImpl(ctx, orderID)
+	if s.syncer == nil {
+		return nil
+	}
+	return s.syncer.syncOrderStatusImpl(ctx, orderID)
 }
 
 func (s *TradingService) startOrderConfirmationTimeoutCheck(ctx context.Context) {
-	s.startOrderConfirmationTimeoutCheckImpl(ctx)
+	if s.syncer == nil {
+		return
+	}
+	s.syncer.startOrderConfirmationTimeoutCheckImpl(ctx)
 }
 
 func (s *TradingService) checkOrderConfirmationTimeout(ctx context.Context) {
-	s.checkOrderConfirmationTimeoutImpl(ctx)
+	if s.syncer == nil {
+		return
+	}
+	s.syncer.checkOrderConfirmationTimeoutImpl(ctx)
 }
 
 func (s *TradingService) FetchUserPositionsFromAPI(ctx context.Context) error {
-	return s.fetchUserPositionsFromAPIImpl(ctx)
+	if s.syncer == nil {
+		return nil
+	}
+	return s.syncer.fetchUserPositionsFromAPIImpl(ctx)
 }
