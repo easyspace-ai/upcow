@@ -9,35 +9,47 @@ import (
 )
 
 // displayGridPosition 显示网格位置信息
-func (s *GridStrategy) displayGridPosition(event *events.PriceChangedEvent) {
+func (s *GridStrategy) displayGridPosition(event *events.PriceChangedEvent, oldPriceUp, oldPriceDown, newPriceUp, newPriceDown int) {
 	if s.grid == nil {
-		log.Debugf("网格未初始化，跳过显示")
+		log.Warnf("⚠️ 网格未初始化，跳过显示")
+		// 即使 grid 为 nil，也显示基本信息
+		fmt.Printf("✅ Price updated (网格未初始化):\n")
+		fmt.Printf("   %s: %dc\n", event.TokenType, event.NewPrice.Cents)
 		return
 	}
 	
-	// 添加调试日志
-	log.Debugf("📊 [显示] displayGridPosition 被调用: %s @ %dc, UP=%dc, DOWN=%dc", 
-		event.TokenType, event.NewPrice.Cents, s.currentPriceUp, s.currentPriceDown)
+	// 参数验证
+	if event == nil {
+		return
+	}
+
+	// 直接使用传入的价格，避免再次读取（可能不一致）
+	currentPriceUp := newPriceUp
+	currentPriceDown := newPriceDown
 
 	// 更新价格后，显示两个币种的完整信息
 	var lines []string
 
 	// UP 币信息（如果价格已更新）
-	if s.currentPriceUp > 0 {
+	if currentPriceUp > 0 {
 		// 如果是 UP 币价格变化，显示价格变化；否则只显示当前价格
 		isUpChanged := event.TokenType == domain.TokenTypeUp
 		upEvent := event
 		if !isUpChanged {
-			// 创建一个只包含当前价格的事件（不显示价格变化）
+			// 创建一个包含当前价格和旧价格的事件（用于显示价格变化）
+			var oldPrice *domain.Price
+			if oldPriceUp > 0 {
+				oldPrice = &domain.Price{Cents: oldPriceUp}
+			}
 			upEvent = &events.PriceChangedEvent{
 				Market:    event.Market,
 				TokenType: domain.TokenTypeUp,
-				OldPrice:  nil, // 不显示变化
-				NewPrice:  domain.Price{Cents: s.currentPriceUp},
+				OldPrice:  oldPrice,
+				NewPrice:  domain.Price{Cents: currentPriceUp},
 				Timestamp: event.Timestamp,
 			}
 		}
-		upLine := s.formatGridPosition("UP", s.currentPriceUp, isUpChanged, upEvent)
+		upLine := s.formatGridPosition("UP", currentPriceUp, isUpChanged || oldPriceUp > 0, upEvent)
 		lines = append(lines, upLine)
 	} else {
 		// 即使价格未更新，也显示等待状态
@@ -45,21 +57,25 @@ func (s *GridStrategy) displayGridPosition(event *events.PriceChangedEvent) {
 	}
 
 	// DOWN 币信息（如果价格已更新）
-	if s.currentPriceDown > 0 {
+	if currentPriceDown > 0 {
 		// 如果是 DOWN 币价格变化，显示价格变化；否则只显示当前价格
 		isDownChanged := event.TokenType == domain.TokenTypeDown
 		downEvent := event
 		if !isDownChanged {
-			// 创建一个只包含当前价格的事件（不显示价格变化）
+			// 创建一个包含当前价格和旧价格的事件（用于显示价格变化）
+			var oldPrice *domain.Price
+			if oldPriceDown > 0 {
+				oldPrice = &domain.Price{Cents: oldPriceDown}
+			}
 			downEvent = &events.PriceChangedEvent{
 				Market:    event.Market,
 				TokenType: domain.TokenTypeDown,
-				OldPrice:  nil, // 不显示变化
-				NewPrice:  domain.Price{Cents: s.currentPriceDown},
+				OldPrice:  oldPrice,
+				NewPrice:  domain.Price{Cents: currentPriceDown},
 				Timestamp: event.Timestamp,
 			}
 		}
-		downLine := s.formatGridPosition("DOWN", s.currentPriceDown, isDownChanged, downEvent)
+		downLine := s.formatGridPosition("DOWN", currentPriceDown, isDownChanged || oldPriceDown > 0, downEvent)
 		lines = append(lines, downLine)
 	} else {
 		// 即使价格未更新，也显示等待状态
@@ -182,16 +198,22 @@ func (s *GridStrategy) displayStrategyStatus() {
 
 		// 计算盈亏（如果有当前价格）
 		profitInfo := ""
-		if pos.TokenType == domain.TokenTypeUp && s.currentPriceUp > 0 {
-			currentPrice := domain.Price{Cents: s.currentPriceUp}
+		// 安全读取当前价格
+		s.mu.RLock()
+		currentPriceUp := s.currentPriceUp
+		currentPriceDown := s.currentPriceDown
+		s.mu.RUnlock()
+		
+		if pos.TokenType == domain.TokenTypeUp && currentPriceUp > 0 {
+			currentPrice := domain.Price{Cents: currentPriceUp}
 			profit := pos.CalculateProfit(currentPrice)
 			if profit > 0 {
 				profitInfo = fmt.Sprintf(" | 利润: +%dc", profit)
 			} else if profit < 0 {
 				profitInfo = fmt.Sprintf(" | 亏损: %dc", profit)
 			}
-		} else if pos.TokenType == domain.TokenTypeDown && s.currentPriceDown > 0 {
-			currentPrice := domain.Price{Cents: s.currentPriceDown}
+		} else if pos.TokenType == domain.TokenTypeDown && currentPriceDown > 0 {
+			currentPrice := domain.Price{Cents: currentPriceDown}
 			profit := pos.CalculateProfit(currentPrice)
 			if profit > 0 {
 				profitInfo = fmt.Sprintf(" | 利润: +%dc", profit)

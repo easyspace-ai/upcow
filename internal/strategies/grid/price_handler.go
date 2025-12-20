@@ -28,8 +28,12 @@ func (s *GridStrategy) OnPriceChanged(ctx context.Context, event *events.PriceCh
 	s.latestPrice[event.TokenType] = event
 	s.priceMu.Unlock()
 
+	// 确保事件循环已启动
+	s.startLoop(ctx)
+
 	select {
 	case s.priceSignalC <- struct{}{}:
+		// 信号已发送
 	default:
 		// 已经有信号在队列里，合并即可
 	}
@@ -120,19 +124,23 @@ func (s *GridStrategy) onPriceChangedInternal(ctx context.Context, event *events
 	isFirstUpdateUp := (event.TokenType == domain.TokenTypeUp && oldPriceUp == 0)
 	isFirstUpdateDown := (event.TokenType == domain.TokenTypeDown && oldPriceDown == 0)
 
-	// 更新当前价格
+	// 更新当前价格，并保存更新后的价格用于显示
+	var newPriceUp, newPriceDown int
 	if event.TokenType == domain.TokenTypeUp {
 		s.currentPriceUp = event.NewPrice.Cents
 		s.lastPriceUpdateUp = now
+		newPriceUp = event.NewPrice.Cents
+		newPriceDown = s.currentPriceDown // 另一个币种的价格保持不变
 	} else if event.TokenType == domain.TokenTypeDown {
 		s.currentPriceDown = event.NewPrice.Cents
 		s.lastPriceUpdateDown = now
+		newPriceDown = event.NewPrice.Cents
+		newPriceUp = s.currentPriceUp // 另一个币种的价格保持不变
 	}
 
 	// 保存需要的信息（在锁内）
 	grid := s.grid
 	activePosition := s.activePosition
-	lastDisplayTime := s.lastDisplayTime
 	s.mu.Unlock() // 尽快释放锁，避免阻塞
 
 	// 强对冲/补仓由 HedgePlan 状态机统一驱动（planTick + planStrongHedge）
@@ -141,7 +149,11 @@ func (s *GridStrategy) onPriceChangedInternal(ctx context.Context, event *events
 	// 重构后：从 TradingService 查询活跃订单数量（不需要锁）
 	activeOrdersCount := len(s.getActiveOrders())
 
-	// 显示格式化的价格更新信息（不需要锁）
+	// 显示格式化的价格更新信息到控制台（使用 fmt.Printf 直接输出到终端）
+	// 直接传递更新后的价格，避免在 displayGridPosition 中再次读取（可能不一致）
+	s.displayGridPosition(event, oldPriceUp, oldPriceDown, newPriceUp, newPriceDown)
+	
+	// 同时写入日志文件（使用 log.Infof）
 	s.logPriceUpdate(event, oldPriceUp, oldPriceDown)
 
 	// 检测价格更新异常（需要锁，但快速检查）
@@ -152,23 +164,6 @@ func (s *GridStrategy) onPriceChangedInternal(ctx context.Context, event *events
 	if processDuration > 50*time.Millisecond {
 		log.Debugf("📊 [价格更新诊断] onPriceChangedInternal处理完成: %s @ %dc, 耗时=%v",
 			event.TokenType, event.NewPrice.Cents, processDuration)
-	}
-
-	// 显示价格更新（使用防抖机制，但确保至少每500ms显示一次）
-	// 如果 lastDisplayTime 为零值（首次显示），总是显示
-	const minDisplayInterval = 500 * time.Millisecond // 增加到500ms，减少控制台输出频率
-	shouldDisplay := lastDisplayTime.IsZero() || now.Sub(lastDisplayTime) >= minDisplayInterval
-	
-	if shouldDisplay {
-		s.mu.Lock()
-		s.lastDisplayTime = now
-		s.mu.Unlock()
-		// 实时显示网格位置信息（不需要锁）
-		s.displayGridPosition(event)
-	} else {
-		// 即使不显示到控制台，也确保日志中有记录
-		log.Debugf("📊 [价格更新] 跳过控制台显示（防抖中，距离上次显示=%v）: %s @ %dc", 
-			now.Sub(lastDisplayTime), event.TokenType, event.NewPrice.Cents)
 	}
 
 	// 网格策略同时监控 UP 币和 DOWN 币
