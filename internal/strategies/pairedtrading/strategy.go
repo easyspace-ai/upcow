@@ -57,6 +57,7 @@ type PairedTradingStrategy struct {
 	// 状态管理
 	positionState  *domain.ArbitragePositionState
 	currentMarket  *domain.Market
+	marketGuard    common.MarketSlugGuard
 	currentPhase   Phase
 	lockAchieved   bool      // 是否已完成锁定（两个方向利润都为正）
 	lastActionTime time.Time // 上次执行交易的时间
@@ -214,7 +215,7 @@ func (s *PairedTradingStrategy) onPricesChangedInternal(ctx context.Context, upE
 	}
 
 	// 初始化或更新市场信息
-	if s.currentMarket == nil || s.currentMarket.Slug != event.Market.Slug {
+	if event.Market != nil && s.marketGuard.Update(event.Market.Slug) {
 		// 周期切换：重置状态
 		if s.inFlightLimiter != nil {
 			s.inFlightLimiter.Reset()
@@ -665,42 +666,29 @@ func (s *PairedTradingStrategy) placeBuyOrder(ctx context.Context, market *domai
 			return fmt.Errorf("获取订单簿失败: %w", err)
 		}
 
-		// 检查并调整数量以满足最小金额要求
-		adjustedSize := size
-		orderAmount := adjustedSize * bestAskPrice.ToDecimal()
-
-		if orderAmount < minOrderUSDC {
+		adjustedSize, skipped, adjusted, adjustRatio, orderAmount, newOrderAmount := common.AdjustSizeForMinOrderUSDC(
+			size,
+			bestAskPrice,
+			minOrderUSDC,
+			s.config.AutoAdjustSize,
+			s.config.MaxSizeAdjustRatio,
+		)
+		if skipped {
+			// 不自动调整：直接跳过
 			if !s.config.AutoAdjustSize {
-				// 不自动调整，跳过订单
 				log.Warnf("成对交易策略: %s - 订单金额 %.4f USDC < 最小要求 %.2f USDC，跳过下单（数量=%.2f, 价格=%.4f）",
 					reason, orderAmount, minOrderUSDC, size, bestAskPrice.ToDecimal())
 				return nil
 			}
-
-			// 计算满足最小金额所需的数量
+			// 自动调整但超过最大允许倍数：跳过
 			requiredSize := minOrderUSDC / bestAskPrice.ToDecimal()
-
-			// 检查调整倍数
-			adjustRatio := requiredSize / size
-			if adjustRatio > s.config.MaxSizeAdjustRatio {
-				log.Warnf("成对交易策略: %s - 所需调整倍数 %.2f > 最大允许 %.2f，跳过下单（原数量=%.2f, 需要数量=%.2f, 价格=%.4f）",
-					reason, adjustRatio, s.config.MaxSizeAdjustRatio, size, requiredSize, bestAskPrice.ToDecimal())
-				return nil
-			}
-
-			adjustedSize = requiredSize
-			newOrderAmount := adjustedSize * bestAskPrice.ToDecimal()
-
+			log.Warnf("成对交易策略: %s - 所需调整倍数 %.2f > 最大允许 %.2f，跳过下单（原数量=%.2f, 需要数量=%.2f, 价格=%.4f）",
+				reason, adjustRatio, s.config.MaxSizeAdjustRatio, size, requiredSize, bestAskPrice.ToDecimal())
+			return nil
+		}
+		if adjusted {
 			log.Infof("成对交易策略: %s - ⚠️ 自动调整数量以满足最小金额：%.2f → %.2f shares (%.2fx), 原金额=%.4f → 新金额=%.4f USDC (价格=%.4f)",
 				reason, size, adjustedSize, adjustRatio, orderAmount, newOrderAmount, bestAskPrice.ToDecimal())
-
-			// 二次检查：如果调整后仍然不满足（由于浮点精度），再加一点
-			if newOrderAmount < minOrderUSDC {
-				adjustedSize = adjustedSize * 1.01 // 增加1%确保满足
-				finalAmount := adjustedSize * bestAskPrice.ToDecimal()
-				log.Debugf("成对交易策略: %s - 二次调整数量到 %.2f shares (金额=%.4f USDC) 以确保满足最小金额",
-					reason, adjustedSize, finalAmount)
-			}
 		}
 
 		order := orderutil.NewOrder(market.Slug, assetID, types.SideBuy, bestAskPrice, adjustedSize, tokenType, true, types.OrderTypeFAK)
@@ -725,48 +713,19 @@ func (s *PairedTradingStrategy) placeBuyOrder(ctx context.Context, market *domai
 				return
 			}
 
-			// 检查并调整数量以满足最小金额要求
-			adjustedSize := size
-			orderAmount := adjustedSize * bestAskPrice.ToDecimal()
-
-			if orderAmount < minOrderUSDC {
-				if !s.config.AutoAdjustSize {
-					// 不自动调整，跳过订单
-					select {
-					case s.cmdResultC <- pairedTradingCmdResult{tokenType: tokenType, reason: reason, skipped: true}:
-					default:
-					}
-					return
+			adjustedSize, skipped, _, _, _, _ := common.AdjustSizeForMinOrderUSDC(
+				size,
+				bestAskPrice,
+				minOrderUSDC,
+				s.config.AutoAdjustSize,
+				s.config.MaxSizeAdjustRatio,
+			)
+			if skipped {
+				select {
+				case s.cmdResultC <- pairedTradingCmdResult{tokenType: tokenType, reason: reason, skipped: true}:
+				default:
 				}
-
-				// 计算满足最小金额所需的数量
-				requiredSize := minOrderUSDC / bestAskPrice.ToDecimal()
-
-				// 检查调整倍数
-				adjustRatio := requiredSize / size
-				if adjustRatio > s.config.MaxSizeAdjustRatio {
-					log.Warnf("成对交易策略: %s - 所需调整倍数 %.2f > 最大允许 %.2f，跳过下单（原数量=%.2f, 需要数量=%.2f, 价格=%.4f）",
-						reason, adjustRatio, s.config.MaxSizeAdjustRatio, size, requiredSize, bestAskPrice.ToDecimal())
-					select {
-					case s.cmdResultC <- pairedTradingCmdResult{tokenType: tokenType, reason: reason, skipped: true}:
-					default:
-					}
-					return
-				}
-
-				adjustedSize = requiredSize
-				newOrderAmount := adjustedSize * bestAskPrice.ToDecimal()
-
-				log.Infof("成对交易策略: %s - ⚠️ 自动调整数量以满足最小金额：%.2f → %.2f shares (%.2fx), 原金额=%.4f → 新金额=%.4f USDC (价格=%.4f)",
-					reason, size, adjustedSize, adjustRatio, orderAmount, newOrderAmount, bestAskPrice.ToDecimal())
-
-				// 二次检查：如果调整后仍然不满足（由于浮点精度），再加一点
-				if newOrderAmount < minOrderUSDC {
-					adjustedSize = adjustedSize * 1.01
-					finalAmount := adjustedSize * bestAskPrice.ToDecimal()
-					log.Debugf("成对交易策略: %s - 二次调整数量到 %.2f shares (金额=%.4f USDC) 以确保满足最小金额",
-						reason, adjustedSize, finalAmount)
-				}
+				return
 			}
 
 			mSlug := ""
@@ -817,7 +776,7 @@ func (s *PairedTradingStrategy) onOrderUpdateInternal(ctx context.Context, order
 	defer s.mu.Unlock()
 
 	// 只处理当前市场的订单
-	if s.currentMarket == nil || s.currentMarket.Slug != order.MarketSlug {
+	if s.marketGuard.Current() == "" || s.marketGuard.Current() != order.MarketSlug {
 		return nil
 	}
 

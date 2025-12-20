@@ -11,6 +11,7 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/strategies"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/pkg/bbgo"
 )
 
@@ -27,11 +28,11 @@ func init() {
 // GridStrategy 网格策略实现
 type GridStrategy struct {
 	// Executor 串行 IO 执行器（由 Environment 注入）
-	Executor              bbgo.CommandExecutor
-	config                *GridStrategyConfig
-	grid                  *domain.Grid
-	tradingService        TradingServiceInterface // 交易服务接口
-	directModeDebounce    int                     // 直接回调模式的防抖间隔（毫秒），默认100ms
+	Executor           bbgo.CommandExecutor
+	config             *GridStrategyConfig
+	grid               *domain.Grid
+	tradingService     TradingServiceInterface // 交易服务接口
+	directModeDebounce int                     // 直接回调模式的防抖间隔（毫秒），默认100ms
 	// activeOrders 已移除：现在由 OrderEngine 管理，通过 tradingService.GetActiveOrders() 查询
 	activePosition        *domain.Position
 	roundsThisPeriod      int
@@ -64,13 +65,12 @@ type GridStrategy struct {
 	priceUpdateCount       int       // 价格更新计数（用于诊断）
 	lastPriceUpdateLogTime time.Time // 上次价格更新日志时间
 	// 对冲订单提交防抖
-	lastHedgeOrderSubmitTime time.Time // 最后一次提交对冲订单的时间（用于防抖）
-	lastHedgeOrderSubmitMu   sync.Mutex // 保护 lastHedgeOrderSubmitTime 的锁
+	hedgeSubmitDebouncer *common.Debouncer // 对冲订单提交防抖（默认2s）
 	// 风险8修复：对冲订单提交锁（防止多个对冲机制并发提交）
 	hedgeOrderSubmitMu sync.Mutex // 保护对冲订单提交的锁，确保同一时间只有一个goroutine提交对冲订单
 	// 订单成交事件去重：orderID -> filledAt timestamp
-	processedFilledOrders map[string]time.Time // 已处理的订单成交事件（用于去重）
-	processedFilledOrdersMu sync.RWMutex // 保护 processedFilledOrders 的锁
+	processedFilledOrders   map[string]time.Time // 已处理的订单成交事件（用于去重）
+	processedFilledOrdersMu sync.RWMutex         // 保护 processedFilledOrders 的锁
 
 	// 单线程事件循环（确定性优先）
 	loopOnce     sync.Once
@@ -183,6 +183,10 @@ func (s *GridStrategy) Initialize(ctx context.Context, config strategies.Strateg
 	// 设置默认值（BBGO风格：只支持直接回调模式）
 	if s.directModeDebounce <= 0 {
 		s.directModeDebounce = 100 // 默认100ms防抖
+	}
+	// 对冲订单提交防抖：默认 2s（只在成功提交后 Mark）
+	if s.hedgeSubmitDebouncer == nil {
+		s.hedgeSubmitDebouncer = common.NewDebouncer(2 * time.Second)
 	}
 
 	// 使用手工定义的网格层级创建网格
@@ -590,9 +594,9 @@ func (s *GridStrategy) Subscribe(session *bbgo.ExchangeSession) {
 		log.Errorf("❌ [周期切换] 错误：网格配置丢失！策略实例可能被重置！")
 		return
 	}
-	log.Infof("✅ [周期切换] 策略配置正常：网格层级数量=%d, 订单大小=%.2f", 
+	log.Infof("✅ [周期切换] 策略配置正常：网格层级数量=%d, 订单大小=%.2f",
 		len(s.grid.Levels), s.config.OrderSize)
-	
+
 	// 确保 map 已初始化（防止 nil map panic）
 	s.mu.Lock()
 	// 重构后：activeOrders 已移除，现在由 OrderEngine 管理
@@ -647,7 +651,7 @@ func (s *GridStrategy) Subscribe(session *bbgo.ExchangeSession) {
 	} else {
 		log.Infof("✅ [周期切换] Session priceChangeHandlers 已成功注册，数量=%d", handlerCount)
 	}
-	
+
 	// 调试：检查 session 的 MarketDataStream 是否已设置
 	if session.MarketDataStream == nil {
 		log.Warnf("⚠️ [周期切换] Session 的 MarketDataStream 为 nil，价格变化事件可能无法传递")

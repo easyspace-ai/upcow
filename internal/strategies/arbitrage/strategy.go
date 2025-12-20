@@ -34,6 +34,7 @@ type ArbitrageStrategy struct {
 	tradingService TradingServiceInterface
 	positionState  *domain.ArbitragePositionState
 	currentMarket  *domain.Market
+	marketGuard    common.MarketSlugGuard
 	priceUp        float64 // 当前UP价格
 	priceDown      float64 // 当前DOWN价格
 
@@ -181,7 +182,7 @@ func (s *ArbitrageStrategy) onPricesChangedInternal(ctx context.Context, upEvent
 	}
 
 	// 初始化或更新市场信息
-	if s.currentMarket == nil || s.currentMarket.Slug != event.Market.Slug {
+	if event.Market != nil && s.marketGuard.Update(event.Market.Slug) {
 		// 周期切换：清理 in-flight 计数，避免新周期被旧状态卡住
 		if s.inFlightLimiter != nil {
 			s.inFlightLimiter.Reset()
@@ -341,7 +342,7 @@ func (s *ArbitrageStrategy) OnOrderFilled(ctx context.Context, event *events.Ord
 	}
 
 	// 只处理当前市场的订单
-	if s.currentMarket == nil || s.currentMarket.Slug != event.Market.Slug {
+	if event == nil || event.Market == nil || s.marketGuard.Current() == "" || event.Market.Slug != s.marketGuard.Current() {
 		return nil
 	}
 
@@ -791,14 +792,20 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 			return fmt.Errorf("获取订单簿失败: %w", err)
 		}
 
-		orderAmount := size * bestAskPrice.ToDecimal()
-		if orderAmount < minOrderUSDC {
+		adjustedSize, skipped, _, _, orderAmount, _ := common.AdjustSizeForMinOrderUSDC(
+			size,
+			bestAskPrice,
+			minOrderUSDC,
+			false,
+			0,
+		)
+		if skipped {
 			logger.Warnf("套利策略: %s - 订单金额 %.2f USDC 小于最小要求 %.2f USDC，跳过下单（数量=%.2f, 价格=%.4f）",
 				reason, orderAmount, minOrderUSDC, size, bestAskPrice.ToDecimal())
 			return nil
 		}
 
-		order := orderutil.NewOrder(market.Slug, assetID, types.SideBuy, bestAskPrice, size, tokenType, true, types.OrderTypeFAK)
+		order := orderutil.NewOrder(market.Slug, assetID, types.SideBuy, bestAskPrice, adjustedSize, tokenType, true, types.OrderTypeFAK)
 		_, err = ts.PlaceOrder(ctx, order)
 		return err
 	}
@@ -820,8 +827,14 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 				return
 			}
 
-			orderAmount := size * bestAskPrice.ToDecimal()
-			if orderAmount < minOrderUSDC {
+			adjustedSize, skipped, _, _, _, _ := common.AdjustSizeForMinOrderUSDC(
+				size,
+				bestAskPrice,
+				minOrderUSDC,
+				false,
+				0,
+			)
+			if skipped {
 				select {
 				case s.cmdResultC <- arbitrageCmdResult{tokenType: tokenType, reason: reason, skipped: true}:
 				default:
@@ -834,7 +847,7 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 			if s.currentMarket != nil {
 				mSlug = s.currentMarket.Slug
 			}
-			order := orderutil.NewOrder(mSlug, assetID, types.SideBuy, bestAskPrice, size, tokenType, true, types.OrderTypeFAK)
+			order := orderutil.NewOrder(mSlug, assetID, types.SideBuy, bestAskPrice, adjustedSize, tokenType, true, types.OrderTypeFAK)
 
 			created, err := ts.PlaceOrder(runCtx, order)
 			select {
