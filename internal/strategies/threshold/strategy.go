@@ -10,6 +10,7 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/strategies"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/logger"
@@ -32,8 +33,8 @@ type ThresholdStrategy struct {
 	Executor       bbgo.CommandExecutor
 	config         *ThresholdStrategyConfig
 	tradingService TradingServiceInterface
-	hasPosition    bool          // 是否已有仓位
-	entryPrice     *domain.Price // 买入价格（用于计算止盈止损）
+	hasPosition    bool             // 是否已有仓位
+	entryPrice     *domain.Price    // 买入价格（用于计算止盈止损）
 	entryTokenType domain.TokenType // 买入的 Token 类型
 
 	// 统一：单线程 loop（价格合并 + 订单更新 + 命令结果）
@@ -139,10 +140,7 @@ func (s *ThresholdStrategy) OnPriceChanged(ctx context.Context, event *events.Pr
 	s.priceMu.Lock()
 	s.latestPrice = event
 	s.priceMu.Unlock()
-	select {
-	case s.priceSignalC <- struct{}{}:
-	default:
-	}
+	common.TrySignal(s.priceSignalC)
 	return nil
 }
 
@@ -517,4 +515,3 @@ func (s *ThresholdStrategy) Shutdown(ctx context.Context, wg *sync.WaitGroup) {
 	}
 	log.Infof("价格阈值策略: 资源清理完成")
 }
-

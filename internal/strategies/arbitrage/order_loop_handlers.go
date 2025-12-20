@@ -40,8 +40,8 @@ func (s *ArbitrageStrategy) handleOrderUpdateInternal(ctx context.Context, order
 
 func (s *ArbitrageStrategy) handleCmdResultInternal(_ context.Context, res arbitrageCmdResult) error {
 	// 无论成功/失败/跳过，都释放 in-flight 槽位（节流由上层控制）
-	if s.inFlight > 0 {
-		s.inFlight--
+	if s.inFlightLimiter != nil {
+		s.inFlightLimiter.Release()
 	}
 	if res.err != nil {
 		logger.Warnf("套利策略: 下单命令失败: reason=%s token=%s err=%v", res.reason, res.tokenType, res.err)
@@ -55,4 +55,3 @@ func (s *ArbitrageStrategy) handleCmdResultInternal(_ context.Context, res arbit
 	}
 	return nil
 }
-

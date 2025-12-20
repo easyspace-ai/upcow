@@ -11,6 +11,7 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/strategies"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/logger"
@@ -37,15 +38,15 @@ type ArbitrageStrategy struct {
 	priceDown      float64 // 当前DOWN价格
 
 	// 统一：单线程 loop（价格合并 + 订单更新 + 命令结果）
-	loopOnce     sync.Once
-	loopCancel   context.CancelFunc
-	priceSignalC chan struct{}
-	priceMu      sync.Mutex
-	latestPrices map[domain.TokenType]*events.PriceChangedEvent
-	orderC       chan *domain.Order
-	cmdResultC   chan arbitrageCmdResult
-	inFlight     int
-	maxInFlight  int
+	loopOnce        sync.Once
+	loopCancel      context.CancelFunc
+	priceSignalC    chan struct{}
+	priceMu         sync.Mutex
+	latestPrices    map[domain.TokenType]*events.PriceChangedEvent
+	orderC          chan *domain.Order
+	cmdResultC      chan arbitrageCmdResult
+	maxInFlight     int
+	inFlightLimiter *common.InFlightLimiter
 
 	mu             sync.RWMutex
 	isPlacingOrder bool
@@ -120,6 +121,12 @@ func (s *ArbitrageStrategy) InitializeWithConfig(ctx context.Context, config str
 		// 参考 CSV：单秒可出现 10-30 笔成交，策略侧至少要允许小并发，避免“只能一笔一笔慢慢下”
 		s.maxInFlight = 8
 	}
+	if s.inFlightLimiter == nil {
+		s.inFlightLimiter = common.NewInFlightLimiter(s.maxInFlight)
+	} else {
+		s.inFlightLimiter.SetMax(s.maxInFlight)
+	}
+	s.inFlightLimiter.Reset()
 
 	logger.Infof("套利策略已初始化: 周期时长=%v, 锁盈起始=%v, UP目标=%v, DOWN目标=%v",
 		arbitrageConfig.CycleDuration,
@@ -142,10 +149,7 @@ func (s *ArbitrageStrategy) OnPriceChanged(ctx context.Context, event *events.Pr
 	}
 	s.latestPrices[event.TokenType] = event
 	s.priceMu.Unlock()
-	select {
-	case s.priceSignalC <- struct{}{}:
-	default:
-	}
+	common.TrySignal(s.priceSignalC)
 	return nil
 }
 
@@ -179,7 +183,9 @@ func (s *ArbitrageStrategy) onPricesChangedInternal(ctx context.Context, upEvent
 	// 初始化或更新市场信息
 	if s.currentMarket == nil || s.currentMarket.Slug != event.Market.Slug {
 		// 周期切换：清理 in-flight 计数，避免新周期被旧状态卡住
-		s.inFlight = 0
+		if s.inFlightLimiter != nil {
+			s.inFlightLimiter.Reset()
+		}
 		s.currentMarket = event.Market
 		s.positionState = domain.NewArbitragePositionState(event.Market)
 		logger.Infof("套利策略: 初始化新市场 %s, 周期开始时间=%d", event.Market.Slug, event.Market.Timestamp)
@@ -726,7 +732,7 @@ func (s *ArbitrageStrategy) placeBuyOrderSplit(ctx context.Context, market *doma
 	}
 	remaining := size
 	for remaining > 0 {
-		if s.maxInFlight > 0 && s.inFlight >= s.maxInFlight {
+		if s.inFlightLimiter != nil && s.inFlightLimiter.AtLimit() {
 			return nil
 		}
 		q := remaining
@@ -744,7 +750,7 @@ func (s *ArbitrageStrategy) placeBuyOrderSplit(ctx context.Context, market *doma
 // placeBuyOrder 下买入订单
 func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Market, tokenType domain.TokenType, size float64, reason string) error {
 	// 统一：loop 内限并发，避免在高频价格下无限投递
-	if s.maxInFlight > 0 && s.inFlight >= s.maxInFlight {
+	if s.inFlightLimiter != nil && s.inFlightLimiter.AtLimit() {
 		return nil
 	}
 	if market == nil || s.tradingService == nil || s.config == nil {
@@ -773,6 +779,13 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 
 	// 没有 executor 时仍保持兼容（但会阻塞 loop，不推荐）
 	if exec == nil {
+		if s.inFlightLimiter != nil && !s.inFlightLimiter.TryAcquire() {
+			return nil
+		}
+		if s.inFlightLimiter != nil {
+			defer s.inFlightLimiter.Release()
+		}
+
 		bestAskPrice, err := orderutil.QuoteBuyPrice(ctx, ts, assetID, maxCents)
 		if err != nil {
 			return fmt.Errorf("获取订单簿失败: %w", err)
@@ -791,7 +804,9 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 	}
 
 	s.initLoopIfNeeded()
-	s.inFlight++
+	if s.inFlightLimiter != nil && !s.inFlightLimiter.TryAcquire() {
+		return nil
+	}
 	ok := exec.Submit(bbgo.Command{
 		Name:    fmt.Sprintf("arbitrage_buy_%s_%s", tokenType, reason),
 		Timeout: 25 * time.Second,
@@ -829,8 +844,8 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 		},
 	})
 	if !ok {
-		if s.inFlight > 0 {
-			s.inFlight--
+		if s.inFlightLimiter != nil {
+			s.inFlightLimiter.Release()
 		}
 		return fmt.Errorf("执行器队列已满，无法提交订单")
 	}

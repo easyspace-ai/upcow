@@ -11,6 +11,7 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/strategies"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
@@ -65,15 +66,14 @@ type PairedTradingStrategy struct {
 	priceDown float64
 
 	// 统一：单线程 loop（价格合并 + 订单更新 + 命令结果）
-	loopOnce     sync.Once
-	loopCancel   context.CancelFunc
-	priceSignalC chan struct{}
-	priceMu      sync.Mutex
-	latestPrices map[domain.TokenType]*events.PriceChangedEvent
-	orderC       chan *domain.Order
-	cmdResultC   chan pairedTradingCmdResult
-	inFlight     int
-	maxInFlight  int
+	loopOnce        sync.Once
+	loopCancel      context.CancelFunc
+	priceSignalC    chan struct{}
+	priceMu         sync.Mutex
+	latestPrices    map[domain.TokenType]*events.PriceChangedEvent
+	orderC          chan *domain.Order
+	cmdResultC      chan pairedTradingCmdResult
+	inFlightLimiter *common.InFlightLimiter
 
 	mu             sync.RWMutex
 	isPlacingOrder bool
@@ -99,8 +99,8 @@ type TradingServiceInterface interface {
 // NewPairedTradingStrategy 创建新的成对交易策略
 func NewPairedTradingStrategy() *PairedTradingStrategy {
 	return &PairedTradingStrategy{
-		currentPhase: PhaseBuild,
-		maxInFlight:  8, // 默认允许8个并发订单
+		currentPhase:    PhaseBuild,
+		inFlightLimiter: common.NewInFlightLimiter(8), // 默认允许8个并发订单
 	}
 }
 
@@ -156,6 +156,10 @@ func (s *PairedTradingStrategy) InitializeWithConfig(ctx context.Context, config
 	s.config = pairedConfig
 	s.currentPhase = PhaseBuild
 	s.lockAchieved = false
+	if s.inFlightLimiter == nil {
+		s.inFlightLimiter = common.NewInFlightLimiter(8)
+	}
+	s.inFlightLimiter.Reset()
 
 	log.Infof("成对交易策略已初始化: 建仓阶段=%v, 锁定起始=%v, 放大起始=%v, 周期时长=%v",
 		pairedConfig.BuildDuration,
@@ -178,10 +182,7 @@ func (s *PairedTradingStrategy) OnPriceChanged(ctx context.Context, event *event
 	}
 	s.latestPrices[event.TokenType] = event
 	s.priceMu.Unlock()
-	select {
-	case s.priceSignalC <- struct{}{}:
-	default:
-	}
+	common.TrySignal(s.priceSignalC)
 	return nil
 }
 
@@ -215,7 +216,9 @@ func (s *PairedTradingStrategy) onPricesChangedInternal(ctx context.Context, upE
 	// 初始化或更新市场信息
 	if s.currentMarket == nil || s.currentMarket.Slug != event.Market.Slug {
 		// 周期切换：重置状态
-		s.inFlight = 0
+		if s.inFlightLimiter != nil {
+			s.inFlightLimiter.Reset()
+		}
 		s.currentMarket = event.Market
 		s.positionState = domain.NewArbitragePositionState(event.Market)
 		s.currentPhase = PhaseBuild
@@ -597,8 +600,8 @@ func (s *PairedTradingStrategy) placeBuyOrderSplit(ctx context.Context, market *
 
 	remaining := size
 	for remaining > 0 {
-		if s.maxInFlight > 0 && s.inFlight >= s.maxInFlight {
-			log.Warnf("成对交易策略: in-flight 订单数量已达上限（%d），暂停下单", s.maxInFlight)
+		if s.inFlightLimiter != nil && s.inFlightLimiter.AtLimit() {
+			log.Warnf("成对交易策略: in-flight 订单数量已达上限（%d），暂停下单", s.inFlightLimiter.Max())
 			return nil
 		}
 
@@ -620,7 +623,7 @@ func (s *PairedTradingStrategy) placeBuyOrderSplit(ctx context.Context, market *
 // placeBuyOrder 下买入订单
 func (s *PairedTradingStrategy) placeBuyOrder(ctx context.Context, market *domain.Market, tokenType domain.TokenType, size float64, reason string) error {
 	// 限制并发订单数量
-	if s.maxInFlight > 0 && s.inFlight >= s.maxInFlight {
+	if s.inFlightLimiter != nil && s.inFlightLimiter.AtLimit() {
 		return nil
 	}
 
@@ -650,6 +653,13 @@ func (s *PairedTradingStrategy) placeBuyOrder(ctx context.Context, market *domai
 
 	// 没有 executor 时仍保持兼容
 	if exec == nil {
+		if s.inFlightLimiter != nil && !s.inFlightLimiter.TryAcquire() {
+			return nil
+		}
+		if s.inFlightLimiter != nil {
+			defer s.inFlightLimiter.Release()
+		}
+
 		bestAskPrice, err := orderutil.QuoteBuyPrice(ctx, ts, assetID, maxCents)
 		if err != nil {
 			return fmt.Errorf("获取订单簿失败: %w", err)
@@ -658,7 +668,7 @@ func (s *PairedTradingStrategy) placeBuyOrder(ctx context.Context, market *domai
 		// 检查并调整数量以满足最小金额要求
 		adjustedSize := size
 		orderAmount := adjustedSize * bestAskPrice.ToDecimal()
-		
+
 		if orderAmount < minOrderUSDC {
 			if !s.config.AutoAdjustSize {
 				// 不自动调整，跳过订单
@@ -666,10 +676,10 @@ func (s *PairedTradingStrategy) placeBuyOrder(ctx context.Context, market *domai
 					reason, orderAmount, minOrderUSDC, size, bestAskPrice.ToDecimal())
 				return nil
 			}
-			
+
 			// 计算满足最小金额所需的数量
 			requiredSize := minOrderUSDC / bestAskPrice.ToDecimal()
-			
+
 			// 检查调整倍数
 			adjustRatio := requiredSize / size
 			if adjustRatio > s.config.MaxSizeAdjustRatio {
@@ -677,18 +687,18 @@ func (s *PairedTradingStrategy) placeBuyOrder(ctx context.Context, market *domai
 					reason, adjustRatio, s.config.MaxSizeAdjustRatio, size, requiredSize, bestAskPrice.ToDecimal())
 				return nil
 			}
-			
+
 			adjustedSize = requiredSize
 			newOrderAmount := adjustedSize * bestAskPrice.ToDecimal()
-			
+
 			log.Infof("成对交易策略: %s - ⚠️ 自动调整数量以满足最小金额：%.2f → %.2f shares (%.2fx), 原金额=%.4f → 新金额=%.4f USDC (价格=%.4f)",
 				reason, size, adjustedSize, adjustRatio, orderAmount, newOrderAmount, bestAskPrice.ToDecimal())
-			
+
 			// 二次检查：如果调整后仍然不满足（由于浮点精度），再加一点
 			if newOrderAmount < minOrderUSDC {
 				adjustedSize = adjustedSize * 1.01 // 增加1%确保满足
 				finalAmount := adjustedSize * bestAskPrice.ToDecimal()
-				log.Debugf("成对交易策略: %s - 二次调整数量到 %.2f shares (金额=%.4f USDC) 以确保满足最小金额", 
+				log.Debugf("成对交易策略: %s - 二次调整数量到 %.2f shares (金额=%.4f USDC) 以确保满足最小金额",
 					reason, adjustedSize, finalAmount)
 			}
 		}
@@ -699,7 +709,9 @@ func (s *PairedTradingStrategy) placeBuyOrder(ctx context.Context, market *domai
 	}
 
 	s.initLoopIfNeeded()
-	s.inFlight++
+	if s.inFlightLimiter != nil && !s.inFlightLimiter.TryAcquire() {
+		return nil
+	}
 	ok := exec.Submit(bbgo.Command{
 		Name:    fmt.Sprintf("paired_trading_buy_%s_%s", tokenType, reason),
 		Timeout: 25 * time.Second,
@@ -716,7 +728,7 @@ func (s *PairedTradingStrategy) placeBuyOrder(ctx context.Context, market *domai
 			// 检查并调整数量以满足最小金额要求
 			adjustedSize := size
 			orderAmount := adjustedSize * bestAskPrice.ToDecimal()
-			
+
 			if orderAmount < minOrderUSDC {
 				if !s.config.AutoAdjustSize {
 					// 不自动调整，跳过订单
@@ -726,10 +738,10 @@ func (s *PairedTradingStrategy) placeBuyOrder(ctx context.Context, market *domai
 					}
 					return
 				}
-				
+
 				// 计算满足最小金额所需的数量
 				requiredSize := minOrderUSDC / bestAskPrice.ToDecimal()
-				
+
 				// 检查调整倍数
 				adjustRatio := requiredSize / size
 				if adjustRatio > s.config.MaxSizeAdjustRatio {
@@ -741,18 +753,18 @@ func (s *PairedTradingStrategy) placeBuyOrder(ctx context.Context, market *domai
 					}
 					return
 				}
-				
+
 				adjustedSize = requiredSize
 				newOrderAmount := adjustedSize * bestAskPrice.ToDecimal()
-				
+
 				log.Infof("成对交易策略: %s - ⚠️ 自动调整数量以满足最小金额：%.2f → %.2f shares (%.2fx), 原金额=%.4f → 新金额=%.4f USDC (价格=%.4f)",
 					reason, size, adjustedSize, adjustRatio, orderAmount, newOrderAmount, bestAskPrice.ToDecimal())
-				
+
 				// 二次检查：如果调整后仍然不满足（由于浮点精度），再加一点
 				if newOrderAmount < minOrderUSDC {
 					adjustedSize = adjustedSize * 1.01
 					finalAmount := adjustedSize * bestAskPrice.ToDecimal()
-					log.Debugf("成对交易策略: %s - 二次调整数量到 %.2f shares (金额=%.4f USDC) 以确保满足最小金额", 
+					log.Debugf("成对交易策略: %s - 二次调整数量到 %.2f shares (金额=%.4f USDC) 以确保满足最小金额",
 						reason, adjustedSize, finalAmount)
 				}
 			}
@@ -772,8 +784,8 @@ func (s *PairedTradingStrategy) placeBuyOrder(ctx context.Context, market *domai
 	})
 
 	if !ok {
-		if s.inFlight > 0 {
-			s.inFlight--
+		if s.inFlightLimiter != nil {
+			s.inFlightLimiter.Release()
 		}
 		return fmt.Errorf("执行器队列已满，无法提交订单")
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/strategies"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/pkg/bbgo"
 )
@@ -45,17 +46,17 @@ type orderUpdate struct {
 type cmdKind string
 
 const (
-	cmdPlaceYes cmdKind = "place_yes"
-	cmdPlaceNo  cmdKind = "place_no"
+	cmdPlaceYes   cmdKind = "place_yes"
+	cmdPlaceNo    cmdKind = "place_no"
 	cmdSupplement cmdKind = "supplement"
-	cmdCancel   cmdKind = "cancel"
-	cmdFlatten  cmdKind = "flatten"
+	cmdCancel     cmdKind = "cancel"
+	cmdFlatten    cmdKind = "flatten"
 )
 
 type cmdResult struct {
 	kind    cmdKind
 	planID  string
-	order   *domain.Order   // template
+	order   *domain.Order // template
 	created *domain.Order
 	err     error
 }
@@ -228,10 +229,7 @@ func (s *PairLockStrategy) OnPriceChanged(ctx context.Context, ev *events.PriceC
 	s.priceMu.Lock()
 	s.latestPrice[key] = &priceEvent{ctx: ctx, event: ev}
 	s.priceMu.Unlock()
-	select {
-	case s.priceSignalC <- struct{}{}:
-	default:
-	}
+	common.TrySignal(s.priceSignalC)
 	return nil
 }
 
@@ -914,4 +912,3 @@ func (s *PairLockStrategy) estimateLockedProfit() float64 {
 func almostEqual(a, b float64) bool {
 	return math.Abs(a-b) <= 1e-6
 }
-

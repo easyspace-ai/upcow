@@ -6,16 +6,21 @@ import (
 
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
+	"github.com/betbot/gobet/internal/strategies/common"
 )
 
 // startLoop 启动策略内部单线程事件循环（只启动一次）
 func (s *PairedTradingStrategy) startLoop(ctx context.Context) {
-	s.loopOnce.Do(func() {
-		loopCtx, cancel := context.WithCancel(ctx)
-		s.loopCancel = cancel
-		s.initLoopIfNeeded()
-		go s.runLoop(loopCtx)
-	})
+	common.StartLoopOnce(
+		ctx,
+		&s.loopOnce,
+		func(cancel context.CancelFunc) { s.loopCancel = cancel },
+		100*time.Millisecond,
+		func(loopCtx context.Context, tickC <-chan time.Time) {
+			s.initLoopIfNeeded()
+			s.runLoop(loopCtx, tickC)
+		},
+	)
 }
 
 // stopLoop 停止事件循环
@@ -42,12 +47,9 @@ func (s *PairedTradingStrategy) initLoopIfNeeded() {
 }
 
 // runLoop 单线程事件循环
-func (s *PairedTradingStrategy) runLoop(ctx context.Context) {
+func (s *PairedTradingStrategy) runLoop(ctx context.Context, tickC <-chan time.Time) {
 	log.Infof("成对交易策略: 事件循环已启动")
 	defer log.Infof("成对交易策略: 事件循环已停止")
-
-	ticker := time.NewTicker(100 * time.Millisecond) // 定期检查状态
-	defer ticker.Stop()
 
 	for {
 		select {
@@ -73,8 +75,8 @@ func (s *PairedTradingStrategy) runLoop(ctx context.Context) {
 
 		case result := <-s.cmdResultC:
 			// 命令执行结果
-			if s.inFlight > 0 {
-				s.inFlight--
+			if s.inFlightLimiter != nil {
+				s.inFlightLimiter.Release()
 			}
 
 			if result.err != nil {
@@ -87,7 +89,7 @@ func (s *PairedTradingStrategy) runLoop(ctx context.Context) {
 					result.created.Size, result.created.Price.ToDecimal())
 			}
 
-		case <-ticker.C:
+		case <-tickC:
 			// 定期检查（可用于日志输出等）
 			// 暂时不需要额外处理
 		}
