@@ -10,7 +10,6 @@ import (
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
-	"github.com/betbot/gobet/internal/strategies"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 	strategyports "github.com/betbot/gobet/internal/strategies/ports"
@@ -87,19 +86,17 @@ func (s *MomentumStrategy) Validate() error {
 
 func (s *MomentumStrategy) Initialize() error {
 	s.config = &s.MomentumStrategyConfig
-	return nil
-}
-
-// InitializeWithConfig 已废弃：旧的“适配器注入配置”路径。
-// 为了兼容历史调用点，保留空实现（新 loader 不会走到这里）。
-func (s *MomentumStrategy) InitializeWithConfig(_ context.Context, _ strategies.StrategyConfig) error {
-	s.config = &s.MomentumStrategyConfig
+	if err := s.MomentumStrategyConfig.Validate(); err != nil {
+		return err
+	}
 	if s.tradeCooldown == nil {
 		s.tradeCooldown = common.NewDebouncer(time.Duration(s.CooldownSecs) * time.Second)
 	} else {
 		s.tradeCooldown.SetInterval(time.Duration(s.CooldownSecs) * time.Second)
 		s.tradeCooldown.Reset()
 	}
+	log.Infof("动量策略初始化: asset=%s size=$%.2f threshold=%dbps window=%ds edge=%dc cooldown=%ds polygon=%v",
+		s.Asset, s.SizeUSDC, s.ThresholdBps, s.WindowSecs, s.MinEdgeCents, s.CooldownSecs, s.UsePolygonFeed)
 	return nil
 }
 

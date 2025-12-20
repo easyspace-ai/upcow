@@ -10,7 +10,6 @@ import (
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
-	"github.com/betbot/gobet/internal/strategies"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 	strategyports "github.com/betbot/gobet/internal/strategies/ports"
@@ -92,23 +91,10 @@ func (s *ArbitrageStrategy) Validate() error {
 // Initialize 初始化策略（BBGO风格）
 func (s *ArbitrageStrategy) Initialize() error {
 	s.config = &s.ArbitrageStrategyConfig
-	return nil
-}
-
-// InitializeWithConfig 初始化策略（兼容旧接口）
-func (s *ArbitrageStrategy) InitializeWithConfig(ctx context.Context, config strategies.StrategyConfig) error {
-	arbitrageConfig, ok := config.(*ArbitrageStrategyConfig)
-	if !ok {
-		return fmt.Errorf("无效的配置类型")
-	}
-
-	if err := arbitrageConfig.Validate(); err != nil {
+	if err := s.ArbitrageStrategyConfig.Validate(); err != nil {
 		return fmt.Errorf("配置验证失败: %w", err)
 	}
 
-	// 旧路径：仍允许从适配器注入；新 bbgo main 路径会直接把配置反序列化到 struct。
-	s.config = arbitrageConfig
-	s.ArbitrageStrategyConfig = *arbitrageConfig
 	if s.maxInFlight <= 0 {
 		// 参考 CSV：单秒可出现 10-30 笔成交，策略侧至少要允许小并发，避免“只能一笔一笔慢慢下”
 		s.maxInFlight = 8
@@ -121,11 +107,10 @@ func (s *ArbitrageStrategy) InitializeWithConfig(ctx context.Context, config str
 	s.inFlightLimiter.Reset()
 
 	logger.Infof("套利策略已初始化: 周期时长=%v, 锁盈起始=%v, UP目标=%v, DOWN目标=%v",
-		arbitrageConfig.CycleDuration.Duration,
-		arbitrageConfig.LockStart.Duration,
-		arbitrageConfig.TargetUpBase,
-		arbitrageConfig.TargetDownBase)
-
+		s.CycleDuration.Duration,
+		s.LockStart.Duration,
+		s.TargetUpBase,
+		s.TargetDownBase)
 	return nil
 }
 

@@ -10,7 +10,6 @@ import (
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
-	"github.com/betbot/gobet/internal/strategies"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 	strategyports "github.com/betbot/gobet/internal/strategies/ports"
@@ -129,22 +128,10 @@ func (s *PairedTradingStrategy) Validate() error {
 // Initialize 初始化策略（BBGO风格）
 func (s *PairedTradingStrategy) Initialize() error {
 	s.config = &s.PairedTradingConfig
-	return nil
-}
-
-// InitializeWithConfig 初始化策略（兼容旧接口）
-func (s *PairedTradingStrategy) InitializeWithConfig(ctx context.Context, config strategies.StrategyConfig) error {
-	pairedConfig, ok := config.(*PairedTradingConfig)
-	if !ok {
-		return fmt.Errorf("无效的配置类型")
-	}
-
-	if err := pairedConfig.Validate(); err != nil {
+	if err := s.PairedTradingConfig.Validate(); err != nil {
 		return fmt.Errorf("配置验证失败: %w", err)
 	}
 
-	s.config = pairedConfig
-	s.PairedTradingConfig = *pairedConfig
 	s.currentPhase = PhaseBuild
 	s.lockAchieved = false
 	if s.inFlightLimiter == nil {
@@ -153,11 +140,10 @@ func (s *PairedTradingStrategy) InitializeWithConfig(ctx context.Context, config
 	s.inFlightLimiter.Reset()
 
 	log.Infof("成对交易策略已初始化: 建仓阶段=%v, 锁定起始=%v, 放大起始=%v, 周期时长=%v",
-		pairedConfig.BuildDuration.Duration,
-		pairedConfig.LockStart.Duration,
-		pairedConfig.AmplifyStart.Duration,
-		pairedConfig.CycleDuration.Duration)
-
+		s.BuildDuration.Duration,
+		s.LockStart.Duration,
+		s.AmplifyStart.Duration,
+		s.CycleDuration.Duration)
 	return nil
 }
 

@@ -2,7 +2,6 @@ package updown
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -59,15 +58,9 @@ func (s *Strategy) Validate() error {
 	return cfg.Validate()
 }
 
-// InitializeWithConfig is used by StrategyLoader to inject the adapted config.
-func (s *Strategy) InitializeWithConfig(_ context.Context, cfg interface{}) error {
-	c, ok := cfg.(*Config)
-	if !ok {
-		return fmt.Errorf("无效配置类型: %T", cfg)
-	}
+func (s *Strategy) Initialize() error {
 	s.mu.Lock()
-	s.config = c
-	s.Config = *c
+	s.config = &s.Config
 	if s.inFlight == nil {
 		s.inFlight = strategycommon.NewInFlightLimiter(4)
 	}

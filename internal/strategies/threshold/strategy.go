@@ -9,7 +9,6 @@ import (
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
-	"github.com/betbot/gobet/internal/strategies"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 	strategyports "github.com/betbot/gobet/internal/strategies/ports"
@@ -93,31 +92,16 @@ func (s *ThresholdStrategy) Validate() error {
 // Initialize 初始化策略（BBGO风格）
 func (s *ThresholdStrategy) Initialize() error {
 	s.config = &s.ThresholdStrategyConfig
-	return nil
-}
-
-// InitializeWithConfig 初始化策略（兼容旧接口）
-func (s *ThresholdStrategy) InitializeWithConfig(ctx context.Context, config strategies.StrategyConfig) error {
-	thresholdConfig, ok := config.(*ThresholdStrategyConfig)
-	if !ok {
-		return fmt.Errorf("无效的配置类型")
-	}
-
-	if err := thresholdConfig.Validate(); err != nil {
+	if err := s.ThresholdStrategyConfig.Validate(); err != nil {
 		return fmt.Errorf("配置验证失败: %w", err)
 	}
-
-	s.config = thresholdConfig
-	s.ThresholdStrategyConfig = *thresholdConfig
-
 	log.Infof("价格阈值策略已初始化: 买入阈值=%.4f, 卖出阈值=%.4f, 订单大小=%.2f, Token类型=%s, 止盈=%dc, 止损=%dc",
-		thresholdConfig.BuyThreshold,
-		thresholdConfig.SellThreshold,
-		thresholdConfig.OrderSize,
-		thresholdConfig.TokenType,
-		thresholdConfig.ProfitTargetCents,
-		thresholdConfig.StopLossCents)
-
+		s.BuyThreshold,
+		s.SellThreshold,
+		s.OrderSize,
+		s.TokenType,
+		s.ProfitTargetCents,
+		s.StopLossCents)
 	return nil
 }
 
