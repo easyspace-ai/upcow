@@ -106,12 +106,6 @@ func loadUserJSON() (*UserJSON, error) {
 	// 尝试多个可能的路径（相对于当前工作目录）
 	possiblePaths := []string{
 		"data/user.json",
-		"../data/user.json",
-		"../../data/user.json",
-		"../../../data/user.json",
-		"user.json",
-		"../user.json",
-		"../../user.json",
 	}
 
 	for _, path := range possiblePaths {

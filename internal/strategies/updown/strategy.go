@@ -2,7 +2,6 @@ package updown
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -59,6 +58,7 @@ func (s *Strategy) Validate() error {
 	return cfg.Validate()
 }
 
+// Initialize is called by Trader.Initialize (bbgo 风格)。
 func (s *Strategy) Initialize() error {
 	s.mu.Lock()
 	s.config = &s.Config
@@ -127,7 +127,6 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if e == nil || e.Market == nil {
 		return nil
 	}
-	fmt.Println("====", e.OldPrice, e.NewPrice)
 	s.startLoop(ctx)
 	strategycommon.TrySignal(s.signalC)
 	return nil
@@ -163,7 +162,7 @@ func (s *Strategy) tryDoOnce(ctx context.Context) {
 	ts := s.tradingService
 	s.mu.RUnlock()
 
-	if cfg == nil || !cfg.Enabled || market == nil || ts == nil {
+	if cfg == nil || market == nil || ts == nil {
 		return
 	}
 

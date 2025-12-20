@@ -99,3 +99,24 @@ func (h *HandlerList) Count() int {
 	return len(h.handlers)
 }
 
+// Remove 移除处理器（通过比较指针地址）
+func (h *HandlerList) Remove(handler PriceChangeHandler) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i, hdl := range h.handlers {
+		if hdl == handler {
+			// 移除第 i 个元素
+			h.handlers = append(h.handlers[:i], h.handlers[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// Clear 清空所有处理器
+func (h *HandlerList) Clear() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.handlers = make([]PriceChangeHandler, 0)
+}
+

@@ -70,10 +70,31 @@ func (os *OrderSyncService) startOrderStatusSyncImpl(ctx context.Context) {
 func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 	s := os.s
 	metrics.ReconcileRuns.Add(1)
+	
+	// 获取当前市场（只同步当前周期的订单）
+	currentMarketSlug := s.GetCurrentMarket()
+	
 	// 通过 OrderEngine 获取活跃订单
 	openOrders := s.GetActiveOrders()
-	orderIDs := make([]string, 0, len(openOrders))
+	
+	// 过滤：只处理当前周期的订单
+	filteredOrders := make([]*domain.Order, 0, len(openOrders))
 	for _, order := range openOrders {
+		if order == nil {
+			continue
+		}
+		// 如果设置了当前市场，只处理当前周期的订单
+		if currentMarketSlug != "" {
+			if order.MarketSlug == "" || order.MarketSlug != currentMarketSlug {
+				// 跳过非当前周期的订单（不记录日志，避免噪音）
+				continue
+			}
+		}
+		filteredOrders = append(filteredOrders, order)
+	}
+	
+	orderIDs := make([]string, 0, len(filteredOrders))
+	for _, order := range filteredOrders {
 		orderIDs = append(orderIDs, order.OrderID)
 	}
 
@@ -118,10 +139,9 @@ func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 	}
 
 	// 检查本地订单是否还在开放订单列表中
-	// 通过 OrderEngine 获取当前活跃订单
-	localOrders := s.GetActiveOrders()
+	// 使用过滤后的订单列表（只包含当前周期的订单）
 	localOrdersMap := make(map[string]*domain.Order)
-	for _, order := range localOrders {
+	for _, order := range filteredOrders {
 		localOrdersMap[order.OrderID] = order
 	}
 

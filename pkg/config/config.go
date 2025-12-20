@@ -135,6 +135,7 @@ type Config struct {
 	LogByCycle                           bool           // 是否按周期命名日志文件
 	DirectModeDebounce                   int            // 直接回调模式的防抖间隔（毫秒），默认100ms（BBGO风格：只支持直接模式）
 	MinOrderSize                         float64        // 全局最小下单金额（USDC），默认 1.1（交易所要求 >= 1）
+	MinShareSize                         float64        // 限价单最小 share 数量，默认 5.0（仅限价单 GTC 时应用）
 	OrderStatusCheckTimeout              int            // 订单状态检查超时时间（秒），如果WebSocket在此时长内没有更新，则启用API轮询，默认3秒
 	OrderStatusCheckInterval             int            // 订单状态API轮询间隔（秒），默认3秒
 	OrderStatusSyncIntervalWithOrders    int            // 有活跃订单时的订单状态同步间隔（秒），默认3秒（官方API限流：150请求/10秒，理论上可支持1秒，但建议3秒以上）
@@ -172,6 +173,7 @@ type ConfigFile struct {
 	LogByCycle                           bool   `yaml:"log_by_cycle" json:"log_by_cycle"`
 	DirectModeDebounce                   int    `yaml:"direct_mode_debounce" json:"direct_mode_debounce"`                                           // 直接回调模式的防抖间隔（毫秒），默认100ms（BBGO风格：只支持直接模式）
 	MinOrderSize                         float64 `yaml:"minOrderSize" json:"minOrderSize"`
+	MinShareSize                         float64 `yaml:"minShareSize" json:"minShareSize"`                                                         // 限价单最小 share 数量（仅限价单 GTC 时应用）
 	OrderStatusCheckTimeout              int    `yaml:"order_status_check_timeout" json:"order_status_check_timeout"`                               // WebSocket超时时间（秒），默认3秒
 	OrderStatusCheckInterval             int    `yaml:"order_status_check_interval" json:"order_status_check_interval"`                             // API轮询间隔（秒），默认3秒
 	OrderStatusSyncIntervalWithOrders    int    `yaml:"order_status_sync_interval_with_orders" json:"order_status_sync_interval_with_orders"`       // 有活跃订单时的同步间隔（秒），默认3秒
@@ -272,6 +274,18 @@ func LoadFromFile(filePath string) (*Config, error) {
 				}
 			}
 			return 1.1
+		}(),
+		MinShareSize: func() float64 {
+			// 优先级：config file > env > 默认 5.0
+			if configFile != nil && configFile.MinShareSize > 0 {
+				return configFile.MinShareSize
+			}
+			if envVal := getEnv("MIN_SHARE_SIZE", ""); envVal != "" {
+				if v, err := strconv.ParseFloat(envVal, 64); err == nil && v > 0 {
+					return v
+				}
+			}
+			return 5.0 // 默认 5.0 shares（Polymarket 限价单要求）
 		}(),
 		OrderStatusCheckTimeout: func() int {
 			if configFile != nil && configFile.OrderStatusCheckTimeout > 0 {

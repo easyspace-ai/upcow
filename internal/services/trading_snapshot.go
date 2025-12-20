@@ -39,6 +39,9 @@ func (ss *SnapshotService) loadSnapshot() {
 	}
 	metrics.SnapshotLoads.Add(1)
 
+	// 获取当前市场（只恢复当前周期的订单）
+	currentMarketSlug := s.GetCurrentMarket()
+
 	// 恢复余额/订单/仓位（快速热启动），后续会由对账循环纠偏
 	if snap.Balance > 0 {
 		s.orderEngine.SubmitCommand(&UpdateBalanceCommand{
@@ -48,14 +51,30 @@ func (ss *SnapshotService) loadSnapshot() {
 		})
 	}
 
+	// 只恢复当前周期的订单
+	restoredCount := 0
+	skippedCount := 0
 	for _, o := range snap.OpenOrders {
 		if o == nil || o.OrderID == "" {
 			continue
+		}
+		// 如果设置了当前市场，只恢复当前周期的订单
+		if currentMarketSlug != "" {
+			if o.MarketSlug == "" || o.MarketSlug != currentMarketSlug {
+				skippedCount++
+				log.Debugf("🔄 [快照恢复] 跳过非当前周期的订单: orderID=%s, marketSlug=%s, 当前周期=%s",
+					o.OrderID, o.MarketSlug, currentMarketSlug)
+				continue
+			}
 		}
 		s.orderEngine.SubmitCommand(&UpdateOrderCommand{
 			id:    fmt.Sprintf("restore_order_%s", o.OrderID),
 			Order: o,
 		})
+		restoredCount++
+	}
+	if restoredCount > 0 || skippedCount > 0 {
+		log.Infof("🔄 [快照恢复] 恢复订单: 当前周期=%d, 跳过旧周期=%d", restoredCount, skippedCount)
 	}
 
 	for _, p := range snap.Positions {
@@ -125,6 +144,10 @@ func (ss *SnapshotService) bootstrapOpenOrdersFromExchange(ctx context.Context) 
 	if s.dryRun {
 		return
 	}
+	
+	// 获取当前市场（只恢复当前周期的订单）
+	currentMarketSlug := s.GetCurrentMarket()
+	
 	openOrdersResp, err := s.clobClient.GetOpenOrders(ctx, nil)
 	if err != nil {
 		log.Warnf("🔄 [重启恢复] 获取 open orders 失败: %v", err)
@@ -133,16 +156,33 @@ func (ss *SnapshotService) bootstrapOpenOrdersFromExchange(ctx context.Context) 
 	if len(openOrdersResp) == 0 {
 		return
 	}
-	log.Infof("🔄 [重启恢复] 交易所 open orders=%d，开始注入 OrderEngine", len(openOrdersResp))
+	
+	// 只恢复当前周期的订单
+	restoredCount := 0
+	skippedCount := 0
+	log.Infof("🔄 [重启恢复] 交易所 open orders=%d，开始注入 OrderEngine（当前周期=%s）", len(openOrdersResp), currentMarketSlug)
 	for _, oo := range openOrdersResp {
 		o := openOrderToDomain(oo)
 		if o == nil || o.OrderID == "" {
 			continue
 		}
+		// 如果设置了当前市场，只恢复当前周期的订单
+		if currentMarketSlug != "" {
+			if o.MarketSlug == "" || o.MarketSlug != currentMarketSlug {
+				skippedCount++
+				log.Debugf("🔄 [重启恢复] 跳过非当前周期的订单: orderID=%s, marketSlug=%s, 当前周期=%s",
+					o.OrderID, o.MarketSlug, currentMarketSlug)
+				continue
+			}
+		}
 		s.orderEngine.SubmitCommand(&UpdateOrderCommand{
 			id:    fmt.Sprintf("bootstrap_open_%s", o.OrderID),
 			Order: o,
 		})
+		restoredCount++
+	}
+	if restoredCount > 0 || skippedCount > 0 {
+		log.Infof("🔄 [重启恢复] 恢复订单: 当前周期=%d, 跳过旧周期=%d", restoredCount, skippedCount)
 	}
 }
 

@@ -541,6 +541,10 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 		marketLog.Debugf("解析 book 价格失败: source=%s value=%s err=%v", source, priceStr, err)
 		return
 	}
+	
+	// 调试日志：记录原始价格字符串和解析结果
+	marketLog.Debugf("💰 [book价格解析] source=%s, priceStr=%s → %dc (decimal=%.4f)", 
+		source, priceStr, newPrice.Cents, newPrice.ToDecimal())
 
 	var tokenType domain.TokenType
 	if bm.AssetID == m.market.YesAssetID {
@@ -551,6 +555,14 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 		return
 	}
 
+	// 检查是否已关闭（避免处理关闭后的延迟消息）
+	select {
+	case <-m.closeC:
+		marketLog.Debugf("⚠️ [book->price] MarketStream 已关闭，忽略价格事件: Token=%s, 价格=%dc", tokenType, newPrice.Cents)
+		return
+	default:
+	}
+	
 	event := &events.PriceChangedEvent{
 		Market:    m.market,
 		TokenType: tokenType,
@@ -564,6 +576,22 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 
 // handlePriceChange 处理价格变化（直接回调，不使用事件总线）
 func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]interface{}) {
+	// 检查是否已关闭（避免处理关闭后的延迟消息）
+	select {
+	case <-m.closeC:
+		marketLog.Debugf("⚠️ [价格处理] MarketStream 已关闭，忽略价格变化消息")
+		return
+	default:
+	}
+	
+	// 检查 context 是否已取消
+	select {
+	case <-ctx.Done():
+		marketLog.Debugf("⚠️ [价格处理] Context 已取消，忽略价格变化消息")
+		return
+	default:
+	}
+	
 	priceChanges, ok := msg["price_changes"].([]interface{})
 	if !ok {
 		marketLog.Debugf("⚠️ [价格处理] 价格变化消息中没有 price_changes 字段")
@@ -573,10 +601,21 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 	// 检查 handlers 数量
 	handlerCount := m.handlers.Count()
 	if handlerCount == 0 {
-		marketLog.Warnf("⚠️ [价格处理] MarketStream.handlers 为空，价格更新将被丢弃！市场=%s", m.market.Slug)
-	} else {
-		marketLog.Debugf("📊 [价格处理] 收到价格变化消息，handlers 数量=%d，市场=%s", handlerCount, m.market.Slug)
+		marketLog.Debugf("⚠️ [价格处理] MarketStream.handlers 为空，价格更新将被丢弃！市场=%s", m.market.Slug)
+		return
 	}
+	
+	// 检查当前市场是否匹配（防止处理旧周期的消息）
+	currentMarketSlug := ""
+	if m.market != nil {
+		currentMarketSlug = m.market.Slug
+	}
+	if currentMarketSlug == "" {
+		marketLog.Debugf("⚠️ [价格处理] MarketStream.market 为空，忽略价格变化消息")
+		return
+	}
+	
+	marketLog.Debugf("📊 [价格处理] 收到价格变化消息，handlers 数量=%d，市场=%s", handlerCount, currentMarketSlug)
 
 	latestPrices := make(map[string]struct {
 		price  domain.Price
@@ -614,8 +653,17 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 		// 解析价格
 		newPrice, err := parsePriceString(priceStr)
 		if err != nil {
+			marketLog.Debugf("⚠️ [价格解析] 解析失败: source=%s, priceStr=%s, err=%v", priceSource, priceStr, err)
 			continue
 		}
+		
+		// 调试日志：记录原始价格字符串和解析结果（INFO 级别，方便排查）
+		marketSlug := ""
+		if m.market != nil {
+			marketSlug = m.market.Slug
+		}
+		marketLog.Infof("💰 [价格解析] 市场=%s, assetID=%s, source=%s, 原始字符串=%s → 解析结果=%dc (小数=%.4f)", 
+			marketSlug, assetID[:12]+"...", priceSource, priceStr, newPrice.Cents, newPrice.ToDecimal())
 
 		latestPrices[assetID] = struct {
 			price  domain.Price
@@ -634,6 +682,15 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 			continue
 		}
 
+		// 再次检查是否已关闭（双重保险）
+		select {
+		case <-m.closeC:
+			marketLog.Debugf("⚠️ [价格事件] MarketStream 已关闭，忽略价格事件: 市场=%s, Token=%s, 价格=%dc",
+				currentMarketSlug, tokenType, latest.price.Cents)
+			continue
+		default:
+		}
+		
 		event := &events.PriceChangedEvent{
 			Market:    m.market,
 			TokenType: tokenType,
@@ -641,11 +698,11 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 			NewPrice:  latest.price,
 			Timestamp: time.Now(),
 		}
-
+		
 		// 直接触发回调（不使用事件总线）
 		// 注意：这里使用 handlerCount（在函数开头定义）
-		marketLog.Debugf("📤 [价格处理] 触发价格变化回调: %s @ %dc (handlers=%d, 市场=%s)",
-			tokenType, latest.price.Cents, handlerCount, m.market.Slug)
+		marketLog.Infof("📤 [价格事件] 触发价格变化回调: 市场=%s, Token=%s, 价格=%dc (handlers=%d)",
+			currentMarketSlug, tokenType, latest.price.Cents, handlerCount)
 		m.handlers.Emit(ctx, event)
 	}
 }
@@ -660,6 +717,14 @@ func (m *MarketStream) Close() error {
 	default:
 		close(m.closeC)
 	}
+
+	// 清空所有 handlers（取消上一周期的订阅）
+	m.handlers.Clear()
+	marketSlug := ""
+	if m.market != nil {
+		marketSlug = m.market.Slug
+	}
+	marketLog.Infof("🔄 [关闭] MarketStream 已清空所有 handlers，市场=%s", marketSlug)
 
 	m.connMu.Lock()
 	if m.connCancel != nil {

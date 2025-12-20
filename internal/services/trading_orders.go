@@ -129,16 +129,22 @@ func (o *OrdersService) adjustOrderSize(order *domain.Order) *domain.Order {
 		minOrderSize = 1.1 // 默认值
 	}
 
-	// Polymarket 要求最小 share 数量为 5
-	const minShareSize = 5.0
+	// 限价单最小 share 数量（仅限价单 GTC 时应用）
+	minShareSize := s.minShareSize
+	if minShareSize <= 0 {
+		minShareSize = 5.0 // 默认值
+	}
 
-	// 卖单（SELL）不能为了满足“最小金额/最小 shares”而自动放大：
+	// 判断是否为限价单（GTC）
+	isLimitOrder := adjustedOrder.OrderType == types.OrderTypeGTC
+
+	// 卖单（SELL）不能为了满足"最小金额/最小 shares"而自动放大：
 	// - 放大卖单很容易超过实际持仓 shares
 	// - 交易所返回的 "not enough balance / allowance" 会误导为 USDC/授权问题
 	// 因此：SELL 只记录提示，不做任何向上调整。
 	if adjustedOrder.Side == types.SideSell {
-		if adjustedOrder.Size < minShareSize {
-			log.Warnf("⚠️ 卖单 share 数量 %.4f 小于最小值 %.0f；为避免超过持仓，本系统不会自动放大卖单，交易所可能拒单",
+		if isLimitOrder && adjustedOrder.Size < minShareSize {
+			log.Warnf("⚠️ 限价卖单 share 数量 %.4f 小于最小值 %.0f；为避免超过持仓，本系统不会自动放大卖单，交易所可能拒单",
 				adjustedOrder.Size, minShareSize)
 		}
 		if requiredAmount < minOrderSize {
@@ -153,11 +159,11 @@ func (o *OrdersService) adjustOrderSize(order *domain.Order) *domain.Order {
 	originalAmount := requiredAmount
 	adjusted := false
 
-	// 1. 首先检查 share 数量是否满足最小值
-	if adjustedOrder.Size < minShareSize {
+	// 1. 首先检查 share 数量是否满足最小值（仅限价单 GTC）
+	if isLimitOrder && adjustedOrder.Size < minShareSize {
 		adjustedOrder.Size = minShareSize
 		adjusted = true
-		log.Infof("⚠️ 订单 share 数量 %.4f 小于最小值 %.0f，自动调整: %.4f → %.4f shares",
+		log.Infof("⚠️ 限价单 share 数量 %.4f 小于最小值 %.0f，自动调整: %.4f → %.4f shares",
 			originalSize, minShareSize, originalSize, adjustedOrder.Size)
 	}
 
@@ -168,8 +174,8 @@ func (o *OrdersService) adjustOrderSize(order *domain.Order) *domain.Order {
 	if requiredAmount < minOrderSize {
 		// 订单金额小于最小要求，自动调整 order.Size
 		adjustedOrder.Size = minOrderSize / adjustedOrder.Price.ToDecimal()
-		// 确保调整后的数量不小于最小 share 数量
-		if adjustedOrder.Size < minShareSize {
+		// 确保调整后的数量不小于最小 share 数量（仅限价单 GTC）
+		if isLimitOrder && adjustedOrder.Size < minShareSize {
 			adjustedOrder.Size = minShareSize
 		}
 		adjusted = true

@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -45,6 +46,7 @@ type TradingService struct {
 	signatureType types.SignatureType
 	dryRun        bool
 	minOrderSize  float64
+	minShareSize  float64 // 限价单最小 share 数量（仅限价单 GTC 时应用）
 
 	// 上下文
 	ctx    context.Context
@@ -64,6 +66,10 @@ type TradingService struct {
 	// 重启恢复/快照
 	persistence   persistence.Service
 	persistenceID string
+
+	// 当前市场（用于过滤订单状态同步）
+	currentMarketSlug string
+	currentMarketMu   sync.RWMutex
 }
 
 // NewTradingService 创建新的交易服务（使用 OrderEngine）
@@ -86,6 +92,7 @@ func NewTradingService(clobClient *client.Client, dryRun bool) *TradingService {
 		signatureType:                        types.SignatureTypeBrowser,
 		dryRun:                               dryRun,
 		minOrderSize:                         minOrderSize,
+		minShareSize:                         5.0, // 默认 5.0 shares（Polymarket 限价单要求）
 		ctx:                                  ctx,
 		cancel:                               cancel,
 		orderStatusCache:                     cache.NewOrderStatusCache(),
@@ -112,6 +119,21 @@ func NewTradingService(clobClient *client.Client, dryRun bool) *TradingService {
 	}
 
 	return service
+}
+
+// SetCurrentMarket 设置当前市场（用于过滤订单状态同步）
+func (s *TradingService) SetCurrentMarket(marketSlug string) {
+	s.currentMarketMu.Lock()
+	defer s.currentMarketMu.Unlock()
+	s.currentMarketSlug = marketSlug
+	log.Infof("✅ [周期切换] 已设置当前市场: %s", marketSlug)
+}
+
+// GetCurrentMarket 获取当前市场
+func (s *TradingService) GetCurrentMarket() string {
+	s.currentMarketMu.RLock()
+	defer s.currentMarketMu.RUnlock()
+	return s.currentMarketSlug
 }
 
 // SetOrderStatusSyncConfig 设置订单状态同步配置（无锁版本）
@@ -151,12 +173,18 @@ func (s *TradingService) Start(ctx context.Context) error {
 	go s.orderEngine.Run(s.ctx)
 
 	// 重启恢复：先加载快照（热启动），后续再用交易所 open orders 对账纠偏
+	// 注意：需要在设置当前市场之后才能恢复订单（否则会恢复所有旧周期的订单）
+	// 因此快照恢复会在周期切换回调中或启动后延迟执行
 	if s.snapshots != nil {
-		s.snapshots.loadSnapshot()
+		// 延迟执行，等待当前市场设置完成
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			s.snapshots.loadSnapshot()
+		}()
 	}
 	go func() {
-		// 等待 OrderEngine 就绪
-		time.Sleep(200 * time.Millisecond)
+		// 等待 OrderEngine 就绪和当前市场设置完成
+		time.Sleep(500 * time.Millisecond)
 		if s.snapshots != nil {
 			s.snapshots.bootstrapOpenOrdersFromExchange(s.ctx)
 		}
@@ -222,6 +250,15 @@ func (s *TradingService) SetMinOrderSize(minOrderSize float64) {
 	// 更新 OrderEngine 的最小订单金额
 	s.orderEngine.MinOrderSize = minOrderSize
 	log.Infof("✅ 已设置最小订单金额: %.2f USDC", minOrderSize)
+}
+
+// SetMinShareSize 设置限价单最小 share 数量（无锁版本）
+func (s *TradingService) SetMinShareSize(minShareSize float64) {
+	if minShareSize < 0 {
+		minShareSize = 5.0 // 默认值
+	}
+	s.minShareSize = minShareSize
+	log.Infof("✅ 已设置限价单最小 share 数量: %.2f（仅限价单 GTC 时应用）", minShareSize)
 }
 
 // WaitOrderResult 等待订单处理结果（已废弃，现在通过 OrderEngine 处理）

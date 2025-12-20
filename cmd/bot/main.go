@@ -191,8 +191,11 @@ func main() {
 	logrus.Infof("订单状态同步配置: 有活跃订单时=%d秒, 无活跃订单时=%d秒（官方API限流：150请求/10秒，理论上可支持1秒，但建议3秒以上）",
 		cfg.OrderStatusSyncIntervalWithOrders, cfg.OrderStatusSyncIntervalWithoutOrders)
 
-	// 设置最小订单金额（全局配置，不再从某个策略“偷读”）
+	// 设置最小订单金额（全局配置，不再从某个策略"偷读"）
 	tradingService.SetMinOrderSize(cfg.MinOrderSize)
+	
+	// 设置限价单最小 share 数量（仅限价单 GTC 时应用）
+	tradingService.SetMinShareSize(cfg.MinShareSize)
 
 	// 创建 Environment
 	environ := bbgo.NewEnvironment()
@@ -306,6 +309,9 @@ func main() {
 	}
 
 	logrus.Infof("当前市场: %s", market.Slug)
+	
+	// 设置交易服务的当前市场（用于过滤订单状态同步）
+	tradingService.SetCurrentMarket(market.Slug)
 
 	// 注册策略到会话的辅助函数
 	registerStrategiesToSession := func(session *bbgo.ExchangeSession, market *domain.Market) {
@@ -353,10 +359,14 @@ func main() {
 	// 设置会话切换回调，当周期切换时重新注册策略
 	marketScheduler.OnSessionSwitch(func(oldSession *bbgo.ExchangeSession, newSession *bbgo.ExchangeSession, newMarket *domain.Market) {
 		logrus.Infof("🔄 [周期切换] 检测到会话切换，重新注册策略到新会话: %s", newMarket.Slug)
+		
+		// 更新交易服务的当前市场（用于过滤订单状态同步）
+		tradingService.SetCurrentMarket(newMarket.Slug)
+		
 		// 只管理本周期：先取消上一周期残留的 open orders，避免跨周期串单
 		cancelCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		tradingService.CancelOrdersNotInMarket(cancelCtx, newMarket.Slug)
-		// 可选：周期开始时也清空“本周期残留 open orders”（例如重启后同周期还有挂单）
+		// 可选：周期开始时也清空"本周期残留 open orders"（例如重启后同周期还有挂单）
 		if cfg.CancelOpenOrdersOnCycleStart {
 			tradingService.CancelOrdersForMarket(cancelCtx, newMarket.Slug)
 		}
@@ -388,22 +398,23 @@ func main() {
 	logrus.Info("收到停止信号，正在关闭...")
 
 	// 优雅关闭（按照 BBGO 的关闭顺序）
-	gracefulShutdownPeriod := 30 * time.Second
+	gracefulShutdownPeriod := 10 * time.Second // 缩短超时时间，避免长时间等待
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), gracefulShutdownPeriod)
 	defer shutdownCancel()
 
-	// 1. 调用 bbgo.Shutdown()（这会调用所有策略的 Shutdown）
-	bbgo.Shutdown(shutdownCtx, environ.ShutdownManager())
-
-	// 2. 停止交易服务（让订单队列处理完成）
-	logrus.Info("正在停止交易服务...")
-	tradingService.Stop()
-
-	// 3. 停止市场调度器（关闭WebSocket连接）
+	// 1. 先停止市场调度器（关闭WebSocket连接，停止接收新消息）
 	logrus.Info("正在停止市场调度器...")
 	if err := marketScheduler.Stop(shutdownCtx); err != nil {
 		logrus.Errorf("停止市场调度器失败: %v", err)
 	}
+
+	// 2. 调用 bbgo.Shutdown()（这会调用所有策略的 Shutdown）
+	logrus.Info("正在关闭策略...")
+	bbgo.Shutdown(shutdownCtx, environ.ShutdownManager())
+
+	// 3. 停止交易服务（让订单队列处理完成）
+	logrus.Info("正在停止交易服务...")
+	tradingService.Stop()
 
 	// 4. 保存策略状态
 	if err := trader.SaveState(shutdownCtx); err != nil {
