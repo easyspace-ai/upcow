@@ -18,14 +18,29 @@ var ioExecutorLog = logrus.WithField("component", "io_executor")
 type IOExecutor struct {
 	clobClient *client.Client
 	dryRun     bool
+
+	// 下单资金地址（代理钱包 / funder / proxy_address）与签名类型
+	// - funderAddress 非空时，订单 maker 将使用该地址（signer 仍为 EOA）
+	// - signatureType 用于 CLOB 的签名类型（Browser/GnosisSafe 等）
+	funderAddress string
+	signatureType types.SignatureType
 }
 
 // NewIOExecutor 创建 IO 执行器
 func NewIOExecutor(clobClient *client.Client, dryRun bool) *IOExecutor {
 	return &IOExecutor{
-		clobClient: clobClient,
-		dryRun:     dryRun,
+		clobClient:    clobClient,
+		dryRun:        dryRun,
+		funderAddress: "",
+		signatureType: types.SignatureTypeBrowser,
 	}
+}
+
+// SetFunderAddress 设置下单资金地址（proxy_address）与签名类型。
+// 注意：这里不会校验地址合法性，调用方应保证传入的 funderAddress 正确。
+func (e *IOExecutor) SetFunderAddress(funderAddress string, signatureType types.SignatureType) {
+	e.funderAddress = funderAddress
+	e.signatureType = signatureType
 }
 
 // PlaceOrderAsync 异步下单
@@ -91,7 +106,14 @@ func (e *IOExecutor) placeOrderSync(ctx context.Context, order *domain.Order) (*
 	}
 
 	// 创建签名订单
-	signedOrder, err := e.clobClient.CreateOrder(ctx, userOrder, options)
+	var signedOrder *types.SignedOrder
+	var err error
+	if e.funderAddress != "" {
+		// 使用 proxy_address 作为 maker（资金地址），signer 仍为 EOA 私钥地址
+		signedOrder, err = e.clobClient.CreateOrderWithFunder(ctx, userOrder, options, e.funderAddress, e.signatureType)
+	} else {
+		signedOrder, err = e.clobClient.CreateOrder(ctx, userOrder, options)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("创建订单失败: %w", err)
 	}
