@@ -6,6 +6,7 @@ import (
 
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
+	"github.com/betbot/gobet/internal/strategies/common"
 )
 
 type arbitrageCmdResult struct {
@@ -33,13 +34,12 @@ func (s *ArbitrageStrategy) initLoopIfNeeded() {
 
 func (s *ArbitrageStrategy) startLoop(ctx context.Context) {
 	s.initLoopIfNeeded()
-	s.loopOnce.Do(func() {
-		loopCtx, cancel := context.WithCancel(ctx)
-		s.loopCancel = cancel
-		go func() {
-			// 更细粒度的 tick：用于高频市场下的节奏控制（同时避免过度忙轮询）
-			ticker := time.NewTicker(250 * time.Millisecond)
-			defer ticker.Stop()
+	common.StartLoopOnce(
+		ctx,
+		&s.loopOnce,
+		func(cancel context.CancelFunc) { s.loopCancel = cancel },
+		250*time.Millisecond,
+		func(loopCtx context.Context, tickC <-chan time.Time) {
 			for {
 				select {
 				case <-loopCtx.Done():
@@ -58,12 +58,12 @@ func (s *ArbitrageStrategy) startLoop(ctx context.Context) {
 					_ = s.handleOrderUpdateInternal(loopCtx, o)
 				case res := <-s.cmdResultC:
 					_ = s.handleCmdResultInternal(loopCtx, res)
-				case <-ticker.C:
+				case <-tickC:
 					// 保留 tick：未来可用于“缺价时补偿检查/周期末强制锁定”等逻辑
 				}
 			}
-		}()
-	})
+		},
+	)
 }
 
 func (s *ArbitrageStrategy) stopLoop() {
@@ -71,4 +71,3 @@ func (s *ArbitrageStrategy) stopLoop() {
 		s.loopCancel()
 	}
 }
-
