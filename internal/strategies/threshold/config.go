@@ -6,14 +6,14 @@ import (
 
 // ThresholdStrategyConfig 价格阈值策略配置
 type ThresholdStrategyConfig struct {
-	BuyThreshold      float64 // 买入阈值（小数，例如 0.62）
-	SellThreshold     float64 // 卖出阈值（小数，可选，如果为 0 则不卖出）
-	OrderSize         float64 // 订单大小
-	TokenType         string  // Token 类型：YES 或 NO，空字符串表示两者都监控
-	ProfitTargetCents int     // 止盈目标（分），例如 3 表示 +3 cents
-	StopLossCents     int     // 止损目标（分），例如 10 表示 -10 cents
-	MaxBuySlippageCents  int  // 买入最大滑点（分），相对触发价上限（0=关闭）
-	MaxSellSlippageCents int  // 卖出最大滑点（分），相对触发价下限（0=关闭）
+	BuyThreshold         float64 `json:"buyThreshold" yaml:"buyThreshold"`
+	SellThreshold        float64 `json:"sellThreshold" yaml:"sellThreshold"`
+	OrderSize            float64 `json:"orderSize" yaml:"orderSize"`
+	TokenType            string  `json:"tokenType" yaml:"tokenType"`
+	ProfitTargetCents    int     `json:"profitTargetCents" yaml:"profitTargetCents"`
+	StopLossCents        int     `json:"stopLossCents" yaml:"stopLossCents"`
+	MaxBuySlippageCents  int     `json:"maxBuySlippageCents" yaml:"maxBuySlippageCents"`
+	MaxSellSlippageCents int     `json:"maxSellSlippageCents" yaml:"maxSellSlippageCents"`
 }
 
 // GetName 实现 StrategyConfig 接口

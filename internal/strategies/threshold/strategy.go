@@ -23,8 +23,8 @@ const ID = "threshold"
 var log = logrus.WithField("strategy", ID)
 
 func init() {
-	// BBGO风格：在init函数中注册策略及其配置适配器
-	bbgo.RegisterStrategyWithAdapter(ID, &ThresholdStrategy{}, &ThresholdConfigAdapter{})
+	// bbgo main 风格：注册策略 struct，用于直接从 YAML/JSON 反序列化配置
+	bbgo.RegisterStrategy(ID, &ThresholdStrategy{})
 }
 
 // ThresholdStrategy 价格阈值策略实现
@@ -32,7 +32,8 @@ func init() {
 // 支持止盈止损：止盈 +N cents，止损 -N cents
 type ThresholdStrategy struct {
 	Executor       bbgo.CommandExecutor
-	config         *ThresholdStrategyConfig
+	ThresholdStrategyConfig `yaml:",inline" json:",inline"`
+	config                *ThresholdStrategyConfig `json:"-" yaml:"-"`
 	tradingService strategyports.BasicTradingService
 	hasPosition    bool             // 是否已有仓位
 	entryPrice     *domain.Price    // 买入价格（用于计算止盈止损）
@@ -85,18 +86,13 @@ func (s *ThresholdStrategy) Defaults() error {
 
 // Validate 验证配置（BBGO风格）
 func (s *ThresholdStrategy) Validate() error {
-	if s.config == nil {
-		return fmt.Errorf("策略配置未设置")
-	}
-	return s.config.Validate()
+	s.config = &s.ThresholdStrategyConfig
+	return s.ThresholdStrategyConfig.Validate()
 }
 
 // Initialize 初始化策略（BBGO风格）
 func (s *ThresholdStrategy) Initialize() error {
-	// BBGO风格的Initialize方法，使用已设置的config
-	if s.config == nil {
-		return fmt.Errorf("策略配置未设置")
-	}
+	s.config = &s.ThresholdStrategyConfig
 	return nil
 }
 
@@ -112,6 +108,7 @@ func (s *ThresholdStrategy) InitializeWithConfig(ctx context.Context, config str
 	}
 
 	s.config = thresholdConfig
+	s.ThresholdStrategyConfig = *thresholdConfig
 
 	log.Infof("价格阈值策略已初始化: 买入阈值=%.4f, 卖出阈值=%.4f, 订单大小=%.2f, Token类型=%s, 止盈=%dc, 止损=%dc",
 		thresholdConfig.BuyThreshold,

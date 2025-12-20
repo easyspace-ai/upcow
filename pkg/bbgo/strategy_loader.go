@@ -2,6 +2,7 @@ package bbgo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 
@@ -117,6 +118,19 @@ func (l *StrategyLoader) setTradingService(strategy interface{}) error {
 // initializeStrategy 将“适配后的配置”绑定到策略实例。
 // 这里只负责把 config 交给策略（通常是设置 s.config 字段），不负责调用 Defaults/Validate/Initialize()。
 func (l *StrategyLoader) initializeStrategy(ctx context.Context, strategy interface{}, config interface{}) error {
+	// bbgo main 风格：优先把“配置 map/结构”直接反序列化到策略实例上。
+	// 这样新增策略只需要：
+	// - 在策略 struct 上定义 yaml/json tag
+	// - init() RegisterStrategy(ID, &Strategy{})
+	// 不需要额外的 config adapter / InitializeWithConfig 注入链路。
+	if config != nil {
+		if b, err := json.Marshal(config); err == nil {
+			if err := json.Unmarshal(b, strategy); err == nil {
+				return nil
+			}
+		}
+	}
+
 	strategyValue := reflect.ValueOf(strategy)
 	configValue := reflect.ValueOf(config)
 

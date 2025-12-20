@@ -24,14 +24,15 @@ const ID = "arbitrage"
 var log = logrus.WithField("strategy", ID)
 
 func init() {
-	// BBGO风格：在init函数中注册策略及其配置适配器
-	bbgo.RegisterStrategyWithAdapter(ID, &ArbitrageStrategy{}, &ArbitrageConfigAdapter{})
+	// bbgo main 风格：注册策略 struct，用于直接从 YAML/JSON 反序列化配置
+	bbgo.RegisterStrategy(ID, &ArbitrageStrategy{})
 }
 
 // ArbitrageStrategy 套利策略实现
 type ArbitrageStrategy struct {
 	Executor       bbgo.CommandExecutor
-	config         *ArbitrageStrategyConfig
+	ArbitrageStrategyConfig `yaml:",inline" json:",inline"`
+	config                 *ArbitrageStrategyConfig `json:"-" yaml:"-"`
 	tradingService strategyports.BasicTradingService
 	positionState  *domain.ArbitragePositionState
 	currentMarket  *domain.Market
@@ -84,18 +85,13 @@ func (s *ArbitrageStrategy) Defaults() error {
 
 // Validate 验证配置（BBGO风格）
 func (s *ArbitrageStrategy) Validate() error {
-	if s.config == nil {
-		return fmt.Errorf("策略配置未设置")
-	}
-	return s.config.Validate()
+	s.config = &s.ArbitrageStrategyConfig
+	return s.ArbitrageStrategyConfig.Validate()
 }
 
 // Initialize 初始化策略（BBGO风格）
 func (s *ArbitrageStrategy) Initialize() error {
-	// BBGO风格的Initialize方法，使用已设置的config
-	if s.config == nil {
-		return fmt.Errorf("策略配置未设置")
-	}
+	s.config = &s.ArbitrageStrategyConfig
 	return nil
 }
 
@@ -110,7 +106,9 @@ func (s *ArbitrageStrategy) InitializeWithConfig(ctx context.Context, config str
 		return fmt.Errorf("配置验证失败: %w", err)
 	}
 
+	// 旧路径：仍允许从适配器注入；新 bbgo main 路径会直接把配置反序列化到 struct。
 	s.config = arbitrageConfig
+	s.ArbitrageStrategyConfig = *arbitrageConfig
 	if s.maxInFlight <= 0 {
 		// 参考 CSV：单秒可出现 10-30 笔成交，策略侧至少要允许小并发，避免“只能一笔一笔慢慢下”
 		s.maxInFlight = 8
@@ -123,8 +121,8 @@ func (s *ArbitrageStrategy) InitializeWithConfig(ctx context.Context, config str
 	s.inFlightLimiter.Reset()
 
 	logger.Infof("套利策略已初始化: 周期时长=%v, 锁盈起始=%v, UP目标=%v, DOWN目标=%v",
-		arbitrageConfig.CycleDuration,
-		arbitrageConfig.LockStart,
+		arbitrageConfig.CycleDuration.Duration,
+		arbitrageConfig.LockStart.Duration,
 		arbitrageConfig.TargetUpBase,
 		arbitrageConfig.TargetDownBase)
 

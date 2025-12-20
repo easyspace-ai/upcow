@@ -2,12 +2,12 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -33,161 +33,108 @@ type ProxyConfig struct {
 	Port int
 }
 
-// GridConfig 网格策略配置
-type GridConfig struct {
-	GridLevels                    []int   // 手工定义的网格层级列表（分），例如 [62, 65, 71, ...]，第一个值即为最小交易价格
-	OrderSize                     float64 // 订单大小
-	MinOrderSize                  float64 // 最小下单金额（USDC），默认1.1，交易所要求不能小于1
-	EnableRebuy                   bool    // 允许重新买入
-	EnableDoubleSide              bool    // 双向交易
-	ProfitTarget                  int     // 止盈目标（分），默认 3 cents，用于对冲锁定利润
-	MaxUnhedgedLoss               int     // 最大未对冲损失（分），默认 10 cents
-	HardStopPrice                 int     // 硬止损价格（分），默认 50c - 价格跌到此价格以下必须止损（因为50以上才是win）
-	ElasticStopPrice              int     // 弹性止损价格（分），默认 40c - 弹性止损价格，考虑波动性
-	MaxRoundsPerPeriod            int     // 每个 15 分钟周期内允许开启的「网格轮数」上限，默认 1
-	PriceDeviationThreshold       int     // 价格偏差阈值（分），默认 2 cents，订单价格与订单簿价格偏差超过此值则撤单重新下单
-	EntryMaxBuySlippageCents      int     // 入场买入允许的最大滑点（分），相对 gridLevel 上限（默认0=关闭）
-	SupplementMaxBuySlippageCents int     // 补仓/强对冲买入允许的最大滑点（分），相对当前价上限（默认0=关闭）
+// ExchangeStrategyMount 按 bbgo main 的风格挂载策略：
+//
+// exchangeStrategies:
+// - on: polymarket
+//   grid:
+//     gridLevels: [62, 65]
+//     orderSize: 3
+//
+// 其中：
+// - on: 会话名（本项目通常是 "polymarket"；支持 string 或 []string）
+// - 其余 key 必须且只能有一个：即策略 ID
+// - value 是该策略的配置（任意结构，最终会被反序列化到策略 struct 上）
+type ExchangeStrategyMount struct {
+	On []string `yaml:"-" json:"-"`
 
-	// 实盘工程化参数
-	HealthLogIntervalSeconds   int  // 健康日志输出间隔（秒），默认 15
-	StrongHedgeDebounceSeconds int  // 强对冲/补仓节流间隔（秒），默认 2
-	EnableAdhocStrongHedge     bool // 是否启用“无 plan 兜底强对冲”（周期末 break-even），默认 true
+	StrategyID string                 `yaml:"-" json:"-"`
+	Config     map[string]interface{} `yaml:"-" json:"-"`
 }
 
-// ThresholdConfig 价格阈值策略配置
-type ThresholdConfig struct {
-	BuyThreshold         float64 // 买入阈值（小数，例如 0.62）
-	SellThreshold        float64 // 卖出阈值（小数，可选，如果为 0 则不卖出）
-	OrderSize            float64 // 订单大小
-	TokenType            string  // Token 类型：YES 或 NO，空字符串表示两者都监控
-	ProfitTargetCents    int     // 止盈目标（分），例如 3 表示 +3 cents
-	StopLossCents        int     // 止损目标（分），例如 10 表示 -10 cents
-	MaxBuySlippageCents  int     // 买入允许的最大滑点（分），相对触发价上限（默认0=关闭）
-	MaxSellSlippageCents int     // 卖出允许的最大滑点（分），相对触发价下限（默认0=关闭）
+func (m *ExchangeStrategyMount) UnmarshalYAML(value *yaml.Node) error {
+	if value == nil {
+		return errors.New("exchangeStrategies entry is nil")
+	}
+	var raw map[string]interface{}
+	if err := value.Decode(&raw); err != nil {
+		return fmt.Errorf("decode exchangeStrategies entry failed: %w", err)
+	}
+
+	onVal, ok := raw["on"]
+	if !ok {
+		return fmt.Errorf("exchangeStrategies entry missing 'on'")
+	}
+	m.On = parseStringOrStringSlice(onVal)
+	if len(m.On) == 0 {
+		return fmt.Errorf("exchangeStrategies entry 'on' is empty")
+	}
+
+	// 找到策略 key（排除 on）
+	var strategyKeys []string
+	for k := range raw {
+		if k == "on" {
+			continue
+		}
+		strategyKeys = append(strategyKeys, k)
+	}
+	if len(strategyKeys) != 1 {
+		return fmt.Errorf("exchangeStrategies entry must contain exactly 1 strategy key (got %d)", len(strategyKeys))
+	}
+
+	m.StrategyID = strategyKeys[0]
+	cfgVal := raw[m.StrategyID]
+	if cfgVal == nil {
+		m.Config = map[string]interface{}{}
+		return nil
+	}
+
+	if cfgMap, ok := cfgVal.(map[string]interface{}); ok {
+		m.Config = cfgMap
+		return nil
+	}
+
+	// 允许用户把配置写成非 map（例如标量/数组），这里统一包一层，交给后续 json/yaml 反序列化处理
+	m.Config = map[string]interface{}{"_": cfgVal}
+	return nil
 }
 
-// PairLockConfig 成对锁定（Complete-Set）滚动策略配置
-type PairLockConfig struct {
-	EnableParallel           bool    // 是否开启并行多轮（默认 false）
-	MaxConcurrentPlans       int     // 最大并行轮数（默认 1；仅 EnableParallel=true 时生效）
-	MaxTotalUnhedgedShares   float64 // 全局未锁定风险预算（shares；保守口径：在途轮次 targetSize 总和），默认 0（策略侧会给并行模式设置保守默认）
-	MaxPlanAgeSeconds        int     // 单轮最大存活时间（秒），默认 60
-	OnFailAction             string  // 失败动作：pause/cancel_pause/flatten_pause（默认 pause）
-	FailMaxSellSlippageCents int     // 失败回平（flatten）卖出滑点下限（分，0=关闭）
-	FailFlattenMinShares     float64 // 失败回平最小差额（shares），默认 1.0
-	OrderSize                float64 // 每轮下单 shares（YES/NO 两腿相同）
-	MinOrderSize             float64 // 最小下单金额（USDC），默认 1.1
-	ProfitTargetCents        int     // 锁定利润目标（分），默认 3
-	MaxRoundsPerPeriod       int     // 单周期最多轮数，默认 1
-	CooldownMs               int     // 触发冷却（ms），默认 250
-	MaxSupplementAttempts    int     // 补齐最大尝试次数，默认 3
-	EntryMaxBuySlippageCents int     // 买入最大滑点（分，相对最近观测价上限，0=关闭）
-}
-
-// PairedTradingConfig 成对交易策略配置（用于 config.yaml/config.json）
-type PairedTradingConfig struct {
-	// 阶段控制参数
-	BuildDuration     time.Duration
-	LockStart         time.Duration
-	AmplifyStart      time.Duration
-	CycleDuration     time.Duration
-	EarlyLockPrice    float64
-	EarlyAmplifyPrice float64
-
-	// 建仓参数
-	BaseTarget     float64
-	BuildLotSize   float64
-	BuildThreshold float64
-	MinRatio       float64
-	MaxRatio       float64
-
-	// 锁定参数
-	LockThreshold    float64
-	LockPriceMax     float64
-	ExtremeHigh      float64
-	TargetProfitBase float64
-	InsuranceSize    float64
-
-	// 放大参数
-	AmplifyTarget      float64
-	AmplifyPriceMax    float64
-	InsurancePriceMax  float64
-	DirectionThreshold float64
-
-	// 通用参数
-	MinOrderSize        float64
-	MaxBuySlippageCents int
-	AutoAdjustSize      bool
-	MaxSizeAdjustRatio  float64
-}
-
-// ArbitrageConfig 套利策略配置
-type ArbitrageConfig struct {
-	LockStartMinutes        int     // 锁盈阶段起始时间（分钟，默认12）
-	EarlyLockPriceThreshold float64 // 提前锁盈价格阈值（默认0.85，当UP或DOWN价格达到此阈值时提前进入锁盈）
-	TargetUpBase            float64 // UP胜目标利润（USDC，默认100）
-	TargetDownBase          float64 // DOWN胜目标利润（USDC，默认60）
-	BaseTarget              float64 // 基础建仓目标持仓量（默认1500）
-	BuildLotSize            float64 // 建仓阶段单次下单量（默认18）
-	MaxUpIncrement          float64 // 锁盈阶段单次最大UP加仓量（默认100）
-	MaxDownIncrement        float64 // 锁盈阶段单次最大DOWN加仓量（默认100）
-	SmallIncrement          float64 // 反向保险小额加仓量（默认20）
-	MinOrderSize            float64 // 最小下单规模（默认1.0）
-	MaxBuySlippageCents     int     // 买入允许的最大滑点（分），相对当前观测价上限（默认0=关闭）
-}
-
-// DataRecorderConfig 数据记录策略配置
-type DataRecorderConfig struct {
-	OutputDir       string // CSV 文件保存目录
-	UseRTDSFallback bool   // 是否使用 RTDS 作为目标价备选方案
-}
-
-// MomentumConfig 动量策略配置
-type MomentumConfig struct {
-	// Asset 标的资产：BTC/ETH/SOL/XRP（用于 Polygon 行情订阅与日志标识）
-	Asset string
-
-	// SizeUSDC 每次触发下单的名义金额（USDC）
-	SizeUSDC float64
-
-	// ThresholdBps 触发阈值（bps），例如 15 表示 0.15%
-	ThresholdBps int
-
-	// WindowSecs 计算动量的窗口（秒）
-	WindowSecs int
-
-	// MinEdgeCents 最小“估计优势”（分），例如 3 表示 3¢
-	MinEdgeCents int
-
-	// CooldownSecs 同一市场触发后的冷却时间（秒）
-	CooldownSecs int
-
-	// UsePolygonFeed 是否启用 Polygon 外部行情源（默认 true；没有 API key 时会自动降级为“仅记录不交易”）
-	UsePolygonFeed bool
-}
-
-// StrategyConfig 策略配置（支持多策略）
-type StrategyConfig struct {
-	EnabledStrategies []string             // 启用的策略列表，例如 ["grid", "threshold", "arbitrage", "datarecorder"]
-	Grid              *GridConfig          // 网格策略配置（如果启用）
-	Threshold         *ThresholdConfig     // 价格阈值策略配置（如果启用）
-	PairLock          *PairLockConfig      // 成对锁定策略配置（如果启用）
-	PairedTrading     *PairedTradingConfig // 成对交易策略配置（如果启用）
-	Arbitrage         *ArbitrageConfig     // 套利策略配置（如果启用）
-	DataRecorder      *DataRecorderConfig  // 数据记录策略配置（如果启用）
-	Momentum          *MomentumConfig      // 动量策略配置（如果启用）
+func parseStringOrStringSlice(v interface{}) []string {
+	switch t := v.(type) {
+	case string:
+		if strings.TrimSpace(t) == "" {
+			return nil
+		}
+		return []string{t}
+	case []interface{}:
+		out := make([]string, 0, len(t))
+		for _, it := range t {
+			s, ok := it.(string)
+			if !ok {
+				continue
+			}
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			out = append(out, s)
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 // Config 应用配置
 type Config struct {
 	Wallet                               WalletConfig
 	Proxy                                *ProxyConfig
-	Strategies                           StrategyConfig // 多策略配置
+	ExchangeStrategies                   []ExchangeStrategyMount // bbgo main 风格：动态策略挂载
 	LogLevel                             string         // 日志级别
 	LogFile                              string         // 日志文件路径（可选）
 	LogByCycle                           bool           // 是否按周期命名日志文件
 	DirectModeDebounce                   int            // 直接回调模式的防抖间隔（毫秒），默认100ms（BBGO风格：只支持直接模式）
+	MinOrderSize                         float64        // 全局最小下单金额（USDC），默认 1.1（交易所要求 >= 1）
 	OrderStatusCheckTimeout              int            // 订单状态检查超时时间（秒），如果WebSocket在此时长内没有更新，则启用API轮询，默认3秒
 	OrderStatusCheckInterval             int            // 订单状态API轮询间隔（秒），默认3秒
 	OrderStatusSyncIntervalWithOrders    int            // 有活跃订单时的订单状态同步间隔（秒），默认3秒（官方API限流：150请求/10秒，理论上可支持1秒，但建议3秒以上）
@@ -219,119 +166,12 @@ type ConfigFile struct {
 		Host string `yaml:"host" json:"host"`
 		Port int    `yaml:"port" json:"port"`
 	} `yaml:"proxy" json:"proxy"`
-	Strategies struct {
-		Enabled []string `yaml:"enabled" json:"enabled"`
-		Grid    struct {
-			GridLevels                    []int   `yaml:"grid_levels" json:"grid_levels"` // 手工定义的网格层级列表，例如 [62, 65, 71]，第一个值即为最小交易价格
-			OrderSize                     float64 `yaml:"order_size" json:"order_size"`
-			MinOrderSize                  float64 `yaml:"min_order_size" json:"min_order_size"` // 最小下单金额（USDC），默认1.1
-			EnableRebuy                   bool    `yaml:"enable_rebuy" json:"enable_rebuy"`
-			EnableDoubleSide              bool    `yaml:"enable_double_side" json:"enable_double_side"`
-			ProfitTarget                  int     `yaml:"profit_target" json:"profit_target"`
-			MaxUnhedgedLoss               int     `yaml:"max_unhedged_loss" json:"max_unhedged_loss"`
-			HardStopPrice                 int     `yaml:"hard_stop_price" json:"hard_stop_price"`
-			ElasticStopPrice              int     `yaml:"elastic_stop_price" json:"elastic_stop_price"`
-			MaxRoundsPerPeriod            int     `yaml:"max_rounds_per_period" json:"max_rounds_per_period"`
-			EntryMaxBuySlippageCents      int     `yaml:"entry_max_buy_slippage_cents" json:"entry_max_buy_slippage_cents"`
-			SupplementMaxBuySlippageCents int     `yaml:"supplement_max_buy_slippage_cents" json:"supplement_max_buy_slippage_cents"`
-			HealthLogIntervalSeconds      int     `yaml:"health_log_interval_seconds" json:"health_log_interval_seconds"`
-			StrongHedgeDebounceSeconds    int     `yaml:"strong_hedge_debounce_seconds" json:"strong_hedge_debounce_seconds"`
-			EnableAdhocStrongHedge        *bool   `yaml:"enable_adhoc_strong_hedge" json:"enable_adhoc_strong_hedge"`
-		} `yaml:"grid" json:"grid"`
-		Threshold struct {
-			BuyThreshold         float64 `yaml:"buy_threshold" json:"buy_threshold"`
-			SellThreshold        float64 `yaml:"sell_threshold" json:"sell_threshold"`
-			OrderSize            float64 `yaml:"order_size" json:"order_size"`
-			TokenType            string  `yaml:"token_type" json:"token_type"`
-			ProfitTargetCents    int     `yaml:"profit_target_cents" json:"profit_target_cents"`
-			StopLossCents        int     `yaml:"stop_loss_cents" json:"stop_loss_cents"`
-			MaxBuySlippageCents  int     `yaml:"max_buy_slippage_cents" json:"max_buy_slippage_cents"`
-			MaxSellSlippageCents int     `yaml:"max_sell_slippage_cents" json:"max_sell_slippage_cents"`
-		} `yaml:"threshold" json:"threshold"`
-		PairLock struct {
-			EnableParallel           bool    `yaml:"enable_parallel" json:"enable_parallel"`
-			MaxConcurrentPlans       int     `yaml:"max_concurrent_plans" json:"max_concurrent_plans"`
-			MaxTotalUnhedgedShares   float64 `yaml:"max_total_unhedged_shares" json:"max_total_unhedged_shares"`
-			MaxPlanAgeSeconds        int     `yaml:"max_plan_age_seconds" json:"max_plan_age_seconds"`
-			OnFailAction             string  `yaml:"on_fail_action" json:"on_fail_action"`
-			FailMaxSellSlippageCents int     `yaml:"fail_max_sell_slippage_cents" json:"fail_max_sell_slippage_cents"`
-			FailFlattenMinShares     float64 `yaml:"fail_flatten_min_shares" json:"fail_flatten_min_shares"`
-			OrderSize                float64 `yaml:"order_size" json:"order_size"`
-			MinOrderSize             float64 `yaml:"min_order_size" json:"min_order_size"`
-			ProfitTargetCents        int     `yaml:"profit_target_cents" json:"profit_target_cents"`
-			MaxRoundsPerPeriod       int     `yaml:"max_rounds_per_period" json:"max_rounds_per_period"`
-			CooldownMs               int     `yaml:"cooldown_ms" json:"cooldown_ms"`
-			MaxSupplementAttempts    int     `yaml:"max_supplement_attempts" json:"max_supplement_attempts"`
-			EntryMaxBuySlippageCents int     `yaml:"entry_max_buy_slippage_cents" json:"entry_max_buy_slippage_cents"`
-		} `yaml:"pairlock" json:"pairlock"`
-		PairedTrading struct {
-			// 阶段控制参数（单位：秒；与 legacy map 配置保持一致）
-			BuildDuration int `yaml:"build_duration" json:"build_duration"`
-			LockStart     int `yaml:"lock_start" json:"lock_start"`
-			AmplifyStart  int `yaml:"amplify_start" json:"amplify_start"`
-			CycleDuration int `yaml:"cycle_duration" json:"cycle_duration"`
-
-			EarlyLockPrice    float64 `yaml:"early_lock_price" json:"early_lock_price"`
-			EarlyAmplifyPrice float64 `yaml:"early_amplify_price" json:"early_amplify_price"`
-
-			// 建仓参数
-			BaseTarget     float64 `yaml:"base_target" json:"base_target"`
-			BuildLotSize   float64 `yaml:"build_lot_size" json:"build_lot_size"`
-			BuildThreshold float64 `yaml:"build_threshold" json:"build_threshold"`
-			MinRatio       float64 `yaml:"min_ratio" json:"min_ratio"`
-			MaxRatio       float64 `yaml:"max_ratio" json:"max_ratio"`
-
-			// 锁定参数
-			LockThreshold    float64 `yaml:"lock_threshold" json:"lock_threshold"`
-			LockPriceMax     float64 `yaml:"lock_price_max" json:"lock_price_max"`
-			ExtremeHigh      float64 `yaml:"extreme_high" json:"extreme_high"`
-			TargetProfitBase float64 `yaml:"target_profit_base" json:"target_profit_base"`
-			InsuranceSize    float64 `yaml:"insurance_size" json:"insurance_size"`
-
-			// 放大参数
-			AmplifyTarget      float64 `yaml:"amplify_target" json:"amplify_target"`
-			AmplifyPriceMax    float64 `yaml:"amplify_price_max" json:"amplify_price_max"`
-			InsurancePriceMax  float64 `yaml:"insurance_price_max" json:"insurance_price_max"`
-			DirectionThreshold float64 `yaml:"direction_threshold" json:"direction_threshold"`
-
-			// 通用参数
-			MinOrderSize        float64 `yaml:"min_order_size" json:"min_order_size"`
-			MaxBuySlippageCents int     `yaml:"max_buy_slippage_cents" json:"max_buy_slippage_cents"`
-			AutoAdjustSize      *bool   `yaml:"auto_adjust_size" json:"auto_adjust_size"`
-			MaxSizeAdjustRatio  float64 `yaml:"max_size_adjust_ratio" json:"max_size_adjust_ratio"`
-		} `yaml:"paired_trading" json:"paired_trading"`
-		Arbitrage struct {
-			LockStartMinutes        int     `yaml:"lock_start_minutes" json:"lock_start_minutes"`
-			EarlyLockPriceThreshold float64 `yaml:"early_lock_price_threshold" json:"early_lock_price_threshold"`
-			TargetUpBase            float64 `yaml:"target_up_base" json:"target_up_base"`
-			TargetDownBase          float64 `yaml:"target_down_base" json:"target_down_base"`
-			BaseTarget              float64 `yaml:"base_target" json:"base_target"`
-			BuildLotSize            float64 `yaml:"build_lot_size" json:"build_lot_size"`
-			MaxUpIncrement          float64 `yaml:"max_up_increment" json:"max_up_increment"`
-			MaxDownIncrement        float64 `yaml:"max_down_increment" json:"max_down_increment"`
-			SmallIncrement          float64 `yaml:"small_increment" json:"small_increment"`
-			MinOrderSize            float64 `yaml:"min_order_size" json:"min_order_size"`
-			MaxBuySlippageCents     int     `yaml:"max_buy_slippage_cents" json:"max_buy_slippage_cents"`
-		} `yaml:"arbitrage" json:"arbitrage"`
-		DataRecorder struct {
-			OutputDir       string `yaml:"output_dir" json:"output_dir"`
-			UseRTDSFallback bool   `yaml:"use_rtds_fallback" json:"use_rtds_fallback"`
-		} `yaml:"datarecorder" json:"datarecorder"`
-
-		Momentum struct {
-			Asset          string  `yaml:"asset" json:"asset"`
-			SizeUSDC       float64 `yaml:"size_usdc" json:"size_usdc"`
-			ThresholdBps   int     `yaml:"threshold_bps" json:"threshold_bps"`
-			WindowSecs     int     `yaml:"window_secs" json:"window_secs"`
-			MinEdgeCents   int     `yaml:"min_edge_cents" json:"min_edge_cents"`
-			CooldownSecs   int     `yaml:"cooldown_secs" json:"cooldown_secs"`
-			UsePolygonFeed bool    `yaml:"use_polygon_feed" json:"use_polygon_feed"`
-		} `yaml:"momentum" json:"momentum"`
-	} `yaml:"strategies" json:"strategies"`
+	ExchangeStrategies                   []ExchangeStrategyMount `yaml:"exchangeStrategies" json:"exchangeStrategies"`
 	LogLevel                             string `yaml:"log_level" json:"log_level"`
 	LogFile                              string `yaml:"log_file" json:"log_file"`
 	LogByCycle                           bool   `yaml:"log_by_cycle" json:"log_by_cycle"`
 	DirectModeDebounce                   int    `yaml:"direct_mode_debounce" json:"direct_mode_debounce"`                                           // 直接回调模式的防抖间隔（毫秒），默认100ms（BBGO风格：只支持直接模式）
+	MinOrderSize                         float64 `yaml:"minOrderSize" json:"minOrderSize"`
 	OrderStatusCheckTimeout              int    `yaml:"order_status_check_timeout" json:"order_status_check_timeout"`                               // WebSocket超时时间（秒），默认3秒
 	OrderStatusCheckInterval             int    `yaml:"order_status_check_interval" json:"order_status_check_interval"`                             // API轮询间隔（秒），默认3秒
 	OrderStatusSyncIntervalWithOrders    int    `yaml:"order_status_sync_interval_with_orders" json:"order_status_sync_interval_with_orders"`       // 有活跃订单时的同步间隔（秒），默认3秒
@@ -374,22 +214,6 @@ func LoadFromFile(filePath string) (*Config, error) {
 	// 解析代理配置（优先级：配置文件 > 环境变量 > user.json > 默认值）
 	proxyConfig := parseProxyConfigFromSources(configFile, userJSON)
 
-	// 解析启用的策略列表（优先级：配置文件 > 环境变量 > 默认值）
-	enabledStrategies := parseEnabledStrategies(configFile)
-
-	pairedTradingAutoAdjust := func() bool {
-		// 优先级：env > config file > 默认值(true)
-		if envVal := getEnv("PAIRED_TRADING_AUTO_ADJUST_SIZE", ""); envVal != "" {
-			return envVal == "true" || envVal == "1"
-		}
-		if configFile != nil {
-			if v := safeGet(configFile, func(cf *ConfigFile) *bool { return cf.Strategies.PairedTrading.AutoAdjustSize }); v != nil {
-				return *v
-			}
-		}
-		return true
-	}()
-
 	// 构建配置（优先级：环境变量 > user.json > 配置文件 > 默认值）
 	// 注意：钱包信息优先从 user.json 加载，配置文件中的钱包配置会被忽略
 	config := &Config{
@@ -398,319 +222,12 @@ func LoadFromFile(filePath string) (*Config, error) {
 			FunderAddress: getEnvOrUserJSON("WALLET_FUNDER_ADDRESS", userJSON.ProxyAddress, userJSON.RecipientAddress, userJSON.Address, ""),
 		},
 		Proxy: proxyConfig,
-		Strategies: StrategyConfig{
-			EnabledStrategies: enabledStrategies,
-			Grid: &GridConfig{
-				GridLevels:         safeGet(configFile, func(cf *ConfigFile) []int { return cf.Strategies.Grid.GridLevels }),
-				OrderSize:          getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Grid.OrderSize }), parseFloatEnv("ORDER_SIZE", 1)),
-				MinOrderSize:       getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Grid.MinOrderSize }), parseFloatEnv("GRID_MIN_ORDER_SIZE", 1.1)),
-				EnableRebuy:        getBoolFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) bool { return cf.Strategies.Grid.EnableRebuy }), parseBoolEnv("ENABLE_REBUY", true)),
-				EnableDoubleSide:   getBoolFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) bool { return cf.Strategies.Grid.EnableDoubleSide }), parseBoolEnv("ENABLE_DOUBLE_SIDE", true)),
-				ProfitTarget:       getIntFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.ProfitTarget }), parseIntEnv("PROFIT_TARGET", 3)),
-				MaxUnhedgedLoss:    getIntFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.MaxUnhedgedLoss }), parseIntEnv("MAX_UNHEDGED_LOSS", 10)),
-				HardStopPrice:      getIntFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.HardStopPrice }), parseIntEnv("HARD_STOP_PRICE", 50)),
-				ElasticStopPrice:   getIntFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.ElasticStopPrice }), parseIntEnv("ELASTIC_STOP_PRICE", 40)),
-				MaxRoundsPerPeriod: getIntFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.MaxRoundsPerPeriod }), parseIntEnv("MAX_ROUNDS_PER_PERIOD", 1)),
-				EntryMaxBuySlippageCents: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.EntryMaxBuySlippageCents }),
-					parseIntEnv("GRID_ENTRY_MAX_BUY_SLIPPAGE_CENTS", 0),
-				),
-				SupplementMaxBuySlippageCents: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.SupplementMaxBuySlippageCents }),
-					parseIntEnv("GRID_SUPPLEMENT_MAX_BUY_SLIPPAGE_CENTS", 0),
-				),
-				HealthLogIntervalSeconds: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.HealthLogIntervalSeconds }),
-					parseIntEnv("GRID_HEALTH_LOG_INTERVAL_SECONDS", 15),
-				),
-				StrongHedgeDebounceSeconds: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.StrongHedgeDebounceSeconds }),
-					parseIntEnv("GRID_STRONG_HEDGE_DEBOUNCE_SECONDS", 2),
-				),
-				EnableAdhocStrongHedge: func() bool {
-					// 优先级：env > config file > 默认 true
-					if envVal := getEnv("GRID_ENABLE_ADHOC_STRONG_HEDGE", ""); envVal != "" {
-						return envVal == "true" || envVal == "1"
-					}
-					if configFile != nil {
-						if v := safeGet(configFile, func(cf *ConfigFile) *bool { return cf.Strategies.Grid.EnableAdhocStrongHedge }); v != nil {
-							return *v
-						}
-					}
-					return true
-				}(),
-			},
-			Threshold: &ThresholdConfig{
-				BuyThreshold:      getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Threshold.BuyThreshold }), parseFloatEnv("THRESHOLD_BUY_THRESHOLD", 0.62)),
-				SellThreshold:     getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Threshold.SellThreshold }), parseFloatEnv("THRESHOLD_SELL_THRESHOLD", 0)),
-				OrderSize:         getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Threshold.OrderSize }), parseFloatEnv("THRESHOLD_ORDER_SIZE", 3.0)),
-				TokenType:         getValueFromSources(configFile != nil && safeGet(configFile, func(cf *ConfigFile) string { return cf.Strategies.Threshold.TokenType }) != "", safeGet(configFile, func(cf *ConfigFile) string { return cf.Strategies.Threshold.TokenType }), getEnv("THRESHOLD_TOKEN_TYPE", "")),
-				ProfitTargetCents: getIntFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Threshold.ProfitTargetCents }), parseIntEnv("THRESHOLD_PROFIT_TARGET_CENTS", 3)),
-				StopLossCents:     getIntFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Threshold.StopLossCents }), parseIntEnv("THRESHOLD_STOP_LOSS_CENTS", 10)),
-				MaxBuySlippageCents: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Threshold.MaxBuySlippageCents }),
-					parseIntEnv("THRESHOLD_MAX_BUY_SLIPPAGE_CENTS", 0),
-				),
-				MaxSellSlippageCents: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Threshold.MaxSellSlippageCents }),
-					parseIntEnv("THRESHOLD_MAX_SELL_SLIPPAGE_CENTS", 0),
-				),
-			},
-			PairLock: &PairLockConfig{
-				EnableParallel: getBoolFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) bool { return cf.Strategies.PairLock.EnableParallel }),
-					parseBoolEnv("PAIRLOCK_ENABLE_PARALLEL", false),
-				),
-				MaxConcurrentPlans: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxConcurrentPlans }),
-					parseIntEnv("PAIRLOCK_MAX_CONCURRENT_PLANS", 1),
-				),
-				MaxTotalUnhedgedShares: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.MaxTotalUnhedgedShares }),
-					parseFloatEnv("PAIRLOCK_MAX_TOTAL_UNHEDGED_SHARES", 0),
-				),
-				MaxPlanAgeSeconds: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxPlanAgeSeconds }),
-					parseIntEnv("PAIRLOCK_MAX_PLAN_AGE_SECONDS", 60),
-				),
-				OnFailAction: getValueFromSources(
-					configFile != nil && safeGet(configFile, func(cf *ConfigFile) string { return cf.Strategies.PairLock.OnFailAction }) != "",
-					safeGet(configFile, func(cf *ConfigFile) string { return cf.Strategies.PairLock.OnFailAction }),
-					getEnv("PAIRLOCK_ON_FAIL_ACTION", "pause"),
-				),
-				FailMaxSellSlippageCents: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.FailMaxSellSlippageCents }),
-					parseIntEnv("PAIRLOCK_FAIL_MAX_SELL_SLIPPAGE_CENTS", 0),
-				),
-				FailFlattenMinShares: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.FailFlattenMinShares }),
-					parseFloatEnv("PAIRLOCK_FAIL_FLATTEN_MIN_SHARES", 1.0),
-				),
-				OrderSize: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.OrderSize }),
-					parseFloatEnv("PAIRLOCK_ORDER_SIZE", 3.0),
-				),
-				MinOrderSize: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.MinOrderSize }),
-					parseFloatEnv("PAIRLOCK_MIN_ORDER_SIZE", 1.1),
-				),
-				ProfitTargetCents: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.ProfitTargetCents }),
-					parseIntEnv("PAIRLOCK_PROFIT_TARGET_CENTS", 3),
-				),
-				MaxRoundsPerPeriod: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxRoundsPerPeriod }),
-					parseIntEnv("PAIRLOCK_MAX_ROUNDS_PER_PERIOD", 1),
-				),
-				CooldownMs: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.CooldownMs }),
-					parseIntEnv("PAIRLOCK_COOLDOWN_MS", 250),
-				),
-				MaxSupplementAttempts: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxSupplementAttempts }),
-					parseIntEnv("PAIRLOCK_MAX_SUPPLEMENT_ATTEMPTS", 3),
-				),
-				EntryMaxBuySlippageCents: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.EntryMaxBuySlippageCents }),
-					parseIntEnv("PAIRLOCK_ENTRY_MAX_BUY_SLIPPAGE_CENTS", 0),
-				),
-			},
-			PairedTrading: &PairedTradingConfig{
-				BuildDuration: time.Duration(getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairedTrading.BuildDuration }),
-					parseIntEnv("PAIRED_TRADING_BUILD_DURATION", 300),
-				)) * time.Second,
-				LockStart: time.Duration(getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairedTrading.LockStart }),
-					parseIntEnv("PAIRED_TRADING_LOCK_START", 300),
-				)) * time.Second,
-				AmplifyStart: time.Duration(getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairedTrading.AmplifyStart }),
-					parseIntEnv("PAIRED_TRADING_AMPLIFY_START", 600),
-				)) * time.Second,
-				CycleDuration: time.Duration(getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairedTrading.CycleDuration }),
-					parseIntEnv("PAIRED_TRADING_CYCLE_DURATION", 900),
-				)) * time.Second,
-				EarlyLockPrice: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.EarlyLockPrice }),
-					parseFloatEnv("PAIRED_TRADING_EARLY_LOCK_PRICE", 0.85),
-				),
-				EarlyAmplifyPrice: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.EarlyAmplifyPrice }),
-					parseFloatEnv("PAIRED_TRADING_EARLY_AMPLIFY_PRICE", 0.90),
-				),
-				BaseTarget: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.BaseTarget }),
-					parseFloatEnv("PAIRED_TRADING_BASE_TARGET", 30.0),
-				),
-				BuildLotSize: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.BuildLotSize }),
-					parseFloatEnv("PAIRED_TRADING_BUILD_LOT_SIZE", 3.0),
-				),
-				BuildThreshold: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.BuildThreshold }),
-					parseFloatEnv("PAIRED_TRADING_BUILD_THRESHOLD", 0.60),
-				),
-				MinRatio: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.MinRatio }),
-					parseFloatEnv("PAIRED_TRADING_MIN_RATIO", 0.40),
-				),
-				MaxRatio: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.MaxRatio }),
-					parseFloatEnv("PAIRED_TRADING_MAX_RATIO", 0.60),
-				),
-				LockThreshold: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.LockThreshold }),
-					parseFloatEnv("PAIRED_TRADING_LOCK_THRESHOLD", 5.0),
-				),
-				LockPriceMax: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.LockPriceMax }),
-					parseFloatEnv("PAIRED_TRADING_LOCK_PRICE_MAX", 0.70),
-				),
-				ExtremeHigh: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.ExtremeHigh }),
-					parseFloatEnv("PAIRED_TRADING_EXTREME_HIGH", 0.80),
-				),
-				TargetProfitBase: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.TargetProfitBase }),
-					parseFloatEnv("PAIRED_TRADING_TARGET_PROFIT_BASE", 2.0),
-				),
-				InsuranceSize: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.InsuranceSize }),
-					parseFloatEnv("PAIRED_TRADING_INSURANCE_SIZE", 1.5),
-				),
-				AmplifyTarget: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.AmplifyTarget }),
-					parseFloatEnv("PAIRED_TRADING_AMPLIFY_TARGET", 5.0),
-				),
-				AmplifyPriceMax: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.AmplifyPriceMax }),
-					parseFloatEnv("PAIRED_TRADING_AMPLIFY_PRICE_MAX", 0.85),
-				),
-				InsurancePriceMax: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.InsurancePriceMax }),
-					parseFloatEnv("PAIRED_TRADING_INSURANCE_PRICE_MAX", 0.20),
-				),
-				DirectionThreshold: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.DirectionThreshold }),
-					parseFloatEnv("PAIRED_TRADING_DIRECTION_THRESHOLD", 0.70),
-				),
-				MinOrderSize: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.MinOrderSize }),
-					parseFloatEnv("PAIRED_TRADING_MIN_ORDER_SIZE", 1.1),
-				),
-				MaxBuySlippageCents: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairedTrading.MaxBuySlippageCents }),
-					parseIntEnv("PAIRED_TRADING_MAX_BUY_SLIPPAGE_CENTS", 3),
-				),
-				AutoAdjustSize: pairedTradingAutoAdjust,
-				MaxSizeAdjustRatio: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.MaxSizeAdjustRatio }),
-					parseFloatEnv("PAIRED_TRADING_MAX_SIZE_ADJUST_RATIO", 5.0),
-				),
-			},
-			Arbitrage: &ArbitrageConfig{
-				LockStartMinutes:        getIntFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Arbitrage.LockStartMinutes }), parseIntEnv("ARBITRAGE_LOCK_START_MINUTES", 12)),
-				EarlyLockPriceThreshold: getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.EarlyLockPriceThreshold }), parseFloatEnv("ARBITRAGE_EARLY_LOCK_PRICE_THRESHOLD", 0.85)),
-				TargetUpBase:            getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.TargetUpBase }), parseFloatEnv("ARBITRAGE_TARGET_UP_BASE", 100.0)),
-				TargetDownBase:          getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.TargetDownBase }), parseFloatEnv("ARBITRAGE_TARGET_DOWN_BASE", 60.0)),
-				BaseTarget:              getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.BaseTarget }), parseFloatEnv("ARBITRAGE_BASE_TARGET", 1500.0)),
-				BuildLotSize:            getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.BuildLotSize }), parseFloatEnv("ARBITRAGE_BUILD_LOT_SIZE", 18.0)),
-				MaxUpIncrement:          getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.MaxUpIncrement }), parseFloatEnv("ARBITRAGE_MAX_UP_INCREMENT", 100.0)),
-				MaxDownIncrement:        getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.MaxDownIncrement }), parseFloatEnv("ARBITRAGE_MAX_DOWN_INCREMENT", 100.0)),
-				SmallIncrement:          getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.SmallIncrement }), parseFloatEnv("ARBITRAGE_SMALL_INCREMENT", 20.0)),
-				MinOrderSize:            getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.MinOrderSize }), parseFloatEnv("ARBITRAGE_MIN_ORDER_SIZE", 1.2)),
-				MaxBuySlippageCents: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Arbitrage.MaxBuySlippageCents }),
-					parseIntEnv("ARBITRAGE_MAX_BUY_SLIPPAGE_CENTS", 0),
-				),
-			},
-			DataRecorder: &DataRecorderConfig{
-				OutputDir:       getValueFromSources(configFile != nil && safeGet(configFile, func(cf *ConfigFile) string { return cf.Strategies.DataRecorder.OutputDir }) != "", safeGet(configFile, func(cf *ConfigFile) string { return cf.Strategies.DataRecorder.OutputDir }), getEnv("DATARECORDER_OUTPUT_DIR", "data/recordings")),
-				UseRTDSFallback: getBoolFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) bool { return cf.Strategies.DataRecorder.UseRTDSFallback }), parseBoolEnv("DATARECORDER_USE_RTDS_FALLBACK", true)),
-			},
-			Momentum: &MomentumConfig{
-				Asset: getValueFromSources(
-					configFile != nil && safeGet(configFile, func(cf *ConfigFile) string { return cf.Strategies.Momentum.Asset }) != "",
-					safeGet(configFile, func(cf *ConfigFile) string { return cf.Strategies.Momentum.Asset }),
-					getEnv("MOMENTUM_ASSET", "BTC"),
-				),
-				SizeUSDC: getFloatFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Momentum.SizeUSDC }),
-					parseFloatEnv("MOMENTUM_SIZE_USDC", 25.0),
-				),
-				ThresholdBps: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Momentum.ThresholdBps }),
-					parseIntEnv("MOMENTUM_THRESHOLD_BPS", 15),
-				),
-				WindowSecs: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Momentum.WindowSecs }),
-					parseIntEnv("MOMENTUM_WINDOW_SECS", 5),
-				),
-				MinEdgeCents: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Momentum.MinEdgeCents }),
-					parseIntEnv("MOMENTUM_MIN_EDGE_CENTS", 3),
-				),
-				CooldownSecs: getIntFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Momentum.CooldownSecs }),
-					parseIntEnv("MOMENTUM_COOLDOWN_SECS", 30),
-				),
-				UsePolygonFeed: getBoolFromSources(
-					configFile != nil,
-					safeGet(configFile, func(cf *ConfigFile) bool { return cf.Strategies.Momentum.UsePolygonFeed }),
-					parseBoolEnv("MOMENTUM_USE_POLYGON_FEED", true),
-				),
-			},
-		},
+		ExchangeStrategies: func() []ExchangeStrategyMount {
+			if configFile != nil && len(configFile.ExchangeStrategies) > 0 {
+				return configFile.ExchangeStrategies
+			}
+			return nil
+		}(),
 		LogLevel: func() string {
 			if configFile != nil && configFile.LogLevel != "" {
 				return configFile.LogLevel
@@ -743,6 +260,18 @@ func LoadFromFile(filePath string) (*Config, error) {
 				}
 			}
 			return 100 // 默认100ms
+		}(),
+		MinOrderSize: func() float64 {
+			// 优先级：config file > env > 默认 1.1
+			if configFile != nil && configFile.MinOrderSize > 0 {
+				return configFile.MinOrderSize
+			}
+			if envVal := getEnv("MIN_ORDER_SIZE", ""); envVal != "" {
+				if v, err := strconv.ParseFloat(envVal, 64); err == nil && v > 0 {
+					return v
+				}
+			}
+			return 1.1
 		}(),
 		OrderStatusCheckTimeout: func() int {
 			if configFile != nil && configFile.OrderStatusCheckTimeout > 0 {
@@ -896,19 +425,8 @@ func parseProxyConfigFromSources(configFile *ConfigFile, userJSON *UserJSON) *Pr
 	}
 }
 
-// parseEnabledStrategies 解析启用的策略列表
-func parseEnabledStrategies(configFile *ConfigFile) []string {
-	if configFile != nil && len(configFile.Strategies.Enabled) > 0 {
-		return configFile.Strategies.Enabled
-	}
-	// 如果没有配置文件或配置文件中没有设置 enabled，检查环境变量
-	// 如果环境变量也没有设置，返回空列表（不启用任何策略，避免默认启用 threshold）
-	enabledStrategiesStr := getEnv("ENABLED_STRATEGIES", "")
-	if enabledStrategiesStr == "" {
-		return []string{} // 返回空列表，而不是默认启用 threshold
-	}
-	return parseStrategyList(enabledStrategiesStr)
-}
+// NOTE: 旧版通过 enabled 策略列表+硬编码策略结构体加载。
+// 当前已切换到 bbgo main 风格的 exchangeStrategies（动态挂载），不再需要 parseEnabledStrategies。
 
 // getValueFromSources 从多个源获取字符串值（优先级：配置文件 > 环境变量/默认值）
 func getValueFromSources(hasConfigValue bool, configValue, envValue string) string {
@@ -965,190 +483,13 @@ func (c *Config) Validate() error {
 	if c.Wallet.FunderAddress == "" {
 		return fmt.Errorf("WALLET_FUNDER_ADDRESS 未配置")
 	}
-	if len(c.Strategies.EnabledStrategies) == 0 {
-		return fmt.Errorf("至少需要启用一个策略")
+	if len(c.ExchangeStrategies) == 0 {
+		return fmt.Errorf("exchangeStrategies 不能为空（请按 bbgo main 风格配置策略）")
 	}
-
-	// 验证启用的策略配置
-	for _, strategyName := range c.Strategies.EnabledStrategies {
-		switch strategyName {
-		case "grid":
-			if c.Strategies.Grid == nil {
-				return fmt.Errorf("网格策略已启用但配置为空")
-			}
-			if len(c.Strategies.Grid.GridLevels) == 0 {
-				return fmt.Errorf("网格层级列表 grid_levels 不能为空")
-			}
-			if c.Strategies.Grid.OrderSize <= 0 {
-				return fmt.Errorf("ORDER_SIZE 必须大于 0")
-			}
-			if c.Strategies.Grid.HealthLogIntervalSeconds < 0 {
-				return fmt.Errorf("GRID_HEALTH_LOG_INTERVAL_SECONDS 不能为负数")
-			}
-			if c.Strategies.Grid.StrongHedgeDebounceSeconds < 0 {
-				return fmt.Errorf("GRID_STRONG_HEDGE_DEBOUNCE_SECONDS 不能为负数")
-			}
-		case "threshold":
-			if c.Strategies.Threshold == nil {
-				return fmt.Errorf("价格阈值策略已启用但配置为空")
-			}
-			if c.Strategies.Threshold.BuyThreshold <= 0 || c.Strategies.Threshold.BuyThreshold >= 1 {
-				return fmt.Errorf("THRESHOLD_BUY_THRESHOLD 必须在 0 到 1 之间")
-			}
-			if c.Strategies.Threshold.OrderSize <= 0 {
-				return fmt.Errorf("THRESHOLD_ORDER_SIZE 必须大于 0")
-			}
-			if c.Strategies.Threshold.ProfitTargetCents < 0 {
-				return fmt.Errorf("THRESHOLD_PROFIT_TARGET_CENTS 不能为负数")
-			}
-			if c.Strategies.Threshold.StopLossCents < 0 {
-				return fmt.Errorf("THRESHOLD_STOP_LOSS_CENTS 不能为负数")
-			}
-		case "pairlock":
-			if c.Strategies.PairLock == nil {
-				return fmt.Errorf("pairlock 策略已启用但配置为空")
-			}
-			if c.Strategies.PairLock.OrderSize <= 0 {
-				return fmt.Errorf("PAIRLOCK_ORDER_SIZE 必须大于 0")
-			}
-			if c.Strategies.PairLock.MinOrderSize < 1.0 {
-				return fmt.Errorf("PAIRLOCK_MIN_ORDER_SIZE 必须 >= 1.0")
-			}
-			if c.Strategies.PairLock.ProfitTargetCents < 0 {
-				return fmt.Errorf("PAIRLOCK_PROFIT_TARGET_CENTS 不能为负数")
-			}
-			if c.Strategies.PairLock.MaxRoundsPerPeriod <= 0 {
-				return fmt.Errorf("PAIRLOCK_MAX_ROUNDS_PER_PERIOD 必须 > 0")
-			}
-			if c.Strategies.PairLock.CooldownMs < 0 {
-				return fmt.Errorf("PAIRLOCK_COOLDOWN_MS 不能为负数")
-			}
-			if c.Strategies.PairLock.MaxSupplementAttempts <= 0 {
-				return fmt.Errorf("PAIRLOCK_MAX_SUPPLEMENT_ATTEMPTS 必须 > 0")
-			}
-			if c.Strategies.PairLock.EntryMaxBuySlippageCents < 0 {
-				return fmt.Errorf("PAIRLOCK_ENTRY_MAX_BUY_SLIPPAGE_CENTS 不能为负数")
-			}
-			if c.Strategies.PairLock.EnableParallel {
-				if c.Strategies.PairLock.MaxConcurrentPlans <= 0 {
-					return fmt.Errorf("PAIRLOCK_MAX_CONCURRENT_PLANS 必须 > 0")
-				}
-			}
-			if c.Strategies.PairLock.MaxTotalUnhedgedShares < 0 {
-				return fmt.Errorf("PAIRLOCK_MAX_TOTAL_UNHEDGED_SHARES 不能为负数")
-			}
-			if c.Strategies.PairLock.MaxPlanAgeSeconds <= 0 {
-				return fmt.Errorf("PAIRLOCK_MAX_PLAN_AGE_SECONDS 必须 > 0")
-			}
-			switch c.Strategies.PairLock.OnFailAction {
-			case "", "pause", "cancel_pause", "flatten_pause":
-			default:
-				return fmt.Errorf("PAIRLOCK_ON_FAIL_ACTION 无效: %s", c.Strategies.PairLock.OnFailAction)
-			}
-			if c.Strategies.PairLock.FailMaxSellSlippageCents < 0 {
-				return fmt.Errorf("PAIRLOCK_FAIL_MAX_SELL_SLIPPAGE_CENTS 不能为负数")
-			}
-			if c.Strategies.PairLock.FailFlattenMinShares < 0 {
-				return fmt.Errorf("PAIRLOCK_FAIL_FLATTEN_MIN_SHARES 不能为负数")
-			}
-		case "paired_trading":
-			if c.Strategies.PairedTrading == nil {
-				return fmt.Errorf("paired_trading 策略已启用但配置为空")
-			}
-			if c.Strategies.PairedTrading.CycleDuration <= 0 {
-				return fmt.Errorf("paired_trading.cycle_duration 必须 > 0")
-			}
-			if c.Strategies.PairedTrading.LockStart < 0 || c.Strategies.PairedTrading.AmplifyStart < 0 || c.Strategies.PairedTrading.BuildDuration < 0 {
-				return fmt.Errorf("paired_trading 阶段时间不能为负数")
-			}
-			if c.Strategies.PairedTrading.LockStart > c.Strategies.PairedTrading.CycleDuration || c.Strategies.PairedTrading.AmplifyStart > c.Strategies.PairedTrading.CycleDuration {
-				return fmt.Errorf("paired_trading 阶段时间必须在 cycle_duration 内")
-			}
-			if c.Strategies.PairedTrading.MinOrderSize <= 0 {
-				return fmt.Errorf("paired_trading.min_order_size 必须 > 0")
-			}
-			if c.Strategies.PairedTrading.MaxBuySlippageCents < 0 {
-				return fmt.Errorf("paired_trading.max_buy_slippage_cents 不能为负数")
-			}
-			if c.Strategies.PairedTrading.MaxSizeAdjustRatio < 0 {
-				return fmt.Errorf("paired_trading.max_size_adjust_ratio 不能为负数")
-			}
-		case "arbitrage":
-			if c.Strategies.Arbitrage == nil {
-				return fmt.Errorf("套利策略已启用但配置为空")
-			}
-			if c.Strategies.Arbitrage.LockStartMinutes <= 0 || c.Strategies.Arbitrage.LockStartMinutes >= 15 {
-				return fmt.Errorf("ARBITRAGE_LOCK_START_MINUTES 必须在 0 到 15 之间")
-			}
-			if c.Strategies.Arbitrage.EarlyLockPriceThreshold <= 0 || c.Strategies.Arbitrage.EarlyLockPriceThreshold >= 1 {
-				return fmt.Errorf("ARBITRAGE_EARLY_LOCK_PRICE_THRESHOLD 必须在 0 到 1 之间")
-			}
-			if c.Strategies.Arbitrage.TargetUpBase < 0 {
-				return fmt.Errorf("ARBITRAGE_TARGET_UP_BASE 不能为负数")
-			}
-			if c.Strategies.Arbitrage.TargetDownBase < 0 {
-				return fmt.Errorf("ARBITRAGE_TARGET_DOWN_BASE 不能为负数")
-			}
-			if c.Strategies.Arbitrage.BaseTarget <= 0 {
-				return fmt.Errorf("ARBITRAGE_BASE_TARGET 必须大于 0")
-			}
-			if c.Strategies.Arbitrage.BuildLotSize <= 0 {
-				return fmt.Errorf("ARBITRAGE_BUILD_LOT_SIZE 必须大于 0")
-			}
-			if c.Strategies.Arbitrage.MinOrderSize <= 0 {
-				return fmt.Errorf("ARBITRAGE_MIN_ORDER_SIZE 必须大于 0")
-			}
-		case "datarecorder":
-			if c.Strategies.DataRecorder == nil {
-				return fmt.Errorf("数据记录策略已启用但配置为空")
-			}
-			if c.Strategies.DataRecorder.OutputDir == "" {
-				return fmt.Errorf("DATARECORDER_OUTPUT_DIR 不能为空")
-			}
-		case "momentum":
-			if c.Strategies.Momentum == nil {
-				return fmt.Errorf("动量策略已启用但配置为空")
-			}
-			if c.Strategies.Momentum.Asset == "" {
-				return fmt.Errorf("MOMENTUM_ASSET 不能为空")
-			}
-			if c.Strategies.Momentum.SizeUSDC <= 0 {
-				return fmt.Errorf("MOMENTUM_SIZE_USDC 必须大于 0")
-			}
-			if c.Strategies.Momentum.ThresholdBps <= 0 {
-				return fmt.Errorf("MOMENTUM_THRESHOLD_BPS 必须大于 0")
-			}
-			if c.Strategies.Momentum.WindowSecs <= 0 {
-				return fmt.Errorf("MOMENTUM_WINDOW_SECS 必须大于 0")
-			}
-			if c.Strategies.Momentum.MinEdgeCents < 0 {
-				return fmt.Errorf("MOMENTUM_MIN_EDGE_CENTS 不能为负数")
-			}
-			if c.Strategies.Momentum.CooldownSecs < 0 {
-				return fmt.Errorf("MOMENTUM_COOLDOWN_SECS 不能为负数")
-			}
-		default:
-			return fmt.Errorf("未知的策略: %s", strategyName)
-		}
+	if c.MinOrderSize > 0 && c.MinOrderSize < 1.0 {
+		return fmt.Errorf("minOrderSize 必须 >= 1.0")
 	}
-
 	return nil
-}
-
-// parseStrategyList 解析策略列表（逗号分隔）
-func parseStrategyList(str string) []string {
-	if str == "" {
-		return []string{}
-	}
-	parts := strings.Split(str, ",")
-	result := make([]string, 0, len(parts))
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-	return result
 }
 
 // loadUserJSON 加载 user.json 文件

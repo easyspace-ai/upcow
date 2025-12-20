@@ -23,7 +23,8 @@ const ID = "momentum"
 var log = logrus.WithField("strategy", ID)
 
 func init() {
-	bbgo.RegisterStrategyWithAdapter(ID, &MomentumStrategy{}, &MomentumConfigAdapter{})
+	// bbgo main 风格：注册策略 struct，用于直接从 YAML/JSON 反序列化配置
+	bbgo.RegisterStrategy(ID, &MomentumStrategy{})
 }
 
 type Direction int
@@ -52,7 +53,10 @@ type MomentumSignal struct {
 type MomentumStrategy struct {
 	Executor       bbgo.CommandExecutor
 	tradingService strategyports.MomentumTradingService
-	config         *MomentumStrategyConfig
+
+	// 配置字段（bbgo main 风格：直接反序列化到策略 struct）
+	MomentumStrategyConfig `yaml:",inline" json:",inline"`
+	config                *MomentumStrategyConfig `json:"-" yaml:"-"`
 
 	loopOnce   sync.Once
 	loopCancel context.CancelFunc
@@ -77,36 +81,25 @@ func (s *MomentumStrategy) SetTradingService(ts strategyports.MomentumTradingSer
 func (s *MomentumStrategy) Defaults() error { return nil }
 
 func (s *MomentumStrategy) Validate() error {
-	if s.config == nil {
-		return fmt.Errorf("策略配置未设置")
-	}
-	return s.config.Validate()
+	s.config = &s.MomentumStrategyConfig
+	return s.MomentumStrategyConfig.Validate()
 }
 
 func (s *MomentumStrategy) Initialize() error {
-	if s.config == nil {
-		return fmt.Errorf("策略配置未设置")
-	}
+	s.config = &s.MomentumStrategyConfig
 	return nil
 }
 
-func (s *MomentumStrategy) InitializeWithConfig(ctx context.Context, cfg strategies.StrategyConfig) error {
-	c, ok := cfg.(*MomentumStrategyConfig)
-	if !ok {
-		return fmt.Errorf("无效的配置类型")
-	}
-	if err := c.Validate(); err != nil {
-		return err
-	}
-	s.config = c
+// InitializeWithConfig 已废弃：旧的“适配器注入配置”路径。
+// 为了兼容历史调用点，保留空实现（新 loader 不会走到这里）。
+func (s *MomentumStrategy) InitializeWithConfig(_ context.Context, _ strategies.StrategyConfig) error {
+	s.config = &s.MomentumStrategyConfig
 	if s.tradeCooldown == nil {
-		s.tradeCooldown = common.NewDebouncer(time.Duration(c.CooldownSecs) * time.Second)
+		s.tradeCooldown = common.NewDebouncer(time.Duration(s.CooldownSecs) * time.Second)
 	} else {
-		s.tradeCooldown.SetInterval(time.Duration(c.CooldownSecs) * time.Second)
+		s.tradeCooldown.SetInterval(time.Duration(s.CooldownSecs) * time.Second)
 		s.tradeCooldown.Reset()
 	}
-	log.Infof("动量策略初始化: asset=%s size=$%.2f threshold=%dbps window=%ds edge=%dc cooldown=%ds polygon=%v",
-		c.Asset, c.SizeUSDC, c.ThresholdBps, c.WindowSecs, c.MinEdgeCents, c.CooldownSecs, c.UsePolygonFeed)
 	return nil
 }
 

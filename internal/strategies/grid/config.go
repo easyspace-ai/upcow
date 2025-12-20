@@ -6,23 +6,23 @@ import (
 
 // GridStrategyConfig 网格策略配置
 type GridStrategyConfig struct {
-	GridLevels                    []int   // 手工定义的网格层级列表（分），例如 [62, 65, 71, ...]
-	OrderSize                     float64 // 订单大小（share数量），每次买入的share数量
-	MinOrderSize                  float64 // 最小下单金额（USDC），默认1.1，交易所要求不能小于1
-	EnableRebuy                   bool    // 允许重新买入
-	EnableDoubleSide              bool    // 双向交易
-	ProfitTarget                  int     // 止盈目标（分）
-	MaxUnhedgedLoss               int     // 最大未对冲损失（分）
-	HardStopPrice                 int     // 硬止损价格（分）
-	ElasticStopPrice              int     // 弹性止损价格（分）
-	MaxRoundsPerPeriod            int     // 每个周期最大轮数
-	EntryMaxBuySlippageCents      int     // 入场买入最大滑点（分），相对 gridLevel（0=关闭）
-	SupplementMaxBuySlippageCents int     // 补仓/强对冲买入最大滑点（分），相对当前价（0=关闭）
+	GridLevels                    []int   `json:"gridLevels" yaml:"gridLevels"`
+	OrderSize                     float64 `json:"orderSize" yaml:"orderSize"`
+	MinOrderSize                  float64 `json:"minOrderSize" yaml:"minOrderSize"`
+	EnableRebuy                   bool    `json:"enableRebuy" yaml:"enableRebuy"`
+	EnableDoubleSide              bool    `json:"enableDoubleSide" yaml:"enableDoubleSide"`
+	ProfitTarget                  int     `json:"profitTarget" yaml:"profitTarget"`
+	MaxUnhedgedLoss               int     `json:"maxUnhedgedLoss" yaml:"maxUnhedgedLoss"`
+	HardStopPrice                 int     `json:"hardStopPrice" yaml:"hardStopPrice"`
+	ElasticStopPrice              int     `json:"elasticStopPrice" yaml:"elasticStopPrice"`
+	MaxRoundsPerPeriod            int     `json:"maxRoundsPerPeriod" yaml:"maxRoundsPerPeriod"`
+	EntryMaxBuySlippageCents      int     `json:"entryMaxBuySlippageCents" yaml:"entryMaxBuySlippageCents"`
+	SupplementMaxBuySlippageCents int     `json:"supplementMaxBuySlippageCents" yaml:"supplementMaxBuySlippageCents"`
 
 	// 实盘工程化参数
-	HealthLogIntervalSeconds   int  // 健康日志输出间隔（秒），默认 15
-	StrongHedgeDebounceSeconds int  // 强对冲/补仓节流间隔（秒），默认 2
-	EnableAdhocStrongHedge     bool // 是否启用“无 plan 兜底强对冲”（周期末 break-even），默认 true
+	HealthLogIntervalSeconds   int  `json:"healthLogIntervalSeconds" yaml:"healthLogIntervalSeconds"`
+	StrongHedgeDebounceSeconds int  `json:"strongHedgeDebounceSeconds" yaml:"strongHedgeDebounceSeconds"`
+	EnableAdhocStrongHedge     bool `json:"enableAdhocStrongHedge" yaml:"enableAdhocStrongHedge"`
 }
 
 // GetName 实现 StrategyConfig 接口

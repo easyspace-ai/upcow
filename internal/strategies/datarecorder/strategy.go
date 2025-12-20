@@ -22,8 +22,8 @@ const ID = "datarecorder"
 var log = logrus.WithField("strategy", ID)
 
 func init() {
-	// BBGO风格：在init函数中注册策略及其配置适配器
-	bbgo.RegisterStrategyWithAdapter(ID, &DataRecorderStrategy{}, &DataRecorderConfigAdapter{})
+	// bbgo main 风格：注册策略 struct，用于直接从 YAML/JSON 反序列化配置
+	bbgo.RegisterStrategy(ID, &DataRecorderStrategy{})
 }
 
 // rtdsLoggerAdapter 适配器，将 RTDS 日志输出到我们的 logger 系统
@@ -36,7 +36,8 @@ func (l *rtdsLoggerAdapter) Printf(format string, v ...interface{}) {
 // DataRecorderStrategy 数据记录策略
 type DataRecorderStrategy struct {
 	Executor           bbgo.CommandExecutor
-	config             *DataRecorderStrategyConfig
+	DataRecorderStrategyConfig `yaml:",inline" json:",inline"`
+	config                   *DataRecorderStrategyConfig `json:"-" yaml:"-"`
 	recorder           *DataRecorder
 	targetPriceFetcher *TargetPriceFetcher
 	rtdsClient         *rtds.Client
@@ -88,18 +89,13 @@ func (s *DataRecorderStrategy) Defaults() error {
 
 // Validate 验证配置（BBGO风格）
 func (s *DataRecorderStrategy) Validate() error {
-	if s.config == nil {
-		return fmt.Errorf("策略配置未设置")
-	}
-	return s.config.Validate()
+	s.config = &s.DataRecorderStrategyConfig
+	return s.DataRecorderStrategyConfig.Validate()
 }
 
 // Initialize 初始化策略（BBGO风格）
 func (s *DataRecorderStrategy) Initialize() error {
-	// BBGO风格的Initialize方法，使用已设置的config
-	if s.config == nil {
-		return fmt.Errorf("策略配置未设置")
-	}
+	s.config = &s.DataRecorderStrategyConfig
 	return nil
 }
 
@@ -115,6 +111,7 @@ func (s *DataRecorderStrategy) InitializeWithConfig(ctx context.Context, config 
 	}
 
 	s.config = recorderConfig
+	s.DataRecorderStrategyConfig = *recorderConfig
 
 	// 创建数据记录器（流式写入）
 	recorder, err := NewDataRecorder(recorderConfig.OutputDir)

@@ -12,7 +12,6 @@ import (
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
-	"github.com/betbot/gobet/internal/strategies"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 	strategyports "github.com/betbot/gobet/internal/strategies/ports"
@@ -24,7 +23,8 @@ const ID = "pairlock"
 var log = logrus.WithField("strategy", ID)
 
 func init() {
-	bbgo.RegisterStrategyWithAdapter(ID, &PairLockStrategy{}, &PairLockConfigAdapter{})
+	// bbgo main 风格：注册策略 struct，用于直接从 YAML/JSON 反序列化配置
+	bbgo.RegisterStrategy(ID, &PairLockStrategy{})
 }
 
 type tokenKey string
@@ -71,7 +71,8 @@ type cmdResult struct {
 type PairLockStrategy struct {
 	Executor bbgo.CommandExecutor
 
-	config         *PairLockStrategyConfig
+	PairLockStrategyConfig `yaml:",inline" json:",inline"`
+	config                 *PairLockStrategyConfig `json:"-" yaml:"-"`
 	tradingService strategyports.PairLockTradingService
 
 	// 单线程 loop
@@ -125,19 +126,13 @@ func (s *PairLockStrategy) Name() string { return ID }
 func (s *PairLockStrategy) Defaults() error { return nil }
 
 func (s *PairLockStrategy) Validate() error {
-	if s.config == nil {
-		return fmt.Errorf("策略配置未设置")
-	}
-	return s.config.Validate()
+	s.config = &s.PairLockStrategyConfig
+	return s.PairLockStrategyConfig.Validate()
 }
 
-func (s *PairLockStrategy) Initialize(ctx context.Context, conf strategies.StrategyConfig) error {
-	cfg, ok := conf.(*PairLockStrategyConfig)
-	if !ok {
-		return fmt.Errorf("无效的配置类型")
-	}
-	s.config = cfg
-	if err := s.Validate(); err != nil {
+func (s *PairLockStrategy) Initialize() error {
+	s.config = &s.PairLockStrategyConfig
+	if err := s.PairLockStrategyConfig.Validate(); err != nil {
 		return err
 	}
 	if s.attemptCooldown == nil {

@@ -18,6 +18,11 @@ import (
 
 var log = logrus.WithField("strategy", "updown")
 
+func init() {
+	// bbgo main 风格：注册策略 struct，用于直接从 YAML/JSON 反序列化配置
+	bbgo.RegisterStrategy(ID, &Strategy{})
+}
+
 // Strategy is a standard single-exchange strategy implementation.
 // It demonstrates:
 // - typed tradingService ports
@@ -28,7 +33,8 @@ type Strategy struct {
 	Executor bbgo.CommandExecutor
 
 	mu             sync.RWMutex
-	config         *Config
+	Config         `yaml:",inline" json:",inline"`
+	config         *Config `json:"-" yaml:"-"`
 	tradingService strategyports.BasicTradingService
 	currentMarket  *domain.Market
 	marketGuard    strategycommon.MarketSlugGuard
@@ -46,12 +52,10 @@ func (s *Strategy) Name() string { return ID }
 func (s *Strategy) Defaults() error { return nil }
 
 func (s *Strategy) Validate() error {
-	s.mu.RLock()
+	s.mu.Lock()
+	s.config = &s.Config
 	cfg := s.config
-	s.mu.RUnlock()
-	if cfg == nil {
-		return fmt.Errorf("config 未注入")
-	}
+	s.mu.Unlock()
 	return cfg.Validate()
 }
 
@@ -63,6 +67,7 @@ func (s *Strategy) InitializeWithConfig(_ context.Context, cfg interface{}) erro
 	}
 	s.mu.Lock()
 	s.config = c
+	s.Config = *c
 	if s.inFlight == nil {
 		s.inFlight = strategycommon.NewInFlightLimiter(4)
 	}
