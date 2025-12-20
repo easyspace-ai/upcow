@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -391,10 +392,12 @@ func (m *MarketStream) subscribe(market *domain.Market) error {
 
 // handleMessage 处理消息
 func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
+	payload := bytes.TrimSpace(message)
+
 	// 兼容：服务器可能发送纯文本 PING/PONG（旧实现 MarketWebSocket 就是这么处理的）
 	// 注意：这里不能假设一定是 JSON
-	if len(message) > 0 {
-		switch string(message) {
+	if len(payload) > 0 {
+		switch string(payload) {
 		case "PING":
 			// 回复 PONG，保持连接
 			if err := m.writeTextMessage("PONG"); err != nil {
@@ -415,9 +418,9 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 	// 兼容：服务器可能发送 JSON 数组（例如初始 book 快照会是数组）。
 	// 这种情况下逐条展开处理，避免“策略完全收不到价格”的情况。
 	// 参考：clob/examples/place_order_auto.go
-	if len(message) > 0 && message[0] == '[' {
+	if len(payload) > 0 && payload[0] == '[' {
 		var rawMsgs []json.RawMessage
-		if err := json.Unmarshal(message, &rawMsgs); err == nil && len(rawMsgs) > 0 {
+		if err := json.Unmarshal(payload, &rawMsgs); err == nil && len(rawMsgs) > 0 {
 			for _, raw := range rawMsgs {
 				if len(raw) == 0 {
 					continue
@@ -431,9 +434,14 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 	var msgType struct {
 		EventType string `json:"event_type"`
 	}
-	if err := json.Unmarshal(message, &msgType); err != nil {
+	if err := json.Unmarshal(payload, &msgType); err != nil {
+		// 这里很可能是 JSON 数组 / 非预期格式：给出更可见的诊断（INFO 级别日志里也能看到）
+		if len(payload) > 0 && payload[0] == '[' {
+			marketLog.Warnf("⚠️ 收到数组格式消息但解析失败（可能包含非对象元素/格式异常），已丢弃。len=%d err=%v", len(payload), err)
+			return
+		}
 		// 非 JSON 消息：只在 debug 记录，避免刷屏
-		msgPreview := message
+		msgPreview := payload
 		if len(msgPreview) > 200 {
 			msgPreview = msgPreview[:200]
 		}
@@ -450,12 +458,12 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 		} else {
 			marketLog.Debugf("📨 [消息处理] 收到 price_change 消息，handlers 数量=%d，市场=%s", handlerCount, m.market.Slug)
 		}
-		var msg map[string]interface{}
-		if err := json.Unmarshal(message, &msg); err != nil {
+		var decoded map[string]interface{}
+		if err := json.Unmarshal(payload, &decoded); err != nil {
 			marketLog.Warnf("解析价格变化消息失败: %v", err)
 			return
 		}
-		m.handlePriceChange(ctx, msg)
+		m.handlePriceChange(ctx, decoded)
 	case "subscribed":
 		marketLog.Infof("✅ MarketStream 收到订阅成功消息")
 		// 订阅成功但长时间没任何数据时，给出更明确的诊断提示
@@ -471,7 +479,7 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 	case "book":
 		// 兼容：某些情况下服务器只推 book（快照/增量），未推 price_change。
 		// 为了不让策略“完全看不到实时 up/down”，这里从 book 中提取 best_ask/best_bid 并发出 PriceChangedEvent。
-		m.handleBookAsPrice(ctx, message)
+		m.handleBookAsPrice(ctx, payload)
 	case "tick_size_change":
 		// Tick size 变化（可选处理）
 		marketLog.Debugf("收到 tick size 变化消息")
