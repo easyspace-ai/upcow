@@ -207,6 +207,10 @@ func (s *TradingService) Stop() {
 func (s *TradingService) SetFunderAddress(funderAddress string, signatureType types.SignatureType) {
 	s.funderAddress = funderAddress
 	s.signatureType = signatureType
+	// 关键：IOExecutor 下单签名必须同步使用 funderAddress，否则 maker 仍会是 EOA
+	if s.ioExecutor != nil {
+		s.ioExecutor.SetFunderAddress(funderAddress, signatureType)
+	}
 }
 
 // SetMinOrderSize 设置最小订单金额（USDC）（无锁版本）
