@@ -55,12 +55,11 @@ type PairedTradingStrategy struct {
 	tradingService TradingServiceInterface
 
 	// 状态管理
-	positionState  *domain.ArbitragePositionState
-	currentMarket  *domain.Market
-	marketGuard    common.MarketSlugGuard
-	currentPhase   Phase
-	lockAchieved   bool      // 是否已完成锁定（两个方向利润都为正）
-	lastActionTime time.Time // 上次执行交易的时间
+	positionState *domain.ArbitragePositionState
+	currentMarket *domain.Market
+	marketGuard   common.MarketSlugGuard
+	currentPhase  Phase
+	lockAchieved  bool // 是否已完成锁定（两个方向利润都为正）
 
 	// 价格状态
 	priceUp   float64

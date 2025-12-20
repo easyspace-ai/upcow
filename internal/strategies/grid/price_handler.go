@@ -73,15 +73,20 @@ func (s *GridStrategy) onPriceChangedInternal(ctx context.Context, event *events
 
 	// 添加诊断日志：记录价格更新频率（每10次记录一次）
 	s.mu.Lock()
+	if s.priceUpdateLogDebouncer == nil {
+		// 兜底：避免未初始化导致 nil；这里的 interval 只用于“首次总是 Ready”语义
+		s.priceUpdateLogDebouncer = common.NewDebouncer(0)
+	}
 	if s.priceUpdateCount == 0 {
 		s.priceUpdateCount = 1
-		s.lastPriceUpdateLogTime = time.Now()
+		s.priceUpdateLogDebouncer.Reset()
+		s.priceUpdateLogDebouncer.MarkNow()
 	} else {
 		s.priceUpdateCount++
 		if s.priceUpdateCount%10 == 0 {
-			elapsed := time.Since(s.lastPriceUpdateLogTime)
+			_, elapsed := s.priceUpdateLogDebouncer.ReadyNow()
 			log.Debugf("📊 [价格更新] 已处理%d次价格更新，最近10次耗时=%v", s.priceUpdateCount, elapsed)
-			s.lastPriceUpdateLogTime = time.Now()
+			s.priceUpdateLogDebouncer.MarkNow()
 		}
 	}
 	s.mu.Unlock()

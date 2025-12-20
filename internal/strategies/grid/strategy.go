@@ -59,8 +59,8 @@ type GridStrategy struct {
 	processedGridLevels map[string]*common.Debouncer
 	processedLevelsMu   sync.RWMutex // 保护 processedGridLevels 的锁 // 当前市场的 Slug，用于检测周期切换
 	// 价格更新诊断
-	priceUpdateCount       int       // 价格更新计数（用于诊断）
-	lastPriceUpdateLogTime time.Time // 上次价格更新日志时间
+	priceUpdateCount        int               // 价格更新计数（用于诊断）
+	priceUpdateLogDebouncer *common.Debouncer // 价格更新诊断日志防抖（默认按10次输出节奏）
 
 	// UI/日志输出防抖（避免高频刷屏；不影响交易决策）
 	displayDebouncer *common.Debouncer
