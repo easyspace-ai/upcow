@@ -3,7 +3,6 @@ package grid
 import (
 	"context"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/betbot/gobet/clob/types"
@@ -191,57 +190,12 @@ func (s *GridStrategy) planStrongHedge(ctx context.Context) {
 		return
 	}
 
-	needUp := math.Max(0, target-upWin)
-	needDown := math.Max(0, target-downWin)
-	var tokenType domain.TokenType
-	var assetID string
-	var priceCents int
-	var needed float64
-	if needUp >= needDown {
-		tokenType = domain.TokenTypeUp
-		assetID = s.currentMarket.YesAssetID
-		priceCents = s.currentPriceUp
-		needed = needUp
-	} else {
-		tokenType = domain.TokenTypeDown
-		assetID = s.currentMarket.NoAssetID
-		priceCents = s.currentPriceDown
-		needed = needDown
-	}
-
-	price := domain.Price{Cents: priceCents}
-	priceDec := price.ToDecimal()
-	if priceDec <= 0 || priceDec >= 1 {
+	tokenType, assetID, price, dQ, maxBuy, ok := s.calcStrongHedgeOrderParams(target, upWin, downWin)
+	if !ok {
 		return
-	}
-
-	dQ := needed / (1.0 - priceDec)
-	if dQ <= 0 || math.IsNaN(dQ) || math.IsInf(dQ, 0) {
-		return
-	}
-
-	minOrderUSDC := s.config.MinOrderSize
-	if minOrderUSDC <= 0 {
-		minOrderUSDC = 1.1
-	}
-	if dQ*priceDec < minOrderUSDC {
-		dQ = minOrderUSDC / priceDec
-	}
-
-	// 限制单次补仓
-	maxDQ := 50.0
-	if s.isInHedgeLockWindow(s.currentMarket) {
-		maxDQ = math.Max(50.0, dQ)
-	}
-	if dQ > maxDQ {
-		dQ = maxDQ
 	}
 
 	// 取 bestAsk，优先成交
-	maxBuy := 0
-	if s.config.SupplementMaxBuySlippageCents > 0 {
-		maxBuy = price.Cents + s.config.SupplementMaxBuySlippageCents
-	}
 	bestPrice, err := orderutil.QuoteBuyPrice(ctx, s.tradingService, assetID, maxBuy)
 	if err != nil {
 		// 盘口不可用则用当前价格兜底（避免完全停摆）
