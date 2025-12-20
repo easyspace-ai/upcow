@@ -10,7 +10,6 @@ import (
 
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
-	"github.com/betbot/gobet/internal/strategies"
 	"github.com/betbot/gobet/internal/strategies/common"
 	strategyports "github.com/betbot/gobet/internal/strategies/ports"
 	"github.com/betbot/gobet/pkg/bbgo"
@@ -22,15 +21,16 @@ const ID = "grid"
 var log = logrus.WithField("strategy", ID)
 
 func init() {
-	// BBGO风格：在init函数中注册策略及其配置适配器
-	bbgo.RegisterStrategyWithAdapter(ID, &GridStrategy{}, &GridConfigAdapter{})
+	// bbgo main 风格：注册策略 struct，用于直接从 YAML/JSON 反序列化配置
+	bbgo.RegisterStrategy(ID, &GridStrategy{})
 }
 
 // GridStrategy 网格策略实现
 type GridStrategy struct {
 	// Executor 串行 IO 执行器（由 Environment 注入）
 	Executor           bbgo.CommandExecutor
-	config             *GridStrategyConfig
+	GridStrategyConfig `yaml:",inline" json:",inline"`
+	config             *GridStrategyConfig `json:"-" yaml:"-"`
 	grid               *domain.Grid
 	tradingService     strategyports.GridTradingService // 交易服务接口
 	directModeDebounce int                              // 直接回调模式的防抖间隔（毫秒），默认100ms
@@ -154,23 +154,16 @@ func (s *GridStrategy) Defaults() error {
 
 // Validate 验证配置（BBGO风格）
 func (s *GridStrategy) Validate() error {
-	if s.config == nil {
-		return fmt.Errorf("策略配置未设置")
-	}
-	return s.config.Validate()
+	s.config = &s.GridStrategyConfig
+	return s.GridStrategyConfig.Validate()
 }
 
-// Initialize 初始化策略
-func (s *GridStrategy) Initialize(ctx context.Context, config strategies.StrategyConfig) error {
-	gridConfig, ok := config.(*GridStrategyConfig)
-	if !ok {
-		return fmt.Errorf("无效的配置类型")
-	}
+// Initialize 初始化策略（BBGO风格：无参数，配置已直接反序列化到 struct）
+func (s *GridStrategy) Initialize() error {
+	s.config = &s.GridStrategyConfig
 
-	s.config = gridConfig
-
-	// BBGO风格：调用Validate方法验证配置
-	if err := s.Validate(); err != nil {
+	// 验证配置
+	if err := s.GridStrategyConfig.Validate(); err != nil {
 		return fmt.Errorf("配置验证失败: %w", err)
 	}
 
@@ -207,10 +200,10 @@ func (s *GridStrategy) Initialize(ctx context.Context, config strategies.Strateg
 	}
 
 	// 使用手工定义的网格层级创建网格
-	s.grid = domain.NewGridFromLevels(gridConfig.GridLevels)
+	s.grid = domain.NewGridFromLevels(s.config.GridLevels)
 	// BBGO风格：使用logrus.WithField的logger
 	log.Infof("网格策略已初始化: 网格层级数量=%d, 层级=%v, 防抖间隔=%dms, EnableDoubleSide=%v",
-		len(s.grid.Levels), gridConfig.GridLevels, s.directModeDebounce, gridConfig.EnableDoubleSide)
+		len(s.grid.Levels), s.config.GridLevels, s.directModeDebounce, s.config.EnableDoubleSide)
 
 	// 清空双向持仓跟踪（新周期开始）
 	s.ResetHoldings()

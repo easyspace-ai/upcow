@@ -23,14 +23,8 @@ import (
 	"github.com/betbot/gobet/pkg/logger"
 	"github.com/betbot/gobet/pkg/persistence"
 
-	// 导入策略包以触发 init() 函数注册策略
-	_ "github.com/betbot/gobet/internal/strategies/arbitrage"
-	_ "github.com/betbot/gobet/internal/strategies/datarecorder"
-	_ "github.com/betbot/gobet/internal/strategies/grid"
-	_ "github.com/betbot/gobet/internal/strategies/momentum"
-	_ "github.com/betbot/gobet/internal/strategies/pairlock"
-	_ "github.com/betbot/gobet/internal/strategies/threshold"
-	_ "github.com/betbot/gobet/internal/strategies/updown"
+	// 导入策略集合以触发 init() 注册（bbgo 风格）
+	_ "github.com/betbot/gobet/internal/strategies/all"
 )
 
 // sessionOrderHandler 将订单更新转发到Session（BBGO风格）
@@ -55,19 +49,6 @@ func (h *sessionOrderHandler) OnOrderUpdate(ctx context.Context, order *domain.O
 	}
 	h.session.EmitOrderUpdate(ctx, order)
 	return nil
-}
-
-// adaptStrategyConfig 适配配置，将 config.StrategyConfig 转换为策略特定的配置结构
-// 使用配置适配器模式，每个策略负责自己的配置适配逻辑
-func adaptStrategyConfig(strategyName string, strategyConfig config.StrategyConfig, proxyConfig *config.ProxyConfig) (interface{}, error) {
-	// 查找配置适配器
-	adapter, exists := bbgo.GetConfigAdapter(strategyName)
-	if !exists {
-		return nil, fmt.Errorf("策略 %s 未注册配置适配器", strategyName)
-	}
-
-	// 使用适配器转换配置
-	return adapter.AdaptConfig(strategyConfig, proxyConfig)
 }
 
 func main() {
@@ -210,12 +191,8 @@ func main() {
 	logrus.Infof("订单状态同步配置: 有活跃订单时=%d秒, 无活跃订单时=%d秒（官方API限流：150请求/10秒，理论上可支持1秒，但建议3秒以上）",
 		cfg.OrderStatusSyncIntervalWithOrders, cfg.OrderStatusSyncIntervalWithoutOrders)
 
-	// 设置最小订单金额（从网格策略配置中读取，如果没有则使用默认值 1.1）
-	minOrderSize := 1.1 // 默认值
-	if cfg.Strategies.Grid != nil && cfg.Strategies.Grid.MinOrderSize > 0 {
-		minOrderSize = cfg.Strategies.Grid.MinOrderSize
-	}
-	tradingService.SetMinOrderSize(minOrderSize)
+	// 设置最小订单金额（全局配置，不再从某个策略“偷读”）
+	tradingService.SetMinOrderSize(cfg.MinOrderSize)
 
 	// 创建 Environment
 	environ := bbgo.NewEnvironment()
@@ -250,25 +227,29 @@ func main() {
 	// 创建 Trader
 	trader := bbgo.NewTrader(environ)
 
-	// 加载策略（使用策略加载器，BBGO风格）
+	// 加载策略（bbgo main 风格：exchangeStrategies 动态挂载）
 	loader := bbgo.NewStrategyLoader(tradingService)
-	for _, strategyName := range cfg.Strategies.EnabledStrategies {
-		// 适配配置
-		adaptedConfig, err := adaptStrategyConfig(strategyName, cfg.Strategies, cfg.Proxy)
-		if err != nil {
-			logrus.Errorf("适配策略 %s 配置失败: %v", strategyName, err)
+	for _, mount := range cfg.ExchangeStrategies {
+		// 本项目默认会话名是 polymarket；如果配置了其它 session，则直接跳过
+		shouldMount := false
+		for _, on := range mount.On {
+			if on == "polymarket" {
+				shouldMount = true
+				break
+			}
+		}
+		if !shouldMount {
+			logrus.Infof("⏭️ 跳过策略 %s：未挂载到 polymarket（on=%v）", mount.StrategyID, mount.On)
 			continue
 		}
 
-		// 使用策略加载器加载策略
-		strategy, err := loader.LoadStrategy(initCtx, strategyName, adaptedConfig)
+		strategy, err := loader.LoadStrategy(initCtx, mount.StrategyID, mount.Config)
 		if err != nil {
-			logrus.Errorf("加载策略 %s 失败: %v", strategyName, err)
+			logrus.Errorf("加载策略 %s 失败: %v", mount.StrategyID, err)
 			continue
 		}
-
 		trader.AddStrategy(strategy)
-		logrus.Infof("✅ 策略 %s 已加载", strategyName)
+		logrus.Infof("✅ 策略 %s 已加载（on=%v）", mount.StrategyID, mount.On)
 	}
 
 	// 注入服务

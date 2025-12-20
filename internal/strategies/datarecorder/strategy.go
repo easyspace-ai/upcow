@@ -10,7 +10,6 @@ import (
 	"github.com/betbot/gobet/clob/rtds"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
-	"github.com/betbot/gobet/internal/strategies"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/logger"
@@ -22,8 +21,8 @@ const ID = "datarecorder"
 var log = logrus.WithField("strategy", ID)
 
 func init() {
-	// BBGO风格：在init函数中注册策略及其配置适配器
-	bbgo.RegisterStrategyWithAdapter(ID, &DataRecorderStrategy{}, &DataRecorderConfigAdapter{})
+	// bbgo main 风格：注册策略 struct，用于直接从 YAML/JSON 反序列化配置
+	bbgo.RegisterStrategy(ID, &DataRecorderStrategy{})
 }
 
 // rtdsLoggerAdapter 适配器，将 RTDS 日志输出到我们的 logger 系统
@@ -36,7 +35,8 @@ func (l *rtdsLoggerAdapter) Printf(format string, v ...interface{}) {
 // DataRecorderStrategy 数据记录策略
 type DataRecorderStrategy struct {
 	Executor           bbgo.CommandExecutor
-	config             *DataRecorderStrategyConfig
+	DataRecorderStrategyConfig `yaml:",inline" json:",inline"`
+	config                   *DataRecorderStrategyConfig `json:"-" yaml:"-"`
 	recorder           *DataRecorder
 	targetPriceFetcher *TargetPriceFetcher
 	rtdsClient         *rtds.Client
@@ -83,41 +83,33 @@ func (s *DataRecorderStrategy) Name() string {
 
 // Defaults 设置默认值（BBGO风格）
 func (s *DataRecorderStrategy) Defaults() error {
+	// 允许用户不显式配置 outputDir，给出默认值（更贴近 bbgo 的体验）
+	if s.OutputDir == "" {
+		s.OutputDir = "data/recordings"
+	}
+	// UseRTDSFallback 默认 true（用指针区分“未设置”和“显式 false”）
+	if s.UseRTDSFallback == nil {
+		def := true
+		s.UseRTDSFallback = &def
+	}
 	return nil
 }
 
 // Validate 验证配置（BBGO风格）
 func (s *DataRecorderStrategy) Validate() error {
-	if s.config == nil {
-		return fmt.Errorf("策略配置未设置")
-	}
-	return s.config.Validate()
+	s.config = &s.DataRecorderStrategyConfig
+	return s.DataRecorderStrategyConfig.Validate()
 }
 
 // Initialize 初始化策略（BBGO风格）
 func (s *DataRecorderStrategy) Initialize() error {
-	// BBGO风格的Initialize方法，使用已设置的config
-	if s.config == nil {
-		return fmt.Errorf("策略配置未设置")
-	}
-	return nil
-}
-
-// InitializeWithConfig 初始化策略（兼容旧接口）
-func (s *DataRecorderStrategy) InitializeWithConfig(ctx context.Context, config strategies.StrategyConfig) error {
-	recorderConfig, ok := config.(*DataRecorderStrategyConfig)
-	if !ok {
-		return fmt.Errorf("无效的配置类型")
-	}
-
-	if err := recorderConfig.Validate(); err != nil {
+	s.config = &s.DataRecorderStrategyConfig
+	if err := s.DataRecorderStrategyConfig.Validate(); err != nil {
 		return fmt.Errorf("配置验证失败: %w", err)
 	}
 
-	s.config = recorderConfig
-
 	// 创建数据记录器（流式写入）
-	recorder, err := NewDataRecorder(recorderConfig.OutputDir)
+	recorder, err := NewDataRecorder(s.OutputDir)
 	if err != nil {
 		return fmt.Errorf("创建数据记录器失败: %w", err)
 	}
@@ -128,7 +120,7 @@ func (s *DataRecorderStrategy) InitializeWithConfig(ctx context.Context, config 
 	rtdsLogger := &rtdsLoggerAdapter{}
 	rtdsConfig := &rtds.ClientConfig{
 		URL:            rtds.RTDSWebSocketURL,
-		ProxyURL:       recorderConfig.ProxyURL, // 设置代理 URL
+		ProxyURL:       s.ProxyURL, // 设置代理 URL
 		PingInterval:   5 * time.Second,
 		WriteTimeout:   10 * time.Second,
 		ReadTimeout:    60 * time.Second,
@@ -141,7 +133,11 @@ func (s *DataRecorderStrategy) InitializeWithConfig(ctx context.Context, config 
 	s.rtdsClient = rtdsClient
 
 	// 创建目标价获取器
-	s.targetPriceFetcher = NewTargetPriceFetcher(recorderConfig.UseRTDSFallback, rtdsClient)
+	useFallback := true
+	if s.UseRTDSFallback != nil {
+		useFallback = *s.UseRTDSFallback
+	}
+	s.targetPriceFetcher = NewTargetPriceFetcher(useFallback, rtdsClient)
 
 	// 连接 RTDS
 	logger.Infof("数据记录策略: 正在连接 RTDS...")
@@ -195,7 +191,7 @@ func (s *DataRecorderStrategy) InitializeWithConfig(ctx context.Context, config 
 	logger.Infof("数据记录策略: Chainlink BTC 价格订阅成功")
 
 	logger.Infof("数据记录策略已初始化: 输出目录=%s, RTDS备选=%v, 实时价格源=Chainlink",
-		recorderConfig.OutputDir, recorderConfig.UseRTDSFallback)
+		s.OutputDir, useFallback)
 
 	return nil
 }

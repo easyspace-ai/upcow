@@ -2,6 +2,7 @@ package bbgo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 
@@ -116,36 +117,19 @@ func (l *StrategyLoader) setTradingService(strategy interface{}) error {
 
 // initializeStrategy 将“适配后的配置”绑定到策略实例。
 // 这里只负责把 config 交给策略（通常是设置 s.config 字段），不负责调用 Defaults/Validate/Initialize()。
-func (l *StrategyLoader) initializeStrategy(ctx context.Context, strategy interface{}, config interface{}) error {
-	strategyValue := reflect.ValueOf(strategy)
-	configValue := reflect.ValueOf(config)
-
-	// 1) 优先尝试 Initialize(ctx, config)（部分策略使用此方法）
-	initMethod := strategyValue.MethodByName("Initialize")
-	if initMethod.IsValid() {
-		methodType := initMethod.Type()
-		if methodType.NumIn() == 2 {
-			results := initMethod.Call([]reflect.Value{reflect.ValueOf(ctx), configValue})
-			if len(results) > 0 && !results[0].IsNil() {
-				if err, ok := results[0].Interface().(error); ok && err != nil {
-					return fmt.Errorf("Initialize 失败: %w", err)
-				}
-			}
-			return nil
-		}
-	}
-
-	// 2) 尝试 InitializeWithConfig(ctx, config)（多数策略使用此方法）
-	initWithConfigMethod := strategyValue.MethodByName("InitializeWithConfig")
-	if initWithConfigMethod.IsValid() {
-		results := initWithConfigMethod.Call([]reflect.Value{reflect.ValueOf(ctx), configValue})
-		if len(results) > 0 && !results[0].IsNil() {
-			if err, ok := results[0].Interface().(error); ok && err != nil {
-				return fmt.Errorf("InitializeWithConfig 失败: %w", err)
-			}
-		}
+func (l *StrategyLoader) initializeStrategy(_ context.Context, strategy interface{}, config interface{}) error {
+	// bbgo(main) 风格：直接把配置 map 反序列化到策略 struct 上。
+	// 生命周期（Defaults/Validate/Initialize/Run）由 Trader 统一管理。
+	if config == nil {
 		return nil
 	}
 
-	return fmt.Errorf("无法注入策略配置：策略没有 Initialize(ctx, cfg) 或 InitializeWithConfig(ctx, cfg) 方法")
+	b, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("序列化策略配置失败: %w", err)
+	}
+	if err := json.Unmarshal(b, strategy); err != nil {
+		return fmt.Errorf("反序列化策略配置失败: %w", err)
+	}
+	return nil
 }

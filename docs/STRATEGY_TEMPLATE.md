@@ -3,8 +3,7 @@
 ### 目录结构（推荐）
 ```
 internal/strategies/<strategy_name>/
-  - adapter.go          # bbgo.ConfigAdapter（使用 internal/strategies/configadapter 的泛型助手）
-  - config.go           # 配置结构体 + Validate + GetName
+  - config.go           # 配置结构体 + Validate（json/yaml tag 使用 camelCase）
   - strategy.go         # Strategy struct + 生命周期 + 核心状态机入口
   - event_loop.go       # 单 goroutine loop（使用 common.StartLoopOnce）
   - order_loop_handlers.go / handlers.go  # 事件处理拆分（保持 strategy.go 不膨胀）
@@ -17,7 +16,7 @@ internal/strategies/<strategy_name>/
 - **限并发**：必须使用 `common.InFlightLimiter`
 - **非阻塞信号**：必须使用 `common.TrySignal` / `common.TrySend`
 - **跨周期隔离**：必须使用 `common.MarketSlugGuard`，订单必须携带 `MarketSlug`
-- **配置适配**：bbgo adapter 使用 `internal/strategies/configadapter.AdaptRequired`
+- **配置加载**：按 bbgo(main) 风格，配置由 loader 直接反序列化到策略 struct（不需要 adapter）
 
 ### 可直接复制的代码骨架
 - 见：`internal/strategies/template/`（该包**不注册**，仅用于复制/参考，确保可编译）

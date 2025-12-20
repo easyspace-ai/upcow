@@ -7,13 +7,13 @@ import (
 
 // MomentumStrategyConfig 动量策略配置（来自 pkg/config.MomentumConfig 的适配结果）。
 type MomentumStrategyConfig struct {
-	Asset          string
-	SizeUSDC       float64
-	ThresholdBps   int
-	WindowSecs     int
-	MinEdgeCents   int
-	CooldownSecs   int
-	UsePolygonFeed bool
+	Asset          string  `json:"asset" yaml:"asset"`
+	SizeUSDC       float64 `json:"sizeUSDC" yaml:"sizeUSDC"`
+	ThresholdBps   int     `json:"thresholdBps" yaml:"thresholdBps"`
+	WindowSecs     int     `json:"windowSecs" yaml:"windowSecs"`
+	MinEdgeCents   int     `json:"minEdgeCents" yaml:"minEdgeCents"`
+	CooldownSecs   int     `json:"cooldownSecs" yaml:"cooldownSecs"`
+	UsePolygonFeed bool    `json:"usePolygonFeed" yaml:"usePolygonFeed"`
 }
 
 // GetName 实现 StrategyConfig 接口

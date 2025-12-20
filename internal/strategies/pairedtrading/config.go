@@ -4,45 +4,44 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/betbot/gobet/pkg/bbgo"
-	"github.com/betbot/gobet/pkg/config"
+	"github.com/betbot/gobet/internal/strategies/common"
 )
 
 // PairedTradingConfig 成对交易策略配置
 type PairedTradingConfig struct {
 	// 阶段控制参数
-	BuildDuration     time.Duration `yaml:"build_duration"`      // 建仓阶段持续时间
-	LockStart         time.Duration `yaml:"lock_start"`          // 锁定阶段开始时间
-	AmplifyStart      time.Duration `yaml:"amplify_start"`       // 放大阶段开始时间
-	CycleDuration     time.Duration `yaml:"cycle_duration"`      // 周期总时长
-	EarlyLockPrice    float64       `yaml:"early_lock_price"`    // 提前进入锁定阶段的价格阈值
-	EarlyAmplifyPrice float64       `yaml:"early_amplify_price"` // 提前进入放大阶段的价格阈值
+	BuildDuration     common.Duration `json:"buildDuration" yaml:"buildDuration"`   // 例如 "5m"
+	LockStart         common.Duration `json:"lockStart" yaml:"lockStart"`           // 例如 "5m"
+	AmplifyStart      common.Duration `json:"amplifyStart" yaml:"amplifyStart"`     // 例如 "10m"
+	CycleDuration     common.Duration `json:"cycleDuration" yaml:"cycleDuration"`   // 例如 "15m"
+	EarlyLockPrice    float64         `json:"earlyLockPrice" yaml:"earlyLockPrice"` // 提前进入锁定阶段的价格阈值
+	EarlyAmplifyPrice float64         `json:"earlyAmplifyPrice" yaml:"earlyAmplifyPrice"` // 提前进入放大阶段的价格阈值
 
 	// 建仓参数
-	BaseTarget     float64 `yaml:"base_target"`     // 基础建仓目标（shares）
-	BuildLotSize   float64 `yaml:"build_lot_size"`  // 单次建仓数量
-	BuildThreshold float64 `yaml:"build_threshold"` // 建仓价格上限
-	MinRatio       float64 `yaml:"min_ratio"`       // 最小持仓比例
-	MaxRatio       float64 `yaml:"max_ratio"`       // 最大持仓比例
+	BaseTarget     float64 `json:"baseTarget" yaml:"baseTarget"`     // 基础建仓目标（shares）
+	BuildLotSize   float64 `json:"buildLotSize" yaml:"buildLotSize"` // 单次建仓数量
+	BuildThreshold float64 `json:"buildThreshold" yaml:"buildThreshold"` // 建仓价格上限
+	MinRatio       float64 `json:"minRatio" yaml:"minRatio"`         // 最小持仓比例
+	MaxRatio       float64 `json:"maxRatio" yaml:"maxRatio"`         // 最大持仓比例
 
 	// 锁定参数
-	LockThreshold    float64 `yaml:"lock_threshold"`     // 触发锁定的风险阈值（USDC）
-	LockPriceMax     float64 `yaml:"lock_price_max"`     // 锁定阶段最高买入价格
-	ExtremeHigh      float64 `yaml:"extreme_high"`       // 极端价格阈值
-	TargetProfitBase float64 `yaml:"target_profit_base"` // 目标利润（每个方向，USDC）
-	InsuranceSize    float64 `yaml:"insurance_size"`     // 反向保险数量
+	LockThreshold    float64 `json:"lockThreshold" yaml:"lockThreshold"`     // 触发锁定的风险阈值（USDC）
+	LockPriceMax     float64 `json:"lockPriceMax" yaml:"lockPriceMax"`       // 锁定阶段最高买入价格
+	ExtremeHigh      float64 `json:"extremeHigh" yaml:"extremeHigh"`         // 极端价格阈值
+	TargetProfitBase float64 `json:"targetProfitBase" yaml:"targetProfitBase"` // 目标利润（每个方向，USDC）
+	InsuranceSize    float64 `json:"insuranceSize" yaml:"insuranceSize"`     // 反向保险数量
 
 	// 放大参数
-	AmplifyTarget      float64 `yaml:"amplify_target"`      // 放大目标利润（USDC）
-	AmplifyPriceMax    float64 `yaml:"amplify_price_max"`   // 放大阶段最高买入价格
-	InsurancePriceMax  float64 `yaml:"insurance_price_max"` // 反向保险最高价格
-	DirectionThreshold float64 `yaml:"direction_threshold"` // 主方向判定阈值
+	AmplifyTarget      float64 `json:"amplifyTarget" yaml:"amplifyTarget"`         // 放大目标利润（USDC）
+	AmplifyPriceMax    float64 `json:"amplifyPriceMax" yaml:"amplifyPriceMax"`     // 放大阶段最高买入价格
+	InsurancePriceMax  float64 `json:"insurancePriceMax" yaml:"insurancePriceMax"` // 反向保险最高价格
+	DirectionThreshold float64 `json:"directionThreshold" yaml:"directionThreshold"` // 主方向判定阈值
 
 	// 通用参数
-	MinOrderSize        float64 `yaml:"min_order_size"`         // 最小下单金额（USDC）
-	MaxBuySlippageCents int     `yaml:"max_buy_slippage_cents"` // 最大买入滑点（分）
-	AutoAdjustSize      bool    `yaml:"auto_adjust_size"`       // 是否自动调整数量以满足最小金额（默认true）
-	MaxSizeAdjustRatio  float64 `yaml:"max_size_adjust_ratio"`  // 最大数量调整倍数（默认5.0）
+	MinOrderSize        float64 `json:"minOrderSize" yaml:"minOrderSize"`                 // 最小下单金额（USDC）
+	MaxBuySlippageCents int     `json:"maxBuySlippageCents" yaml:"maxBuySlippageCents"`   // 最大买入滑点（分）
+	AutoAdjustSize      bool    `json:"autoAdjustSize" yaml:"autoAdjustSize"`             // 是否自动调整数量以满足最小金额（默认true）
+	MaxSizeAdjustRatio  float64 `json:"maxSizeAdjustRatio" yaml:"maxSizeAdjustRatio"`     // 最大数量调整倍数（默认5.0）
 }
 
 // GetName implements strategies.StrategyConfig (compat).
@@ -51,19 +50,19 @@ func (c *PairedTradingConfig) GetName() string { return ID }
 // Validate 验证配置
 func (c *PairedTradingConfig) Validate() error {
 	// 验证阶段时间
-	if c.BuildDuration <= 0 {
+	if c.BuildDuration.Duration <= 0 {
 		return fmt.Errorf("build_duration 必须大于 0")
 	}
-	if c.LockStart <= 0 {
+	if c.LockStart.Duration <= 0 {
 		return fmt.Errorf("lock_start 必须大于 0")
 	}
-	if c.AmplifyStart <= 0 {
+	if c.AmplifyStart.Duration <= 0 {
 		return fmt.Errorf("amplify_start 必须大于 0")
 	}
-	if c.CycleDuration <= 0 {
+	if c.CycleDuration.Duration <= 0 {
 		return fmt.Errorf("cycle_duration 必须大于 0")
 	}
-	if c.LockStart > c.AmplifyStart || c.AmplifyStart > c.CycleDuration {
+	if c.LockStart.Duration > c.AmplifyStart.Duration || c.AmplifyStart.Duration > c.CycleDuration.Duration {
 		return fmt.Errorf("阶段时间必须满足: build_duration < lock_start < amplify_start < cycle_duration")
 	}
 
@@ -143,10 +142,10 @@ func (c *PairedTradingConfig) Validate() error {
 func DefaultPairedTradingConfig() *PairedTradingConfig {
 	return &PairedTradingConfig{
 		// 阶段控制（默认15分钟周期）
-		BuildDuration:     5 * time.Minute,  // 建仓阶段 0-5 分钟
-		LockStart:         5 * time.Minute,  // 锁定阶段 5-10 分钟
-		AmplifyStart:      10 * time.Minute, // 放大阶段 10-15 分钟
-		CycleDuration:     15 * time.Minute, // 总周期 15 分钟
+		BuildDuration:     common.Duration{Duration: 5 * time.Minute},  // 建仓阶段 0-5 分钟
+		LockStart:         common.Duration{Duration: 5 * time.Minute},  // 锁定阶段 5-10 分钟
+		AmplifyStart:      common.Duration{Duration: 10 * time.Minute}, // 放大阶段 10-15 分钟
+		CycleDuration:     common.Duration{Duration: 15 * time.Minute}, // 总周期 15 分钟
 		EarlyLockPrice:    0.85,             // 价格超过0.85提前进入锁定
 		EarlyAmplifyPrice: 0.90,             // 价格超过0.90提前进入放大
 
@@ -177,196 +176,3 @@ func DefaultPairedTradingConfig() *PairedTradingConfig {
 		MaxSizeAdjustRatio:  5.0,  // 最大调整5倍
 	}
 }
-
-// PairedTradingConfigAdapter 配置适配器（BBGO风格）
-type PairedTradingConfigAdapter struct{}
-
-// AdaptConfig implements bbgo.ConfigAdapter.
-func (a *PairedTradingConfigAdapter) AdaptConfig(strategyConfig interface{}, proxyConfig interface{}) (interface{}, error) {
-	switch v := strategyConfig.(type) {
-	case map[string]interface{}:
-		return a.AdaptFromMap(v)
-	case config.StrategyConfig:
-		if v.PairedTrading == nil {
-			return nil, fmt.Errorf("paired_trading 策略已启用但配置为空")
-		}
-		pc := v.PairedTrading
-		cfg := &PairedTradingConfig{
-			BuildDuration:     pc.BuildDuration,
-			LockStart:         pc.LockStart,
-			AmplifyStart:      pc.AmplifyStart,
-			CycleDuration:     pc.CycleDuration,
-			EarlyLockPrice:    pc.EarlyLockPrice,
-			EarlyAmplifyPrice: pc.EarlyAmplifyPrice,
-
-			BaseTarget:     pc.BaseTarget,
-			BuildLotSize:   pc.BuildLotSize,
-			BuildThreshold: pc.BuildThreshold,
-			MinRatio:       pc.MinRatio,
-			MaxRatio:       pc.MaxRatio,
-
-			LockThreshold:    pc.LockThreshold,
-			LockPriceMax:     pc.LockPriceMax,
-			ExtremeHigh:      pc.ExtremeHigh,
-			TargetProfitBase: pc.TargetProfitBase,
-			InsuranceSize:    pc.InsuranceSize,
-
-			AmplifyTarget:      pc.AmplifyTarget,
-			AmplifyPriceMax:    pc.AmplifyPriceMax,
-			InsurancePriceMax:  pc.InsurancePriceMax,
-			DirectionThreshold: pc.DirectionThreshold,
-
-			MinOrderSize:        pc.MinOrderSize,
-			MaxBuySlippageCents: pc.MaxBuySlippageCents,
-			AutoAdjustSize:      pc.AutoAdjustSize,
-			MaxSizeAdjustRatio:  pc.MaxSizeAdjustRatio,
-		}
-		if err := cfg.Validate(); err != nil {
-			return nil, err
-		}
-		return cfg, nil
-	default:
-		return nil, fmt.Errorf("无效的策略配置类型: %T", strategyConfig)
-	}
-}
-
-// AdaptFromMap 从 map 适配配置
-func (a *PairedTradingConfigAdapter) AdaptFromMap(m map[string]interface{}) (interface{}, error) {
-	config := DefaultPairedTradingConfig()
-
-	// 阶段控制参数
-	if v, ok := m["build_duration"]; ok {
-		if d, err := time.ParseDuration(fmt.Sprintf("%vs", v)); err == nil {
-			config.BuildDuration = d
-		}
-	}
-	if v, ok := m["lock_start"]; ok {
-		if d, err := time.ParseDuration(fmt.Sprintf("%vs", v)); err == nil {
-			config.LockStart = d
-		}
-	}
-	if v, ok := m["amplify_start"]; ok {
-		if d, err := time.ParseDuration(fmt.Sprintf("%vs", v)); err == nil {
-			config.AmplifyStart = d
-		}
-	}
-	if v, ok := m["cycle_duration"]; ok {
-		if d, err := time.ParseDuration(fmt.Sprintf("%vs", v)); err == nil {
-			config.CycleDuration = d
-		}
-	}
-	if v, ok := m["early_lock_price"]; ok {
-		if f, ok := v.(float64); ok {
-			config.EarlyLockPrice = f
-		}
-	}
-	if v, ok := m["early_amplify_price"]; ok {
-		if f, ok := v.(float64); ok {
-			config.EarlyAmplifyPrice = f
-		}
-	}
-
-	// 建仓参数
-	if v, ok := m["base_target"]; ok {
-		if f, ok := v.(float64); ok {
-			config.BaseTarget = f
-		}
-	}
-	if v, ok := m["build_lot_size"]; ok {
-		if f, ok := v.(float64); ok {
-			config.BuildLotSize = f
-		}
-	}
-	if v, ok := m["build_threshold"]; ok {
-		if f, ok := v.(float64); ok {
-			config.BuildThreshold = f
-		}
-	}
-	if v, ok := m["min_ratio"]; ok {
-		if f, ok := v.(float64); ok {
-			config.MinRatio = f
-		}
-	}
-	if v, ok := m["max_ratio"]; ok {
-		if f, ok := v.(float64); ok {
-			config.MaxRatio = f
-		}
-	}
-
-	// 锁定参数
-	if v, ok := m["lock_threshold"]; ok {
-		if f, ok := v.(float64); ok {
-			config.LockThreshold = f
-		}
-	}
-	if v, ok := m["lock_price_max"]; ok {
-		if f, ok := v.(float64); ok {
-			config.LockPriceMax = f
-		}
-	}
-	if v, ok := m["extreme_high"]; ok {
-		if f, ok := v.(float64); ok {
-			config.ExtremeHigh = f
-		}
-	}
-	if v, ok := m["target_profit_base"]; ok {
-		if f, ok := v.(float64); ok {
-			config.TargetProfitBase = f
-		}
-	}
-	if v, ok := m["insurance_size"]; ok {
-		if f, ok := v.(float64); ok {
-			config.InsuranceSize = f
-		}
-	}
-
-	// 放大参数
-	if v, ok := m["amplify_target"]; ok {
-		if f, ok := v.(float64); ok {
-			config.AmplifyTarget = f
-		}
-	}
-	if v, ok := m["amplify_price_max"]; ok {
-		if f, ok := v.(float64); ok {
-			config.AmplifyPriceMax = f
-		}
-	}
-	if v, ok := m["insurance_price_max"]; ok {
-		if f, ok := v.(float64); ok {
-			config.InsurancePriceMax = f
-		}
-	}
-	if v, ok := m["direction_threshold"]; ok {
-		if f, ok := v.(float64); ok {
-			config.DirectionThreshold = f
-		}
-	}
-
-	// 通用参数
-	if v, ok := m["min_order_size"]; ok {
-		if f, ok := v.(float64); ok {
-			config.MinOrderSize = f
-		}
-	}
-	if v, ok := m["max_buy_slippage_cents"]; ok {
-		if i, ok := v.(int); ok {
-			config.MaxBuySlippageCents = i
-		} else if f, ok := v.(float64); ok {
-			config.MaxBuySlippageCents = int(f)
-		}
-	}
-	if v, ok := m["auto_adjust_size"]; ok {
-		if b, ok := v.(bool); ok {
-			config.AutoAdjustSize = b
-		}
-	}
-	if v, ok := m["max_size_adjust_ratio"]; ok {
-		if f, ok := v.(float64); ok {
-			config.MaxSizeAdjustRatio = f
-		}
-	}
-
-	return config, nil
-}
-
-var _ bbgo.ConfigAdapter = (*PairedTradingConfigAdapter)(nil)

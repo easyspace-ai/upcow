@@ -10,7 +10,6 @@ import (
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
-	"github.com/betbot/gobet/internal/strategies"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 	strategyports "github.com/betbot/gobet/internal/strategies/ports"
@@ -24,14 +23,15 @@ const ID = "arbitrage"
 var log = logrus.WithField("strategy", ID)
 
 func init() {
-	// BBGO风格：在init函数中注册策略及其配置适配器
-	bbgo.RegisterStrategyWithAdapter(ID, &ArbitrageStrategy{}, &ArbitrageConfigAdapter{})
+	// bbgo main 风格：注册策略 struct，用于直接从 YAML/JSON 反序列化配置
+	bbgo.RegisterStrategy(ID, &ArbitrageStrategy{})
 }
 
 // ArbitrageStrategy 套利策略实现
 type ArbitrageStrategy struct {
 	Executor       bbgo.CommandExecutor
-	config         *ArbitrageStrategyConfig
+	ArbitrageStrategyConfig `yaml:",inline" json:",inline"`
+	config                 *ArbitrageStrategyConfig `json:"-" yaml:"-"`
 	tradingService strategyports.BasicTradingService
 	positionState  *domain.ArbitragePositionState
 	currentMarket  *domain.Market
@@ -84,33 +84,17 @@ func (s *ArbitrageStrategy) Defaults() error {
 
 // Validate 验证配置（BBGO风格）
 func (s *ArbitrageStrategy) Validate() error {
-	if s.config == nil {
-		return fmt.Errorf("策略配置未设置")
-	}
-	return s.config.Validate()
+	s.config = &s.ArbitrageStrategyConfig
+	return s.ArbitrageStrategyConfig.Validate()
 }
 
 // Initialize 初始化策略（BBGO风格）
 func (s *ArbitrageStrategy) Initialize() error {
-	// BBGO风格的Initialize方法，使用已设置的config
-	if s.config == nil {
-		return fmt.Errorf("策略配置未设置")
-	}
-	return nil
-}
-
-// InitializeWithConfig 初始化策略（兼容旧接口）
-func (s *ArbitrageStrategy) InitializeWithConfig(ctx context.Context, config strategies.StrategyConfig) error {
-	arbitrageConfig, ok := config.(*ArbitrageStrategyConfig)
-	if !ok {
-		return fmt.Errorf("无效的配置类型")
-	}
-
-	if err := arbitrageConfig.Validate(); err != nil {
+	s.config = &s.ArbitrageStrategyConfig
+	if err := s.ArbitrageStrategyConfig.Validate(); err != nil {
 		return fmt.Errorf("配置验证失败: %w", err)
 	}
 
-	s.config = arbitrageConfig
 	if s.maxInFlight <= 0 {
 		// 参考 CSV：单秒可出现 10-30 笔成交，策略侧至少要允许小并发，避免“只能一笔一笔慢慢下”
 		s.maxInFlight = 8
@@ -123,11 +107,10 @@ func (s *ArbitrageStrategy) InitializeWithConfig(ctx context.Context, config str
 	s.inFlightLimiter.Reset()
 
 	logger.Infof("套利策略已初始化: 周期时长=%v, 锁盈起始=%v, UP目标=%v, DOWN目标=%v",
-		arbitrageConfig.CycleDuration,
-		arbitrageConfig.LockStart,
-		arbitrageConfig.TargetUpBase,
-		arbitrageConfig.TargetDownBase)
-
+		s.CycleDuration.Duration,
+		s.LockStart.Duration,
+		s.TargetUpBase,
+		s.TargetDownBase)
 	return nil
 }
 

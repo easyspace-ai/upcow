@@ -2,7 +2,6 @@ package template
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -28,7 +27,8 @@ type Strategy struct {
 	Executor bbgo.CommandExecutor
 
 	mu             sync.RWMutex
-	config         *Config
+	Config         `yaml:",inline" json:",inline"`
+	config         *Config `json:"-" yaml:"-"`
 	tradingService strategyports.BasicTradingService
 	currentMarket  *domain.Market
 	marketGuard    strategycommon.MarketSlugGuard
@@ -46,23 +46,17 @@ func (s *Strategy) Name() string { return ID }
 func (s *Strategy) Defaults() error { return nil }
 
 func (s *Strategy) Validate() error {
-	s.mu.RLock()
+	s.mu.Lock()
+	s.config = &s.Config
 	cfg := s.config
-	s.mu.RUnlock()
-	if cfg == nil {
-		return fmt.Errorf("config 未注入")
-	}
+	s.mu.Unlock()
 	return cfg.Validate()
 }
 
-// InitializeWithConfig is used by StrategyLoader to inject the adapted config.
-func (s *Strategy) InitializeWithConfig(_ context.Context, cfg interface{}) error {
-	c, ok := cfg.(*Config)
-	if !ok {
-		return fmt.Errorf("无效配置类型: %T", cfg)
-	}
+// Initialize is called by Trader.Initialize (bbgo 风格)。
+func (s *Strategy) Initialize() error {
 	s.mu.Lock()
-	s.config = c
+	s.config = &s.Config
 	if s.inFlight == nil {
 		s.inFlight = strategycommon.NewInFlightLimiter(4)
 	}
@@ -163,7 +157,7 @@ func (s *Strategy) tryDoOnce(ctx context.Context) {
 	ts := s.tradingService
 	s.mu.RUnlock()
 
-	if cfg == nil || !cfg.Enabled || market == nil || ts == nil {
+	if cfg == nil || market == nil || ts == nil {
 		return
 	}
 

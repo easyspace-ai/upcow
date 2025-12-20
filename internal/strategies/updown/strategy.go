@@ -2,7 +2,6 @@ package updown
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -19,8 +18,8 @@ import (
 var log = logrus.WithField("strategy", "updown")
 
 func init() {
-	// BBGO风格：在init函数中注册策略及其配置适配器
-	bbgo.RegisterStrategyWithAdapter(ID, &upDownStrategy{}, &ConfigAdapter{})
+	// bbgo main 风格：注册策略 struct，用于直接从 YAML/JSON 反序列化配置
+	bbgo.RegisterStrategy(ID, &Strategy{})
 }
 
 // Strategy is a standard single-exchange strategy implementation.
@@ -33,7 +32,8 @@ type upDownStrategy struct {
 	Executor bbgo.CommandExecutor
 
 	mu             sync.RWMutex
-	config         *Config
+	Config         `yaml:",inline" json:",inline"`
+	config         *Config `json:"-" yaml:"-"`
 	tradingService strategyports.BasicTradingService
 	currentMarket  *domain.Market
 	marketGuard    strategycommon.MarketSlugGuard
@@ -50,24 +50,17 @@ func (s *upDownStrategy) Name() string { return ID }
 
 func (s *upDownStrategy) Defaults() error { return nil }
 
-func (s *upDownStrategy) Validate() error {
-	s.mu.RLock()
+func (s *Strategy) Validate() error {
+	s.mu.Lock()
+	s.config = &s.Config
 	cfg := s.config
-	s.mu.RUnlock()
-	if cfg == nil {
-		return fmt.Errorf("config 未注入")
-	}
+	s.mu.Unlock()
 	return cfg.Validate()
 }
 
-// InitializeWithConfig is used by StrategyLoader to inject the adapted config.
-func (s *upDownStrategy) InitializeWithConfig(_ context.Context, cfg interface{}) error {
-	c, ok := cfg.(*Config)
-	if !ok {
-		return fmt.Errorf("无效配置类型: %T", cfg)
-	}
+func (s *Strategy) Initialize() error {
 	s.mu.Lock()
-	s.config = c
+	s.config = &s.Config
 	if s.inFlight == nil {
 		s.inFlight = strategycommon.NewInFlightLimiter(4)
 	}

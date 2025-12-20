@@ -3,22 +3,24 @@ package arbitrage
 import (
 	"fmt"
 	"time"
+
+	"github.com/betbot/gobet/internal/strategies/common"
 )
 
 // ArbitrageStrategyConfig 套利策略配置
 type ArbitrageStrategyConfig struct {
-	CycleDuration           time.Duration // 周期时长（默认15分钟）
-	LockStart               time.Duration // 锁盈阶段起始时间（默认12分钟）
-	EarlyLockPriceThreshold float64       // 提前锁盈价格阈值（默认0.85，当UP或DOWN价格达到此阈值时提前进入锁盈阶段）
-	TargetUpBase            float64       // UP胜目标利润（USDC，默认100）
-	TargetDownBase          float64       // DOWN胜目标利润（USDC，默认60）
-	BaseTarget              float64       // 基础建仓目标持仓量（默认1500）
-	BuildLotSize            float64       // 建仓阶段单次下单量（默认18）
-	MaxUpIncrement          float64       // 锁盈阶段单次最大UP加仓量（默认总持仓的5%）
-	MaxDownIncrement        float64       // 锁盈阶段单次最大DOWN加仓量（默认总持仓的5%）
-	SmallIncrement          float64       // 反向保险小额加仓量（默认总持仓的1%）
-	MinOrderSize            float64       // 最小下单金额（USDC，默认1.2，交易所要求不能小于1）
-	MaxBuySlippageCents     int           // 买入最大滑点（分），相对当前观测价上限（0=关闭）
+	CycleDuration           common.Duration `json:"cycleDuration" yaml:"cycleDuration"` // 周期时长（例如 "15m"）
+	LockStart               common.Duration `json:"lockStart" yaml:"lockStart"`         // 锁盈阶段起始时间（例如 "10m"）
+	EarlyLockPriceThreshold float64         `json:"earlyLockPriceThreshold" yaml:"earlyLockPriceThreshold"`
+	TargetUpBase            float64         `json:"targetUpBase" yaml:"targetUpBase"`
+	TargetDownBase          float64         `json:"targetDownBase" yaml:"targetDownBase"`
+	BaseTarget              float64         `json:"baseTarget" yaml:"baseTarget"`
+	BuildLotSize            float64         `json:"buildLotSize" yaml:"buildLotSize"`
+	MaxUpIncrement          float64         `json:"maxUpIncrement" yaml:"maxUpIncrement"`
+	MaxDownIncrement        float64         `json:"maxDownIncrement" yaml:"maxDownIncrement"`
+	SmallIncrement          float64         `json:"smallIncrement" yaml:"smallIncrement"`
+	MinOrderSize            float64         `json:"minOrderSize" yaml:"minOrderSize"`
+	MaxBuySlippageCents     int             `json:"maxBuySlippageCents" yaml:"maxBuySlippageCents"`
 }
 
 // GetName 实现 StrategyConfig 接口
@@ -28,10 +30,10 @@ func (c *ArbitrageStrategyConfig) GetName() string {
 
 // Validate 验证配置
 func (c *ArbitrageStrategyConfig) Validate() error {
-	if c.CycleDuration <= 0 {
+	if c.CycleDuration.Duration <= 0 {
 		return fmt.Errorf("周期时长必须大于0")
 	}
-	if c.LockStart <= 0 || c.LockStart >= c.CycleDuration {
+	if c.LockStart.Duration <= 0 || c.LockStart.Duration >= c.CycleDuration.Duration {
 		return fmt.Errorf("锁盈阶段起始时间必须在0和周期时长之间")
 	}
 	if c.EarlyLockPriceThreshold <= 0 || c.EarlyLockPriceThreshold >= 1 {
@@ -61,8 +63,8 @@ func (c *ArbitrageStrategyConfig) Validate() error {
 // DefaultArbitrageStrategyConfig 返回默认配置
 func DefaultArbitrageStrategyConfig() *ArbitrageStrategyConfig {
 	return &ArbitrageStrategyConfig{
-		CycleDuration:           15 * time.Minute,
-		LockStart:               10 * time.Minute, // 从12分钟提前到10分钟，与高手机器人策略一致
+		CycleDuration:           common.Duration{Duration: 15 * time.Minute},
+		LockStart:               common.Duration{Duration: 10 * time.Minute}, // 从12分钟提前到10分钟，与高手机器人策略一致
 		EarlyLockPriceThreshold: 0.85,             // 当UP或DOWN价格达到0.85时提前进入锁盈
 		TargetUpBase:            100.0,
 		TargetDownBase:          60.0,
