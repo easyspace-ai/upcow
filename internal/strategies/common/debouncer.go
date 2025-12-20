@@ -62,3 +62,10 @@ func (d *Debouncer) Mark(now time.Time) {
 
 // MarkNow records time.Now() as successful action time.
 func (d *Debouncer) MarkNow() { d.Mark(time.Now()) }
+
+// Reset clears the last action time (next Ready will return true).
+func (d *Debouncer) Reset() {
+	d.mu.Lock()
+	d.last = time.Time{}
+	d.mu.Unlock()
+}

@@ -11,6 +11,7 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/strategies"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
@@ -63,9 +64,9 @@ type MomentumStrategy struct {
 	signalC    chan MomentumSignal
 
 	// 当前周期 market（用于 MarketSlug/assetID）
-	mu           sync.RWMutex
+	mu            sync.RWMutex
 	currentMarket *domain.Market
-	lastTradeAt  time.Time
+	lastTradeAt   time.Time
 }
 
 func (s *MomentumStrategy) ID() string   { return ID }
@@ -147,18 +148,22 @@ func (s *MomentumStrategy) Shutdown(ctx context.Context, wg *sync.WaitGroup) {
 }
 
 func (s *MomentumStrategy) startLoop(parent context.Context) {
-	s.loopOnce.Do(func() {
-		loopCtx, cancel := context.WithCancel(parent)
-		s.loopCancel = cancel
-		s.signalC = make(chan MomentumSignal, 1024)
+	common.StartLoopOnce(
+		parent,
+		&s.loopOnce,
+		func(cancel context.CancelFunc) { s.loopCancel = cancel },
+		0,
+		func(loopCtx context.Context, _ <-chan time.Time) {
+			s.signalC = make(chan MomentumSignal, 1024)
 
-		// 外部行情源：Polygon
-		if s.config != nil && s.config.UsePolygonFeed {
-			go runPolygonFeed(loopCtx, s.config.Asset, s.config.ThresholdBps, s.config.WindowSecs, s.signalC, log)
-		}
+			// 外部行情源：Polygon
+			if s.config != nil && s.config.UsePolygonFeed {
+				go runPolygonFeed(loopCtx, s.config.Asset, s.config.ThresholdBps, s.config.WindowSecs, s.signalC, log)
+			}
 
-		go s.loop(loopCtx)
-	})
+			s.loop(loopCtx)
+		},
+	)
 }
 
 func (s *MomentumStrategy) loop(ctx context.Context) {
@@ -262,4 +267,3 @@ func (s *MomentumStrategy) placeFAK(ctx context.Context, ts TradingServiceInterf
 	}
 	return nil
 }
-

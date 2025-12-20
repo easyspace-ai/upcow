@@ -86,12 +86,13 @@ func (s *GridStrategy) ResetStateForNewCycle() {
 	log.Infof("🔄 [周期切换] 轮数已重置: 0")
 
 	// 重置显示时间（确保新周期第一次价格更新能显示）
-	s.lastDisplayTime = time.Time{}
-	log.Debugf("🔄 [周期切换] 显示时间已重置，确保首次价格更新能显示")
+	if s.displayDebouncer != nil {
+		s.displayDebouncer.Reset()
+		log.Debugf("🔄 [周期切换] 显示防抖已重置，确保首次价格更新能显示")
+	}
 
 	// 重置双向持仓跟踪
 	s.resetHoldingsLocked()
 
 	log.Infof("✅ [周期切换] 策略状态已重置，准备开始新周期")
 }
-

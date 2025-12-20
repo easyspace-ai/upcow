@@ -37,13 +37,10 @@ type GridStrategy struct {
 	activePosition        *domain.Position
 	roundsThisPeriod      int
 	currentPeriod         int64
-	currentPriceUp        int        // 当前 UP 币价格（分）
-	currentPriceDown      int        // 当前 DOWN 币价格（分）
-	lastPriceUpdateUp     time.Time  // UP 币最后更新时间
-	lastPriceUpdateDown   time.Time  // DOWN 币最后更新时间
-	lastDisplayTime       time.Time  // 最后显示时间（用于防抖）
-	lastDirectProcessTime time.Time  // 直接回调模式：上次处理时间（用于防抖）
-	lastDirectProcessMu   sync.Mutex // 保护 lastDirectProcessTime 的锁
+	currentPriceUp        int       // 当前 UP 币价格（分）
+	currentPriceDown      int       // 当前 DOWN 币价格（分）
+	lastPriceUpdateUp     time.Time // UP 币最后更新时间
+	lastPriceUpdateDown   time.Time // DOWN 币最后更新时间
 	mu                    sync.RWMutex
 	isPlacingOrder        bool
 	placeOrderMu          sync.Mutex
@@ -64,6 +61,9 @@ type GridStrategy struct {
 	// 价格更新诊断
 	priceUpdateCount       int       // 价格更新计数（用于诊断）
 	lastPriceUpdateLogTime time.Time // 上次价格更新日志时间
+
+	// UI/日志输出防抖（避免高频刷屏；不影响交易决策）
+	displayDebouncer *common.Debouncer
 	// 对冲订单提交防抖
 	hedgeSubmitDebouncer *common.Debouncer // 对冲订单提交防抖（默认2s）
 	// 风险8修复：对冲订单提交锁（防止多个对冲机制并发提交）
@@ -183,6 +183,11 @@ func (s *GridStrategy) Initialize(ctx context.Context, config strategies.Strateg
 	// 设置默认值（BBGO风格：只支持直接回调模式）
 	if s.directModeDebounce <= 0 {
 		s.directModeDebounce = 100 // 默认100ms防抖
+	}
+	if s.displayDebouncer == nil {
+		s.displayDebouncer = common.NewDebouncer(time.Duration(s.directModeDebounce) * time.Millisecond)
+	} else {
+		s.displayDebouncer.SetInterval(time.Duration(s.directModeDebounce) * time.Millisecond)
 	}
 	// 对冲订单提交防抖：默认 2s（只在成功提交后 Mark）
 	if s.hedgeSubmitDebouncer == nil {

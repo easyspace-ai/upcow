@@ -145,15 +145,27 @@ func (s *GridStrategy) onPriceChangedInternal(ctx context.Context, event *events
 	// 重构后：从 TradingService 查询活跃订单数量（不需要锁）
 	activeOrdersCount := len(s.getActiveOrders())
 
-	// 显示格式化的价格更新信息到控制台（使用 fmt.Printf 直接输出到终端）
-	// 直接传递更新后的价格，避免在 displayGridPosition 中再次读取（可能不一致）
-	s.displayGridPosition(event, oldPriceUp, oldPriceDown, newPriceUp, newPriceDown)
+	// UI/日志输出防抖（不影响交易决策，只防刷屏）
+	shouldOutput := true
+	if s.displayDebouncer != nil {
+		ready, _ := s.displayDebouncer.Ready(now)
+		shouldOutput = ready
+	}
+	if shouldOutput {
+		// 显示格式化的价格更新信息到控制台（使用 fmt.Printf 直接输出到终端）
+		// 直接传递更新后的价格，避免在 displayGridPosition 中再次读取（可能不一致）
+		s.displayGridPosition(event, oldPriceUp, oldPriceDown, newPriceUp, newPriceDown)
 
-	// 同时写入日志文件（使用 log.Infof）
-	s.logPriceUpdate(event, oldPriceUp, oldPriceDown)
+		// 同时写入日志文件（使用 log.Infof）
+		s.logPriceUpdate(event, oldPriceUp, oldPriceDown)
 
-	// 检测价格更新异常（需要锁，但快速检查）
-	s.checkPriceUpdateAnomaly(ctx, now)
+		// 检测价格更新异常（需要锁，但快速检查）
+		s.checkPriceUpdateAnomaly(ctx, now)
+
+		if s.displayDebouncer != nil {
+			s.displayDebouncer.Mark(now)
+		}
+	}
 
 	// 诊断：记录价格更新处理完成时间
 	processDuration := time.Since(startTime)
