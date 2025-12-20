@@ -121,7 +121,7 @@ func (o *OrdersService) adjustOrderSize(order *domain.Order) *domain.Order {
 	adjustedOrder := *order
 
 	// 计算订单所需金额（USDC）
-	requiredAmount := order.Price.ToDecimal() * order.Size
+	requiredAmount := adjustedOrder.Price.ToDecimal() * adjustedOrder.Size
 
 	// 检查并调整最小订单金额和最小 share 数量
 	minOrderSize := s.minOrderSize
@@ -131,6 +131,22 @@ func (o *OrdersService) adjustOrderSize(order *domain.Order) *domain.Order {
 
 	// Polymarket 要求最小 share 数量为 5
 	const minShareSize = 5.0
+
+	// 卖单（SELL）不能为了满足“最小金额/最小 shares”而自动放大：
+	// - 放大卖单很容易超过实际持仓 shares
+	// - 交易所返回的 "not enough balance / allowance" 会误导为 USDC/授权问题
+	// 因此：SELL 只记录提示，不做任何向上调整。
+	if adjustedOrder.Side == types.SideSell {
+		if adjustedOrder.Size < minShareSize {
+			log.Warnf("⚠️ 卖单 share 数量 %.4f 小于最小值 %.0f；为避免超过持仓，本系统不会自动放大卖单，交易所可能拒单",
+				adjustedOrder.Size, minShareSize)
+		}
+		if requiredAmount < minOrderSize {
+			log.Warnf("⚠️ 卖单金额 %.2f USDC 小于最小要求 %.2f USDC；为避免超过持仓，本系统不会自动放大卖单，交易所可能拒单",
+				requiredAmount, minOrderSize)
+		}
+		return &adjustedOrder
+	}
 
 	// 检查并调整订单大小
 	originalSize := adjustedOrder.Size
