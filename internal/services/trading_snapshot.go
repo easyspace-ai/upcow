@@ -61,6 +61,14 @@ func (s *TradingService) loadSnapshot() {
 		if p == nil || p.ID == "" {
 			continue
 		}
+		// 兼容旧快照：若 MarketSlug 为空，尝试从 Market/EntryOrder 补齐
+		if p.MarketSlug == "" {
+			if p.Market != nil && p.Market.Slug != "" {
+				p.MarketSlug = p.Market.Slug
+			} else if p.EntryOrder != nil && p.EntryOrder.MarketSlug != "" {
+				p.MarketSlug = p.EntryOrder.MarketSlug
+			}
+		}
 		_ = s.CreatePosition(context.Background(), p)
 	}
 }

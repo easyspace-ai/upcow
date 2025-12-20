@@ -609,6 +609,7 @@ func (e *OrderEngine) updatePositionFromTrade(trade *domain.Trade, order *domain
 		// 创建新仓位
 		position = &domain.Position{
 			ID:        positionID,
+			MarketSlug: order.MarketSlug,
 			Market:    trade.Market,
 			EntryOrder: order,
 			EntryPrice: trade.Price,
@@ -642,7 +643,8 @@ func (e *OrderEngine) updatePositionFromTrade(trade *domain.Trade, order *domain
 
 // getPositionID 获取仓位ID
 func (e *OrderEngine) getPositionID(order *domain.Order) string {
-	return fmt.Sprintf("%s_%s", order.AssetID, order.TokenType)
+	// 只管理本周期：positionID 按 MarketSlug 分桶
+	return fmt.Sprintf("%s_%s_%s", order.MarketSlug, order.AssetID, order.TokenType)
 }
 
 // processPendingTrades 处理待处理的交易

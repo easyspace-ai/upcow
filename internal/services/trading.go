@@ -1656,6 +1656,31 @@ func (s *TradingService) GetOpenPositions() []*domain.Position {
 	}
 }
 
+// GetOpenPositionsForMarket 只返回指定 marketSlug 的开放仓位
+func (s *TradingService) GetOpenPositionsForMarket(marketSlug string) []*domain.Position {
+	positions := s.GetOpenPositions()
+	if marketSlug == "" {
+		return positions
+	}
+	out := make([]*domain.Position, 0, len(positions))
+	for _, p := range positions {
+		if p == nil {
+			continue
+		}
+		slug := p.MarketSlug
+		if slug == "" && p.Market != nil {
+			slug = p.Market.Slug
+		}
+		if slug == "" && p.EntryOrder != nil {
+			slug = p.EntryOrder.MarketSlug
+		}
+		if slug == marketSlug {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // GetBestPrice 获取订单簿的最佳买卖价格（买一价和卖一价）
 // SyncOrderStatus 同步订单状态（通过 API 查询，然后通过 OrderEngine 更新）
 func (s *TradingService) SyncOrderStatus(ctx context.Context, orderID string) error {

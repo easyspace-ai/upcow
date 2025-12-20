@@ -154,6 +154,15 @@ func (s *ThresholdStrategy) onPriceChangedInternal(ctx context.Context, event *e
 	if tradingService == nil {
 		return fmt.Errorf("交易服务未设置")
 	}
+	if event == nil || event.Market == nil || config == nil {
+		return nil
+	}
+
+	// 只管理本周期：market slug 变化即清理本地状态
+	if s.currentMarket != nil && s.currentMarket.Slug != "" && s.currentMarket.Slug != event.Market.Slug {
+		_ = s.Cleanup(ctx)
+	}
+	s.currentMarket = event.Market
 
 	// 检查 Token 类型过滤
 	if config.TokenType != "" {
