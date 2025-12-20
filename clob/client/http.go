@@ -63,7 +63,7 @@ func (h *httpClient) get(endpoint string, headers map[string]string, params map[
 	reqURL := h.host + endpoint
 
 	// 先打印初始 URL（在添加参数之前）
-	fmt.Printf("}}}}}}}}}}}[HTTP DEBUG] GET 初始URL: %s\n", reqURL)
+	fmt.Printf("[HTTP DEBUG] GET 初始URL: %s\n", reqURL)
 
 	if len(params) > 0 {
 		u, err := url.Parse(reqURL)

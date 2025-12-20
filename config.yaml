@@ -14,7 +14,8 @@ strategies:
   # 启用的策略列表（grid, threshold, arbitrage）
   enabled:
     - grid
-  
+  updown:
+
   # 网格策略配置
   grid:
     grid_levels: [62, 65, 71,77]  # 网格层级列表（分），移除85和87分以确保利润平衡
@@ -75,3 +76,6 @@ dry_run: true            # 纸交易模式：true = 仅模拟交易，false = �
 order_status_sync_interval_with_orders: 3     # 有活跃订单时的同步间隔（秒），默认3秒（需要快速判断是否下对冲单）
 order_status_sync_interval_without_orders: 30 # 无活跃订单时的同步间隔（秒），默认30秒
 
+GRID_HEALTH_LOG_INTERVAL_SECONDS: 15
+GRID_STRONG_HEDGE_DEBOUNCE_SECONDS: 2
+GRID_ENABLE_ADHOC_STRONG_HEDGE: true

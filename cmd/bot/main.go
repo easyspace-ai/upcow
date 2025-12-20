@@ -30,6 +30,7 @@ import (
 	_ "github.com/betbot/gobet/internal/strategies/momentum"
 	_ "github.com/betbot/gobet/internal/strategies/pairlock"
 	_ "github.com/betbot/gobet/internal/strategies/threshold"
+	_ "github.com/betbot/gobet/internal/strategies/updown"
 )
 
 // sessionOrderHandler 将订单更新转发到Session（BBGO风格）
@@ -354,7 +355,7 @@ func main() {
 
 		// 检查注册后的 handlers 数量（用于调试）
 		handlerCountAfter := session.PriceChangeHandlerCount()
-		logrus.Infof("🔄 [周期切换] 策略注册后 Session priceChangeHandlers 数量=%d (之前=%d)", 
+		logrus.Infof("🔄 [周期切换] 策略注册后 Session priceChangeHandlers 数量=%d (之前=%d)",
 			handlerCountAfter, handlerCountBefore)
 		if handlerCountAfter == 0 {
 			logrus.Errorf("❌ [周期切换] 错误：策略注册后 Session priceChangeHandlers 仍为空！市场=%s", market.Slug)
