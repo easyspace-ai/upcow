@@ -56,7 +56,7 @@ type GridStrategy struct {
 	currentMarketSlug string
 	currentMarket     *domain.Market // 当前市场引用（用于订单更新处理）
 	// 已处理的网格层级（防止重复触发）：tokenType:gridLevel -> timestamp
-	processedGridLevels map[string]time.Time
+	processedGridLevels map[string]*common.Debouncer
 	processedLevelsMu   sync.RWMutex // 保护 processedGridLevels 的锁 // 当前市场的 Slug，用于检测周期切换
 	// 价格更新诊断
 	priceUpdateCount       int       // 价格更新计数（用于诊断）

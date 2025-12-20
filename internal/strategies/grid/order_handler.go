@@ -115,536 +115,537 @@ func (s *GridStrategy) handleGridLevelReached(
 	return s.handleGridLevelReachedWithPlan(ctx, market, tokenType, gridLevel, currentPrice)
 
 	/*
-			legacy implementation removed:
-			- 不再允许策略 loop 里直接同步 PlaceOrder/CancelOrder
-			- 统一由 HedgePlan 状态机 + 全局 Executor 串行执行
+				legacy implementation removed:
+				- 不再允许策略 loop 里直接同步 PlaceOrder/CancelOrder
+				- 统一由 HedgePlan 状态机 + 全局 Executor 串行执行
 
 
-		log.Infof("🎯 [网格下单] handleGridLevelReached开始处理: %s币, 网格层级=%dc, 当前价格=%dc (%.4f), market=%s",
-			tokenType, gridLevel, currentPrice.Cents, currentPrice.ToDecimal(), market.Slug)
+			log.Infof("🎯 [网格下单] handleGridLevelReached开始处理: %s币, 网格层级=%dc, 当前价格=%dc (%.4f), market=%s",
+				tokenType, gridLevel, currentPrice.Cents, currentPrice.ToDecimal(), market.Slug)
 
-		// 第一层防护：检查是否正在下单（全局锁，防止任何并发下单）
-		// 同时检查防重复标记，确保原子性操作
-		levelKey := fmt.Sprintf("%s:%d", tokenType, gridLevel)
-		s.placeOrderMu.Lock()
-		defer s.placeOrderMu.Unlock()
-		log.Debugf("🔒 [网格下单] 已获取placeOrderMu锁，开始检查下单条件")
+			// 第一层防护：检查是否正在下单（全局锁，防止任何并发下单）
+			// 同时检查防重复标记，确保原子性操作
+			levelKey := fmt.Sprintf("%s:%d", tokenType, gridLevel)
+			s.placeOrderMu.Lock()
+			defer s.placeOrderMu.Unlock()
+			log.Debugf("🔒 [网格下单] 已获取placeOrderMu锁，开始检查下单条件")
 
-		if s.isPlacingOrder {
-			// 风险13修复：检查isPlacingOrder是否超时（超过60秒强制重置）
-			const maxPlacingOrderTimeout = 60 * time.Second
-			if !s.isPlacingOrderSetTime.IsZero() {
-				timeSinceSet := time.Since(s.isPlacingOrderSetTime)
-				if timeSinceSet > maxPlacingOrderTimeout {
-					log.Warnf("⚠️ [防重复] isPlacingOrder标志已持续%v（超过%v），强制重置（防止卡死）: %s:%dc",
-						timeSinceSet, maxPlacingOrderTimeout, tokenType, gridLevel)
-					s.isPlacingOrder = false
-					s.isPlacingOrderSetTime = time.Time{}
+			if s.isPlacingOrder {
+				// 风险13修复：检查isPlacingOrder是否超时（超过60秒强制重置）
+				const maxPlacingOrderTimeout = 60 * time.Second
+				if !s.isPlacingOrderSetTime.IsZero() {
+					timeSinceSet := time.Since(s.isPlacingOrderSetTime)
+					if timeSinceSet > maxPlacingOrderTimeout {
+						log.Warnf("⚠️ [防重复] isPlacingOrder标志已持续%v（超过%v），强制重置（防止卡死）: %s:%dc",
+							timeSinceSet, maxPlacingOrderTimeout, tokenType, gridLevel)
+						s.isPlacingOrder = false
+						s.isPlacingOrderSetTime = time.Time{}
+					} else {
+						log.Warnf("⚠️ [防重复] 正在下单中，跳过网格层级 %s:%dc (isPlacingOrder=true，已持续%v)",
+							tokenType, gridLevel, timeSinceSet)
+						return nil
+					}
 				} else {
-					log.Warnf("⚠️ [防重复] 正在下单中，跳过网格层级 %s:%dc (isPlacingOrder=true，已持续%v)",
-						tokenType, gridLevel, timeSinceSet)
+					log.Warnf("⚠️ [防重复] 正在下单中，跳过网格层级 %s:%dc (isPlacingOrder=true，但SetTime未设置)", tokenType, gridLevel)
 					return nil
 				}
-			} else {
-				log.Warnf("⚠️ [防重复] 正在下单中，跳过网格层级 %s:%dc (isPlacingOrder=true，但SetTime未设置)", tokenType, gridLevel)
-				return nil
 			}
-		}
 
-		// 第二层防护：检查是否已处理过该网格层级（防止重复触发）
-		// 注意：这个检查也在下单锁内，确保原子性
-		s.processedLevelsMu.Lock()
-		if s.processedGridLevels == nil {
-			s.processedGridLevels = make(map[string]time.Time)
-		}
-		lastProcessedTime, alreadyProcessed := s.processedGridLevels[levelKey]
-		if alreadyProcessed {
-			// 如果距离上次处理时间小于 30 秒，跳过（防止重复触发）
-			// 增加时间窗口，因为订单可能需要时间成交
-			if time.Since(lastProcessedTime) < 30*time.Second {
+			// 第二层防护：检查是否已处理过该网格层级（防止重复触发）
+			// 注意：这个检查也在下单锁内，确保原子性
+			s.processedLevelsMu.Lock()
+			if s.processedGridLevels == nil {
+				s.processedGridLevels = make(map[string]*common.Debouncer)
+			}
+			// 时间窗口：订单可能需要时间成交，避免抖动重复触发
+			deb, ok := s.processedGridLevels[levelKey]
+			if !ok || deb == nil {
+				deb = common.NewDebouncer(30 * time.Second)
+				s.processedGridLevels[levelKey] = deb
+			}
+			if ready, since := deb.ReadyNow(); !ready {
 				s.processedLevelsMu.Unlock()
 				log.Debugf("📌 [防重复] 网格层级 %s:%dc 已在 %v 前处理过，跳过重复触发",
-					tokenType, gridLevel, time.Since(lastProcessedTime))
+					tokenType, gridLevel, since)
 				return nil
 			}
-		}
-		// 立即标记为已处理（防止并发时重复触发）
-		// 如果订单提交失败，会在错误处理中清除标记（允许重试）
-		s.processedGridLevels[levelKey] = time.Now()
-		s.processedLevelsMu.Unlock()
-		log.Debugf("📌 [防重复] 网格层级 %s:%dc 已标记为处理中，防止重复触发", tokenType, gridLevel)
+			// 立即标记为已处理（防止并发时重复触发）
+			// 如果订单提交失败，会在错误处理中清除标记（允许重试）
+			deb.MarkNow()
+			s.processedLevelsMu.Unlock()
+			log.Debugf("📌 [防重复] 网格层级 %s:%dc 已标记为处理中，防止重复触发", tokenType, gridLevel)
 
-		// 设置下单标志（锁已在函数开头获取，这里直接设置，确保原子性）
-		s.isPlacingOrder = true
-		s.isPlacingOrderSetTime = time.Now()
+			// 设置下单标志（锁已在函数开头获取，这里直接设置，确保原子性）
+			s.isPlacingOrder = true
+			s.isPlacingOrderSetTime = time.Now()
 
-		// 确保 map 已初始化（防止 nil map panic）
-		s.mu.Lock()
-		// 重构后：activeOrders 已移除，现在由 OrderEngine 管理
-		if false {
+			// 确保 map 已初始化（防止 nil map panic）
+			s.mu.Lock()
 			// 重构后：activeOrders 已移除，现在由 OrderEngine 管理
-		}
-		if s.pendingHedgeOrders == nil {
-			s.pendingHedgeOrders = make(map[string]*domain.Order)
-		}
-		s.mu.Unlock()
+			if false {
+				// 重构后：activeOrders 已移除，现在由 OrderEngine 管理
+			}
+			if s.pendingHedgeOrders == nil {
+				s.pendingHedgeOrders = make(map[string]*domain.Order)
+			}
+			s.mu.Unlock()
 
-		// 先快速检查（需要锁）
-		s.mu.RLock()
-		roundsThisPeriod := s.roundsThisPeriod
-		maxRoundsPerPeriod := s.config.MaxRoundsPerPeriod
-		hasActivePosition := s.activePosition != nil
-		s.mu.RUnlock()
-
-		// 重构后：从 TradingService 查询活跃订单（不需要锁）
-		hasActiveOrders := s.hasActiveOrders()
-
-		// 检查周期限制
-		if roundsThisPeriod >= maxRoundsPerPeriod {
-			log.Infof("⚠️ [网格下单] 已达到周期最大轮数限制 (%d/%d)，跳过网格层级 %s:%dc",
-				roundsThisPeriod, maxRoundsPerPeriod, tokenType, gridLevel)
-			return nil
-		}
-		log.Debugf("✅ [网格下单] 周期限制检查通过: 当前轮数=%d/%d", roundsThisPeriod, maxRoundsPerPeriod)
-
-		// 检查是否已有活跃仓位或订单
-		// 规则：一轮里只能一对单（主单+对冲单）全部成交后，再开启下一轮
-		log.Debugf("🔍 [网格下单] 检查活跃仓位和订单: hasActivePosition=%v, hasActiveOrders=%v", hasActivePosition, hasActiveOrders)
-		if hasActivePosition || hasActiveOrders {
+			// 先快速检查（需要锁）
 			s.mu.RLock()
-			activePosition := s.activePosition
-			pendingHedgeOrders := s.pendingHedgeOrders
+			roundsThisPeriod := s.roundsThisPeriod
+			maxRoundsPerPeriod := s.config.MaxRoundsPerPeriod
+			hasActivePosition := s.activePosition != nil
 			s.mu.RUnlock()
 
 			// 重构后：从 TradingService 查询活跃订单（不需要锁）
-			activeOrders := s.getActiveOrders()
-			activeOrdersMap := make(map[string]*domain.Order)
-			for _, order := range activeOrders {
-				activeOrdersMap[order.OrderID] = order
-			}
+			hasActiveOrders := s.hasActiveOrders()
 
-			// 1. 检查是否有待提交的对冲订单（主单已提交但未成交，对冲订单还在等待）
-			if len(pendingHedgeOrders) > 0 {
-				log.Infof("⚠️ [订单顺序] 有待提交的对冲订单（等待主单成交），跳过网格层级 %dc (价格: %dc)", gridLevel, currentPrice.Cents)
-				for entryOrderID, hedgeOrder := range pendingHedgeOrders {
-					log.Infof("   待提交对冲订单: 主单ID=%s, 对冲订单ID=%s, %s币 @ %dc",
-						entryOrderID[:8], hedgeOrder.OrderID[:8], hedgeOrder.TokenType, hedgeOrder.Price.Cents)
-				}
+			// 检查周期限制
+			if roundsThisPeriod >= maxRoundsPerPeriod {
+				log.Infof("⚠️ [网格下单] 已达到周期最大轮数限制 (%d/%d)，跳过网格层级 %s:%dc",
+					roundsThisPeriod, maxRoundsPerPeriod, tokenType, gridLevel)
 				return nil
 			}
+			log.Debugf("✅ [网格下单] 周期限制检查通过: 当前轮数=%d/%d", roundsThisPeriod, maxRoundsPerPeriod)
 
-			// 2. 检查是否有未成交的订单（主单或对冲单）
-			if len(activeOrdersMap) > 0 {
-				// 检查是否有未成交的主单或对冲单
-				hasPendingEntryOrder := false
-				hasPendingHedgeOrder := false
-				for _, order := range activeOrdersMap {
-					if order.Status == domain.OrderStatusPending || order.Status == domain.OrderStatusOpen {
-						if order.IsEntryOrder {
-							hasPendingEntryOrder = true
-						} else {
-							hasPendingHedgeOrder = true
-						}
-					}
+			// 检查是否已有活跃仓位或订单
+			// 规则：一轮里只能一对单（主单+对冲单）全部成交后，再开启下一轮
+			log.Debugf("🔍 [网格下单] 检查活跃仓位和订单: hasActivePosition=%v, hasActiveOrders=%v", hasActivePosition, hasActiveOrders)
+			if hasActivePosition || hasActiveOrders {
+				s.mu.RLock()
+				activePosition := s.activePosition
+				pendingHedgeOrders := s.pendingHedgeOrders
+				s.mu.RUnlock()
+
+				// 重构后：从 TradingService 查询活跃订单（不需要锁）
+				activeOrders := s.getActiveOrders()
+				activeOrdersMap := make(map[string]*domain.Order)
+				for _, order := range activeOrders {
+					activeOrdersMap[order.OrderID] = order
 				}
 
-				if hasPendingEntryOrder || hasPendingHedgeOrder {
-					log.Infof("⚠️ [订单顺序] 有未成交订单，跳过网格层级 %dc (价格: %dc)", gridLevel, currentPrice.Cents)
-					if hasPendingEntryOrder {
-						log.Infof("   未成交主单: 等待主单成交")
+				// 1. 检查是否有待提交的对冲订单（主单已提交但未成交，对冲订单还在等待）
+				if len(pendingHedgeOrders) > 0 {
+					log.Infof("⚠️ [订单顺序] 有待提交的对冲订单（等待主单成交），跳过网格层级 %dc (价格: %dc)", gridLevel, currentPrice.Cents)
+					for entryOrderID, hedgeOrder := range pendingHedgeOrders {
+						log.Infof("   待提交对冲订单: 主单ID=%s, 对冲订单ID=%s, %s币 @ %dc",
+							entryOrderID[:8], hedgeOrder.OrderID[:8], hedgeOrder.TokenType, hedgeOrder.Price.Cents)
 					}
-					if hasPendingHedgeOrder {
-						log.Infof("   未成交对冲单: 等待对冲单成交")
-					}
-					for orderID, order := range activeOrdersMap {
+					return nil
+				}
+
+				// 2. 检查是否有未成交的订单（主单或对冲单）
+				if len(activeOrdersMap) > 0 {
+					// 检查是否有未成交的主单或对冲单
+					hasPendingEntryOrder := false
+					hasPendingHedgeOrder := false
+					for _, order := range activeOrdersMap {
 						if order.Status == domain.OrderStatusPending || order.Status == domain.OrderStatusOpen {
-							orderType := "主单"
-							if !order.IsEntryOrder {
-								orderType = "对冲单"
+							if order.IsEntryOrder {
+								hasPendingEntryOrder = true
+							} else {
+								hasPendingHedgeOrder = true
 							}
-							log.Infof("   活跃订单: %s (ID=%s, %s币 @ %dc, 状态=%s)",
-								orderType, orderID[:8], order.TokenType, order.Price.Cents, string(order.Status))
 						}
 					}
-					return nil
+
+					if hasPendingEntryOrder || hasPendingHedgeOrder {
+						log.Infof("⚠️ [订单顺序] 有未成交订单，跳过网格层级 %dc (价格: %dc)", gridLevel, currentPrice.Cents)
+						if hasPendingEntryOrder {
+							log.Infof("   未成交主单: 等待主单成交")
+						}
+						if hasPendingHedgeOrder {
+							log.Infof("   未成交对冲单: 等待对冲单成交")
+						}
+						for orderID, order := range activeOrdersMap {
+							if order.Status == domain.OrderStatusPending || order.Status == domain.OrderStatusOpen {
+								orderType := "主单"
+								if !order.IsEntryOrder {
+									orderType = "对冲单"
+								}
+								log.Infof("   活跃订单: %s (ID=%s, %s币 @ %dc, 状态=%s)",
+									orderType, orderID[:8], order.TokenType, order.Price.Cents, string(order.Status))
+							}
+						}
+						return nil
+					}
+				}
+
+				// 3. 检查仓位状态
+				if activePosition != nil {
+					// 检查主单和对冲单是否都已成交
+					entryOrderFilled := activePosition.EntryOrder != nil && activePosition.EntryOrder.IsFilled()
+					hedgeOrderFilled := activePosition.HedgeOrder != nil && activePosition.HedgeOrder.IsFilled()
+
+					if entryOrderFilled && hedgeOrderFilled {
+						// 主单和对冲单都已成交，仓位已完全对冲（锁定利润），清空仓位以允许下一轮
+						log.Infof("✅ [订单顺序] 上一轮主单和对冲单都已成交（锁定利润），清空仓位以开启新的一轮")
+						s.mu.Lock()
+						s.activePosition = nil
+						s.mu.Unlock()
+						// 继续执行，允许开始新的一轮
+					} else {
+						// 主单或对冲单未成交，不能开启新的一轮
+						log.Infof("⚠️ [订单顺序] 上一轮未完全成交，不能开启新的一轮。跳过网格层级 %dc (价格: %dc)", gridLevel, currentPrice.Cents)
+						log.Infof("   主单状态: %v, 对冲单状态: %v",
+							entryOrderFilled, hedgeOrderFilled)
+						if activePosition.EntryOrder != nil {
+							log.Infof("   主单: %s币 @ %dc, 数量=%.2f, 状态=%s",
+								activePosition.EntryOrder.TokenType, activePosition.EntryOrder.Price.Cents,
+								activePosition.EntryOrder.Size, activePosition.EntryOrder.Status)
+						}
+						if activePosition.HedgeOrder != nil {
+							log.Infof("   对冲单: %s币 @ %dc, 数量=%.2f, 状态=%s",
+								activePosition.HedgeOrder.TokenType, activePosition.HedgeOrder.Price.Cents,
+								activePosition.HedgeOrder.Size, activePosition.HedgeOrder.Status)
+						}
+						return nil
+					}
 				}
 			}
 
-			// 3. 检查仓位状态
-			if activePosition != nil {
-				// 检查主单和对冲单是否都已成交
-				entryOrderFilled := activePosition.EntryOrder != nil && activePosition.EntryOrder.IsFilled()
-				hedgeOrderFilled := activePosition.HedgeOrder != nil && activePosition.HedgeOrder.IsFilled()
+			log.Infof("✅ [网格下单] 所有检查通过，准备创建订单: %s币, 网格层级=%dc, 当前价格=%dc",
+				tokenType, gridLevel, currentPrice.Cents)
 
-				if entryOrderFilled && hedgeOrderFilled {
-					// 主单和对冲单都已成交，仓位已完全对冲（锁定利润），清空仓位以允许下一轮
-					log.Infof("✅ [订单顺序] 上一轮主单和对冲单都已成交（锁定利润），清空仓位以开启新的一轮")
-					s.mu.Lock()
-					s.activePosition = nil
-					s.mu.Unlock()
-					// 继续执行，允许开始新的一轮
+			// 下单锁已在函数开头获取，这里不需要再次获取
+			// 下单标志已在函数开头设置，这里不需要再次设置
+			defer func() {
+				// 风险13修复：确保 isPlacingOrder 标志被重置，并清除设置时间
+				// 注意：锁已在函数开头获取，defer函数执行时锁还在被持有（直到第1261行的defer释放），
+				// 所以这里可以直接设置标志，不需要再次获取锁
+				s.isPlacingOrder = false
+				s.isPlacingOrderSetTime = time.Time{}
+				log.Debugf("🔄 [下单] isPlacingOrder 标志已重置（handleGridLevelReached defer）")
+
+				// 如果发生panic，清除防重复标记（允许重试）
+				if err := recover(); err != nil {
+					s.processedLevelsMu.Lock()
+					if s.processedGridLevels != nil {
+						delete(s.processedGridLevels, levelKey)
+						log.Errorf("❌ [下单] 发生panic，已清除防重复标记: %v", err)
+					}
+					s.processedLevelsMu.Unlock()
+					panic(err) // 重新抛出panic
+				}
+			}()
+
+			// 为下单操作创建带超时的上下文（30秒超时）
+			orderCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+
+			// 获取订单簿最佳价格（使用实际成交价格，而不是网格层级价格）
+			// 买入订单使用最佳卖价（best ask），确保以最佳价格成交
+			var entryPrice domain.Price
+			var hedgePrice domain.Price
+			var entryOrder *domain.Order
+			var hedgeOrder *domain.Order
+
+			if tokenType == domain.TokenTypeUp {
+				// UP 币达到网格层级：买入 UP 币，对冲买入 DOWN 币
+				// 获取 UP 币的最佳卖价（best ask）
+				bestAsk, _, err := s.tradingService.GetBestPrice(orderCtx, market.YesAssetID)
+				if err != nil || bestAsk <= 0 {
+					log.Warnf("无法获取UP币最佳卖价，使用网格层级价格: %v", err)
+					entryPrice = domain.Price{Cents: gridLevel}
 				} else {
-					// 主单或对冲单未成交，不能开启新的一轮
-					log.Infof("⚠️ [订单顺序] 上一轮未完全成交，不能开启新的一轮。跳过网格层级 %dc (价格: %dc)", gridLevel, currentPrice.Cents)
-					log.Infof("   主单状态: %v, 对冲单状态: %v",
-						entryOrderFilled, hedgeOrderFilled)
-					if activePosition.EntryOrder != nil {
-						log.Infof("   主单: %s币 @ %dc, 数量=%.2f, 状态=%s",
-							activePosition.EntryOrder.TokenType, activePosition.EntryOrder.Price.Cents,
-							activePosition.EntryOrder.Size, activePosition.EntryOrder.Status)
+					bestAskCents := int(bestAsk * 100 + 0.5) // 四舍五入
+					// 验证价格合理性：如果获取到的价格异常（小于1分或大于100分），使用网格层级价格
+					if bestAskCents < 1 || bestAskCents > 100 {
+						log.Warnf("UP币最佳卖价异常: %.4f (%dc)，超出合理范围[1, 100]，使用网格层级价格 %dc",
+							bestAsk, bestAskCents, gridLevel)
+						entryPrice = domain.Price{Cents: gridLevel}
+					} else {
+						// 验证价格合理性：如果获取到的价格与网格层级差异过大（超过30分），使用网格层级价格
+						priceDiff := bestAskCents - gridLevel
+						if priceDiff < 0 {
+							priceDiff = -priceDiff
+						}
+						if priceDiff > 30 {
+							log.Warnf("UP币最佳卖价与网格层级差异较大: %.4f (%dc) vs %dc (差异=%dc)，使用网格层级价格",
+								bestAsk, bestAskCents, gridLevel, priceDiff)
+							entryPrice = domain.Price{Cents: gridLevel}
+						} else {
+							entryPrice = domain.PriceFromDecimal(bestAsk)
+							log.Debugf("使用UP币最佳卖价: %.4f (网格层级: %dc)", bestAsk, gridLevel)
+						}
 					}
-					if activePosition.HedgeOrder != nil {
-						log.Infof("   对冲单: %s币 @ %dc, 数量=%.2f, 状态=%s",
-							activePosition.HedgeOrder.TokenType, activePosition.HedgeOrder.Price.Cents,
-							activePosition.HedgeOrder.Size, activePosition.HedgeOrder.Status)
-					}
-					return nil
 				}
+
+				// 对冲价格计算：基于实际成交价格计算，确保锁定至少 ProfitTarget 的利润
+				// 总成本 = entryPrice + hedgePrice
+				// 无论哪个胜出，收益 = 100 - (entryPrice + hedgePrice) >= ProfitTarget
+				// 所以：hedgePrice <= 100 - entryPrice - ProfitTarget
+				hedgePriceCents := 100 - entryPrice.Cents - s.config.ProfitTarget
+				if hedgePriceCents < 0 {
+					hedgePriceCents = 0
+				}
+				hedgePrice = domain.Price{Cents: hedgePriceCents}
+
+				log.Infof("网格交易: UP币网格层级=%dc, 买入UP币@%dc (最佳卖价), 对冲买入DOWN币@%dc (锁定利润≥%dc, 总成本=%dc)",
+					gridLevel, entryPrice.Cents, hedgePrice.Cents, s.config.ProfitTarget, entryPrice.Cents+hedgePrice.Cents)
+
+				// 计算入场订单金额和share数量
+				entryAmount, entryShare := s.calculateOrderSize(entryPrice)
+
+				// 入场订单：买入 UP 币（使用市价单 FAK，吃卖一价）
+				entryOrder = &domain.Order{
+					OrderID:      fmt.Sprintf("entry-up-%d-%d", gridLevel, time.Now().UnixNano()),
+					AssetID:      market.YesAssetID,
+					Side:         types.SideBuy,
+					Price:        entryPrice,
+					Size:         entryShare,
+					GridLevel:    gridLevel,
+					TokenType:    domain.TokenTypeUp,
+					IsEntryOrder: true,
+					Status:       domain.OrderStatusPending,
+					CreatedAt:    time.Now(),
+					OrderType:    types.OrderTypeFAK, // 市价单，吃卖一价
+				}
+
+				// 对冲订单：买入 DOWN 币
+				if s.config.EnableDoubleSide {
+					// 计算对冲订单金额和share数量
+					hedgeAmount, hedgeShare := s.calculateOrderSize(hedgePrice)
+
+					hedgeOrder = &domain.Order{
+						OrderID:      fmt.Sprintf("hedge-down-%d-%d", gridLevel, time.Now().UnixNano()),
+						AssetID:      market.NoAssetID,
+						Side:         types.SideBuy,
+						Price:        hedgePrice,
+						Size:         hedgeShare,
+						GridLevel:    gridLevel,
+						TokenType:    domain.TokenTypeDown,
+						IsEntryOrder: false,
+						Status:       domain.OrderStatusPending,
+						CreatedAt:    time.Now(),
+						OrderType:    types.OrderTypeFAK, // 市价单，吃卖一价
+					}
+
+					log.Infof("🔧 [配置检查] EnableDoubleSide=%v, 已创建对冲订单: DOWN币 @ %dc, 数量=%.4f",
+						s.config.EnableDoubleSide, hedgePrice.Cents, hedgeShare)
+					log.Debugf("订单金额计算: 入场金额=%.2f USDC, share=%.4f; 对冲金额=%.2f USDC, share=%.4f",
+						entryAmount, entryShare, hedgeAmount, hedgeShare)
+				} else {
+					log.Warnf("⚠️ [配置检查] EnableDoubleSide=%v, 未创建对冲订单！", s.config.EnableDoubleSide)
+				}
+			} else if tokenType == domain.TokenTypeDown {
+				// DOWN 币达到网格层级（>= 62分）：买入 DOWN 币（因为 DOWN 币在涨）
+				// 获取 DOWN 币的最佳卖价（best ask）
+				bestAsk, _, err := s.tradingService.GetBestPrice(orderCtx, market.NoAssetID)
+				if err != nil || bestAsk <= 0 {
+					log.Warnf("无法获取DOWN币最佳卖价，使用网格层级价格: %v", err)
+					entryPrice = domain.Price{Cents: gridLevel}
+				} else {
+					bestAskCents := int(bestAsk * 100 + 0.5) // 四舍五入
+					// 验证价格合理性：如果获取到的价格异常（小于1分或大于100分），使用网格层级价格
+					if bestAskCents < 1 || bestAskCents > 100 {
+						log.Warnf("DOWN币最佳卖价异常: %.4f (%dc)，超出合理范围[1, 100]，使用网格层级价格 %dc",
+							bestAsk, bestAskCents, gridLevel)
+						entryPrice = domain.Price{Cents: gridLevel}
+					} else {
+						// 验证价格合理性：如果获取到的价格与网格层级差异过大（超过30分），使用网格层级价格
+						priceDiff := bestAskCents - gridLevel
+						if priceDiff < 0 {
+							priceDiff = -priceDiff
+						}
+						if priceDiff > 30 {
+							log.Warnf("DOWN币最佳卖价与网格层级差异较大: %.4f (%dc) vs %dc (差异=%dc)，使用网格层级价格",
+								bestAsk, bestAskCents, gridLevel, priceDiff)
+							entryPrice = domain.Price{Cents: gridLevel}
+						} else {
+							entryPrice = domain.PriceFromDecimal(bestAsk)
+							log.Debugf("使用DOWN币最佳卖价: %.4f (网格层级: %dc)", bestAsk, gridLevel)
+						}
+					}
+				}
+
+				// 对冲价格计算：基于实际成交价格计算，确保锁定至少 ProfitTarget 的利润
+				// 总成本 = entryPrice + hedgePrice
+				// 无论哪个胜出，收益 = 100 - (entryPrice + hedgePrice) >= ProfitTarget
+				// 所以：hedgePrice <= 100 - entryPrice - ProfitTarget
+				hedgePriceCents := 100 - entryPrice.Cents - s.config.ProfitTarget
+				if hedgePriceCents < 0 {
+					hedgePriceCents = 0
+				}
+				hedgePrice = domain.Price{Cents: hedgePriceCents}
+
+				log.Infof("网格交易: DOWN币价格达到%dc（网格层级），买入DOWN币@%dc，对冲买入UP币@%dc (锁定利润≥%dc, 总成本=%dc)",
+					gridLevel, entryPrice.Cents, hedgePrice.Cents, s.config.ProfitTarget, entryPrice.Cents+hedgePrice.Cents)
+
+				// 计算入场订单金额和share数量
+				entryAmount, entryShare := s.calculateOrderSize(entryPrice)
+
+				// 入场订单：买入 DOWN 币（使用市价单 FAK，吃卖一价）
+				entryOrder = &domain.Order{
+					OrderID:      fmt.Sprintf("entry-down-%d-%d", gridLevel, time.Now().UnixNano()),
+					AssetID:      market.NoAssetID,
+					Side:         types.SideBuy,
+					Price:        entryPrice,
+					Size:         entryShare,
+					GridLevel:    hedgePriceCents, // 记录对应的 UP 币网格层级
+					TokenType:    domain.TokenTypeDown,
+					IsEntryOrder: true,
+					Status:       domain.OrderStatusPending,
+					CreatedAt:    time.Now(),
+					OrderType:    types.OrderTypeFAK, // 市价单，吃卖一价
+				}
+
+				// 对冲订单：买入 UP 币
+				if s.config.EnableDoubleSide {
+					// 计算对冲订单金额和share数量
+					hedgeAmount, hedgeShare := s.calculateOrderSize(hedgePrice)
+
+					hedgeOrder = &domain.Order{
+						OrderID:      fmt.Sprintf("hedge-up-%d-%d", gridLevel, time.Now().UnixNano()),
+						AssetID:      market.YesAssetID,
+						Side:         types.SideBuy,
+						Price:        hedgePrice,
+						Size:         hedgeShare,
+						GridLevel:    hedgePriceCents,
+						TokenType:    domain.TokenTypeUp,
+						IsEntryOrder: false,
+						Status:       domain.OrderStatusPending,
+						CreatedAt:    time.Now(),
+						OrderType:    types.OrderTypeFAK, // 市价单，吃卖一价
+					}
+
+					log.Infof("🔧 [配置检查] EnableDoubleSide=%v, 已创建对冲订单: UP币 @ %dc, 数量=%.4f",
+						s.config.EnableDoubleSide, hedgePrice.Cents, hedgeShare)
+					log.Debugf("订单金额计算: 入场金额=%.2f USDC, share=%.4f; 对冲金额=%.2f USDC, share=%.4f",
+						entryAmount, entryShare, hedgeAmount, hedgeShare)
+				} else {
+					log.Warnf("⚠️ [配置检查] EnableDoubleSide=%v, 未创建对冲订单！", s.config.EnableDoubleSide)
+				}
+			} else {
+				return fmt.Errorf("不支持的 token 类型: %s", tokenType)
 			}
-		}
 
-		log.Infof("✅ [网格下单] 所有检查通过，准备创建订单: %s币, 网格层级=%dc, 当前价格=%dc",
-			tokenType, gridLevel, currentPrice.Cents)
+			// 提交入场订单
+			if s.tradingService == nil {
+				log.Errorf("❌ 交易服务未设置，无法下单！请检查策略初始化")
+				// 重构后：activeOrders 已移除，订单由 OrderEngine 管理
+				return fmt.Errorf("交易服务未设置，无法下单")
+			}
 
-		// 下单锁已在函数开头获取，这里不需要再次获取
-		// 下单标志已在函数开头设置，这里不需要再次设置
-		defer func() {
-			// 风险13修复：确保 isPlacingOrder 标志被重置，并清除设置时间
-			// 注意：锁已在函数开头获取，defer函数执行时锁还在被持有（直到第1261行的defer释放），
-			// 所以这里可以直接设置标志，不需要再次获取锁
-			s.isPlacingOrder = false
-			s.isPlacingOrderSetTime = time.Time{}
-			log.Debugf("🔄 [下单] isPlacingOrder 标志已重置（handleGridLevelReached defer）")
+			log.Infof("📤 [网格下单] 准备提交%s币入场订单: orderID=%s, assetID=%s, 价格=%dc (%.4f), 数量=%.4f",
+				tokenType, entryOrder.OrderID, entryOrder.AssetID, entryPrice.Cents, entryPrice.ToDecimal(), entryOrder.Size)
 
-			// 如果发生panic，清除防重复标记（允许重试）
-			if err := recover(); err != nil {
+			// 保存原始订单ID，用于更新 pendingHedgeOrders 的 key
+			originalOrderID := entryOrder.OrderID
+
+			createdOrder, err := s.tradingService.PlaceOrder(orderCtx, entryOrder)
+			if err != nil {
+				log.Errorf("❌ [网格下单] %s币买入订单失败: %v", tokenType, err)
+				// 检查是否是超时错误
+				if orderCtx.Err() == context.DeadlineExceeded {
+					log.Errorf("❌ [网格下单] 下单超时（30秒），可能网络问题或API响应慢")
+				}
+				// 检查是否是队列已满错误
+				if strings.Contains(err.Error(), "队列已满") {
+					log.Errorf("❌ [网格下单] 订单队列已满，无法添加订单，可能订单处理速度跟不上")
+				}
+				// 重构后：activeOrders 已移除，订单由 OrderEngine 管理，无需手动清理
+				// 清理对应的待提交对冲订单（主单失败，对冲订单也不应该提交）
+				if hedgeOrder != nil {
+					delete(s.pendingHedgeOrders, entryOrder.OrderID)
+					log.Debugf("🧹 [订单顺序] 主单失败，已清理对应的待提交对冲订单: 主单ID=%s", entryOrder.OrderID)
+				}
+				// 订单提交失败，清除防重复标记（允许重试）
 				s.processedLevelsMu.Lock()
 				if s.processedGridLevels != nil {
 					delete(s.processedGridLevels, levelKey)
-					log.Errorf("❌ [下单] 发生panic，已清除防重复标记: %v", err)
+					log.Debugf("🔄 [防重复] 订单提交失败，已清除防重复标记，允许重试: %s:%dc", tokenType, gridLevel)
 				}
 				s.processedLevelsMu.Unlock()
-				panic(err) // 重新抛出panic
+				return fmt.Errorf("%s币买入订单失败: %w", tokenType, err)
 			}
-		}()
 
-		// 为下单操作创建带超时的上下文（30秒超时）
-		orderCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
+			// 风险1修复：原子化更新订单ID和数量（如果服务器返回了新的订单ID或调整了数量）
+			if createdOrder != nil {
+				// 在锁内原子化更新所有相关映射
+				s.mu.Lock()
 
-		// 获取订单簿最佳价格（使用实际成交价格，而不是网格层级价格）
-		// 买入订单使用最佳卖价（best ask），确保以最佳价格成交
-		var entryPrice domain.Price
-		var hedgePrice domain.Price
-		var entryOrder *domain.Order
-		var hedgeOrder *domain.Order
+				// 检查订单数量是否被调整
+				originalSize := entryOrder.Size
+				if createdOrder.Size != originalSize {
+					log.Warnf("⚠️ [订单调整] 入场订单数量被调整: %.4f → %.4f shares", originalSize, createdOrder.Size)
 
-		if tokenType == domain.TokenTypeUp {
-			// UP 币达到网格层级：买入 UP 币，对冲买入 DOWN 币
-			// 获取 UP 币的最佳卖价（best ask）
-			bestAsk, _, err := s.tradingService.GetBestPrice(orderCtx, market.YesAssetID)
-			if err != nil || bestAsk <= 0 {
-				log.Warnf("无法获取UP币最佳卖价，使用网格层级价格: %v", err)
-				entryPrice = domain.Price{Cents: gridLevel}
-			} else {
-				bestAskCents := int(bestAsk * 100 + 0.5) // 四舍五入
-				// 验证价格合理性：如果获取到的价格异常（小于1分或大于100分），使用网格层级价格
-				if bestAskCents < 1 || bestAskCents > 100 {
-					log.Warnf("UP币最佳卖价异常: %.4f (%dc)，超出合理范围[1, 100]，使用网格层级价格 %dc",
-						bestAsk, bestAskCents, gridLevel)
-					entryPrice = domain.Price{Cents: gridLevel}
-				} else {
-					// 验证价格合理性：如果获取到的价格与网格层级差异过大（超过30分），使用网格层级价格
-					priceDiff := bestAskCents - gridLevel
-					if priceDiff < 0 {
-						priceDiff = -priceDiff
+					// 同步调整对冲订单数量，保持对冲比例一致
+					if hedgeOrder != nil {
+						// 计算调整比例
+						adjustmentRatio := createdOrder.Size / originalSize
+						originalHedgeSize := hedgeOrder.Size
+						adjustedHedgeSize := hedgeOrder.Size * adjustmentRatio
+
+						// 确保对冲订单数量满足最小值要求
+						const minShareSize = 5.0
+						if adjustedHedgeSize < minShareSize {
+							adjustedHedgeSize = minShareSize
+							log.Warnf("⚠️ [订单调整] 对冲订单数量调整后小于最小值，使用最小值: %.4f → %.4f shares",
+								hedgeOrder.Size*adjustmentRatio, adjustedHedgeSize)
+						}
+
+						hedgeOrder.Size = adjustedHedgeSize
+						log.Infof("🔄 [订单调整] 对冲订单数量已同步调整: %.4f → %.4f shares (调整比例: %.4f)",
+							originalHedgeSize, adjustedHedgeSize, adjustmentRatio)
 					}
-					if priceDiff > 30 {
-						log.Warnf("UP币最佳卖价与网格层级差异较大: %.4f (%dc) vs %dc (差异=%dc)，使用网格层级价格",
-							bestAsk, bestAskCents, gridLevel, priceDiff)
-						entryPrice = domain.Price{Cents: gridLevel}
-					} else {
-						entryPrice = domain.PriceFromDecimal(bestAsk)
-						log.Debugf("使用UP币最佳卖价: %.4f (网格层级: %dc)", bestAsk, gridLevel)
-					}
-				}
-			}
 
-			// 对冲价格计算：基于实际成交价格计算，确保锁定至少 ProfitTarget 的利润
-			// 总成本 = entryPrice + hedgePrice
-			// 无论哪个胜出，收益 = 100 - (entryPrice + hedgePrice) >= ProfitTarget
-			// 所以：hedgePrice <= 100 - entryPrice - ProfitTarget
-			hedgePriceCents := 100 - entryPrice.Cents - s.config.ProfitTarget
-			if hedgePriceCents < 0 {
-				hedgePriceCents = 0
-			}
-			hedgePrice = domain.Price{Cents: hedgePriceCents}
-
-			log.Infof("网格交易: UP币网格层级=%dc, 买入UP币@%dc (最佳卖价), 对冲买入DOWN币@%dc (锁定利润≥%dc, 总成本=%dc)",
-				gridLevel, entryPrice.Cents, hedgePrice.Cents, s.config.ProfitTarget, entryPrice.Cents+hedgePrice.Cents)
-
-			// 计算入场订单金额和share数量
-			entryAmount, entryShare := s.calculateOrderSize(entryPrice)
-
-			// 入场订单：买入 UP 币（使用市价单 FAK，吃卖一价）
-			entryOrder = &domain.Order{
-				OrderID:      fmt.Sprintf("entry-up-%d-%d", gridLevel, time.Now().UnixNano()),
-				AssetID:      market.YesAssetID,
-				Side:         types.SideBuy,
-				Price:        entryPrice,
-				Size:         entryShare,
-				GridLevel:    gridLevel,
-				TokenType:    domain.TokenTypeUp,
-				IsEntryOrder: true,
-				Status:       domain.OrderStatusPending,
-				CreatedAt:    time.Now(),
-				OrderType:    types.OrderTypeFAK, // 市价单，吃卖一价
-			}
-
-			// 对冲订单：买入 DOWN 币
-			if s.config.EnableDoubleSide {
-				// 计算对冲订单金额和share数量
-				hedgeAmount, hedgeShare := s.calculateOrderSize(hedgePrice)
-
-				hedgeOrder = &domain.Order{
-					OrderID:      fmt.Sprintf("hedge-down-%d-%d", gridLevel, time.Now().UnixNano()),
-					AssetID:      market.NoAssetID,
-					Side:         types.SideBuy,
-					Price:        hedgePrice,
-					Size:         hedgeShare,
-					GridLevel:    gridLevel,
-					TokenType:    domain.TokenTypeDown,
-					IsEntryOrder: false,
-					Status:       domain.OrderStatusPending,
-					CreatedAt:    time.Now(),
-					OrderType:    types.OrderTypeFAK, // 市价单，吃卖一价
+					// 更新入场订单数量
+					entryOrder.Size = createdOrder.Size
 				}
 
-				log.Infof("🔧 [配置检查] EnableDoubleSide=%v, 已创建对冲订单: DOWN币 @ %dc, 数量=%.4f",
-					s.config.EnableDoubleSide, hedgePrice.Cents, hedgeShare)
-				log.Debugf("订单金额计算: 入场金额=%.2f USDC, share=%.4f; 对冲金额=%.2f USDC, share=%.4f",
-					entryAmount, entryShare, hedgeAmount, hedgeShare)
-			} else {
-				log.Warnf("⚠️ [配置检查] EnableDoubleSide=%v, 未创建对冲订单！", s.config.EnableDoubleSide)
-			}
-		} else if tokenType == domain.TokenTypeDown {
-			// DOWN 币达到网格层级（>= 62分）：买入 DOWN 币（因为 DOWN 币在涨）
-			// 获取 DOWN 币的最佳卖价（best ask）
-			bestAsk, _, err := s.tradingService.GetBestPrice(orderCtx, market.NoAssetID)
-			if err != nil || bestAsk <= 0 {
-				log.Warnf("无法获取DOWN币最佳卖价，使用网格层级价格: %v", err)
-				entryPrice = domain.Price{Cents: gridLevel}
-			} else {
-				bestAskCents := int(bestAsk * 100 + 0.5) // 四舍五入
-				// 验证价格合理性：如果获取到的价格异常（小于1分或大于100分），使用网格层级价格
-				if bestAskCents < 1 || bestAskCents > 100 {
-					log.Warnf("DOWN币最佳卖价异常: %.4f (%dc)，超出合理范围[1, 100]，使用网格层级价格 %dc",
-						bestAsk, bestAskCents, gridLevel)
-					entryPrice = domain.Price{Cents: gridLevel}
-				} else {
-					// 验证价格合理性：如果获取到的价格与网格层级差异过大（超过30分），使用网格层级价格
-					priceDiff := bestAskCents - gridLevel
-					if priceDiff < 0 {
-						priceDiff = -priceDiff
-					}
-					if priceDiff > 30 {
-						log.Warnf("DOWN币最佳卖价与网格层级差异较大: %.4f (%dc) vs %dc (差异=%dc)，使用网格层级价格",
-							bestAsk, bestAskCents, gridLevel, priceDiff)
-						entryPrice = domain.Price{Cents: gridLevel}
-					} else {
-						entryPrice = domain.PriceFromDecimal(bestAsk)
-						log.Debugf("使用DOWN币最佳卖价: %.4f (网格层级: %dc)", bestAsk, gridLevel)
+				// 风险1修复：原子化更新订单ID和相关映射
+				if createdOrder.OrderID != originalOrderID {
+					entryOrder.OrderID = createdOrder.OrderID
+					log.Infof("🔄 [订单ID变更] 订单ID已更新: %s → %s", originalOrderID, createdOrder.OrderID)
+
+					// 重构后：activeOrders 已移除，订单由 OrderEngine 管理，无需手动更新映射
+					log.Debugf("🔄 [订单ID变更] 订单ID已更新: %s → %s (由 OrderEngine 管理)", originalOrderID, createdOrder.OrderID)
+
+					// 原子化更新 pendingHedgeOrders 的 key（如果存在）
+					if hedgeOrder != nil {
+						if existingHedgeOrder, exists := s.pendingHedgeOrders[originalOrderID]; exists {
+							delete(s.pendingHedgeOrders, originalOrderID)
+							s.pendingHedgeOrders[createdOrder.OrderID] = existingHedgeOrder
+							log.Infof("🔄 [订单ID变更] pendingHedgeOrders映射已更新: %s → %s", originalOrderID, createdOrder.OrderID)
+						} else {
+							log.Warnf("⚠️ [订单ID变更] pendingHedgeOrders中未找到原始订单ID: %s，可能已被删除", originalOrderID)
+						}
 					}
 				}
-			}
 
-			// 对冲价格计算：基于实际成交价格计算，确保锁定至少 ProfitTarget 的利润
-			// 总成本 = entryPrice + hedgePrice
-			// 无论哪个胜出，收益 = 100 - (entryPrice + hedgePrice) >= ProfitTarget
-			// 所以：hedgePrice <= 100 - entryPrice - ProfitTarget
-			hedgePriceCents := 100 - entryPrice.Cents - s.config.ProfitTarget
-			if hedgePriceCents < 0 {
-				hedgePriceCents = 0
-			}
-			hedgePrice = domain.Price{Cents: hedgePriceCents}
-
-			log.Infof("网格交易: DOWN币价格达到%dc（网格层级），买入DOWN币@%dc，对冲买入UP币@%dc (锁定利润≥%dc, 总成本=%dc)",
-				gridLevel, entryPrice.Cents, hedgePrice.Cents, s.config.ProfitTarget, entryPrice.Cents+hedgePrice.Cents)
-
-			// 计算入场订单金额和share数量
-			entryAmount, entryShare := s.calculateOrderSize(entryPrice)
-
-			// 入场订单：买入 DOWN 币（使用市价单 FAK，吃卖一价）
-			entryOrder = &domain.Order{
-				OrderID:      fmt.Sprintf("entry-down-%d-%d", gridLevel, time.Now().UnixNano()),
-				AssetID:      market.NoAssetID,
-				Side:         types.SideBuy,
-				Price:        entryPrice,
-				Size:         entryShare,
-				GridLevel:    hedgePriceCents, // 记录对应的 UP 币网格层级
-				TokenType:    domain.TokenTypeDown,
-				IsEntryOrder: true,
-				Status:       domain.OrderStatusPending,
-				CreatedAt:    time.Now(),
-				OrderType:    types.OrderTypeFAK, // 市价单，吃卖一价
-			}
-
-			// 对冲订单：买入 UP 币
-			if s.config.EnableDoubleSide {
-				// 计算对冲订单金额和share数量
-				hedgeAmount, hedgeShare := s.calculateOrderSize(hedgePrice)
-
-				hedgeOrder = &domain.Order{
-					OrderID:      fmt.Sprintf("hedge-up-%d-%d", gridLevel, time.Now().UnixNano()),
-					AssetID:      market.YesAssetID,
-					Side:         types.SideBuy,
-					Price:        hedgePrice,
-					Size:         hedgeShare,
-					GridLevel:    hedgePriceCents,
-					TokenType:    domain.TokenTypeUp,
-					IsEntryOrder: false,
-					Status:       domain.OrderStatusPending,
-					CreatedAt:    time.Now(),
-					OrderType:    types.OrderTypeFAK, // 市价单，吃卖一价
-				}
-
-				log.Infof("🔧 [配置检查] EnableDoubleSide=%v, 已创建对冲订单: UP币 @ %dc, 数量=%.4f",
-					s.config.EnableDoubleSide, hedgePrice.Cents, hedgeShare)
-				log.Debugf("订单金额计算: 入场金额=%.2f USDC, share=%.4f; 对冲金额=%.2f USDC, share=%.4f",
-					entryAmount, entryShare, hedgeAmount, hedgeShare)
+				s.mu.Unlock()
 			} else {
-				log.Warnf("⚠️ [配置检查] EnableDoubleSide=%v, 未创建对冲订单！", s.config.EnableDoubleSide)
+				// 重构后：activeOrders 已移除，订单由 OrderEngine 管理
+				log.Debugf("订单已提交到 OrderEngine: %s", entryOrder.OrderID)
 			}
-		} else {
-			return fmt.Errorf("不支持的 token 类型: %s", tokenType)
-		}
+			entryAmount := entryOrder.Price.ToDecimal() * entryOrder.Size
+			log.Infof("✅ [网格下单] %s币买入订单已提交（市价单FAK，吃卖一价）: orderID=%s, 价格=%dc (%.4f), 数量=%.4f, 金额=%.2f USDC",
+				tokenType, entryOrder.OrderID, entryPrice.Cents, entryPrice.ToDecimal(), entryOrder.Size, entryAmount)
 
-		// 提交入场订单
-		if s.tradingService == nil {
-			log.Errorf("❌ 交易服务未设置，无法下单！请检查策略初始化")
-			// 重构后：activeOrders 已移除，订单由 OrderEngine 管理
-			return fmt.Errorf("交易服务未设置，无法下单")
-		}
+			// 订单提交成功，防重复标记已在函数开头设置，这里只需要确认
+			log.Debugf("📌 [防重复] 网格层级 %s:%dc 订单已提交成功，30秒内不会重复触发", tokenType, gridLevel)
 
-		log.Infof("📤 [网格下单] 准备提交%s币入场订单: orderID=%s, assetID=%s, 价格=%dc (%.4f), 数量=%.4f",
-			tokenType, entryOrder.OrderID, entryOrder.AssetID, entryPrice.Cents, entryPrice.ToDecimal(), entryOrder.Size)
-
-		// 保存原始订单ID，用于更新 pendingHedgeOrders 的 key
-		originalOrderID := entryOrder.OrderID
-
-		createdOrder, err := s.tradingService.PlaceOrder(orderCtx, entryOrder)
-		if err != nil {
-			log.Errorf("❌ [网格下单] %s币买入订单失败: %v", tokenType, err)
-			// 检查是否是超时错误
-			if orderCtx.Err() == context.DeadlineExceeded {
-				log.Errorf("❌ [网格下单] 下单超时（30秒），可能网络问题或API响应慢")
-			}
-			// 检查是否是队列已满错误
-			if strings.Contains(err.Error(), "队列已满") {
-				log.Errorf("❌ [网格下单] 订单队列已满，无法添加订单，可能订单处理速度跟不上")
-			}
-			// 重构后：activeOrders 已移除，订单由 OrderEngine 管理，无需手动清理
-			// 清理对应的待提交对冲订单（主单失败，对冲订单也不应该提交）
+			// 保存对冲订单到待提交列表（等待主单成交后再提交）
 			if hedgeOrder != nil {
-				delete(s.pendingHedgeOrders, entryOrder.OrderID)
-				log.Debugf("🧹 [订单顺序] 主单失败，已清理对应的待提交对冲订单: 主单ID=%s", entryOrder.OrderID)
-			}
-			// 订单提交失败，清除防重复标记（允许重试）
-			s.processedLevelsMu.Lock()
-			if s.processedGridLevels != nil {
-				delete(s.processedGridLevels, levelKey)
-				log.Debugf("🔄 [防重复] 订单提交失败，已清除防重复标记，允许重试: %s:%dc", tokenType, gridLevel)
-			}
-			s.processedLevelsMu.Unlock()
-			return fmt.Errorf("%s币买入订单失败: %w", tokenType, err)
-		}
+				log.Infof("⏳ [订单顺序] 对冲订单已创建，等待主单成交后再提交: EnableDoubleSide=%v", s.config.EnableDoubleSide)
+				hedgeOrder.HedgeOrderID = &entryOrder.OrderID
+				entryOrder.PairOrderID = &hedgeOrder.OrderID
 
-		// 风险1修复：原子化更新订单ID和数量（如果服务器返回了新的订单ID或调整了数量）
-		if createdOrder != nil {
-			// 在锁内原子化更新所有相关映射
-			s.mu.Lock()
-
-			// 检查订单数量是否被调整
-			originalSize := entryOrder.Size
-			if createdOrder.Size != originalSize {
-				log.Warnf("⚠️ [订单调整] 入场订单数量被调整: %.4f → %.4f shares", originalSize, createdOrder.Size)
-
-				// 同步调整对冲订单数量，保持对冲比例一致
-				if hedgeOrder != nil {
-					// 计算调整比例
-					adjustmentRatio := createdOrder.Size / originalSize
-					originalHedgeSize := hedgeOrder.Size
-					adjustedHedgeSize := hedgeOrder.Size * adjustmentRatio
-
-					// 确保对冲订单数量满足最小值要求
-					const minShareSize = 5.0
-					if adjustedHedgeSize < minShareSize {
-						adjustedHedgeSize = minShareSize
-						log.Warnf("⚠️ [订单调整] 对冲订单数量调整后小于最小值，使用最小值: %.4f → %.4f shares",
-							hedgeOrder.Size*adjustmentRatio, adjustedHedgeSize)
-					}
-
-					hedgeOrder.Size = adjustedHedgeSize
-					log.Infof("🔄 [订单调整] 对冲订单数量已同步调整: %.4f → %.4f shares (调整比例: %.4f)",
-						originalHedgeSize, adjustedHedgeSize, adjustmentRatio)
-				}
-
-				// 更新入场订单数量
-				entryOrder.Size = createdOrder.Size
+				// 将对冲订单保存到待提交列表，关联到主单的 OrderID（使用更新后的ID）
+				s.pendingHedgeOrders[entryOrder.OrderID] = hedgeOrder
+				log.Infof("📋 [订单顺序] 对冲订单已保存到待提交列表: 主单ID=%s, 对冲订单ID=%s, 价格=%dc (%.4f), 数量=%.4f",
+					entryOrder.OrderID, hedgeOrder.OrderID, hedgeOrder.Price.Cents, hedgeOrder.Price.ToDecimal(), hedgeOrder.Size)
+			} else {
+				log.Warnf("⚠️ [调试] hedgeOrder为nil！EnableDoubleSide=%v, 未创建对冲订单", s.config.EnableDoubleSide)
 			}
 
-			// 风险1修复：原子化更新订单ID和相关映射
-			if createdOrder.OrderID != originalOrderID {
-				entryOrder.OrderID = createdOrder.OrderID
-				log.Infof("🔄 [订单ID变更] 订单ID已更新: %s → %s", originalOrderID, createdOrder.OrderID)
-
-				// 重构后：activeOrders 已移除，订单由 OrderEngine 管理，无需手动更新映射
-				log.Debugf("🔄 [订单ID变更] 订单ID已更新: %s → %s (由 OrderEngine 管理)", originalOrderID, createdOrder.OrderID)
-
-				// 原子化更新 pendingHedgeOrders 的 key（如果存在）
-				if hedgeOrder != nil {
-					if existingHedgeOrder, exists := s.pendingHedgeOrders[originalOrderID]; exists {
-						delete(s.pendingHedgeOrders, originalOrderID)
-						s.pendingHedgeOrders[createdOrder.OrderID] = existingHedgeOrder
-						log.Infof("🔄 [订单ID变更] pendingHedgeOrders映射已更新: %s → %s", originalOrderID, createdOrder.OrderID)
-					} else {
-						log.Warnf("⚠️ [订单ID变更] pendingHedgeOrders中未找到原始订单ID: %s，可能已被删除", originalOrderID)
-					}
-				}
+			// 只有至少一个订单成功提交，才增加轮数
+			if s.hasActiveOrders() {
+				s.roundsThisPeriod++
 			}
-
-			s.mu.Unlock()
-		} else {
-			// 重构后：activeOrders 已移除，订单由 OrderEngine 管理
-			log.Debugf("订单已提交到 OrderEngine: %s", entryOrder.OrderID)
+			return nil
 		}
-		entryAmount := entryOrder.Price.ToDecimal() * entryOrder.Size
-		log.Infof("✅ [网格下单] %s币买入订单已提交（市价单FAK，吃卖一价）: orderID=%s, 价格=%dc (%.4f), 数量=%.4f, 金额=%.2f USDC",
-			tokenType, entryOrder.OrderID, entryPrice.Cents, entryPrice.ToDecimal(), entryOrder.Size, entryAmount)
-
-		// 订单提交成功，防重复标记已在函数开头设置，这里只需要确认
-		log.Debugf("📌 [防重复] 网格层级 %s:%dc 订单已提交成功，30秒内不会重复触发", tokenType, gridLevel)
-
-		// 保存对冲订单到待提交列表（等待主单成交后再提交）
-		if hedgeOrder != nil {
-			log.Infof("⏳ [订单顺序] 对冲订单已创建，等待主单成交后再提交: EnableDoubleSide=%v", s.config.EnableDoubleSide)
-			hedgeOrder.HedgeOrderID = &entryOrder.OrderID
-			entryOrder.PairOrderID = &hedgeOrder.OrderID
-
-			// 将对冲订单保存到待提交列表，关联到主单的 OrderID（使用更新后的ID）
-			s.pendingHedgeOrders[entryOrder.OrderID] = hedgeOrder
-			log.Infof("📋 [订单顺序] 对冲订单已保存到待提交列表: 主单ID=%s, 对冲订单ID=%s, 价格=%dc (%.4f), 数量=%.4f",
-				entryOrder.OrderID, hedgeOrder.OrderID, hedgeOrder.Price.Cents, hedgeOrder.Price.ToDecimal(), hedgeOrder.Size)
-		} else {
-			log.Warnf("⚠️ [调试] hedgeOrder为nil！EnableDoubleSide=%v, 未创建对冲订单", s.config.EnableDoubleSide)
-		}
-
-		// 只有至少一个订单成功提交，才增加轮数
-		if s.hasActiveOrders() {
-			s.roundsThisPeriod++
-		}
-		return nil
-	}
 
 	*/
 

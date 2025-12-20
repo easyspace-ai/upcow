@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/strategies/common"
 )
 
 // ResetHoldings 重置双向持仓跟踪
@@ -67,10 +68,10 @@ func (s *GridStrategy) ResetStateForNewCycle() {
 
 	// 清空已处理的网格层级（允许新周期重新触发）
 	if s.processedGridLevels == nil {
-		s.processedGridLevels = make(map[string]time.Time)
+		s.processedGridLevels = make(map[string]*common.Debouncer)
 	} else if len(s.processedGridLevels) > 0 {
 		log.Infof("🔄 [周期切换] 清空 %d 个已处理的网格层级", len(s.processedGridLevels))
-		s.processedGridLevels = make(map[string]time.Time)
+		s.processedGridLevels = make(map[string]*common.Debouncer)
 	}
 
 	// 清空已处理的订单成交事件

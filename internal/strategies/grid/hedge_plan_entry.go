@@ -7,6 +7,7 @@ import (
 
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 )
 
@@ -36,14 +37,17 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 	// 简化防重复：单线程 loop 下无需锁；保留时间窗口避免抖动重复触发
 	levelKey := fmt.Sprintf("%s:%d", tokenType, gridLevel)
 	if s.processedGridLevels == nil {
-		s.processedGridLevels = make(map[string]time.Time)
+		s.processedGridLevels = make(map[string]*common.Debouncer)
 	}
-	if last, ok := s.processedGridLevels[levelKey]; ok {
-		if time.Since(last) < 30*time.Second {
-			return nil
-		}
+	deb := s.processedGridLevels[levelKey]
+	if deb == nil {
+		deb = common.NewDebouncer(30 * time.Second)
+		s.processedGridLevels[levelKey] = deb
 	}
-	s.processedGridLevels[levelKey] = time.Now()
+	if ready, _ := deb.ReadyNow(); !ready {
+		return nil
+	}
+	deb.MarkNow()
 
 	orderCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -122,18 +126,18 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 	planID := fmt.Sprintf("%s-%s-%d-%d", market.Slug, tokenType, gridLevel, now.UnixNano())
 	s.plan = &HedgePlan{
 		ID:            planID,
-		LevelKey:       levelKey,
-		State:          PlanEntrySubmitting,
-		CreatedAt:      now,
-		StateAt:        now,
-		EntryAttempts:  1,
-		HedgeAttempts:  0,
-		MaxAttempts:    3,
-		EntryTemplate:  entryOrder,
-		HedgeTemplate:  hedgeOrder,
-		EntryCreated:   nil,
-		HedgeCreated:   nil,
-		LastError:      "",
+		LevelKey:      levelKey,
+		State:         PlanEntrySubmitting,
+		CreatedAt:     now,
+		StateAt:       now,
+		EntryAttempts: 1,
+		HedgeAttempts: 0,
+		MaxAttempts:   3,
+		EntryTemplate: entryOrder,
+		HedgeTemplate: hedgeOrder,
+		EntryCreated:  nil,
+		HedgeCreated:  nil,
+		LastError:     "",
 	}
 
 	// 标记正在下单（用于诊断/兼容旧逻辑）
@@ -145,4 +149,3 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 	_ = currentPrice
 	return s.submitPlaceOrderCmd(orderCtx, planID, gridCmdPlaceEntry, entryOrder)
 }
-
