@@ -270,6 +270,7 @@ func (s *GridStrategy) planStrongHedge(ctx context.Context) {
 
 	order := &domain.Order{
 		OrderID:      fmt.Sprintf("plan-supp-%s-%d-%d", tokenType, bestPrice.Cents, time.Now().UnixNano()),
+		MarketSlug:   s.currentMarket.Slug,
 		AssetID:      assetID,
 		Side:         types.SideBuy,
 		Price:        bestPrice,

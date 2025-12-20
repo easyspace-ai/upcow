@@ -146,6 +146,7 @@ func (e *IOExecutor) CancelOrderAsync(
 func convertOrderResponseToDomain(orderResp *types.OrderResponse, originalOrder *domain.Order) *domain.Order {
 	order := &domain.Order{
 		OrderID:      orderResp.OrderID,
+		MarketSlug:   originalOrder.MarketSlug,
 		AssetID:      originalOrder.AssetID,
 		Side:         originalOrder.Side,
 		Price:        originalOrder.Price,

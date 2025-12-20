@@ -998,10 +998,12 @@ func (s *TradingService) convertOrderResponseToDomain(orderResp *types.OrderResp
 
 	createdOrder := &domain.Order{
 		OrderID:      orderResp.OrderID,
+		MarketSlug:   originalOrder.MarketSlug,
 		AssetID:      originalOrder.AssetID,
 		Side:         originalOrder.Side,
 		Price:        originalOrder.Price,
 		Size:         actualSize, // 使用实际成交数量（如果是 matched）或原始数量
+		FilledSize:   originalOrder.FilledSize,
 		Status:       status,
 		FilledAt:     filledAt,
 		CreatedAt:    time.Now(),
@@ -1010,6 +1012,9 @@ func (s *TradingService) convertOrderResponseToDomain(orderResp *types.OrderResp
 		IsEntryOrder: originalOrder.IsEntryOrder,
 		HedgeOrderID: originalOrder.HedgeOrderID,
 		PairOrderID:  originalOrder.PairOrderID,
+	}
+	if status == domain.OrderStatusFilled {
+		createdOrder.FilledSize = createdOrder.Size
 	}
 	return createdOrder
 }
@@ -1298,6 +1303,7 @@ func (s *TradingService) checkAndCorrectOrderPrice(ctx context.Context, order *d
 		// 创建新的订单（使用新的订单 ID）
 		newOrder := &domain.Order{
 			OrderID:      fmt.Sprintf("%s-corrected-%d", order.OrderID, time.Now().UnixNano()),
+			MarketSlug:   order.MarketSlug,
 			AssetID:      order.AssetID,
 			Side:         order.Side,
 			Price:        newPrice,
@@ -1358,6 +1364,7 @@ func (s *TradingService) checkAndCorrectOrderPrice(ctx context.Context, order *d
 							hedgeNewPrice := domain.PriceFromDecimal(hedgeBestPrice)
 							newHedgeOrder := &domain.Order{
 								OrderID:      fmt.Sprintf("%s-corrected-%d", pairOrder.OrderID, time.Now().UnixNano()),
+								MarketSlug:   pairOrder.MarketSlug,
 								AssetID:      pairOrder.AssetID,
 								Side:         pairOrder.Side,
 								Price:        hedgeNewPrice,
@@ -1490,6 +1497,23 @@ func (s *TradingService) CancelOrder(ctx context.Context, orderID string) error 
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// CancelOrdersNotInMarket 只管理本周期：取消所有 MarketSlug != currentSlug 的活跃订单（MarketSlug 为空也会取消）
+func (s *TradingService) CancelOrdersNotInMarket(ctx context.Context, currentSlug string) {
+	orders := s.GetActiveOrders()
+	for _, o := range orders {
+		if o == nil || o.OrderID == "" {
+			continue
+		}
+		if currentSlug == "" {
+			_ = s.CancelOrder(ctx, o.OrderID)
+			continue
+		}
+		if o.MarketSlug == "" || o.MarketSlug != currentSlug {
+			_ = s.CancelOrder(ctx, o.OrderID)
+		}
 	}
 }
 

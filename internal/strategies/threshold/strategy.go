@@ -220,6 +220,7 @@ func (s *ThresholdStrategy) onPriceChangedInternal(ctx context.Context, event *e
 
 				// 创建买入订单
 				order := &domain.Order{
+					MarketSlug:   event.Market.Slug,
 					AssetID:      assetID,
 					Side:         types.SideBuy,
 					Price:        askPrice,
@@ -395,6 +396,7 @@ func (s *ThresholdStrategy) placeOrder(ctx context.Context, tradingService Tradi
 // createSellOrder 创建卖出订单
 func (s *ThresholdStrategy) createSellOrder(ctx context.Context, tradingService TradingServiceInterface, market *domain.Market, tokenType domain.TokenType, price domain.Price, size float64) error {
 	order := &domain.Order{
+		MarketSlug:   market.Slug,
 		AssetID:      market.GetAssetID(tokenType),
 		Side:         types.SideSell,
 		Price:        price,

@@ -37,6 +37,10 @@ type sessionOrderHandler struct {
 }
 
 func (h *sessionOrderHandler) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
+	// 只把“当前周期”的订单更新转发给 Session/策略，避免跨周期串单
+	if order != nil && order.MarketSlug != "" && h.market != nil && order.MarketSlug != h.market.Slug {
+		return nil
+	}
 	h.session.EmitOrderUpdate(ctx, order)
 	return nil
 }
@@ -356,6 +360,10 @@ func main() {
 	// 设置会话切换回调，当周期切换时重新注册策略
 	marketScheduler.OnSessionSwitch(func(oldSession *bbgo.ExchangeSession, newSession *bbgo.ExchangeSession, newMarket *domain.Market) {
 		logrus.Infof("🔄 [周期切换] 检测到会话切换，重新注册策略到新会话: %s", newMarket.Slug)
+		// 只管理本周期：先取消上一周期残留的 open orders，避免跨周期串单
+		cancelCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		tradingService.CancelOrdersNotInMarket(cancelCtx, newMarket.Slug)
+		cancel()
 		registerStrategiesToSession(newSession, newMarket)
 	})
 

@@ -653,6 +653,7 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 		}
 
 		order := &domain.Order{
+			MarketSlug:   market.Slug,
 			AssetID:      assetID,
 			Side:         types.SideBuy,
 			Price:        domain.PriceFromDecimal(bestAsk),

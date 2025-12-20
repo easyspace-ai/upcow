@@ -67,6 +67,7 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 	if tokenType == domain.TokenTypeUp {
 		entryOrder = &domain.Order{
 			OrderID:      fmt.Sprintf("plan-entry-up-%d-%d", gridLevel, now.UnixNano()),
+			MarketSlug:   market.Slug,
 			AssetID:      market.YesAssetID,
 			Side:         types.SideBuy,
 			Price:        entryPrice,
@@ -82,6 +83,7 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 			_, hedgeShare := s.calculateOrderSize(hedgePrice)
 			hedgeOrder = &domain.Order{
 				OrderID:      fmt.Sprintf("plan-hedge-down-%d-%d", gridLevel, now.UnixNano()),
+				MarketSlug:   market.Slug,
 				AssetID:      market.NoAssetID,
 				Side:         types.SideBuy,
 				Price:        hedgePrice,
@@ -97,6 +99,7 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 	} else if tokenType == domain.TokenTypeDown {
 		entryOrder = &domain.Order{
 			OrderID:      fmt.Sprintf("plan-entry-down-%d-%d", gridLevel, now.UnixNano()),
+			MarketSlug:   market.Slug,
 			AssetID:      market.NoAssetID,
 			Side:         types.SideBuy,
 			Price:        entryPrice,
@@ -112,6 +115,7 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 			_, hedgeShare := s.calculateOrderSize(hedgePrice)
 			hedgeOrder = &domain.Order{
 				OrderID:      fmt.Sprintf("plan-hedge-up-%d-%d", gridLevel, now.UnixNano()),
+				MarketSlug:   market.Slug,
 				AssetID:      market.YesAssetID,
 				Side:         types.SideBuy,
 				Price:        hedgePrice,

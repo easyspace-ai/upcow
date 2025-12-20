@@ -454,35 +454,39 @@ func (e *OrderEngine) handleCancelOrder(cmd *CancelOrderCommand) {
 
 	// 更新状态：标记为取消中
 	order.Status = domain.OrderStatusCanceled
+	e.orderStore[order.OrderID] = order
+	e.emitOrderUpdate(order)
 
-	// 异步执行 IO 操作
+	// 异步执行 IO 操作（结果回流到状态循环）
 	go e.ioExecutor.CancelOrderAsync(cmd.Context, cmd.OrderID, func(err error) {
-		if err != nil {
-			// 取消失败，恢复订单状态
-			order.Status = domain.OrderStatusOpen
-			orderEngineLog.Errorf("取消订单失败: %v", err)
-		} else {
-			// 取消成功，从活跃订单中移除
-			delete(e.openOrders, cmd.OrderID)
-			orderEngineLog.Infof("订单已取消: %s", cmd.OrderID)
+		updateCmd := &UpdateOrderCommand{
+			id:    fmt.Sprintf("cancel_result_%s", cmd.OrderID),
+			Order: order,
+			Error: err,
 		}
+		e.SubmitCommand(updateCmd)
 
-		// 回复原始命令
 		select {
 		case cmd.Reply <- err:
 		default:
 		}
 	})
-
-	// 立即返回
-	select {
-	case cmd.Reply <- nil:
-	default:
-	}
 }
 
 // handleUpdateOrder 处理更新订单命令（IO 操作完成后调用）
 func (e *OrderEngine) handleUpdateOrder(cmd *UpdateOrderCommand) {
+	// CancelOrderAsync 也复用 UpdateOrderCommand 回流：这里区分“取消失败”与“下单失败”
+	if cmd.Error != nil && cmd.Order != nil && cmd.Order.Status == domain.OrderStatusCanceled {
+		// 取消失败：恢复为 open，并保留在 openOrders
+		if existing, ok := e.openOrders[cmd.Order.OrderID]; ok {
+			existing.Status = domain.OrderStatusOpen
+			e.orderStore[existing.OrderID] = existing
+			e.emitOrderUpdate(existing)
+		}
+		e.stats.Errors++
+		return
+	}
+
 	if cmd.Error != nil {
 		// IO 操作失败，标记订单为失败状态
 		order := cmd.Order
@@ -536,8 +540,8 @@ func (e *OrderEngine) handleUpdateOrder(cmd *UpdateOrderCommand) {
 	// 更新订单存储
 	e.orderStore[order.OrderID] = order
 
-	// 如果订单已成交，从活跃订单中移除
-	if order.Status == domain.OrderStatusFilled {
+	// 如果订单已成交/已取消，从活跃订单中移除
+	if order.Status == domain.OrderStatusFilled || order.Status == domain.OrderStatusCanceled {
 		delete(e.openOrders, order.OrderID)
 	}
 

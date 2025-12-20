@@ -123,6 +123,7 @@ func openOrderToDomain(o types.OpenOrder) *domain.Order {
 
 	d := &domain.Order{
 		OrderID:    o.ID,
+		MarketSlug: o.Market,
 		AssetID:    o.AssetID,
 		Side:       side,
 		Price:      domain.PriceFromDecimal(price),

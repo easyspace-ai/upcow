@@ -8,6 +8,7 @@ import (
 // Order 订单领域模型
 type Order struct {
 	OrderID      string          // 订单 ID
+	MarketSlug   string          // 订单所属市场周期（btc-updown-15m-xxxx），用于只管理本周期
 	AssetID      string          // 资产 ID
 	Side         types.Side      // 订单方向
 	Price        Price           // 订单价格
