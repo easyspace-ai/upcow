@@ -37,7 +37,8 @@ func (s *ArbitrageStrategy) startLoop(ctx context.Context) {
 		loopCtx, cancel := context.WithCancel(ctx)
 		s.loopCancel = cancel
 		go func() {
-			ticker := time.NewTicker(1 * time.Second)
+			// 更细粒度的 tick：用于高频市场下的节奏控制（同时避免过度忙轮询）
+			ticker := time.NewTicker(250 * time.Millisecond)
 			defer ticker.Stop()
 			for {
 				select {
@@ -49,12 +50,7 @@ func (s *ArbitrageStrategy) startLoop(ctx context.Context) {
 					down := s.latestPrices[domain.TokenTypeDown]
 					s.latestPrices = make(map[domain.TokenType]*events.PriceChangedEvent)
 					s.priceMu.Unlock()
-					if up != nil {
-						_ = s.onPriceChangedInternal(loopCtx, up)
-					}
-					if down != nil {
-						_ = s.onPriceChangedInternal(loopCtx, down)
-					}
+					_ = s.onPricesChangedInternal(loopCtx, up, down)
 				case o := <-s.orderC:
 					if o == nil {
 						continue
@@ -63,6 +59,7 @@ func (s *ArbitrageStrategy) startLoop(ctx context.Context) {
 				case res := <-s.cmdResultC:
 					_ = s.handleCmdResultInternal(loopCtx, res)
 				case <-ticker.C:
+					// 保留 tick：未来可用于“缺价时补偿检查/周期末强制锁定”等逻辑
 				}
 			}
 		}()

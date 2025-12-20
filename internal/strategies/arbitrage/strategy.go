@@ -44,7 +44,8 @@ type ArbitrageStrategy struct {
 	latestPrices map[domain.TokenType]*events.PriceChangedEvent
 	orderC       chan *domain.Order
 	cmdResultC   chan arbitrageCmdResult
-	pendingPlace bool
+	inFlight     int
+	maxInFlight  int
 
 	mu             sync.RWMutex
 	isPlacingOrder bool
@@ -115,6 +116,10 @@ func (s *ArbitrageStrategy) InitializeWithConfig(ctx context.Context, config str
 	}
 
 	s.config = arbitrageConfig
+	if s.maxInFlight <= 0 {
+		// 参考 CSV：单秒可出现 10-30 笔成交，策略侧至少要允许小并发，避免“只能一笔一笔慢慢下”
+		s.maxInFlight = 8
+	}
 
 	logger.Infof("套利策略已初始化: 周期时长=%v, 锁盈起始=%v, UP目标=%v, DOWN目标=%v",
 		arbitrageConfig.CycleDuration,
@@ -145,6 +150,20 @@ func (s *ArbitrageStrategy) OnPriceChanged(ctx context.Context, event *events.Pr
 }
 
 func (s *ArbitrageStrategy) onPriceChangedInternal(ctx context.Context, event *events.PriceChangedEvent) error {
+	return s.onPricesChangedInternal(ctx, event, nil)
+}
+
+// onPricesChangedInternal 合并处理 UP/DOWN 两侧价格变动，避免同一轮内重复决策与重复下单。
+func (s *ArbitrageStrategy) onPricesChangedInternal(ctx context.Context, upEvent *events.PriceChangedEvent, downEvent *events.PriceChangedEvent) error {
+	// 选择一个有效事件作为“主事件”（用于 market/时间等）
+	event := upEvent
+	if event == nil {
+		event = downEvent
+	}
+	if event == nil {
+		return nil
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -159,27 +178,33 @@ func (s *ArbitrageStrategy) onPriceChangedInternal(ctx context.Context, event *e
 
 	// 初始化或更新市场信息
 	if s.currentMarket == nil || s.currentMarket.Slug != event.Market.Slug {
-		// 周期切换：清理 pending 标记，避免新周期被旧状态卡住
-		s.pendingPlace = false
+		// 周期切换：清理 in-flight 计数，避免新周期被旧状态卡住
+		s.inFlight = 0
 		s.currentMarket = event.Market
 		s.positionState = domain.NewArbitragePositionState(event.Market)
 		logger.Infof("套利策略: 初始化新市场 %s, 周期开始时间=%d", event.Market.Slug, event.Market.Timestamp)
 	}
 
 	// 更新当前价格
-	if event.TokenType == domain.TokenTypeUp {
-		s.priceUp = event.NewPrice.ToDecimal()
-	} else if event.TokenType == domain.TokenTypeDown {
-		s.priceDown = event.NewPrice.ToDecimal()
+	if upEvent != nil {
+		s.priceUp = upEvent.NewPrice.ToDecimal()
+	}
+	if downEvent != nil {
+		s.priceDown = downEvent.NewPrice.ToDecimal()
 	}
 
 	// 获取已过时间（秒）
-	elapsed := s.positionState.GetElapsedTime()
+	nowUnix := time.Now().Unix()
+	// 尽量用事件时间做阶段判断（更贴近市场真实时间线）
+	if !event.Timestamp.IsZero() {
+		nowUnix = event.Timestamp.Unix()
+	}
+	elapsed := s.positionState.GetElapsedTimeAt(nowUnix)
 	cycleDuration := int64(s.config.CycleDuration.Seconds())
 	lockStart := int64(s.config.LockStart.Seconds())
 
 	// 判断当前阶段（基于时间）
-	phase := s.positionState.DetectPhase(cycleDuration, lockStart)
+	phase := s.positionState.DetectPhaseAt(nowUnix, cycleDuration, lockStart)
 
 	// 检测极端价格，提前进入放大利润阶段
 	// 如果UP或DOWN价格达到提前锁盈阈值，提前进入放大利润阶段（锁盈已经在实时进行）
@@ -192,6 +217,12 @@ func (s *ArbitrageStrategy) onPriceChangedInternal(ctx context.Context, event *e
 
 	logger.Debugf("套利策略: 市场=%s, 阶段=%d, 已过时间=%ds, UP价格=%.4f, DOWN价格=%.4f, QUp=%.2f, QDown=%.2f",
 		event.Market.Slug, phase, elapsed, s.priceUp, s.priceDown, s.positionState.QUp, s.positionState.QDown)
+
+	// 关键：优先快速锁定最差情景收益（参考 CSV：通常开盘后 1 分钟内完成锁定）
+	// 这里不做 phase gating：任何阶段如果 worst-case < 0，都要尽快用低成本补齐。
+	if err := s.ensureWorstCaseNonNegative(ctx, event.Market, "ensure_worstcase_nonneg"); err != nil {
+		logger.Warnf("套利策略: 最差收益锁定尝试失败: %v", err)
+	}
 
 	// 核心原则：混合策略 - 结合高手机器人策略和我们的实时锁定优势
 	// 阶段1：快速建仓，不急于锁定（降低实时锁定优先级）
@@ -236,6 +267,62 @@ func (s *ArbitrageStrategy) onPriceChangedInternal(ctx context.Context, event *e
 	default:
 		return nil
 	}
+}
+
+// ensureWorstCaseNonNegative 尝试把最差情景收益（min(Pu, Pd)）拉回到 >= 0。
+// 设计目标：用“更便宜的一侧”优先补齐，并采用拆单/并发下单提升锁定速度。
+func (s *ArbitrageStrategy) ensureWorstCaseNonNegative(ctx context.Context, market *domain.Market, reason string) error {
+	if s.positionState == nil || market == nil || s.tradingService == nil || s.config == nil {
+		return nil
+	}
+	pu := s.positionState.ProfitIfUpWin()
+	pd := s.positionState.ProfitIfDownWin()
+	if pu >= 0 && pd >= 0 {
+		return nil
+	}
+
+	// 选择当前更“危险”的方向（利润更低的那个）
+	token := domain.TokenTypeUp
+	profitSide := pu
+	qSide := s.positionState.QUp
+	if pd < pu {
+		token = domain.TokenTypeDown
+		profitSide = pd
+		qSide = s.positionState.QDown
+	}
+
+	// 估算需要补多少：x >= (-profitSide) / (1 - ask)
+	// 为了避免多一次行情读取，这里用当前观测价做近似（实价由下单时 bestAsk 决定）。
+	obs := s.priceUp
+	if token == domain.TokenTypeDown {
+		obs = s.priceDown
+	}
+	if obs <= 0 || obs >= 0.99 {
+		return nil
+	}
+	deficit := -profitSide
+	if deficit <= 0 {
+		return nil
+	}
+
+	need := deficit / (1.0 - obs)
+
+	// 单次补仓上限：参考 CSV 的典型拆单逻辑（18 为主），并避免一口气把仓位推太大
+	capSize := math.Max(s.config.BuildLotSize, s.config.SmallIncrement)
+	if capSize <= 0 {
+		capSize = 18
+	}
+	if need > capSize {
+		need = capSize
+	}
+
+	// 额外保护：如果这一侧已经远高于基础目标，避免过度单边补（留给后续 tick 逐步处理）
+	baseTarget := s.config.BaseTarget
+	if baseTarget > 0 && qSide > baseTarget*2.5 {
+		need = math.Min(need, capSize*0.5)
+	}
+
+	return s.placeBuyOrderSplit(ctx, market, token, need, reason)
 }
 
 // OnOrderFilled 处理订单成交事件
@@ -354,14 +441,16 @@ func (s *ArbitrageStrategy) handleBuildPhase(ctx context.Context, event *events.
 	// 优先填充持仓较少的一侧
 	// 放宽价格上限到0.85（从0.7放宽），与高手机器人策略一致（0.14-0.87范围）
 	if s.positionState.QUp < baseTarget && s.priceUp > 0 && s.priceUp < 0.85 {
-		if err := s.placeBuyOrder(ctx, event.Market, domain.TokenTypeUp, lotSize, "build_base_up"); err != nil {
+		need := math.Min(lotSize, baseTarget-s.positionState.QUp)
+		if err := s.placeBuyOrderSplit(ctx, event.Market, domain.TokenTypeUp, need, "build_base_up"); err != nil {
 			logger.Errorf("套利策略: 建仓阶段买入UP失败: %v", err)
 			return err
 		}
 	}
 
 	if s.positionState.QDown < baseTarget && s.priceDown > 0 && s.priceDown < 0.85 {
-		if err := s.placeBuyOrder(ctx, event.Market, domain.TokenTypeDown, lotSize, "build_base_down"); err != nil {
+		need := math.Min(lotSize, baseTarget-s.positionState.QDown)
+		if err := s.placeBuyOrderSplit(ctx, event.Market, domain.TokenTypeDown, need, "build_base_down"); err != nil {
 			logger.Errorf("套利策略: 建仓阶段买入DOWN失败: %v", err)
 			return err
 		}
@@ -375,11 +464,11 @@ func (s *ArbitrageStrategy) handleBuildPhase(ctx context.Context, event *events.
 		// 使用 build_lot_size 的一半作为再平衡订单量，避免过大
 		rebalanceSize := math.Max(s.config.BuildLotSize*0.5, s.config.MinOrderSize)
 		if upRatio > 0.55 && s.priceDown > 0 && s.priceDown < 0.85 {
-			if err := s.placeBuyOrder(ctx, event.Market, domain.TokenTypeDown, rebalanceSize, "rebalance_down_in_build"); err != nil {
+			if err := s.placeBuyOrderSplit(ctx, event.Market, domain.TokenTypeDown, rebalanceSize, "rebalance_down_in_build"); err != nil {
 				logger.Errorf("套利策略: 建仓阶段再平衡DOWN失败: %v", err)
 			}
 		} else if upRatio < 0.45 && s.priceUp > 0 && s.priceUp < 0.85 {
-			if err := s.placeBuyOrder(ctx, event.Market, domain.TokenTypeUp, rebalanceSize, "rebalance_up_in_build"); err != nil {
+			if err := s.placeBuyOrderSplit(ctx, event.Market, domain.TokenTypeUp, rebalanceSize, "rebalance_up_in_build"); err != nil {
 				logger.Errorf("套利策略: 建仓阶段再平衡UP失败: %v", err)
 			}
 		}
@@ -407,14 +496,14 @@ func (s *ArbitrageStrategy) handleAdjustPhase(ctx context.Context, event *events
 	// 使用 small_increment 作为调整订单量，适合小资金量
 	adjustSize := math.Max(s.config.SmallIncrement, s.config.MinOrderSize)
 	if s.priceUp > 0.55 && s.priceUp < 0.8 && upRatio < 0.55 {
-		if err := s.placeBuyOrder(ctx, event.Market, domain.TokenTypeUp, adjustSize, "phase2_soft_tilt_up"); err != nil {
+		if err := s.placeBuyOrderSplit(ctx, event.Market, domain.TokenTypeUp, adjustSize, "phase2_soft_tilt_up"); err != nil {
 			logger.Errorf("套利策略: 调整阶段轻微倾斜UP失败: %v", err)
 		}
 	}
 
 	// 对称：盘口偏向DOWN
 	if s.priceDown > 0.55 && s.priceDown < 0.8 && upRatio > 0.45 {
-		if err := s.placeBuyOrder(ctx, event.Market, domain.TokenTypeDown, adjustSize, "phase2_soft_tilt_down"); err != nil {
+		if err := s.placeBuyOrderSplit(ctx, event.Market, domain.TokenTypeDown, adjustSize, "phase2_soft_tilt_down"); err != nil {
 			logger.Errorf("套利策略: 调整阶段轻微倾斜DOWN失败: %v", err)
 		}
 	}
@@ -422,12 +511,12 @@ func (s *ArbitrageStrategy) handleAdjustPhase(ctx context.Context, event *events
 	// 可选：若某一方向即时利润绝对值过大，用对侧小单微调
 	const pnlCap = 200.0
 	if pu > pnlCap && s.priceDown > 0 && s.priceDown < 0.7 {
-		if err := s.placeBuyOrder(ctx, event.Market, domain.TokenTypeDown, 8, "phase2_clip_up_profit"); err != nil {
+		if err := s.placeBuyOrderSplit(ctx, event.Market, domain.TokenTypeDown, 8, "phase2_clip_up_profit"); err != nil {
 			logger.Errorf("套利策略: 调整阶段削减UP利润失败: %v", err)
 		}
 	}
 	if pd > pnlCap && s.priceUp > 0 && s.priceUp < 0.7 {
-		if err := s.placeBuyOrder(ctx, event.Market, domain.TokenTypeUp, 8, "phase2_clip_down_profit"); err != nil {
+		if err := s.placeBuyOrderSplit(ctx, event.Market, domain.TokenTypeUp, 8, "phase2_clip_down_profit"); err != nil {
 			logger.Errorf("套利策略: 调整阶段削减DOWN利润失败: %v", err)
 		}
 	}
@@ -460,7 +549,7 @@ func (s *ArbitrageStrategy) handleRealTimeLockIn(ctx context.Context, event *eve
 		dQ := math.Max(0, math.Min(need, smallIncrement))
 		if dQ > s.config.MinOrderSize {
 			logger.Warnf("套利策略: 检测到UP方向风险敞口（利润=%.2f），立即补充订单锁定", pu)
-			if err := s.placeBuyOrder(ctx, event.Market, domain.TokenTypeUp, dQ, "realtime_lock_up_risk"); err != nil {
+			if err := s.placeBuyOrderSplit(ctx, event.Market, domain.TokenTypeUp, dQ, "realtime_lock_up_risk"); err != nil {
 				logger.Errorf("套利策略: 实时锁盈UP风险失败: %v", err)
 			}
 		}
@@ -473,7 +562,7 @@ func (s *ArbitrageStrategy) handleRealTimeLockIn(ctx context.Context, event *eve
 		dQ := math.Max(0, math.Min(need, smallIncrement))
 		if dQ > s.config.MinOrderSize {
 			logger.Warnf("套利策略: 检测到DOWN方向风险敞口（利润=%.2f），立即补充订单锁定", pd)
-			if err := s.placeBuyOrder(ctx, event.Market, domain.TokenTypeDown, dQ, "realtime_lock_down_risk"); err != nil {
+			if err := s.placeBuyOrderSplit(ctx, event.Market, domain.TokenTypeDown, dQ, "realtime_lock_down_risk"); err != nil {
 				logger.Errorf("套利策略: 实时锁盈DOWN风险失败: %v", err)
 			}
 		}
@@ -487,7 +576,7 @@ func (s *ArbitrageStrategy) handleRealTimeLockIn(ctx context.Context, event *eve
 			dQ := math.Min(smallIncrement*2, 50.0) // 极端价格时可以稍微多买
 			if dQ > s.config.MinOrderSize {
 				logger.Infof("套利策略: 利用极端价格锁定DOWN利润（UP=%.4f, DOWN=%.4f）", s.priceUp, s.priceDown)
-				if err := s.placeBuyOrder(ctx, event.Market, domain.TokenTypeDown, dQ, "realtime_lock_extreme_down"); err != nil {
+				if err := s.placeBuyOrderSplit(ctx, event.Market, domain.TokenTypeDown, dQ, "realtime_lock_extreme_down"); err != nil {
 					logger.Errorf("套利策略: 实时锁盈极端DOWN价格失败: %v", err)
 				}
 			}
@@ -498,7 +587,7 @@ func (s *ArbitrageStrategy) handleRealTimeLockIn(ctx context.Context, event *eve
 			dQ := math.Min(smallIncrement*2, 50.0) // 极端价格时可以稍微多买
 			if dQ > s.config.MinOrderSize {
 				logger.Infof("套利策略: 利用极端价格锁定UP利润（UP=%.4f, DOWN=%.4f）", s.priceUp, s.priceDown)
-				if err := s.placeBuyOrder(ctx, event.Market, domain.TokenTypeUp, dQ, "realtime_lock_extreme_up"); err != nil {
+				if err := s.placeBuyOrderSplit(ctx, event.Market, domain.TokenTypeUp, dQ, "realtime_lock_extreme_up"); err != nil {
 					logger.Errorf("套利策略: 实时锁盈极端UP价格失败: %v", err)
 				}
 			}
@@ -578,7 +667,7 @@ func (s *ArbitrageStrategy) handleProfitAmplification(ctx context.Context, event
 		dQ := math.Max(0, math.Min(need, maxUpIncrement))
 		if dQ > s.config.MinOrderSize {
 			logger.Infof("套利策略: 放大利润阶段 - 推高UP利润到目标 %.2f（当前=%.2f）", targetUp, pu)
-			if err := s.placeBuyOrder(ctx, event.Market, domain.TokenTypeUp, dQ, "amplify_profit_up"); err != nil {
+			if err := s.placeBuyOrderSplit(ctx, event.Market, domain.TokenTypeUp, dQ, "amplify_profit_up"); err != nil {
 				logger.Errorf("套利策略: 放大利润阶段推高UP失败: %v", err)
 			}
 		}
@@ -587,7 +676,7 @@ func (s *ArbitrageStrategy) handleProfitAmplification(ctx context.Context, event
 		dQ := math.Max(0, math.Min(need, maxDownIncrement))
 		if dQ > s.config.MinOrderSize {
 			logger.Infof("套利策略: 放大利润阶段 - 推高DOWN利润到目标 %.2f（当前=%.2f）", targetDown, pd)
-			if err := s.placeBuyOrder(ctx, event.Market, domain.TokenTypeDown, dQ, "amplify_profit_down"); err != nil {
+			if err := s.placeBuyOrderSplit(ctx, event.Market, domain.TokenTypeDown, dQ, "amplify_profit_down"); err != nil {
 				logger.Errorf("套利策略: 放大利润阶段推高DOWN失败: %v", err)
 			}
 		}
@@ -604,7 +693,7 @@ func (s *ArbitrageStrategy) handleProfitAmplification(ctx context.Context, event
 		dQ := math.Max(0, math.Min(need, smallIncrement*2)) // 可以稍微多买
 		if dQ > s.config.MinOrderSize {
 			logger.Infof("套利策略: 放大利润阶段 - 利用极端DOWN价格（%.4f）放大DOWN利润", s.priceDown)
-			if err := s.placeBuyOrder(ctx, event.Market, domain.TokenTypeDown, dQ, "amplify_profit_extreme_down"); err != nil {
+			if err := s.placeBuyOrderSplit(ctx, event.Market, domain.TokenTypeDown, dQ, "amplify_profit_extreme_down"); err != nil {
 				logger.Errorf("套利策略: 放大利润阶段DOWN极端价格失败: %v", err)
 			}
 		}
@@ -614,7 +703,7 @@ func (s *ArbitrageStrategy) handleProfitAmplification(ctx context.Context, event
 		dQ := math.Max(0, math.Min(need, smallIncrement*2)) // 可以稍微多买
 		if dQ > s.config.MinOrderSize {
 			logger.Infof("套利策略: 放大利润阶段 - 利用极端UP价格（%.4f）放大UP利润", s.priceUp)
-			if err := s.placeBuyOrder(ctx, event.Market, domain.TokenTypeUp, dQ, "amplify_profit_extreme_up"); err != nil {
+			if err := s.placeBuyOrderSplit(ctx, event.Market, domain.TokenTypeUp, dQ, "amplify_profit_extreme_up"); err != nil {
 				logger.Errorf("套利策略: 放大利润阶段UP极端价格失败: %v", err)
 			}
 		}
@@ -623,10 +712,39 @@ func (s *ArbitrageStrategy) handleProfitAmplification(ctx context.Context, event
 	return nil
 }
 
+// placeBuyOrderSplit 将大单拆成若干笔（默认参考 BuildLotSize=18），并受 in-flight 限制。
+func (s *ArbitrageStrategy) placeBuyOrderSplit(ctx context.Context, market *domain.Market, tokenType domain.TokenType, size float64, reason string) error {
+	if size <= 0 {
+		return nil
+	}
+	if s.config == nil {
+		return nil
+	}
+	chunk := s.config.BuildLotSize
+	if chunk <= 0 {
+		chunk = size
+	}
+	remaining := size
+	for remaining > 0 {
+		if s.maxInFlight > 0 && s.inFlight >= s.maxInFlight {
+			return nil
+		}
+		q := remaining
+		if q > chunk {
+			q = chunk
+		}
+		if err := s.placeBuyOrder(ctx, market, tokenType, q, reason); err != nil {
+			return err
+		}
+		remaining -= q
+	}
+	return nil
+}
+
 // placeBuyOrder 下买入订单
 func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Market, tokenType domain.TokenType, size float64, reason string) error {
-	// 统一：loop 内节流，避免在高频价格下重复投递
-	if s.pendingPlace {
+	// 统一：loop 内限并发，避免在高频价格下无限投递
+	if s.maxInFlight > 0 && s.inFlight >= s.maxInFlight {
 		return nil
 	}
 	if market == nil || s.tradingService == nil || s.config == nil {
@@ -672,8 +790,8 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 		return err
 	}
 
-	s.pendingPlace = true
 	s.initLoopIfNeeded()
+	s.inFlight++
 	ok := exec.Submit(bbgo.Command{
 		Name:    fmt.Sprintf("arbitrage_buy_%s_%s", tokenType, reason),
 		Timeout: 25 * time.Second,
@@ -711,7 +829,9 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 		},
 	})
 	if !ok {
-		s.pendingPlace = false
+		if s.inFlight > 0 {
+			s.inFlight--
+		}
 		return fmt.Errorf("执行器队列已满，无法提交订单")
 	}
 	return nil

@@ -96,19 +96,25 @@ func (s *ArbitragePositionState) ProfitIfDownWin() float64 {
 	return s.QDown*1.0 - s.CUp - s.CDown
 }
 
-// GetElapsedTime 获取距离周期开始的已过时间（秒）
-func (s *ArbitragePositionState) GetElapsedTime() int64 {
-	now := time.Now().Unix()
-	elapsed := now - s.CycleStartTime
+// GetElapsedTimeAt 获取距离周期开始的已过时间（秒），以传入的 nowUnix 为准。
+// 说明：套利策略的阶段判断应尽量使用事件时间（PriceChangedEvent.Timestamp），
+// 避免由于消息延迟/回放导致的阶段漂移。
+func (s *ArbitragePositionState) GetElapsedTimeAt(nowUnix int64) int64 {
+	elapsed := nowUnix - s.CycleStartTime
 	if elapsed < 0 {
 		return 0
 	}
 	return elapsed
 }
 
-// DetectPhase 判断当前处于哪个阶段
-func (s *ArbitragePositionState) DetectPhase(cycleDuration, lockStart int64) Phase {
-	elapsed := s.GetElapsedTime()
+// GetElapsedTime 获取距离周期开始的已过时间（秒）（兼容旧用法，基于本机时间）。
+func (s *ArbitragePositionState) GetElapsedTime() int64 {
+	return s.GetElapsedTimeAt(time.Now().Unix())
+}
+
+// DetectPhaseAt 判断当前处于哪个阶段，以传入的 nowUnix 为准。
+func (s *ArbitragePositionState) DetectPhaseAt(nowUnix int64, cycleDuration, lockStart int64) Phase {
+	elapsed := s.GetElapsedTimeAt(nowUnix)
 	ratio := float64(elapsed) / float64(cycleDuration)
 	
 	if ratio < 1.0/3.0 {
@@ -118,6 +124,11 @@ func (s *ArbitragePositionState) DetectPhase(cycleDuration, lockStart int64) Pha
 		return PhaseAdjust
 	}
 	return PhaseLock
+}
+
+// DetectPhase 判断当前处于哪个阶段（兼容旧用法，基于本机时间）。
+func (s *ArbitragePositionState) DetectPhase(cycleDuration, lockStart int64) Phase {
+	return s.DetectPhaseAt(time.Now().Unix(), cycleDuration, lockStart)
 }
 
 // NewArbitragePositionState 创建新的套利持仓状态
