@@ -32,6 +32,20 @@ type PairLockStrategyConfig struct {
 	// 默认（当 EnableParallel=true 且未显式配置时）：等于 OrderSize（即最多允许“一个轮次规模”的最坏未对冲风险）。
 	MaxTotalUnhedgedShares float64
 
+	// MaxPlanAgeSeconds 单轮最大存活时间（秒）。
+	// 超过该时间仍未完成锁定，则判定该轮失败并触发 OnFailAction。
+	MaxPlanAgeSeconds int
+
+	// OnFailAction 失败动作：
+	// - "pause": 仅暂停策略（默认，最安全）
+	// - "cancel_pause": 取消该轮相关未成交订单后暂停
+	// - "flatten_pause": 取消未成交订单，并尝试卖出多出来的一腿（把未对冲差额回平）后暂停
+	OnFailAction string
+
+	// FailMaxSellSlippageCents 失败回平（flatten）时允许的卖出滑点下限（分，0=关闭）。
+	// 若启用：卖出价不允许低于（最近观测价 - slippage）。
+	FailMaxSellSlippageCents int
+
 	// CooldownMs 信号触发冷却时间（毫秒），避免高频重复开轮
 	CooldownMs int
 
@@ -77,6 +91,20 @@ func (c *PairLockStrategyConfig) Validate() error {
 		if c.MaxTotalUnhedgedShares < 0 {
 			return fmt.Errorf("max_total_unhedged_shares 不能为负数")
 		}
+	}
+	if c.MaxPlanAgeSeconds <= 0 {
+		c.MaxPlanAgeSeconds = 60
+	}
+	if c.OnFailAction == "" {
+		c.OnFailAction = "pause"
+	}
+	switch c.OnFailAction {
+	case "pause", "cancel_pause", "flatten_pause":
+	default:
+		return fmt.Errorf("on_fail_action 无效: %s (允许: pause/cancel_pause/flatten_pause)", c.OnFailAction)
+	}
+	if c.FailMaxSellSlippageCents < 0 {
+		return fmt.Errorf("fail_max_sell_slippage_cents 不能为负数")
 	}
 	if c.CooldownMs <= 0 {
 		c.CooldownMs = 250

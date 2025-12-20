@@ -66,6 +66,9 @@ type PairLockConfig struct {
 	EnableParallel           bool    // 是否开启并行多轮（默认 false）
 	MaxConcurrentPlans       int     // 最大并行轮数（默认 1；仅 EnableParallel=true 时生效）
 	MaxTotalUnhedgedShares   float64 // 全局未锁定风险预算（shares；保守口径：在途轮次 targetSize 总和），默认 0（策略侧会给并行模式设置保守默认）
+	MaxPlanAgeSeconds        int     // 单轮最大存活时间（秒），默认 60
+	OnFailAction             string  // 失败动作：pause/cancel_pause/flatten_pause（默认 pause）
+	FailMaxSellSlippageCents int     // 失败回平（flatten）卖出滑点下限（分，0=关闭）
 	OrderSize                float64 // 每轮下单 shares（YES/NO 两腿相同）
 	MinOrderSize             float64 // 最小下单金额（USDC），默认 1.1
 	ProfitTargetCents        int     // 锁定利润目标（分），默认 3
@@ -201,6 +204,9 @@ type ConfigFile struct {
 			EnableParallel           bool    `yaml:"enable_parallel" json:"enable_parallel"`
 			MaxConcurrentPlans       int     `yaml:"max_concurrent_plans" json:"max_concurrent_plans"`
 			MaxTotalUnhedgedShares   float64 `yaml:"max_total_unhedged_shares" json:"max_total_unhedged_shares"`
+			MaxPlanAgeSeconds        int     `yaml:"max_plan_age_seconds" json:"max_plan_age_seconds"`
+			OnFailAction             string  `yaml:"on_fail_action" json:"on_fail_action"`
+			FailMaxSellSlippageCents int     `yaml:"fail_max_sell_slippage_cents" json:"fail_max_sell_slippage_cents"`
 			OrderSize                float64 `yaml:"order_size" json:"order_size"`
 			MinOrderSize             float64 `yaml:"min_order_size" json:"min_order_size"`
 			ProfitTargetCents        int     `yaml:"profit_target_cents" json:"profit_target_cents"`
@@ -351,6 +357,21 @@ func LoadFromFile(filePath string) (*Config, error) {
 					configFile != nil,
 					safeGetPairLockFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.MaxTotalUnhedgedShares }),
 					parseFloatEnv("PAIRLOCK_MAX_TOTAL_UNHEDGED_SHARES", 0),
+				),
+				MaxPlanAgeSeconds: getIntFromSources(
+					configFile != nil,
+					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxPlanAgeSeconds }),
+					parseIntEnv("PAIRLOCK_MAX_PLAN_AGE_SECONDS", 60),
+				),
+				OnFailAction: getValueFromSources(
+					configFile != nil && safeGetPairLockString(configFile, func(cf *ConfigFile) string { return cf.Strategies.PairLock.OnFailAction }) != "",
+					safeGetPairLockString(configFile, func(cf *ConfigFile) string { return cf.Strategies.PairLock.OnFailAction }),
+					getEnv("PAIRLOCK_ON_FAIL_ACTION", "pause"),
+				),
+				FailMaxSellSlippageCents: getIntFromSources(
+					configFile != nil,
+					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.FailMaxSellSlippageCents }),
+					parseIntEnv("PAIRLOCK_FAIL_MAX_SELL_SLIPPAGE_CENTS", 0),
 				),
 				OrderSize: getFloatFromSources(
 					configFile != nil,
@@ -760,6 +781,13 @@ func safeGetPairLockBool(cf *ConfigFile, getter func(*ConfigFile) bool) bool {
 	return getter(cf)
 }
 
+func safeGetPairLockString(cf *ConfigFile, getter func(*ConfigFile) string) string {
+	if cf == nil {
+		return ""
+	}
+	return getter(cf)
+}
+
 // safeGetArbitrageInt 安全地获取 Arbitrage 配置的整数值
 func safeGetArbitrageInt(cf *ConfigFile, getter func(*ConfigFile) int) int {
 	if cf == nil {
@@ -902,6 +930,17 @@ func (c *Config) Validate() error {
 			}
 			if c.Strategies.PairLock.MaxTotalUnhedgedShares < 0 {
 				return fmt.Errorf("PAIRLOCK_MAX_TOTAL_UNHEDGED_SHARES 不能为负数")
+			}
+			if c.Strategies.PairLock.MaxPlanAgeSeconds <= 0 {
+				return fmt.Errorf("PAIRLOCK_MAX_PLAN_AGE_SECONDS 必须 > 0")
+			}
+			switch c.Strategies.PairLock.OnFailAction {
+			case "", "pause", "cancel_pause", "flatten_pause":
+			default:
+				return fmt.Errorf("PAIRLOCK_ON_FAIL_ACTION 无效: %s", c.Strategies.PairLock.OnFailAction)
+			}
+			if c.Strategies.PairLock.FailMaxSellSlippageCents < 0 {
+				return fmt.Errorf("PAIRLOCK_FAIL_MAX_SELL_SLIPPAGE_CENTS 不能为负数")
 			}
 		case "arbitrage":
 			if c.Strategies.Arbitrage == nil {

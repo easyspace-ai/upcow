@@ -48,6 +48,8 @@ const (
 	cmdPlaceYes cmdKind = "place_yes"
 	cmdPlaceNo  cmdKind = "place_no"
 	cmdSupplement cmdKind = "supplement"
+	cmdCancel   cmdKind = "cancel"
+	cmdFlatten  cmdKind = "flatten"
 )
 
 type cmdResult struct {
@@ -184,6 +186,8 @@ func (s *PairLockStrategy) Initialize(ctx context.Context, conf strategies.Strat
 		log.Infof("pairlock 风控: max_total_unhedged_shares=%.4f (保守口径：在途轮次 targetSize 总和)",
 			s.config.MaxTotalUnhedgedShares)
 	}
+	log.Infof("pairlock 失败策略: on_fail_action=%s, max_plan_age_seconds=%d, fail_max_sell_slippage_cents=%d",
+		s.config.OnFailAction, s.config.MaxPlanAgeSeconds, s.config.FailMaxSellSlippageCents)
 
 	return nil
 }
@@ -361,6 +365,7 @@ func (s *PairLockStrategy) tryStartNewPlan(ctx context.Context) error {
 	p := &pairLockPlan{
 		ID:          planID,
 		MarketSlug:  market.Slug,
+		CreatedAt:   now,
 		TargetSize:  size,
 		YesTemplate: yesOrder,
 		NoTemplate:  noOrder,
@@ -423,11 +428,7 @@ func (s *PairLockStrategy) onCmdResultInternal(ctx context.Context, res cmdResul
 		return nil
 	}
 	if res.err != nil {
-		p.State = planFailed
-		p.LastError = res.err.Error()
-		p.StateAt = time.Now()
-		s.paused = true
-		log.Errorf("❌ [pairlock] 下单失败，策略暂停: kind=%s err=%v", res.kind, res.err)
+		s.failPlan(ctx, p, fmt.Sprintf("cmd_failed:%s", res.kind), res.err)
 		return nil
 	}
 	if res.created == nil {
@@ -565,17 +566,18 @@ func (s *PairLockStrategy) onTick(ctx context.Context) {
 		if p == nil || p.State == planFailed || p.State == planCompleted {
 			continue
 		}
+		// 超时失败
+		maxAge := time.Duration(s.config.MaxPlanAgeSeconds) * time.Second
+		if maxAge > 0 && !p.CreatedAt.IsZero() && time.Since(p.CreatedAt) > maxAge {
+			s.failPlan(ctx, p, "plan_timeout", nil)
+			return
+		}
 		imb := p.imbalance()
 		if imb <= 0 {
 			continue
 		}
 		if p.SupplementAttempts >= s.config.MaxSupplementAttempts {
-			p.State = planFailed
-			p.LastError = "补齐次数用尽"
-			p.StateAt = time.Now()
-			s.paused = true
-			log.Errorf("❌ [pairlock] plan=%s 补齐失败，策略暂停: yesFilled=%.4f noFilled=%.4f target=%.4f",
-				p.ID, p.YesFilled, p.NoFilled, p.TargetSize)
+			s.failPlan(ctx, p, "supplement_exhausted", nil)
 			return
 		}
 		if !p.LastSupplementAt.IsZero() && time.Since(p.LastSupplementAt) < 2*time.Second {
@@ -666,6 +668,116 @@ func (s *PairLockStrategy) resetForNewCycle() {
 	s.downHoldings = 0
 
 	s.lastCountedFilled = make(map[string]float64)
+}
+
+func (s *PairLockStrategy) failPlan(ctx context.Context, p *pairLockPlan, reason string, err error) {
+	if p == nil || s.config == nil {
+		return
+	}
+	p.State = planFailed
+	p.StateAt = time.Now()
+	if err != nil {
+		p.LastError = err.Error()
+	} else {
+		p.LastError = reason
+	}
+
+	log.Errorf("❌ [pairlock] 轮次失败: plan=%s reason=%s err=%v yesFilled=%.4f noFilled=%.4f target=%.4f action=%s",
+		p.ID, reason, err, p.YesFilled, p.NoFilled, p.TargetSize, s.config.OnFailAction)
+
+	// 失败动作：默认都要暂停（最安全）
+	switch s.config.OnFailAction {
+	case "pause":
+		s.paused = true
+		return
+	case "cancel_pause":
+		s.cancelPlanOpenOrders(p)
+		s.paused = true
+		return
+	case "flatten_pause":
+		s.cancelPlanOpenOrders(p)
+		s.flattenExposure(ctx, p)
+		s.paused = true
+		return
+	default:
+		s.paused = true
+		return
+	}
+}
+
+func (s *PairLockStrategy) cancelPlanOpenOrders(p *pairLockPlan) {
+	if p == nil || s.Executor == nil || s.tradingService == nil || s.currentMarket == nil {
+		return
+	}
+	// best-effort：逐个 cancel（失败忽略），避免阻塞策略 loop
+	for orderID := range p.OrderIDs {
+		oid := orderID
+		_ = s.Executor.Submit(bbgo.Command{
+			Name:    fmt.Sprintf("pairlock_cancel_%s_%s", p.ID, oid),
+			Timeout: 10 * time.Second,
+			Do: func(runCtx context.Context) {
+				_ = s.tradingService.CancelOrder(runCtx, oid)
+			},
+		})
+	}
+}
+
+func (s *PairLockStrategy) flattenExposure(ctx context.Context, p *pairLockPlan) {
+	if p == nil || s.Executor == nil || s.tradingService == nil || s.currentMarket == nil {
+		return
+	}
+	// 只回平“超出的那一腿”
+	overYes := p.YesFilled - p.NoFilled
+	overNo := p.NoFilled - p.YesFilled
+	var assetID string
+	var tokenType domain.TokenType
+	var size float64
+	var refCents int
+	if overYes > 0 {
+		assetID = s.currentMarket.YesAssetID
+		tokenType = domain.TokenTypeUp
+		size = overYes
+		refCents = s.lastSeenUpCents
+	} else if overNo > 0 {
+		assetID = s.currentMarket.NoAssetID
+		tokenType = domain.TokenTypeDown
+		size = overNo
+		refCents = s.lastSeenDownCents
+	} else {
+		return
+	}
+	if size <= 0 {
+		return
+	}
+
+	minSell := 0
+	if s.config.FailMaxSellSlippageCents > 0 && refCents > 0 {
+		minSell = refCents - s.config.FailMaxSellSlippageCents
+		if minSell < 0 {
+			minSell = 0
+		}
+	}
+
+	orderCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	price, qerr := orderutil.QuoteSellPrice(orderCtx, s.tradingService, assetID, minSell)
+	cancel()
+	if qerr != nil {
+		log.Errorf("⚠️ [pairlock] flatten 获取卖价失败: plan=%s err=%v", p.ID, qerr)
+		return
+	}
+
+	now := time.Now()
+	sell := orderutil.NewOrder(s.currentMarket.Slug, assetID, types.SideSell, price, size, tokenType, false, types.OrderTypeFAK)
+	sell.OrderID = fmt.Sprintf("pairlock-flatten-%s-%d", tokenType, now.UnixNano())
+
+	// 提交卖出回平（best-effort）
+	_ = s.Executor.Submit(bbgo.Command{
+		Name:    fmt.Sprintf("pairlock_flatten_%s", p.ID),
+		Timeout: 25 * time.Second,
+		Do: func(runCtx context.Context) {
+			_, _ = s.tradingService.PlaceOrder(runCtx, sell)
+		},
+	})
 }
 
 func (s *PairLockStrategy) inflightPlans() int {

@@ -25,6 +25,8 @@ type pairLockPlan struct {
 	ID        string
 	MarketSlug string
 
+	CreatedAt time.Time
+
 	TargetSize float64
 
 	YesTemplate *domain.Order
