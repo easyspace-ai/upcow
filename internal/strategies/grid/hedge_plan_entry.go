@@ -61,13 +61,11 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 		entryMax = gridLevel + s.config.EntryMaxBuySlippageCents
 	}
 	if tokenType == domain.TokenTypeUp {
-		if p, err := orderutil.QuoteBuyPrice(orderCtx, s.tradingService, market.YesAssetID, entryMax); err == nil {
-			entryPrice = p
-		}
+		p, _ := orderutil.QuoteBuyPriceOr(orderCtx, s.tradingService, market.YesAssetID, entryMax, entryPrice)
+		entryPrice = p
 	} else if tokenType == domain.TokenTypeDown {
-		if p, err := orderutil.QuoteBuyPrice(orderCtx, s.tradingService, market.NoAssetID, entryMax); err == nil {
-			entryPrice = p
-		}
+		p, _ := orderutil.QuoteBuyPriceOr(orderCtx, s.tradingService, market.NoAssetID, entryMax, entryPrice)
+		entryPrice = p
 	}
 
 	// 仍沿用既有“锁定利润目标”规则：hedgePrice <= 100 - entryPrice - ProfitTarget
@@ -91,12 +89,9 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 		if s.config.EnableDoubleSide {
 			_, hedgeShare := s.calculateOrderSize(hedgePrice)
 			// 对冲价格：优先取 bestAsk，但不超过 lock-in 上限（hedgePriceCents）
-			hp := hedgePrice
-			if p, err := orderutil.QuoteBuyPrice(orderCtx, s.tradingService, market.NoAssetID, hedgePriceCents); err == nil {
-				hp = p
-				if hp.Cents > hedgePriceCents {
-					hp.Cents = hedgePriceCents
-				}
+			hp, _ := orderutil.QuoteBuyPriceOr(orderCtx, s.tradingService, market.NoAssetID, hedgePriceCents, hedgePrice)
+			if hp.Cents > hedgePriceCents {
+				hp.Cents = hedgePriceCents
 			}
 			hedgeOrder = orderutil.NewOrder(market.Slug, market.NoAssetID, types.SideBuy, hp, hedgeShare, domain.TokenTypeDown, false, types.OrderTypeFAK)
 			hedgeOrder.OrderID = fmt.Sprintf("plan-hedge-down-%d-%d", gridLevel, now.UnixNano())
@@ -108,12 +103,9 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 		entryOrder.GridLevel = hedgePriceCents // 维持原有语义：记录对冲层级
 		if s.config.EnableDoubleSide {
 			_, hedgeShare := s.calculateOrderSize(hedgePrice)
-			hp := hedgePrice
-			if p, err := orderutil.QuoteBuyPrice(orderCtx, s.tradingService, market.YesAssetID, hedgePriceCents); err == nil {
-				hp = p
-				if hp.Cents > hedgePriceCents {
-					hp.Cents = hedgePriceCents
-				}
+			hp, _ := orderutil.QuoteBuyPriceOr(orderCtx, s.tradingService, market.YesAssetID, hedgePriceCents, hedgePrice)
+			if hp.Cents > hedgePriceCents {
+				hp.Cents = hedgePriceCents
 			}
 			hedgeOrder = orderutil.NewOrder(market.Slug, market.YesAssetID, types.SideBuy, hp, hedgeShare, domain.TokenTypeUp, false, types.OrderTypeFAK)
 			hedgeOrder.OrderID = fmt.Sprintf("plan-hedge-up-%d-%d", gridLevel, now.UnixNano())
