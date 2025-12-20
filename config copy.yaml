@@ -11,9 +11,9 @@ proxy:
 
 # 策略配置
 strategies:
-  # 启用的策略列表（grid, threshold, arbitrage）
+  # 启用的策略列表（grid, threshold, arbitrage, paired_trading）
   enabled:
-    - grid
+    - paired_trading
   
   # 网格策略配置
   grid:
@@ -55,6 +55,42 @@ strategies:
   datarecorder:
     output_dir: "data/recordings"  # CSV 文件保存目录
     use_rtds_fallback: true        # 是否使用 RTDS 作为目标价备选方案
+  
+  # 成对交易策略配置（推荐策略，适用于 btc-updown-15m-* 市场）
+  # 核心理念：通过多轮成对交易，逐步建立并锁定利润结构
+  # 当前配置适用于 40 USDC 资金量
+  paired_trading:
+    # 阶段控制参数（秒）
+    build_duration: 300       # 建仓阶段持续时间（5分钟）
+    lock_start: 300           # 锁定阶段开始时间（5分钟）
+    amplify_start: 600        # 放大阶段开始时间（10分钟）
+    cycle_duration: 900       # 周期总时长（15分钟）
+    early_lock_price: 0.85    # 提前进入锁定阶段的价格阈值
+    early_amplify_price: 0.90 # 提前进入放大阶段的价格阈值（需已锁定）
+    
+    # 建仓参数（阶段1：快速建立双边仓位）
+    base_target: 30.0         # 基础建仓目标（shares）
+    build_lot_size: 3.0       # 单次建仓数量（shares）
+    build_threshold: 0.60     # 建仓价格上限（只在价格低于此值时建仓）
+    min_ratio: 0.40           # 最小持仓比例（避免单边过重）
+    max_ratio: 0.60           # 最大持仓比例（避免单边过重）
+    
+    # 锁定参数（阶段2：识别并执行成对锁定交易）
+    lock_threshold: 5.0       # 触发锁定的风险阈值（USDC，利润低于-5时触发）
+    lock_price_max: 0.70      # 锁定阶段最高买入价格
+    extreme_high: 0.80        # 极端价格阈值（超过此值，利用反向低价锁定）
+    target_profit_base: 2.0   # 目标利润（每个方向，USDC）
+    insurance_size: 1.5       # 反向保险数量（shares）
+    
+    # 放大参数（阶段3：在锁定基础上放大利润）
+    amplify_target: 5.0       # 放大目标利润（USDC）
+    amplify_price_max: 0.85   # 放大阶段最高买入价格
+    insurance_price_max: 0.20 # 反向保险最高价格（极低价时买入保险）
+    direction_threshold: 0.70 # 主方向判定阈值（超过此值认为有明确方向）
+    
+    # 通用参数
+    min_order_size: 1.1       # 最小下单金额（USDC，交易所要求）
+    max_buy_slippage_cents: 3 # 最大买入滑点（分）
 
 # 日志配置
 log_level: "info"      # 日志级别：debug, info, warn, error
