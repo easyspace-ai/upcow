@@ -50,16 +50,13 @@ func (s *GridStrategy) planTick(ctx context.Context) {
 		}
 		// 如果对冲单长时间未成交，撤单并进入重试（撤单重挂）
 		if p.shouldCancelStaleHedge(now) {
-			p.State = PlanHedgeCanceling
-			p.StateAt = now
+			p.enterHedgeCanceling(now)
 			_ = s.submitCancelOrderCmd(p.ID, p.HedgeOrderID)
 		}
 	case PlanHedgeCanceling:
 		// 撤单长时间无反馈：进入重试窗口自愈
 		if p.cancelTimedOut(now) {
-			p.State = PlanRetryWait
-			p.StateAt = now
-			p.NextRetryAt = now.Add(2 * time.Second)
+			p.enterRetryWaitFixed(now, planRetryAfterCancelTimeoutDelay)
 		}
 	}
 

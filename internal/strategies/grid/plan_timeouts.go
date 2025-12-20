@@ -7,10 +7,11 @@ import (
 )
 
 const (
-	planSubmitTimeout    = 35 * time.Second
-	planSyncInterval     = 5 * time.Second
-	planHedgeOpenTimeout = 10 * time.Second
-	planCancelTimeout    = 12 * time.Second
+	planSubmitTimeout                = 35 * time.Second
+	planSyncInterval                 = 5 * time.Second
+	planHedgeOpenTimeout             = 10 * time.Second
+	planCancelTimeout                = 12 * time.Second
+	planRetryAfterCancelTimeoutDelay = 2 * time.Second
 )
 
 func (p *HedgePlan) submittingTimedOut(now time.Time) bool {
