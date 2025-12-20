@@ -14,6 +14,10 @@ func (s *GridStrategy) displayGridPosition(event *events.PriceChangedEvent) {
 		log.Debugf("网格未初始化，跳过显示")
 		return
 	}
+	
+	// 添加调试日志
+	log.Debugf("📊 [显示] displayGridPosition 被调用: %s @ %dc, UP=%dc, DOWN=%dc", 
+		event.TokenType, event.NewPrice.Cents, s.currentPriceUp, s.currentPriceDown)
 
 	// 更新价格后，显示两个币种的完整信息
 	var lines []string

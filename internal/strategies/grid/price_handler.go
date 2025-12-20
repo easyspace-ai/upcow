@@ -22,6 +22,9 @@ func (s *GridStrategy) OnPriceChanged(ctx context.Context, event *events.PriceCh
 	}
 
 	s.priceMu.Lock()
+	if s.latestPrice == nil {
+		s.latestPrice = make(map[domain.TokenType]*events.PriceChangedEvent)
+	}
 	s.latestPrice[event.TokenType] = event
 	s.priceMu.Unlock()
 
@@ -151,15 +154,21 @@ func (s *GridStrategy) onPriceChangedInternal(ctx context.Context, event *events
 			event.TokenType, event.NewPrice.Cents, processDuration)
 	}
 
-	// 显示价格更新（使用防抖机制）
-	const minDisplayInterval = 100 * time.Millisecond
-	shouldDisplay := now.Sub(lastDisplayTime) >= minDisplayInterval
+	// 显示价格更新（使用防抖机制，但确保至少每500ms显示一次）
+	// 如果 lastDisplayTime 为零值（首次显示），总是显示
+	const minDisplayInterval = 500 * time.Millisecond // 增加到500ms，减少控制台输出频率
+	shouldDisplay := lastDisplayTime.IsZero() || now.Sub(lastDisplayTime) >= minDisplayInterval
+	
 	if shouldDisplay {
 		s.mu.Lock()
 		s.lastDisplayTime = now
 		s.mu.Unlock()
 		// 实时显示网格位置信息（不需要锁）
 		s.displayGridPosition(event)
+	} else {
+		// 即使不显示到控制台，也确保日志中有记录
+		log.Debugf("📊 [价格更新] 跳过控制台显示（防抖中，距离上次显示=%v）: %s @ %dc", 
+			now.Sub(lastDisplayTime), event.TokenType, event.NewPrice.Cents)
 	}
 
 	// 网格策略同时监控 UP 币和 DOWN 币

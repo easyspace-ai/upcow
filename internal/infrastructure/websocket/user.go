@@ -410,14 +410,41 @@ func (u *UserWebSocket) handleMessages(ctx context.Context) {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
+					// 捕获 panic，特别是 "repeated read on failed websocket connection"
 					userLog.Errorf("用户订单 WebSocket 读取时发生 panic: %v，连接可能已失败", r)
+					// 标记连接为已关闭，避免后续重复读取
+					u.mu.Lock()
+					u.closed = true
+					u.mu.Unlock()
 					err = fmt.Errorf("panic: %v", r)
 				}
 			}()
+			// 再次检查连接状态（防止在 recover 和实际读取之间的竞态条件）
+			u.mu.RLock()
+			if u.closed || u.conn == nil || u.conn != conn {
+				u.mu.RUnlock()
+				err = fmt.Errorf("连接已关闭")
+				return
+			}
+			u.mu.RUnlock()
 			_, message, err = conn.ReadMessage()
 		}()
 		
 		if err != nil {
+			// 检查是否是 panic 错误（连接失败后重复读取）
+			errStr := err.Error()
+			isPanicError := strings.Contains(errStr, "panic:") || 
+				strings.Contains(errStr, "repeated read on failed websocket connection")
+			
+			// 如果是 panic 错误，立即标记为关闭并退出
+			if isPanicError {
+				userLog.Warnf("用户订单 WebSocket 读取时发生 panic 错误: %v，标记为已关闭并退出", err)
+				u.mu.Lock()
+				u.closed = true
+				u.mu.Unlock()
+				return
+			}
+			
 			// 检查是否是超时错误（这是正常的，用于检查 context）
 			if netErr, ok := err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
 				// 超时，继续循环检查 context
@@ -433,7 +460,6 @@ func (u *UserWebSocket) handleMessages(ctx context.Context) {
 			}
 
 			// 检查是否是正常关闭（连接已被主动关闭）
-			errStr := err.Error()
 			isNormalClose := strings.Contains(errStr, "use of closed network connection") ||
 				strings.Contains(errStr, "connection reset by peer")
 			
