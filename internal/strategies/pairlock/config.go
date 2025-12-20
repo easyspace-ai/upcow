@@ -46,6 +46,10 @@ type PairLockStrategyConfig struct {
 	// 若启用：卖出价不允许低于（最近观测价 - slippage）。
 	FailMaxSellSlippageCents int
 
+	// FailFlattenMinShares 失败回平（flatten）最小回平差额（shares）。
+	// 只有当未对冲差额 >= 该值时才触发卖出回平，避免小额噪声频繁交易。
+	FailFlattenMinShares float64
+
 	// CooldownMs 信号触发冷却时间（毫秒），避免高频重复开轮
 	CooldownMs int
 
@@ -105,6 +109,12 @@ func (c *PairLockStrategyConfig) Validate() error {
 	}
 	if c.FailMaxSellSlippageCents < 0 {
 		return fmt.Errorf("fail_max_sell_slippage_cents 不能为负数")
+	}
+	if c.FailFlattenMinShares < 0 {
+		return fmt.Errorf("fail_flatten_min_shares 不能为负数")
+	}
+	if c.FailFlattenMinShares == 0 {
+		c.FailFlattenMinShares = 1.0
 	}
 	if c.CooldownMs <= 0 {
 		c.CooldownMs = 250

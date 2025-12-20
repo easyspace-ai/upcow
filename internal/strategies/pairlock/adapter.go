@@ -31,6 +31,7 @@ func (a *PairLockConfigAdapter) AdaptConfig(strategyConfig interface{}, proxyCon
 		MaxPlanAgeSeconds:       cfg.PairLock.MaxPlanAgeSeconds,
 		OnFailAction:            cfg.PairLock.OnFailAction,
 		FailMaxSellSlippageCents: cfg.PairLock.FailMaxSellSlippageCents,
+		FailFlattenMinShares:    cfg.PairLock.FailFlattenMinShares,
 		CooldownMs:              cfg.PairLock.CooldownMs,
 		MaxSupplementAttempts:   cfg.PairLock.MaxSupplementAttempts,
 		EntryMaxBuySlippageCents: cfg.PairLock.EntryMaxBuySlippageCents,

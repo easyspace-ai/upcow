@@ -188,6 +188,7 @@ func (s *PairLockStrategy) Initialize(ctx context.Context, conf strategies.Strat
 	}
 	log.Infof("pairlock 失败策略: on_fail_action=%s, max_plan_age_seconds=%d, fail_max_sell_slippage_cents=%d",
 		s.config.OnFailAction, s.config.MaxPlanAgeSeconds, s.config.FailMaxSellSlippageCents)
+	log.Infof("pairlock flatten 阈值: fail_flatten_min_shares=%.4f", s.config.FailFlattenMinShares)
 
 	return nil
 }
@@ -747,6 +748,11 @@ func (s *PairLockStrategy) flattenExposure(ctx context.Context, p *pairLockPlan)
 		return
 	}
 	if size <= 0 {
+		return
+	}
+	if s.config != nil && size < s.config.FailFlattenMinShares {
+		log.Warnf("⚠️ [pairlock] flatten 跳过（差额过小）: plan=%s token=%s diff=%.4f < min=%.4f",
+			p.ID, tokenType, size, s.config.FailFlattenMinShares)
 		return
 	}
 

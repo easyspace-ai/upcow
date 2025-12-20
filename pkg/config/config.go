@@ -69,6 +69,7 @@ type PairLockConfig struct {
 	MaxPlanAgeSeconds        int     // 单轮最大存活时间（秒），默认 60
 	OnFailAction             string  // 失败动作：pause/cancel_pause/flatten_pause（默认 pause）
 	FailMaxSellSlippageCents int     // 失败回平（flatten）卖出滑点下限（分，0=关闭）
+	FailFlattenMinShares     float64 // 失败回平最小差额（shares），默认 1.0
 	OrderSize                float64 // 每轮下单 shares（YES/NO 两腿相同）
 	MinOrderSize             float64 // 最小下单金额（USDC），默认 1.1
 	ProfitTargetCents        int     // 锁定利润目标（分），默认 3
@@ -207,6 +208,7 @@ type ConfigFile struct {
 			MaxPlanAgeSeconds        int     `yaml:"max_plan_age_seconds" json:"max_plan_age_seconds"`
 			OnFailAction             string  `yaml:"on_fail_action" json:"on_fail_action"`
 			FailMaxSellSlippageCents int     `yaml:"fail_max_sell_slippage_cents" json:"fail_max_sell_slippage_cents"`
+			FailFlattenMinShares     float64 `yaml:"fail_flatten_min_shares" json:"fail_flatten_min_shares"`
 			OrderSize                float64 `yaml:"order_size" json:"order_size"`
 			MinOrderSize             float64 `yaml:"min_order_size" json:"min_order_size"`
 			ProfitTargetCents        int     `yaml:"profit_target_cents" json:"profit_target_cents"`
@@ -372,6 +374,11 @@ func LoadFromFile(filePath string) (*Config, error) {
 					configFile != nil,
 					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.FailMaxSellSlippageCents }),
 					parseIntEnv("PAIRLOCK_FAIL_MAX_SELL_SLIPPAGE_CENTS", 0),
+				),
+				FailFlattenMinShares: getFloatFromSources(
+					configFile != nil,
+					safeGetPairLockFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.FailFlattenMinShares }),
+					parseFloatEnv("PAIRLOCK_FAIL_FLATTEN_MIN_SHARES", 1.0),
 				),
 				OrderSize: getFloatFromSources(
 					configFile != nil,
@@ -941,6 +948,9 @@ func (c *Config) Validate() error {
 			}
 			if c.Strategies.PairLock.FailMaxSellSlippageCents < 0 {
 				return fmt.Errorf("PAIRLOCK_FAIL_MAX_SELL_SLIPPAGE_CENTS 不能为负数")
+			}
+			if c.Strategies.PairLock.FailFlattenMinShares < 0 {
+				return fmt.Errorf("PAIRLOCK_FAIL_FLATTEN_MIN_SHARES 不能为负数")
 			}
 		case "arbitrage":
 			if c.Strategies.Arbitrage == nil {
