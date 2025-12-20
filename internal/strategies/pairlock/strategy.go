@@ -616,6 +616,11 @@ func (s *PairLockStrategy) onTick(ctx context.Context) {
 		if maxPriceCents < 0 {
 			maxPriceCents = 0
 		}
+		if maxPriceCents <= 0 {
+			p.SupplementAttempts++
+			p.LastSupplementAt = time.Now()
+			continue
+		}
 
 		assetID := s.currentMarket.YesAssetID
 		tokenType := domain.TokenTypeUp
@@ -627,7 +632,7 @@ func (s *PairLockStrategy) onTick(ctx context.Context) {
 		orderCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		price, err := orderutil.QuoteBuyPrice(orderCtx, s.tradingService, assetID, maxPriceCents)
 		cancel()
-		if err != nil || price.Cents > maxPriceCents {
+		if err != nil {
 			p.SupplementAttempts++
 			p.LastSupplementAt = time.Now()
 			continue
