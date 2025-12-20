@@ -94,9 +94,8 @@ func (s *GridStrategy) onPriceChangedInternal(ctx context.Context, event *events
 	s.mu.Lock()
 
 	// 检测周期切换：如果市场 Slug 变化，说明切换到新周期
-	if s.currentMarketSlug != event.Market.Slug {
-		oldSlug := s.currentMarketSlug
-		s.currentMarketSlug = event.Market.Slug
+	oldSlug := s.marketGuard.Current()
+	if s.marketGuard.Update(event.Market.Slug) {
 		s.mu.Unlock() // 先解锁，避免在 ResetStateForNewCycle 中再次加锁
 
 		if oldSlug != "" {

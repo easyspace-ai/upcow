@@ -53,8 +53,8 @@ type GridStrategy struct {
 	// 待提交的对冲订单（主单 OrderID -> 对冲订单），等待主单成交后再提交
 	pendingHedgeOrders map[string]*domain.Order
 	// 当前市场周期（用于检测周期切换）
-	currentMarketSlug string
-	currentMarket     *domain.Market // 当前市场引用（用于订单更新处理）
+	marketGuard   common.MarketSlugGuard
+	currentMarket *domain.Market // 当前市场引用（用于订单更新处理）
 	// 已处理的网格层级（防止重复触发）：tokenType:gridLevel -> timestamp
 	processedGridLevels map[string]*common.Debouncer
 	processedLevelsMu   sync.RWMutex // 保护 processedGridLevels 的锁 // 当前市场的 Slug，用于检测周期切换
@@ -613,13 +613,16 @@ func (s *GridStrategy) Subscribe(session *bbgo.ExchangeSession) {
 	}
 	s.mu.Unlock()
 
-	// 检测周期切换：如果会话的市场 Slug 与当前不同，说明切换到新周期
+	// 检测周期切换：如果会话的 market slug 变化，说明切换到新周期
 	market := session.Market()
 	if market != nil {
 		s.mu.Lock()
-		oldSlug := s.currentMarketSlug
-		if oldSlug != "" && oldSlug != market.Slug {
-			s.mu.Unlock()
+		oldSlug := s.marketGuard.Current()
+		changed := s.marketGuard.Update(market.Slug)
+		s.currentMarket = market // 保存市场引用，用于订单更新处理
+		s.mu.Unlock()
+
+		if changed && oldSlug != "" {
 			log.Infof("🔄 [周期切换] Subscribe 检测到新周期: %s → %s", oldSlug, market.Slug)
 			// 重置所有状态，与上一个周期完全无关
 			// 使用 defer recover 确保即使 ResetStateForNewCycle 出错，后续代码也能执行
@@ -631,11 +634,10 @@ func (s *GridStrategy) Subscribe(session *bbgo.ExchangeSession) {
 				}()
 				s.ResetStateForNewCycle()
 			}()
-			s.mu.Lock()
+		} else if oldSlug == "" {
+			log.Debugf("📋 [周期切换] 首次设置市场周期: %s", market.Slug)
 		}
-		s.currentMarketSlug = market.Slug
-		s.currentMarket = market // 保存市场引用，用于订单更新处理
-		s.mu.Unlock()
+
 		log.Infof("✅ [周期切换] 周期切换检测完成，准备注册回调")
 	} else {
 		log.Warnf("⚠️ [周期切换] Session.Market() 返回 nil，无法获取市场信息")
