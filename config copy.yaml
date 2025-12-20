@@ -91,6 +91,8 @@ strategies:
     # 通用参数
     min_order_size: 1.1       # 最小下单金额（USDC，交易所要求）
     max_buy_slippage_cents: 3 # 最大买入滑点（分）
+    auto_adjust_size: true    # 自动调整数量以满足最小金额（推荐开启）
+    max_size_adjust_ratio: 5.0 # 最大数量调整倍数（防止低价时过度放大）
 
 # 日志配置
 log_level: "info"      # 日志级别：debug, info, warn, error
