@@ -38,8 +38,17 @@ type sessionOrderHandler struct {
 
 func (h *sessionOrderHandler) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
 	// 只把“当前周期”的订单更新转发给 Session/策略，避免跨周期串单
-	if order != nil && order.MarketSlug != "" && h.market != nil && order.MarketSlug != h.market.Slug {
-		return nil
+	if order != nil && h.market != nil {
+		// 1) 有 MarketSlug：严格匹配
+		if order.MarketSlug != "" && order.MarketSlug != h.market.Slug {
+			return nil
+		}
+		// 2) 没有 MarketSlug：用 assetID 兜底匹配（当前 market 的 yes/no assetID 必须命中其一）
+		if order.MarketSlug == "" && order.AssetID != "" {
+			if order.AssetID != h.market.YesAssetID && order.AssetID != h.market.NoAssetID {
+				return nil
+			}
+		}
 	}
 	h.session.EmitOrderUpdate(ctx, order)
 	return nil

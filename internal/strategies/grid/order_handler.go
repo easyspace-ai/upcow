@@ -57,6 +57,16 @@ func (s *GridStrategy) handleOrderUpdateInternal(loopCtx context.Context, ctx co
 		return nil
 	}
 
+	// 只管理本周期：如果 currentMarket 已知，则用 assetID 严格过滤
+	s.mu.RLock()
+	market := s.currentMarket
+	s.mu.RUnlock()
+	if market != nil {
+		if order.AssetID != market.YesAssetID && order.AssetID != market.NoAssetID {
+			return nil
+		}
+	}
+
 	log.Debugf("📥 [订单更新] 收到订单更新: orderID=%s, status=%s, filledAt=%v",
 		order.OrderID, order.Status, order.FilledAt != nil)
 
@@ -66,10 +76,6 @@ func (s *GridStrategy) handleOrderUpdateInternal(loopCtx context.Context, ctx co
 			order.OrderID, order.FilledAt)
 
 		// 获取当前市场（从策略保存的市场引用中获取）
-		s.mu.RLock()
-		market := s.currentMarket
-		s.mu.RUnlock()
-
 		if market == nil {
 			log.Warnf("⚠️ [订单更新] 无法获取市场信息，跳过订单更新处理: orderID=%s", order.OrderID)
 			return nil

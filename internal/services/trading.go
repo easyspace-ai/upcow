@@ -1424,9 +1424,13 @@ func (s *TradingService) handleOrderFilled(order *domain.Order, market *domain.M
 		now := time.Now()
 		order.FilledAt = &now
 	}
+	if order.MarketSlug == "" && market != nil {
+		order.MarketSlug = market.Slug
+	}
 
 	// 更新订单状态
 	order.Status = domain.OrderStatusFilled
+	order.FilledSize = order.Size
 
 	// 发送 UpdateOrderCommand 到 OrderEngine
 	updateCmd := &UpdateOrderCommand{
@@ -1459,6 +1463,10 @@ func (s *TradingService) HandleTrade(ctx context.Context, trade *domain.Trade) {
 func (s *TradingService) handleOrderCanceled(order *domain.Order) error {
 	// 更新订单状态
 	order.Status = domain.OrderStatusCanceled
+	// 尽量补齐 market slug，避免跨周期串单
+	if order.MarketSlug == "" {
+		// 这里无法可靠拿到 market，只能保留为空
+	}
 
 	// 发送 UpdateOrderCommand 到 OrderEngine
 	updateCmd := &UpdateOrderCommand{
