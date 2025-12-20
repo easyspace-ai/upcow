@@ -28,7 +28,7 @@ func init() {
 // - single goroutine loop via common.StartLoopOnce
 // - non-blocking signals via common.TrySignal
 // - basic in-flight limiting
-type Strategy struct {
+type upDownStrategy struct {
 	Executor bbgo.CommandExecutor
 
 	mu             sync.RWMutex
@@ -45,10 +45,10 @@ type Strategy struct {
 	inFlight *strategycommon.InFlightLimiter
 }
 
-func (s *Strategy) ID() string   { return ID }
-func (s *Strategy) Name() string { return ID }
+func (s *upDownStrategy) ID() string   { return ID }
+func (s *upDownStrategy) Name() string { return ID }
 
-func (s *Strategy) Defaults() error { return nil }
+func (s *upDownStrategy) Defaults() error { return nil }
 
 func (s *Strategy) Validate() error {
 	s.mu.Lock()
@@ -68,19 +68,19 @@ func (s *Strategy) Initialize() error {
 	return nil
 }
 
-func (s *Strategy) SetTradingService(ts strategyports.BasicTradingService) {
+func (s *upDownStrategy) SetTradingService(ts strategyports.BasicTradingService) {
 	s.mu.Lock()
 	s.tradingService = ts
 	s.mu.Unlock()
 }
 
-func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
+func (s *upDownStrategy) Subscribe(session *bbgo.ExchangeSession) {
 	// 标准订阅点：把 websocket callback 绑定到策略。
 	session.OnOrderUpdate(s)
 	session.OnPriceChanged(s)
 }
 
-func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, session *bbgo.ExchangeSession) error {
+func (s *upDownStrategy) Run(ctx context.Context, _ bbgo.OrderExecutor, session *bbgo.ExchangeSession) error {
 	// 标准 Run：记录 market 并启动 loop
 	s.mu.Lock()
 	s.currentMarket = session.Market()
@@ -94,7 +94,7 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, session *bbgo.
 	return ctx.Err()
 }
 
-func (s *Strategy) Shutdown(ctx context.Context, wg *sync.WaitGroup) {
+func (s *upDownStrategy) Shutdown(ctx context.Context, wg *sync.WaitGroup) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -105,7 +105,7 @@ func (s *Strategy) Shutdown(ctx context.Context, wg *sync.WaitGroup) {
 	}()
 }
 
-func (s *Strategy) startLoop(ctx context.Context) {
+func (s *upDownStrategy) startLoop(ctx context.Context) {
 	if s.signalC == nil {
 		s.signalC = make(chan struct{}, 1)
 	}
@@ -122,24 +122,25 @@ func (s *Strategy) startLoop(ctx context.Context) {
 }
 
 // OnPriceChanged implements internal/stream.PriceChangeHandler.
-func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
+func (s *upDownStrategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
 	if e == nil || e.Market == nil {
 		return nil
 	}
+	fmt.Println("====", e.OldPrice, e.NewPrice)
 	s.startLoop(ctx)
 	strategycommon.TrySignal(s.signalC)
 	return nil
 }
 
 // OnOrderUpdate implements internal/ports.OrderUpdateHandler.
-func (s *Strategy) OnOrderUpdate(ctx context.Context, o *domain.Order) error {
+func (s *upDownStrategy) OnOrderUpdate(ctx context.Context, o *domain.Order) error {
 	_ = ctx
 	_ = o
 	// 模板：如果你的策略需要订单更新驱动状态机，可在这里 TrySignal
 	return nil
 }
 
-func (s *Strategy) runLoop(ctx context.Context, tickC <-chan time.Time) {
+func (s *upDownStrategy) runLoop(ctx context.Context, tickC <-chan time.Time) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -154,7 +155,7 @@ func (s *Strategy) runLoop(ctx context.Context, tickC <-chan time.Time) {
 	}
 }
 
-func (s *Strategy) tryDoOnce(ctx context.Context) {
+func (s *upDownStrategy) tryDoOnce(ctx context.Context) {
 	s.mu.RLock()
 	cfg := s.config
 	market := s.currentMarket
@@ -203,7 +204,7 @@ func (s *Strategy) tryDoOnce(ctx context.Context) {
 	}
 }
 
-func (s *Strategy) placeFAK(ctx context.Context, ts strategyports.BasicTradingService, marketSlug, assetID string, size float64, maxCents int) {
+func (s *upDownStrategy) placeFAK(ctx context.Context, ts strategyports.BasicTradingService, marketSlug, assetID string, size float64, maxCents int) {
 	price, err := orderutil.QuoteBuyPrice(ctx, ts, assetID, maxCents)
 	if err != nil {
 		return

@@ -13,9 +13,9 @@ proxy:
 strategies:
   # 启用的策略列表（grid, threshold, arbitrage）
   enabled:
-    - grid
+    - updown
   updown:
-
+    order_size: 3         # 订单大小（share数量），每次买入的share数量
   # 网格策略配置
   grid:
     grid_levels: [62, 65, 71,77]  # 网格层级列表（分），移除85和87分以确保利润平衡
