@@ -158,6 +158,8 @@ func (s *ArbitrageStrategy) onPriceChangedInternal(ctx context.Context, event *e
 
 	// 初始化或更新市场信息
 	if s.currentMarket == nil || s.currentMarket.Slug != event.Market.Slug {
+		// 周期切换：清理 pending 标记，避免新周期被旧状态卡住
+		s.pendingPlace = false
 		s.currentMarket = event.Market
 		s.positionState = domain.NewArbitragePositionState(event.Market)
 		logger.Infof("套利策略: 初始化新市场 %s, 周期开始时间=%d", event.Market.Slug, event.Market.Timestamp)

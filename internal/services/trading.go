@@ -1021,6 +1021,15 @@ func (s *TradingService) convertOrderResponseToDomain(orderResp *types.OrderResp
 
 // PlaceOrder 下单（通过 OrderEngine 发送命令）
 func (s *TradingService) PlaceOrder(ctx context.Context, order *domain.Order) (*domain.Order, error) {
+	if order == nil {
+		return nil, fmt.Errorf("order 不能为空")
+	}
+	// 只管理本周期：强制要求所有策略下单都带 MarketSlug
+	// 否则订单更新无法可靠过滤，容易跨周期串单
+	if order.MarketSlug == "" {
+		return nil, fmt.Errorf("order.MarketSlug 不能为空（只管理本周期）")
+	}
+
 	// 调整订单大小（在发送命令前）
 	order = s.adjustOrderSize(order)
 
@@ -1520,6 +1529,22 @@ func (s *TradingService) CancelOrdersNotInMarket(ctx context.Context, currentSlu
 			continue
 		}
 		if o.MarketSlug == "" || o.MarketSlug != currentSlug {
+			_ = s.CancelOrder(ctx, o.OrderID)
+		}
+	}
+}
+
+// CancelOrdersForMarket 取消指定 marketSlug 的活跃订单
+func (s *TradingService) CancelOrdersForMarket(ctx context.Context, marketSlug string) {
+	if marketSlug == "" {
+		return
+	}
+	orders := s.GetActiveOrders()
+	for _, o := range orders {
+		if o == nil || o.OrderID == "" {
+			continue
+		}
+		if o.MarketSlug == marketSlug {
 			_ = s.CancelOrder(ctx, o.OrderID)
 		}
 	}

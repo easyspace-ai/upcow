@@ -372,6 +372,10 @@ func main() {
 		// 只管理本周期：先取消上一周期残留的 open orders，避免跨周期串单
 		cancelCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		tradingService.CancelOrdersNotInMarket(cancelCtx, newMarket.Slug)
+		// 可选：周期开始时也清空“本周期残留 open orders”（例如重启后同周期还有挂单）
+		if cfg.CancelOpenOrdersOnCycleStart {
+			tradingService.CancelOrdersForMarket(cancelCtx, newMarket.Slug)
+		}
 		cancel()
 		registerStrategiesToSession(newSession, newMarket)
 	})

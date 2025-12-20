@@ -99,6 +99,7 @@ type Config struct {
 	OrderStatusCheckInterval             int            // 订单状态API轮询间隔（秒），默认3秒
 	OrderStatusSyncIntervalWithOrders    int            // 有活跃订单时的订单状态同步间隔（秒），默认3秒（官方API限流：150请求/10秒，理论上可支持1秒，但建议3秒以上）
 	OrderStatusSyncIntervalWithoutOrders int            // 无活跃订单时的订单状态同步间隔（秒），默认30秒
+	CancelOpenOrdersOnCycleStart         bool           // 每个新周期开始时是否清空“本周期残留 open orders”（默认false）
 	DryRun                               bool           // 纸交易模式（dry run），如果为 true，不进行真实交易，只在日志中打印订单信息
 }
 
@@ -172,6 +173,7 @@ type ConfigFile struct {
 	OrderStatusCheckInterval             int    `yaml:"order_status_check_interval" json:"order_status_check_interval"`                             // API轮询间隔（秒），默认3秒
 	OrderStatusSyncIntervalWithOrders    int    `yaml:"order_status_sync_interval_with_orders" json:"order_status_sync_interval_with_orders"`       // 有活跃订单时的同步间隔（秒），默认3秒
 	OrderStatusSyncIntervalWithoutOrders int    `yaml:"order_status_sync_interval_without_orders" json:"order_status_sync_interval_without_orders"` // 无活跃订单时的同步间隔（秒），默认30秒
+	CancelOpenOrdersOnCycleStart         bool   `yaml:"cancel_open_orders_on_cycle_start" json:"cancel_open_orders_on_cycle_start"`                 // 新周期开始时清空本周期残留 open orders（默认false）
 	DryRun                               bool   `yaml:"dry_run" json:"dry_run"`                                                                     // 纸交易模式（dry run），如果为 true，不进行真实交易，只在日志中打印订单信息
 }
 
@@ -345,6 +347,15 @@ func LoadFromFile(filePath string) (*Config, error) {
 				}
 			}
 			return 30 // 默认30秒
+		}(),
+		CancelOpenOrdersOnCycleStart: func() bool {
+			if configFile != nil {
+				return configFile.CancelOpenOrdersOnCycleStart
+			}
+			if envVal := getEnv("CANCEL_OPEN_ORDERS_ON_CYCLE_START", ""); envVal != "" {
+				return envVal == "true" || envVal == "1"
+			}
+			return false
 		}(),
 	}
 
