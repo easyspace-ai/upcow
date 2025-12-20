@@ -32,7 +32,7 @@ func NewStrategyLoader(tradingService interface{}) *StrategyLoader {
 // LoadStrategy 加载单个策略
 // strategyName: 策略名称（必须已注册）
 // config: 策略配置（已适配好的配置对象）
-func (l *StrategyLoader) LoadStrategy(strategyName string, config interface{}) (interface{}, error) {
+func (l *StrategyLoader) LoadStrategy(ctx context.Context, strategyName string, config interface{}) (interface{}, error) {
 	// 获取已注册的策略类型
 	strategyType, err := GetRegisteredStrategy(strategyName)
 	if err != nil {
@@ -52,8 +52,9 @@ func (l *StrategyLoader) LoadStrategy(strategyName string, config interface{}) (
 		}
 	}
 
-	// 执行统一的初始化流程（会在内部设置配置）
-	if err := l.initializeStrategy(strategyInstance, config); err != nil {
+	// 仅做“配置注入/绑定”，不做 Defaults/Validate/Initialize() 的生命周期调用。
+	// 生命周期由 Trader 统一管理，避免重复初始化与上下文错乱。
+	if err := l.initializeStrategy(ctx, strategyInstance, config); err != nil {
 		return nil, fmt.Errorf("初始化策略 %s 失败: %w", strategyName, err)
 	}
 
@@ -113,84 +114,38 @@ func (l *StrategyLoader) setTradingService(strategy interface{}) error {
 	return fmt.Errorf("无法设置交易服务：策略不支持 SetTradingService 方法或 tradingService 字段")
 }
 
-// initializeStrategy 执行统一的初始化流程
-// 流程：Defaults -> Initialize/InitializeWithConfig (设置配置) -> Validate -> Initialize (BBGO风格)
-func (l *StrategyLoader) initializeStrategy(strategy interface{}, config interface{}) error {
-	// 1. Defaults - 设置默认值
-	if defaulter, ok := strategy.(StrategyDefaulter); ok {
-		if err := defaulter.Defaults(); err != nil {
-			return fmt.Errorf("设置默认值失败: %w", err)
-		}
-	}
-
+// initializeStrategy 将“适配后的配置”绑定到策略实例。
+// 这里只负责把 config 交给策略（通常是设置 s.config 字段），不负责调用 Defaults/Validate/Initialize()。
+func (l *StrategyLoader) initializeStrategy(ctx context.Context, strategy interface{}, config interface{}) error {
 	strategyValue := reflect.ValueOf(strategy)
 	configValue := reflect.ValueOf(config)
 
-	// 2. 尝试使用 Initialize 方法（grid 策略使用此方法）
+	// 1) 优先尝试 Initialize(ctx, config)（部分策略使用此方法）
 	initMethod := strategyValue.MethodByName("Initialize")
 	if initMethod.IsValid() {
-		// 检查方法签名：Initialize(ctx context.Context, config strategies.StrategyConfig)
 		methodType := initMethod.Type()
 		if methodType.NumIn() == 2 {
-			// 调用 Initialize(ctx, config)
-			results := initMethod.Call([]reflect.Value{
-				reflect.ValueOf(context.Background()),
-				configValue,
-			})
+			results := initMethod.Call([]reflect.Value{reflect.ValueOf(ctx), configValue})
 			if len(results) > 0 && !results[0].IsNil() {
 				if err, ok := results[0].Interface().(error); ok && err != nil {
 					return fmt.Errorf("Initialize 失败: %w", err)
 				}
 			}
-			// Initialize 成功，跳过后续步骤
 			return nil
 		}
 	}
 
-	// 3. 尝试使用 InitializeWithConfig 方法（其他策略使用此方法）
+	// 2) 尝试 InitializeWithConfig(ctx, config)（多数策略使用此方法）
 	initWithConfigMethod := strategyValue.MethodByName("InitializeWithConfig")
 	if initWithConfigMethod.IsValid() {
-		// 调用 InitializeWithConfig(ctx, config)
-		results := initWithConfigMethod.Call([]reflect.Value{
-			reflect.ValueOf(context.Background()),
-			configValue,
-		})
+		results := initWithConfigMethod.Call([]reflect.Value{reflect.ValueOf(ctx), configValue})
 		if len(results) > 0 && !results[0].IsNil() {
 			if err, ok := results[0].Interface().(error); ok && err != nil {
 				return fmt.Errorf("InitializeWithConfig 失败: %w", err)
 			}
 		}
-		// InitializeWithConfig 成功，跳过后续步骤
 		return nil
 	}
 
-	// 4. 如果没有找到 Initialize 或 InitializeWithConfig 方法，尝试直接设置 config 字段
-	// 注意：这只有在策略和加载器在同一个包内时才可能成功
-	strategyValueForField := reflect.ValueOf(strategy)
-	if strategyValueForField.Kind() == reflect.Ptr {
-		strategyValueForField = strategyValueForField.Elem()
-	}
-	configField := strategyValueForField.FieldByName("config")
-	if configField.IsValid() && configField.CanSet() {
-		configField.Set(configValue)
-		// 设置配置后，继续执行 BBGO 风格的初始化流程
-	} else {
-		return fmt.Errorf("无法设置策略配置：策略没有 Initialize 或 InitializeWithConfig 方法，且 config 字段不可设置")
-	}
-
-	// 5. Validate - 验证配置
-	if validator, ok := strategy.(StrategyValidator); ok {
-		if err := validator.Validate(); err != nil {
-			return fmt.Errorf("配置验证失败: %w", err)
-		}
-	}
-
-	// 6. Initialize - 初始化策略（BBGO 风格的 Initialize() 方法，无参数）
-	if initializer, ok := strategy.(StrategyInitializer); ok {
-		if err := initializer.Initialize(); err != nil {
-			return fmt.Errorf("初始化失败: %w", err)
-		}
-	}
-
-	return nil
+	return fmt.Errorf("无法注入策略配置：策略没有 Initialize(ctx, cfg) 或 InitializeWithConfig(ctx, cfg) 方法")
 }

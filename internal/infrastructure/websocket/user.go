@@ -16,25 +16,16 @@ import (
 
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/ports"
 )
 
 var userLog = logrus.WithField("component", "user_websocket")
 
-// OrderUpdateHandler 订单更新处理器接口（BBGO风格：直接回调）
-type OrderUpdateHandler interface {
-	OnOrderUpdate(ctx context.Context, order *domain.Order) error
-}
-
-// TradeUpdateHandler 交易更新处理器接口（BBGO风格：直接回调）
-type TradeUpdateHandler interface {
-	HandleTrade(ctx context.Context, trade *domain.Trade)
-}
-
 // UserWebSocket 用户订单 WebSocket 客户端（BBGO风格：使用直接回调，不使用事件总线）
 type UserWebSocket struct {
 	conn           *websocket.Conn
-	orderHandlers  []OrderUpdateHandler  // BBGO风格：直接回调列表
-	tradeHandlers  []TradeUpdateHandler  // BBGO风格：交易回调列表
+	orderHandlers  []ports.OrderUpdateHandler // BBGO风格：直接回调列表
+	tradeHandlers  []ports.TradeUpdateHandler // BBGO风格：交易回调列表
 	creds          *UserCredentials
 	mu             sync.RWMutex
 	closed         bool
@@ -60,8 +51,8 @@ type UserCredentials struct {
 // NewUserWebSocket 创建新的用户订单 WebSocket 客户端（BBGO风格）
 func NewUserWebSocket() *UserWebSocket {
 	return &UserWebSocket{
-		orderHandlers:  make([]OrderUpdateHandler, 0),
-		tradeHandlers:  make([]TradeUpdateHandler, 0),
+		orderHandlers:  make([]ports.OrderUpdateHandler, 0),
+		tradeHandlers:  make([]ports.TradeUpdateHandler, 0),
 		maxReconnects:  10,                    // 最多重连 10 次
 		reconnectDelay: 5 * time.Second,       // 初始重连延迟 5 秒
 		lastPong:       time.Now(),
@@ -69,14 +60,14 @@ func NewUserWebSocket() *UserWebSocket {
 }
 
 // OnOrderUpdate 注册订单更新回调（BBGO风格）
-func (u *UserWebSocket) OnOrderUpdate(handler OrderUpdateHandler) {
+func (u *UserWebSocket) OnOrderUpdate(handler ports.OrderUpdateHandler) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.orderHandlers = append(u.orderHandlers, handler)
 }
 
 // OnTradeUpdate 注册交易更新回调（BBGO风格）
-func (u *UserWebSocket) OnTradeUpdate(handler TradeUpdateHandler) {
+func (u *UserWebSocket) OnTradeUpdate(handler ports.TradeUpdateHandler) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.tradeHandlers = append(u.tradeHandlers, handler)
@@ -614,7 +605,7 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 
 	// 触发所有注册的回调处理器
 	for _, handler := range handlers {
-		go func(h OrderUpdateHandler) {
+		go func(h ports.OrderUpdateHandler) {
 			if err := h.OnOrderUpdate(ctx, order); err != nil {
 				userLog.Errorf("订单更新处理器执行失败: %v", err)
 			}

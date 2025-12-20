@@ -18,6 +18,7 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/execution"
 	"github.com/betbot/gobet/internal/metrics"
+	"github.com/betbot/gobet/internal/ports"
 	"github.com/betbot/gobet/internal/risk"
 	"github.com/betbot/gobet/pkg/cache"
 	"github.com/betbot/gobet/pkg/persistence"
@@ -30,12 +31,6 @@ type OrderResult struct {
 	Order   *domain.Order
 	Success bool
 	Error   error
-}
-
-// TradingService 交易服务
-// OrderUpdateHandler 订单更新处理器接口（BBGO风格）
-type OrderUpdateHandler interface {
-	OnOrderUpdate(ctx context.Context, order *domain.Order) error
 }
 
 // TradingService 交易服务（重构后，无锁，使用 OrderEngine）
@@ -122,7 +117,7 @@ func (s *TradingService) SetOrderStatusSyncConfig(withOrdersSeconds, withoutOrde
 }
 
 // OnOrderUpdate 注册订单更新回调（通过 OrderEngine）
-func (s *TradingService) OnOrderUpdate(handler OrderUpdateHandler) {
+func (s *TradingService) OnOrderUpdate(handler ports.OrderUpdateHandler) {
 	s.orderEngine.OnOrderUpdate(handler)
 }
 

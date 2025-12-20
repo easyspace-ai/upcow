@@ -6,6 +6,7 @@ import (
 
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
+	"github.com/betbot/gobet/internal/ports"
 	"github.com/sirupsen/logrus"
 
 	"github.com/betbot/gobet/internal/infrastructure/websocket"
@@ -57,9 +58,10 @@ type Subscription struct {
 }
 
 // OrderHandler 订单处理器接口
-type OrderHandler interface {
-	OnOrderUpdate(ctx context.Context, order *domain.Order) error
-}
+//
+// NOTE: aliased to ports.OrderUpdateHandler to avoid duplicated interface definitions
+// across runtime/services/infrastructure and to keep handler types compatible.
+type OrderHandler = ports.OrderUpdateHandler
 
 // TradeHandler 交易处理器接口（暂时使用 Order，因为当前项目没有独立的 Trade 类型）
 type TradeHandler interface {

@@ -280,7 +280,6 @@ func (s *PairedTradingStrategy) onPricesChangedInternal(ctx context.Context, upE
 // updatePhase 更新当前阶段
 func (s *PairedTradingStrategy) updatePhase(elapsed int64) {
 	buildDuration := int64(s.config.BuildDuration.Seconds())
-	lockStart := int64(s.config.LockStart.Seconds())
 	amplifyStart := int64(s.config.AmplifyStart.Seconds())
 
 	oldPhase := s.currentPhase
@@ -791,7 +790,7 @@ func (s *PairedTradingStrategy) OnOrderUpdate(ctx context.Context, order *domain
 	select {
 	case s.orderC <- order:
 	default:
-		log.Warnf("成对交易策略: orderC 已满，丢弃订单更新 %s", order.ID)
+		log.Warnf("成对交易策略: orderC 已满，丢弃订单更新 %s", order.OrderID)
 	}
 	return nil
 }

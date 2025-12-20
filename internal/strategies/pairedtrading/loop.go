@@ -83,7 +83,7 @@ func (s *PairedTradingStrategy) runLoop(ctx context.Context) {
 				log.Debugf("成对交易策略: 订单跳过 [%s/%s]: 金额不足", result.tokenType, result.reason)
 			} else if result.created != nil {
 				log.Infof("成对交易策略: 订单已创建 [%s/%s]: ID=%s, 数量=%.2f, 价格=%.4f",
-					result.tokenType, result.reason, result.created.ID,
+					result.tokenType, result.reason, result.created.OrderID,
 					result.created.Size, result.created.Price.ToDecimal())
 			}
 

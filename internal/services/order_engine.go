@@ -9,6 +9,7 @@ import (
 
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/ports"
 )
 
 var orderEngineLog = logrus.WithField("component", "order_engine")
@@ -186,7 +187,7 @@ type OrderEngine struct {
 	ioExecutor *IOExecutor
 
 	// 回调
-	orderHandlers []OrderUpdateHandler
+	orderHandlers []ports.OrderUpdateHandler
 
 	// 上下文
 	ctx    context.Context
@@ -208,7 +209,7 @@ func NewOrderEngine(ioExecutor *IOExecutor, minOrderSize float64, dryRun bool) *
 		MinOrderSize:  minOrderSize,
 		dryRun:        dryRun,
 		ioExecutor:    ioExecutor,
-		orderHandlers: make([]OrderUpdateHandler, 0),
+		orderHandlers: make([]ports.OrderUpdateHandler, 0),
 		stats:         &EngineStats{},
 	}
 }
@@ -224,7 +225,7 @@ func (e *OrderEngine) SubmitCommand(cmd OrderCommand) {
 }
 
 // OnOrderUpdate 注册订单更新回调
-func (e *OrderEngine) OnOrderUpdate(handler OrderUpdateHandler) {
+func (e *OrderEngine) OnOrderUpdate(handler ports.OrderUpdateHandler) {
 	// 通过命令注册回调（确保线程安全）
 	cmd := &RegisterHandlerCommand{
 		id:      fmt.Sprintf("register_handler_%d", time.Now().UnixNano()),
@@ -294,7 +295,7 @@ func (e *OrderEngine) handleCommand(cmd OrderCommand) {
 // RegisterHandlerCommand 注册处理器命令
 type RegisterHandlerCommand struct {
 	id      string
-	Handler OrderUpdateHandler
+	Handler ports.OrderUpdateHandler
 }
 
 func (c *RegisterHandlerCommand) CommandType() OrderCommandType { return CmdRegisterHandler }
@@ -850,7 +851,7 @@ func (e *OrderEngine) emitOrderUpdate(order *domain.Order) {
 		if h == nil {
 			continue
 		}
-		func(handler OrderUpdateHandler) {
+		func(handler ports.OrderUpdateHandler) {
 			defer func() {
 				if r := recover(); r != nil {
 					orderEngineLog.Errorf("订单更新回调 panic: %v", r)

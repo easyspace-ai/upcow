@@ -3,6 +3,9 @@ package pairedtrading
 import (
 	"fmt"
 	"time"
+
+	"github.com/betbot/gobet/pkg/bbgo"
+	"github.com/betbot/gobet/pkg/config"
 )
 
 // PairedTradingConfig 成对交易策略配置
@@ -41,6 +44,9 @@ type PairedTradingConfig struct {
 	AutoAdjustSize       bool    `yaml:"auto_adjust_size"`        // 是否自动调整数量以满足最小金额（默认true）
 	MaxSizeAdjustRatio   float64 `yaml:"max_size_adjust_ratio"`   // 最大数量调整倍数（默认5.0）
 }
+
+// GetName implements strategies.StrategyConfig (compat).
+func (c *PairedTradingConfig) GetName() string { return ID }
 
 // Validate 验证配置
 func (c *PairedTradingConfig) Validate() error {
@@ -174,6 +180,21 @@ func DefaultPairedTradingConfig() *PairedTradingConfig {
 
 // PairedTradingConfigAdapter 配置适配器（BBGO风格）
 type PairedTradingConfigAdapter struct{}
+
+// AdaptConfig implements bbgo.ConfigAdapter.
+//
+// NOTE: this strategy is currently not wired into pkg/config.ConfigFile / config.StrategyConfig.
+// If you want to enable it via config.yaml, we should extend pkg/config first.
+func (a *PairedTradingConfigAdapter) AdaptConfig(strategyConfig interface{}, proxyConfig interface{}) (interface{}, error) {
+	switch v := strategyConfig.(type) {
+	case map[string]interface{}:
+		return a.AdaptFromMap(v)
+	case config.StrategyConfig:
+		return nil, fmt.Errorf("paired_trading 策略暂未接入 pkg/config（config.yaml），请先扩展 pkg/config.StrategyConfig")
+	default:
+		return nil, fmt.Errorf("无效的策略配置类型: %T", strategyConfig)
+	}
+}
 
 // AdaptFromMap 从 map 适配配置
 func (a *PairedTradingConfigAdapter) AdaptFromMap(m map[string]interface{}) (interface{}, error) {
@@ -313,3 +334,5 @@ func (a *PairedTradingConfigAdapter) AdaptFromMap(m map[string]interface{}) (int
 
 	return config, nil
 }
+
+var _ bbgo.ConfigAdapter = (*PairedTradingConfigAdapter)(nil)
