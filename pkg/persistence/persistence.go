@@ -1,8 +1,12 @@
 package persistence
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 
 	"github.com/betbot/gobet/pkg/logger"
@@ -49,18 +53,49 @@ type JSONFileStore struct {
 	key     string
 }
 
+var keySanitizer = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+
+func (s *JSONFileStore) filePath() string {
+	// key 形如 "state:<id>:<tag>"，这里做文件名安全化
+	safe := keySanitizer.ReplaceAllString(s.key, "_")
+	return filepath.Join(s.service.baseDir, safe+".json")
+}
+
 // Save 保存数据
 func (s *JSONFileStore) Save(data interface{}) error {
-	// TODO: 实现文件保存逻辑
 	logger.Debugf("[persistence] Save: key=%s", s.key)
-	return nil
+	if err := os.MkdirAll(s.service.baseDir, 0o755); err != nil {
+		return err
+	}
+
+	b, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	path := s.filePath()
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // Load 加载数据
 func (s *JSONFileStore) Load(data interface{}) error {
-	// TODO: 实现文件加载逻辑
 	logger.Debugf("[persistence] Load: key=%s", s.key)
-	return ErrNotExists
+	path := s.filePath()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrNotExists
+		}
+		return err
+	}
+	if len(b) == 0 {
+		return ErrNotExists
+	}
+	return json.Unmarshal(b, data)
 }
 
 // LoadFields 加载带 persistence tag 的字段

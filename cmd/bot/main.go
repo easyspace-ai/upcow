@@ -14,6 +14,7 @@ import (
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/infrastructure/websocket"
+	"github.com/betbot/gobet/internal/metrics"
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
@@ -217,6 +218,18 @@ func main() {
 	// 创建持久化服务
 	persistenceService := persistence.NewJSONFileService("data/persistence")
 	environ.SetPersistenceService(persistenceService)
+	// 交易服务使用同一套持久化（用于重启恢复快照）
+	tradingService.SetPersistence(persistenceService, "bot")
+
+	// 可选：启动 metrics/pprof（默认关闭，通过环境变量启用）
+	if addr := os.Getenv("METRICS_ADDR"); addr != "" {
+		go func() {
+			logrus.Infof("📊 metrics/pprof 启用: listen=%s (expvar:/debug/vars, pprof:/debug/pprof)", addr)
+			if err := metrics.Start(addr); err != nil {
+				logrus.Errorf("metrics server 启动失败: %v", err)
+			}
+		}()
+	}
 
 	// 创建 Trader
 	trader := bbgo.NewTrader(environ)

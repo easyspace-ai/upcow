@@ -521,6 +521,9 @@ func (e *OrderEngine) handleUpdateOrder(cmd *UpdateOrderCommand) {
 		// 更新现有订单
 		existingOrder.Status = order.Status
 		existingOrder.OrderID = order.OrderID
+		if order.FilledSize > 0 {
+			existingOrder.FilledSize = order.FilledSize
+		}
 		if order.FilledAt != nil {
 			existingOrder.FilledAt = order.FilledAt
 		}
@@ -558,11 +561,20 @@ func (e *OrderEngine) handleProcessTrade(cmd *ProcessTradeCommand) {
 	}
 
 	// 2. 更新订单状态
-	if order.Status != domain.OrderStatusFilled {
-		order.Status = domain.OrderStatusFilled
-		now := time.Now()
-		order.FilledAt = &now
-		order.Size = trade.Size // 使用实际成交数量
+	// 支持部分成交：累计 FilledSize，只有 FilledSize >= Size 才标记为 filled
+	if trade.Size > 0 {
+		order.FilledSize += trade.Size
+		if order.FilledSize >= order.Size && order.Size > 0 {
+			order.Status = domain.OrderStatusFilled
+			now := time.Now()
+			order.FilledAt = &now
+			order.FilledSize = order.Size
+		} else {
+			// 仍未完全成交
+			if order.Status != domain.OrderStatusFilled {
+				order.Status = domain.OrderStatusPartial
+			}
+		}
 	}
 
 	// 3. 从活跃订单中移除
@@ -823,17 +835,25 @@ func (e *OrderEngine) handleQueryStats(cmd *QueryStatsCommand) {
 // emitOrderUpdate 触发订单更新回调
 func (e *OrderEngine) emitOrderUpdate(order *domain.Order) {
 	handlers := e.orderHandlers
-	if len(handlers) == 0 {
+	if len(handlers) == 0 || order == nil {
 		return
 	}
 
-	// 异步执行回调，避免阻塞状态循环
-	for _, handler := range handlers {
-		go func(h OrderUpdateHandler) {
-			if err := h.OnOrderUpdate(context.Background(), order); err != nil {
+	// 串行执行（确定性优先；避免并发导致策略状态竞态）
+	for _, h := range handlers {
+		if h == nil {
+			continue
+		}
+		func(handler OrderUpdateHandler) {
+			defer func() {
+				if r := recover(); r != nil {
+					orderEngineLog.Errorf("订单更新回调 panic: %v", r)
+				}
+			}()
+			if err := handler.OnOrderUpdate(context.Background(), order); err != nil {
 				orderEngineLog.Errorf("订单更新回调执行失败: %v", err)
 			}
-		}(handler)
+		}(h)
 	}
 }
 

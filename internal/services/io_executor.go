@@ -150,6 +150,7 @@ func convertOrderResponseToDomain(orderResp *types.OrderResponse, originalOrder 
 		Side:         originalOrder.Side,
 		Price:        originalOrder.Price,
 		Size:         originalOrder.Size,
+		FilledSize:   originalOrder.FilledSize,
 		GridLevel:    originalOrder.GridLevel,
 		TokenType:    originalOrder.TokenType,
 		HedgeOrderID: originalOrder.HedgeOrderID,
@@ -163,10 +164,14 @@ func convertOrderResponseToDomain(orderResp *types.OrderResponse, originalOrder 
 	switch orderResp.Status {
 	case "OPEN", "PENDING":
 		order.Status = domain.OrderStatusOpen
+	case "PARTIALLY_FILLED":
+		order.Status = domain.OrderStatusPartial
 	case "FILLED":
 		order.Status = domain.OrderStatusFilled
 		now := time.Now()
 		order.FilledAt = &now
+		// 对于已成交，已成交数量等于 size
+		order.FilledSize = order.Size
 	case "CANCELLED":
 		order.Status = domain.OrderStatusCanceled
 	default:
