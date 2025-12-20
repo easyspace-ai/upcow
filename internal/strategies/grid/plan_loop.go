@@ -141,12 +141,7 @@ func (s *GridStrategy) planRefreshHedgePrice(ctx context.Context) {
 	}
 
 	assetID := p.HedgeTemplate.AssetID
-	askPrice, err := orderutil.QuoteBuyPrice(ctx, s.tradingService, assetID, 0)
-	if err != nil {
-		// 取不到盘口时，退化为 maxHedgeCents（保证不破坏锁盈/不亏目标）
-		p.HedgeTemplate.Price = domain.Price{Cents: maxHedgeCents}
-		return
-	}
+	askPrice, _ := orderutil.QuoteBuyPriceOr(ctx, s.tradingService, assetID, 0, domain.Price{Cents: maxHedgeCents})
 
 	// 锁盈约束：hedge 价格不能超过 maxHedgeCents，否则锁亏
 	if askPrice.Cents > maxHedgeCents {
@@ -195,11 +190,7 @@ func (s *GridStrategy) planStrongHedge(ctx context.Context) {
 	}
 
 	// 取 bestAsk，优先成交
-	bestPrice, err := orderutil.QuoteBuyPrice(ctx, s.tradingService, assetID, maxBuy)
-	if err != nil {
-		// 盘口不可用则用当前价格兜底（避免完全停摆）
-		bestPrice = price
-	}
+	bestPrice, _ := orderutil.QuoteBuyPriceOr(ctx, s.tradingService, assetID, maxBuy, price)
 
 	s.submitStrongHedgeSupplement(ctx, p, tokenType, assetID, bestPrice, dQ)
 }

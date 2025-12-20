@@ -33,6 +33,16 @@ func QuoteBuyPrice(ctx context.Context, g BestPriceGetter, assetID string, maxCe
 	return p, nil
 }
 
+// QuoteBuyPriceOr is a convenience wrapper that falls back to fallback price when QuoteBuyPrice fails.
+// It returns the chosen price and the original error (if any).
+func QuoteBuyPriceOr(ctx context.Context, g BestPriceGetter, assetID string, maxCents int, fallback domain.Price) (domain.Price, error) {
+	p, err := QuoteBuyPrice(ctx, g, assetID, maxCents)
+	if err != nil {
+		return fallback, err
+	}
+	return p, nil
+}
+
 // QuoteSellPrice 返回卖出时使用的价格（默认取 bestBid），可选做下限保护（minCents>0）。
 func QuoteSellPrice(ctx context.Context, g BestPriceGetter, assetID string, minCents int) (domain.Price, error) {
 	if g == nil {
@@ -67,4 +77,3 @@ func NewOrder(marketSlug string, assetID string, side types.Side, price domain.P
 		OrderType:    orderType,
 	}
 }
-
