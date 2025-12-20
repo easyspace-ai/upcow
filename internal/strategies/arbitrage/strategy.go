@@ -11,6 +11,7 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/strategies"
+	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/logger"
 	"github.com/sirupsen/logrus"
@@ -639,31 +640,19 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 
 	// 没有 executor 时仍保持兼容（但会阻塞 loop，不推荐）
 	if exec == nil {
-		_, bestAsk, err := ts.GetBestPrice(ctx, assetID)
+		bestAskPrice, err := orderutil.QuoteBuyPrice(ctx, ts, assetID, 0)
 		if err != nil {
 			return fmt.Errorf("获取订单簿失败: %w", err)
 		}
-		if bestAsk <= 0 {
-			return fmt.Errorf("订单簿卖一价无效: %.4f", bestAsk)
-		}
 
-		orderAmount := size * bestAsk
+		orderAmount := size * bestAskPrice.ToDecimal()
 		if orderAmount < minOrderUSDC {
 			logger.Warnf("套利策略: %s - 订单金额 %.2f USDC 小于最小要求 %.2f USDC，跳过下单（数量=%.2f, 价格=%.4f）",
-				reason, orderAmount, minOrderUSDC, size, bestAsk)
+				reason, orderAmount, minOrderUSDC, size, bestAskPrice.ToDecimal())
 			return nil
 		}
 
-		order := &domain.Order{
-			MarketSlug:   market.Slug,
-			AssetID:      assetID,
-			Side:         types.SideBuy,
-			Price:        domain.PriceFromDecimal(bestAsk),
-			Size:         size,
-			TokenType:    tokenType,
-			IsEntryOrder: true,
-			Status:       domain.OrderStatusPending,
-		}
+		order := orderutil.NewOrder(market.Slug, assetID, types.SideBuy, bestAskPrice, size, tokenType, true, types.OrderTypeFAK)
 		_, err = ts.PlaceOrder(ctx, order)
 		return err
 	}
@@ -674,7 +663,7 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 		Name:    fmt.Sprintf("arbitrage_buy_%s_%s", tokenType, reason),
 		Timeout: 25 * time.Second,
 		Do: func(runCtx context.Context) {
-			_, bestAsk, err := ts.GetBestPrice(runCtx, assetID)
+			bestAskPrice, err := orderutil.QuoteBuyPrice(runCtx, ts, assetID, 0)
 			if err != nil {
 				select {
 				case s.cmdResultC <- arbitrageCmdResult{tokenType: tokenType, reason: reason, err: err}:
@@ -682,15 +671,8 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 				}
 				return
 			}
-			if bestAsk <= 0 {
-				select {
-				case s.cmdResultC <- arbitrageCmdResult{tokenType: tokenType, reason: reason, err: fmt.Errorf("订单簿卖一价无效: %.4f", bestAsk)}:
-				default:
-				}
-				return
-			}
 
-			orderAmount := size * bestAsk
+			orderAmount := size * bestAskPrice.ToDecimal()
 			if orderAmount < minOrderUSDC {
 				select {
 				case s.cmdResultC <- arbitrageCmdResult{tokenType: tokenType, reason: reason, skipped: true}:
@@ -699,15 +681,12 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 				return
 			}
 
-			order := &domain.Order{
-				AssetID:      assetID,
-				Side:         types.SideBuy,
-				Price:        domain.PriceFromDecimal(bestAsk),
-				Size:         size,
-				TokenType:    tokenType,
-				IsEntryOrder: true,
-				Status:       domain.OrderStatusPending,
+			// marketSlug 通过当前 market 注入，确保只管理本周期
+			mSlug := ""
+			if s.currentMarket != nil {
+				mSlug = s.currentMarket.Slug
 			}
+			order := orderutil.NewOrder(mSlug, assetID, types.SideBuy, bestAskPrice, size, tokenType, true, types.OrderTypeFAK)
 
 			created, err := ts.PlaceOrder(runCtx, order)
 			select {

@@ -10,6 +10,7 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/strategies"
+	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/logger"
 	"github.com/sirupsen/logrus"
@@ -211,33 +212,14 @@ func (s *ThresholdStrategy) onPriceChangedInternal(ctx context.Context, event *e
 
 				assetID := event.Market.GetAssetID(tokenType)
 
-				// 获取订单簿的最佳卖一价（买入时使用卖一价）
-				_, bestAsk, err := tradingService.GetBestPrice(ctx, assetID)
+				// 统一下单模板：买入默认取 bestAsk（可选滑点保护，threshold 这里默认不设上限）
+				askPrice, err := orderutil.QuoteBuyPrice(ctx, tradingService, assetID, 0)
 				if err != nil {
 					logger.Errorf("价格阈值策略: 获取订单簿失败: %v", err)
 					return err
 				}
 
-				if bestAsk <= 0 {
-					logger.Errorf("价格阈值策略: 订单簿中没有卖一价")
-					return fmt.Errorf("订单簿中没有卖一价")
-				}
-
-				// 使用卖一价作为买入价格
-				askPrice := domain.PriceFromDecimal(bestAsk)
-				logger.Infof("价格阈值策略: 使用卖一价 %.4f 买入", bestAsk)
-
-				// 创建买入订单
-				order := &domain.Order{
-					MarketSlug:   event.Market.Slug,
-					AssetID:      assetID,
-					Side:         types.SideBuy,
-					Price:        askPrice,
-					Size:         config.OrderSize,
-					TokenType:    tokenType,
-					IsEntryOrder: true,
-					Status:       domain.OrderStatusPending,
-				}
+				order := orderutil.NewOrder(event.Market.Slug, assetID, types.SideBuy, askPrice, config.OrderSize, tokenType, true, types.OrderTypeFAK)
 
 				// 下单
 				if err := s.placeOrder(ctx, tradingService, order); err != nil {
@@ -273,24 +255,15 @@ func (s *ThresholdStrategy) onPriceChangedInternal(ctx context.Context, event *e
 
 				assetID := event.Market.GetAssetID(entryTokenType)
 
-				// 获取订单簿的最佳卖一价（止盈卖出时使用卖一价）
-				_, bestAsk, err := tradingService.GetBestPrice(ctx, assetID)
+				// 止盈卖出：默认取 bestBid（更容易成交）
+				bidPrice, err := orderutil.QuoteSellPrice(ctx, tradingService, assetID, 0)
 				if err != nil {
 					logger.Errorf("价格阈值策略: 获取订单簿失败: %v", err)
 					return err
 				}
 
-				if bestAsk <= 0 {
-					logger.Errorf("价格阈值策略: 订单簿中没有卖一价")
-					return fmt.Errorf("订单簿中没有卖一价")
-				}
-
-				// 使用卖一价作为卖出价格
-				askPrice := domain.PriceFromDecimal(bestAsk)
-				logger.Infof("价格阈值策略: 止盈卖出，使用卖一价 %.4f", bestAsk)
-
 				// 创建卖出订单
-				if err := s.createSellOrder(ctx, tradingService, event.Market, entryTokenType, askPrice, config.OrderSize); err != nil {
+				if err := s.createSellOrder(ctx, tradingService, event.Market, entryTokenType, bidPrice, config.OrderSize); err != nil {
 					logger.Errorf("价格阈值策略: 止盈卖出订单失败: %v", err)
 					return err
 				}
@@ -308,21 +281,12 @@ func (s *ThresholdStrategy) onPriceChangedInternal(ctx context.Context, event *e
 
 				assetID := event.Market.GetAssetID(entryTokenType)
 
-				// 获取订单簿的最佳买一价（止损卖出时使用买一价）
-				bestBid, _, err := tradingService.GetBestPrice(ctx, assetID)
+				// 止损卖出：也用 bestBid（成交优先）
+				bidPrice, err := orderutil.QuoteSellPrice(ctx, tradingService, assetID, 0)
 				if err != nil {
 					logger.Errorf("价格阈值策略: 获取订单簿失败: %v", err)
 					return err
 				}
-
-				if bestBid <= 0 {
-					logger.Errorf("价格阈值策略: 订单簿中没有买一价")
-					return fmt.Errorf("订单簿中没有买一价")
-				}
-
-				// 使用买一价作为卖出价格
-				bidPrice := domain.PriceFromDecimal(bestBid)
-				logger.Infof("价格阈值策略: 止损卖出，使用买一价 %.4f", bestBid)
 
 				// 创建卖出订单
 				if err := s.createSellOrder(ctx, tradingService, event.Market, entryTokenType, bidPrice, config.OrderSize); err != nil {
@@ -353,15 +317,11 @@ func (s *ThresholdStrategy) onPriceChangedInternal(ctx context.Context, event *e
 
 				assetID := event.Market.GetAssetID(entryTokenType)
 				// 卖出使用买一价（更容易成交）
-				bestBid, _, err := tradingService.GetBestPrice(ctx, assetID)
+				bidPrice, err := orderutil.QuoteSellPrice(ctx, tradingService, assetID, 0)
 				if err != nil {
 					logger.Errorf("价格阈值策略: 获取订单簿失败: %v", err)
 					return err
 				}
-				if bestBid <= 0 {
-					return fmt.Errorf("订单簿中没有买一价")
-				}
-				bidPrice := domain.PriceFromDecimal(bestBid)
 				if err := s.createSellOrder(ctx, tradingService, event.Market, entryTokenType, bidPrice, config.OrderSize); err != nil {
 					logger.Errorf("价格阈值策略: 阈值卖出订单失败: %v", err)
 					return err
@@ -404,16 +364,7 @@ func (s *ThresholdStrategy) placeOrder(ctx context.Context, tradingService Tradi
 
 // createSellOrder 创建卖出订单
 func (s *ThresholdStrategy) createSellOrder(ctx context.Context, tradingService TradingServiceInterface, market *domain.Market, tokenType domain.TokenType, price domain.Price, size float64) error {
-	order := &domain.Order{
-		MarketSlug:   market.Slug,
-		AssetID:      market.GetAssetID(tokenType),
-		Side:         types.SideSell,
-		Price:        price,
-		Size:         size,
-		TokenType:    tokenType,
-		IsEntryOrder: false,
-		Status:       domain.OrderStatusPending,
-	}
+	order := orderutil.NewOrder(market.Slug, market.GetAssetID(tokenType), types.SideSell, price, size, tokenType, false, types.OrderTypeFAK)
 
 	return s.placeOrder(ctx, tradingService, order)
 }
