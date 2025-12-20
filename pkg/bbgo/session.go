@@ -2,6 +2,7 @@ package bbgo
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/betbot/gobet/internal/domain"
@@ -121,37 +122,40 @@ func (s *ExchangeSession) Connect(ctx context.Context) error {
 	s.startPriceLoop(ctx)
 
 	if s.MarketDataStream != nil {
-		market := s.Market()
-		if market != nil {
-			// 将 Session 的价格变化处理器注册到 MarketStream
-			// 这样 MarketStream 收到价格变化时会触发 Session 的处理器
-			sessionLog.Infof("🔗 [Session %s] 注册 sessionPriceHandler 到 MarketStream", s.Name)
-			s.MarketDataStream.OnPriceChanged(&sessionPriceHandler{session: s})
-			
-			// 检查 handlers 数量（用于调试）
-			if ms, ok := s.MarketDataStream.(*websocket.MarketStream); ok {
-				handlerCount := ms.HandlerCount()
-				sessionLog.Infof("✅ [Session %s] MarketStream handlers 数量=%d (注册后)", s.Name, handlerCount)
-				if handlerCount == 0 {
-					sessionLog.Errorf("❌ [Session %s] 错误：MarketStream handlers 为空！sessionPriceHandler 注册失败！", s.Name)
-				}
+		// 先注册 handler：避免因为 market 尚未设置而“静默不注册”，导致后续完全收不到价格事件。
+		// 注册本身不依赖 market；只有 Connect 才依赖 market。
+		sessionLog.Infof("🔗 [Session %s] 注册 sessionPriceHandler 到 MarketStream", s.Name)
+		s.MarketDataStream.OnPriceChanged(&sessionPriceHandler{session: s})
+
+		// 检查 handlers 数量（用于调试）
+		if ms, ok := s.MarketDataStream.(*websocket.MarketStream); ok {
+			handlerCount := ms.HandlerCount()
+			sessionLog.Infof("✅ [Session %s] MarketStream handlers 数量=%d (注册后)", s.Name, handlerCount)
+			if handlerCount == 0 {
+				sessionLog.Errorf("❌ [Session %s] 错误：MarketStream handlers 为空！sessionPriceHandler 注册失败！", s.Name)
 			}
-			
-			if err := s.MarketDataStream.Connect(ctx, market); err != nil {
-				return err
-			}
-			
-			// 连接后再次检查 handlers 数量
-			if ms, ok := s.MarketDataStream.(*websocket.MarketStream); ok {
-				handlerCount := ms.HandlerCount()
-				sessionLog.Infof("✅ [Session %s] MarketStream handlers 数量=%d (连接后)", s.Name, handlerCount)
-				if handlerCount == 0 {
-					sessionLog.Errorf("❌ [Session %s] 错误：连接后 MarketStream handlers 为空！", s.Name)
-				}
-			}
-			
-			sessionLog.Infof("[Session %s] 市场数据流已连接", s.Name)
 		}
+
+		market := s.Market()
+		if market == nil {
+			// 这里以前会“静默跳过连接”，让人误以为 handler 没运行；改为直接报错更可诊断。
+			return fmt.Errorf("session %s market is nil: call SetMarket() before Connect()", s.Name)
+		}
+
+		if err := s.MarketDataStream.Connect(ctx, market); err != nil {
+			return err
+		}
+
+		// 连接后再次检查 handlers 数量
+		if ms, ok := s.MarketDataStream.(*websocket.MarketStream); ok {
+			handlerCount := ms.HandlerCount()
+			sessionLog.Infof("✅ [Session %s] MarketStream handlers 数量=%d (连接后)", s.Name, handlerCount)
+			if handlerCount == 0 {
+				sessionLog.Errorf("❌ [Session %s] 错误：连接后 MarketStream handlers 为空！", s.Name)
+			}
+		}
+
+		sessionLog.Infof("[Session %s] 市场数据流已连接", s.Name)
 	}
 
 	if s.UserDataStream != nil {
@@ -232,10 +236,21 @@ func (s *ExchangeSession) startPriceLoop(ctx context.Context) {
 // sessionPriceHandler 将 MarketStream 的价格变化转发到 Session
 type sessionPriceHandler struct {
 	session *ExchangeSession
+	once    sync.Once
 }
 
 func (h *sessionPriceHandler) OnPriceChanged(ctx context.Context, event *events.PriceChangedEvent) error {
-	sessionLog.Debugf("📥 [sessionPriceHandler] 收到价格变化事件，转发到 Session: %s @ %dc (Session=%s)", 
+	// 用 INFO 打一条“只出现一次”的确认日志，避免用户在 INFO 级别下误判“没运行”。
+	h.once.Do(func() {
+		if event == nil {
+			sessionLog.Infof("📥 [sessionPriceHandler] 首次收到价格事件: <nil> (Session=%s)", h.session.Name)
+			return
+		}
+		sessionLog.Infof("📥 [sessionPriceHandler] 首次收到价格事件: %s @ %dc (Session=%s)",
+			event.TokenType, event.NewPrice.Cents, h.session.Name)
+	})
+
+	sessionLog.Debugf("📥 [sessionPriceHandler] 收到价格变化事件，转发到 Session: %s @ %dc (Session=%s)",
 		event.TokenType, event.NewPrice.Cents, h.session.Name)
 	h.session.EmitPriceChanged(ctx, event)
 	return nil
