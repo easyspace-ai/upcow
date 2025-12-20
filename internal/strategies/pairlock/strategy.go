@@ -97,8 +97,12 @@ type PairLockStrategy struct {
 	lastSeenUpCents   int
 	lastSeenDownCents int
 
-	// plan（同一时刻只跑一个 round，确保确定性）
-	plan   *pairLockPlan
+	// plans：默认串行只会有 0/1 个；开启并行后允许多个
+	plans map[string]*pairLockPlan
+
+	// 快速归属：orderID -> planID（用于 order update 快速定位轮次）
+	orderIDToPlanID map[string]string
+
 	paused bool
 
 	// 双向持仓累计（用于日志与收益估算）
@@ -158,6 +162,12 @@ func (s *PairLockStrategy) Initialize(ctx context.Context, conf strategies.Strat
 	if s.lastCountedFilled == nil {
 		s.lastCountedFilled = make(map[string]float64)
 	}
+	if s.plans == nil {
+		s.plans = make(map[string]*pairLockPlan)
+	}
+	if s.orderIDToPlanID == nil {
+		s.orderIDToPlanID = make(map[string]string)
+	}
 
 	log.Infof("pairlock 策略已初始化: orderSize=%.4f, minOrder=%.2f, profitTarget=%dc, maxRounds=%d, cooldown=%dms, maxSupplementAttempts=%d, slippageCap=%dc",
 		s.config.OrderSize,
@@ -168,6 +178,8 @@ func (s *PairLockStrategy) Initialize(ctx context.Context, conf strategies.Strat
 		s.config.MaxSupplementAttempts,
 		s.config.EntryMaxBuySlippageCents,
 	)
+	log.Infof("pairlock 并行配置: enable_parallel=%v, max_concurrent_plans=%d",
+		s.config.EnableParallel, s.config.MaxConcurrentPlans)
 
 	return nil
 }
@@ -254,7 +266,7 @@ func (s *PairLockStrategy) onPriceChangedInternal(loopCtx context.Context, ctx c
 	if s.roundsThisPeriod >= s.config.MaxRoundsPerPeriod {
 		return nil
 	}
-	if s.plan != nil && (s.plan.State == planSubmitting || s.plan.State == planWaiting || s.plan.State == planSupplementing) {
+	if s.inflightPlans() >= s.maxConcurrentPlans() {
 		return nil
 	}
 
@@ -263,7 +275,18 @@ func (s *PairLockStrategy) onPriceChangedInternal(loopCtx context.Context, ctx c
 		return nil
 	}
 
-	return s.tryStartNewPlan(loopCtx)
+	// 并行模式：一次信号允许尽量补满并发额度（但仍受 cooldown 限制）
+	for s.inflightPlans() < s.maxConcurrentPlans() && s.roundsThisPeriod < s.config.MaxRoundsPerPeriod {
+		if err := s.tryStartNewPlan(loopCtx); err != nil {
+			// 不因为一次失败就中断循环（除非策略被标记 paused）
+			break
+		}
+		// cooldown：避免一次循环内过快连续开轮
+		if !s.lastAttemptAt.IsZero() && time.Since(s.lastAttemptAt) < time.Duration(s.config.CooldownMs)*time.Millisecond {
+			break
+		}
+	}
+	return nil
 }
 
 func (s *PairLockStrategy) tryStartNewPlan(ctx context.Context) error {
@@ -321,7 +344,7 @@ func (s *PairLockStrategy) tryStartNewPlan(ctx context.Context) error {
 	noOrder := orderutil.NewOrder(market.Slug, market.NoAssetID, types.SideBuy, noAsk, size, domain.TokenTypeDown, true, types.OrderTypeFAK)
 	noOrder.OrderID = fmt.Sprintf("pairlock-no-%d", now.UnixNano())
 
-	s.plan = &pairLockPlan{
+	p := &pairLockPlan{
 		ID:          planID,
 		MarketSlug:  market.Slug,
 		TargetSize:  size,
@@ -334,28 +357,31 @@ func (s *PairLockStrategy) tryStartNewPlan(ctx context.Context) error {
 			noOrder.OrderID:  downKey,
 		},
 	}
+	s.plans[planID] = p
+	s.orderIDToPlanID[yesOrder.OrderID] = planID
+	s.orderIDToPlanID[noOrder.OrderID] = planID
 
 	log.Infof("🎯 [pairlock] 开始新一轮: rounds=%d/%d, yesAsk=%dc, noAsk=%dc, total=%dc, maxTotal=%dc, size=%.4f",
 		s.roundsThisPeriod+1, s.config.MaxRoundsPerPeriod, yesAsk.Cents, noAsk.Cents, totalCents, maxTotal, size)
 
 	// 提交两个下单命令（串行执行，但不阻塞策略 loop）
 	if err := s.submitPlaceCmd(planID, cmdPlaceYes, yesOrder); err != nil {
-		s.plan.State = planFailed
-		s.plan.LastError = err.Error()
+		p.State = planFailed
+		p.LastError = err.Error()
 		s.paused = true
 		return err
 	}
 	if err := s.submitPlaceCmd(planID, cmdPlaceNo, noOrder); err != nil {
-		s.plan.State = planFailed
-		s.plan.LastError = err.Error()
+		p.State = planFailed
+		p.LastError = err.Error()
 		s.paused = true
 		return err
 	}
 
 	// 认为本轮已“开启”（即已投递到执行器）
 	s.roundsThisPeriod++
-	s.plan.State = planWaiting
-	s.plan.StateAt = time.Now()
+	p.State = planWaiting
+	p.StateAt = time.Now()
 	return nil
 }
 
@@ -378,13 +404,14 @@ func (s *PairLockStrategy) submitPlaceCmd(planID string, kind cmdKind, order *do
 }
 
 func (s *PairLockStrategy) onCmdResultInternal(ctx context.Context, res cmdResult) error {
-	if s.plan == nil || s.plan.ID != res.planID {
+	p := s.plans[res.planID]
+	if p == nil {
 		return nil
 	}
 	if res.err != nil {
-		s.plan.State = planFailed
-		s.plan.LastError = res.err.Error()
-		s.plan.StateAt = time.Now()
+		p.State = planFailed
+		p.LastError = res.err.Error()
+		p.StateAt = time.Now()
 		s.paused = true
 		log.Errorf("❌ [pairlock] 下单失败，策略暂停: kind=%s err=%v", res.kind, res.err)
 		return nil
@@ -395,44 +422,47 @@ func (s *PairLockStrategy) onCmdResultInternal(ctx context.Context, res cmdResul
 	// 记录真实订单ID（服务器返回）
 	switch res.kind {
 	case cmdPlaceYes:
-		s.plan.YesCreatedID = res.created.OrderID
-		if s.plan.OrderIDs != nil {
-			s.plan.OrderIDs[res.created.OrderID] = upKey
+		p.YesCreatedID = res.created.OrderID
+		if p.OrderIDs != nil {
+			p.OrderIDs[res.created.OrderID] = upKey
 		}
+		s.orderIDToPlanID[res.created.OrderID] = p.ID
 		// 防止“order update 先到、cmd result 后到”导致本轮漏记
-		if s.lastCountedFilled != nil && s.plan.OrderIDs != nil {
+		if s.lastCountedFilled != nil && p.OrderIDs != nil {
 			if already := s.lastCountedFilled[res.created.OrderID]; already > 0 {
-				s.plan.YesFilled += already
+				p.YesFilled += already
 			}
 		}
 	case cmdPlaceNo:
-		s.plan.NoCreatedID = res.created.OrderID
-		if s.plan.OrderIDs != nil {
-			s.plan.OrderIDs[res.created.OrderID] = downKey
+		p.NoCreatedID = res.created.OrderID
+		if p.OrderIDs != nil {
+			p.OrderIDs[res.created.OrderID] = downKey
 		}
-		if s.lastCountedFilled != nil && s.plan.OrderIDs != nil {
+		s.orderIDToPlanID[res.created.OrderID] = p.ID
+		if s.lastCountedFilled != nil && p.OrderIDs != nil {
 			if already := s.lastCountedFilled[res.created.OrderID]; already > 0 {
-				s.plan.NoFilled += already
+				p.NoFilled += already
 			}
 		}
 	case cmdSupplement:
 		// 补齐单：也纳入本轮关联集合（靠 created orderID）
-		if s.plan.OrderIDs != nil {
+		if p.OrderIDs != nil {
 			// template.TokenType up/down 可直接映射
 			if res.order != nil {
 				if res.order.TokenType == domain.TokenTypeUp {
-					s.plan.OrderIDs[res.created.OrderID] = upKey
+					p.OrderIDs[res.created.OrderID] = upKey
 				} else if res.order.TokenType == domain.TokenTypeDown {
-					s.plan.OrderIDs[res.created.OrderID] = downKey
+					p.OrderIDs[res.created.OrderID] = downKey
 				}
 			}
 		}
+		s.orderIDToPlanID[res.created.OrderID] = p.ID
 		if s.lastCountedFilled != nil && res.order != nil {
 			if already := s.lastCountedFilled[res.created.OrderID]; already > 0 {
 				if res.order.TokenType == domain.TokenTypeUp {
-					s.plan.YesFilled += already
+					p.YesFilled += already
 				} else if res.order.TokenType == domain.TokenTypeDown {
-					s.plan.NoFilled += already
+					p.NoFilled += already
 				}
 			}
 		}
@@ -483,27 +513,28 @@ func (s *PairLockStrategy) onOrderUpdateInternal(loopCtx context.Context, ctx co
 		}
 	}
 
-	// plan 内累计：只统计属于本轮的订单（避免上一轮/手动单污染本轮进度）
-	if s.plan != nil && s.plan.OrderIDs != nil {
-		side, ok := s.plan.OrderIDs[order.OrderID]
-		if ok && delta > 0 {
-			if side == upKey {
-				s.plan.YesFilled += delta
-			} else if side == downKey {
-				s.plan.NoFilled += delta
+	// plan 内累计：定位到对应 plan
+	if planID, ok := s.orderIDToPlanID[order.OrderID]; ok && delta > 0 {
+		if p := s.plans[planID]; p != nil && p.OrderIDs != nil && p.State != planFailed {
+			if side, ok := p.OrderIDs[order.OrderID]; ok {
+				if side == upKey {
+					p.YesFilled += delta
+				} else if side == downKey {
+					p.NoFilled += delta
+				}
 			}
-		}
-	}
-
-	// 成功匹配完毕：如果两腿都 >= TargetSize（或几乎相等），完成本轮
-	if s.plan != nil && s.plan.State != planFailed {
-		if s.plan.YesFilled+1e-8 >= s.plan.TargetSize && s.plan.NoFilled+1e-8 >= s.plan.TargetSize {
-			log.Infof("✅ [pairlock] 本轮完成: size=%.4f, lockedProfit≈%.4f USDC（按到期1.0估算）",
-				s.plan.TargetSize, s.estimateLockedProfit())
-			s.plan.State = planCompleted
-			s.plan.StateAt = time.Now()
-			s.plan = nil
-			return nil
+			// 成功匹配完毕：如果两腿都 >= TargetSize，完成本轮
+			if p.YesFilled+1e-8 >= p.TargetSize && p.NoFilled+1e-8 >= p.TargetSize {
+				log.Infof("✅ [pairlock] 本轮完成: plan=%s size=%.4f, lockedProfit≈%.4f USDC（按到期1.0估算）",
+					p.ID, p.TargetSize, s.estimateLockedProfit())
+				p.State = planCompleted
+				p.StateAt = time.Now()
+				// 清理索引
+				for oid := range p.OrderIDs {
+					delete(s.orderIDToPlanID, oid)
+				}
+				delete(s.plans, p.ID)
+			}
 		}
 	}
 
@@ -511,101 +542,97 @@ func (s *PairLockStrategy) onOrderUpdateInternal(loopCtx context.Context, ctx co
 }
 
 func (s *PairLockStrategy) onTick(ctx context.Context) {
-	if s.paused || s.plan == nil || s.currentMarket == nil || s.config == nil {
-		return
-	}
-	if s.plan.State == planFailed || s.plan.State == planCompleted {
+	if s.paused || s.currentMarket == nil || s.config == nil {
 		return
 	}
 
-	imb := s.plan.imbalance()
-	if imb <= 0 {
-		return
-	}
-	// 已尝试过多次就失败并暂停（避免裸露仓位）
-	if s.plan.SupplementAttempts >= s.config.MaxSupplementAttempts {
-		s.plan.State = planFailed
-		s.plan.LastError = "补齐次数用尽"
-		s.paused = true
-		log.Errorf("❌ [pairlock] 补齐失败，策略暂停: yesFilled=%.4f noFilled=%.4f target=%.4f",
-			s.plan.YesFilled, s.plan.NoFilled, s.plan.TargetSize)
-		return
-	}
-	// 限频补齐
-	if !s.plan.LastSupplementAt.IsZero() && time.Since(s.plan.LastSupplementAt) < 2*time.Second {
-		return
-	}
-
-	// 需要补齐哪一腿
-	needYes := s.plan.YesFilled < s.plan.NoFilled
-	needNo := s.plan.NoFilled < s.plan.YesFilled
-	if !needYes && !needNo {
-		return
-	}
-
-	otherPriceCents := 0
-	if needYes && s.plan.NoTemplate != nil {
-		otherPriceCents = s.plan.NoTemplate.Price.Cents
-	}
-	if needNo && s.plan.YesTemplate != nil {
-		otherPriceCents = s.plan.YesTemplate.Price.Cents
-	}
-	if otherPriceCents <= 0 {
-		return
-	}
-
-	maxPriceCents := 100 - s.config.ProfitTargetCents - otherPriceCents
-	if maxPriceCents < 0 {
-		maxPriceCents = 0
-	}
-
-	assetID := s.currentMarket.YesAssetID
-	tokenType := domain.TokenTypeUp
-	if needNo {
-		assetID = s.currentMarket.NoAssetID
-		tokenType = domain.TokenTypeDown
-	}
-
-	orderCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	price, err := orderutil.QuoteBuyPrice(orderCtx, s.tradingService, assetID, maxPriceCents)
-	if err != nil {
-		s.plan.SupplementAttempts++
-		s.plan.LastSupplementAt = time.Now()
-		return
-	}
-	if price.Cents > maxPriceCents {
-		s.plan.SupplementAttempts++
-		s.plan.LastSupplementAt = time.Now()
-		return
-	}
-
-	needSize := imb
-	// 保守：如果超过目标 size，按目标裁剪
-	if needSize > s.plan.TargetSize {
-		needSize = s.plan.TargetSize
-	}
-
-	now := time.Now()
-	supp := orderutil.NewOrder(s.currentMarket.Slug, assetID, types.SideBuy, price, needSize, tokenType, true, types.OrderTypeFAK)
-	supp.OrderID = fmt.Sprintf("pairlock-supp-%s-%d", tokenType, now.UnixNano())
-	if s.plan.OrderIDs != nil {
-		if tokenType == domain.TokenTypeUp {
-			s.plan.OrderIDs[supp.OrderID] = upKey
-		} else if tokenType == domain.TokenTypeDown {
-			s.plan.OrderIDs[supp.OrderID] = downKey
+	// 遍历所有 in-flight plan 进行补齐
+	for _, p := range s.plans {
+		if p == nil || p.State == planFailed || p.State == planCompleted {
+			continue
 		}
+		imb := p.imbalance()
+		if imb <= 0 {
+			continue
+		}
+		if p.SupplementAttempts >= s.config.MaxSupplementAttempts {
+			p.State = planFailed
+			p.LastError = "补齐次数用尽"
+			p.StateAt = time.Now()
+			s.paused = true
+			log.Errorf("❌ [pairlock] plan=%s 补齐失败，策略暂停: yesFilled=%.4f noFilled=%.4f target=%.4f",
+				p.ID, p.YesFilled, p.NoFilled, p.TargetSize)
+			return
+		}
+		if !p.LastSupplementAt.IsZero() && time.Since(p.LastSupplementAt) < 2*time.Second {
+			continue
+		}
+
+		needYes := p.YesFilled < p.NoFilled
+		needNo := p.NoFilled < p.YesFilled
+		if !needYes && !needNo {
+			continue
+		}
+
+		otherPriceCents := 0
+		if needYes && p.NoTemplate != nil {
+			otherPriceCents = p.NoTemplate.Price.Cents
+		}
+		if needNo && p.YesTemplate != nil {
+			otherPriceCents = p.YesTemplate.Price.Cents
+		}
+		if otherPriceCents <= 0 {
+			continue
+		}
+
+		maxPriceCents := 100 - s.config.ProfitTargetCents - otherPriceCents
+		if maxPriceCents < 0 {
+			maxPriceCents = 0
+		}
+
+		assetID := s.currentMarket.YesAssetID
+		tokenType := domain.TokenTypeUp
+		if needNo {
+			assetID = s.currentMarket.NoAssetID
+			tokenType = domain.TokenTypeDown
+		}
+
+		orderCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		price, err := orderutil.QuoteBuyPrice(orderCtx, s.tradingService, assetID, maxPriceCents)
+		cancel()
+		if err != nil || price.Cents > maxPriceCents {
+			p.SupplementAttempts++
+			p.LastSupplementAt = time.Now()
+			continue
+		}
+
+		needSize := imb
+		if needSize > p.TargetSize {
+			needSize = p.TargetSize
+		}
+
+		now := time.Now()
+		supp := orderutil.NewOrder(s.currentMarket.Slug, assetID, types.SideBuy, price, needSize, tokenType, true, types.OrderTypeFAK)
+		supp.OrderID = fmt.Sprintf("pairlock-supp-%s-%d", tokenType, now.UnixNano())
+
+		if p.OrderIDs != nil {
+			if tokenType == domain.TokenTypeUp {
+				p.OrderIDs[supp.OrderID] = upKey
+			} else if tokenType == domain.TokenTypeDown {
+				p.OrderIDs[supp.OrderID] = downKey
+			}
+		}
+		s.orderIDToPlanID[supp.OrderID] = p.ID
+
+		if s.Executor == nil {
+			return
+		}
+		p.State = planSupplementing
+		p.SupplementAttempts++
+		p.LastSupplementAt = time.Now()
+
+		_ = s.submitPlaceCmd(p.ID, cmdSupplement, supp)
 	}
-
-	if s.Executor == nil {
-		return
-	}
-
-	s.plan.State = planSupplementing
-	s.plan.SupplementAttempts++
-	s.plan.LastSupplementAt = time.Now()
-
-	_ = s.submitPlaceCmd(s.plan.ID, cmdSupplement, supp)
 }
 
 func (s *PairLockStrategy) resetForNewCycle() {
@@ -615,7 +642,8 @@ func (s *PairLockStrategy) resetForNewCycle() {
 	s.lastAttemptAt = time.Time{}
 	s.lastSeenUpCents = 0
 	s.lastSeenDownCents = 0
-	s.plan = nil
+	s.plans = make(map[string]*pairLockPlan)
+	s.orderIDToPlanID = make(map[string]string)
 	s.paused = false
 
 	s.upTotalCost = 0
@@ -624,6 +652,32 @@ func (s *PairLockStrategy) resetForNewCycle() {
 	s.downHoldings = 0
 
 	s.lastCountedFilled = make(map[string]float64)
+}
+
+func (s *PairLockStrategy) inflightPlans() int {
+	n := 0
+	for _, p := range s.plans {
+		if p == nil {
+			continue
+		}
+		if p.State == planSubmitting || p.State == planWaiting || p.State == planSupplementing {
+			n++
+		}
+	}
+	return n
+}
+
+func (s *PairLockStrategy) maxConcurrentPlans() int {
+	if s.config == nil {
+		return 1
+	}
+	if !s.config.EnableParallel {
+		return 1
+	}
+	if s.config.MaxConcurrentPlans <= 0 {
+		return 1
+	}
+	return s.config.MaxConcurrentPlans
 }
 
 func (s *PairLockStrategy) isFilledDuplicate(orderID string, filledAt time.Time) bool {

@@ -63,6 +63,8 @@ type ThresholdConfig struct {
 
 // PairLockConfig 成对锁定（Complete-Set）滚动策略配置
 type PairLockConfig struct {
+	EnableParallel           bool    // 是否开启并行多轮（默认 false）
+	MaxConcurrentPlans       int     // 最大并行轮数（默认 1；仅 EnableParallel=true 时生效）
 	OrderSize                float64 // 每轮下单 shares（YES/NO 两腿相同）
 	MinOrderSize             float64 // 最小下单金额（USDC），默认 1.1
 	ProfitTargetCents        int     // 锁定利润目标（分），默认 3
@@ -195,6 +197,8 @@ type ConfigFile struct {
 			MaxSellSlippageCents int  `yaml:"max_sell_slippage_cents" json:"max_sell_slippage_cents"`
 		} `yaml:"threshold" json:"threshold"`
 		PairLock struct {
+			EnableParallel           bool    `yaml:"enable_parallel" json:"enable_parallel"`
+			MaxConcurrentPlans       int     `yaml:"max_concurrent_plans" json:"max_concurrent_plans"`
 			OrderSize                float64 `yaml:"order_size" json:"order_size"`
 			MinOrderSize             float64 `yaml:"min_order_size" json:"min_order_size"`
 			ProfitTargetCents        int     `yaml:"profit_target_cents" json:"profit_target_cents"`
@@ -331,6 +335,16 @@ func LoadFromFile(filePath string) (*Config, error) {
 				),
 			},
 			PairLock: &PairLockConfig{
+				EnableParallel: getBoolFromSources(
+					configFile != nil,
+					safeGetPairLockBool(configFile, func(cf *ConfigFile) bool { return cf.Strategies.PairLock.EnableParallel }),
+					parseBoolEnv("PAIRLOCK_ENABLE_PARALLEL", false),
+				),
+				MaxConcurrentPlans: getIntFromSources(
+					configFile != nil,
+					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxConcurrentPlans }),
+					parseIntEnv("PAIRLOCK_MAX_CONCURRENT_PLANS", 1),
+				),
 				OrderSize: getFloatFromSources(
 					configFile != nil,
 					safeGetPairLockFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.OrderSize }),
@@ -731,6 +745,14 @@ func safeGetPairLockFloat(cf *ConfigFile, getter func(*ConfigFile) float64) floa
 	return getter(cf)
 }
 
+// safeGetPairLockBool 安全地获取 PairLock 配置的布尔值
+func safeGetPairLockBool(cf *ConfigFile, getter func(*ConfigFile) bool) bool {
+	if cf == nil {
+		return false
+	}
+	return getter(cf)
+}
+
 // safeGetArbitrageInt 安全地获取 Arbitrage 配置的整数值
 func safeGetArbitrageInt(cf *ConfigFile, getter func(*ConfigFile) int) int {
 	if cf == nil {
@@ -865,6 +887,11 @@ func (c *Config) Validate() error {
 			}
 			if c.Strategies.PairLock.EntryMaxBuySlippageCents < 0 {
 				return fmt.Errorf("PAIRLOCK_ENTRY_MAX_BUY_SLIPPAGE_CENTS 不能为负数")
+			}
+			if c.Strategies.PairLock.EnableParallel {
+				if c.Strategies.PairLock.MaxConcurrentPlans <= 0 {
+					return fmt.Errorf("PAIRLOCK_MAX_CONCURRENT_PLANS 必须 > 0")
+				}
 			}
 		case "arbitrage":
 			if c.Strategies.Arbitrage == nil {
