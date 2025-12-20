@@ -141,5 +141,15 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 	s.placeOrderMu.Unlock()
 
 	_ = currentPrice
-	return s.submitPlaceOrderCmd(orderCtx, planID, gridCmdPlaceEntry, entryOrder)
+	if err := s.submitPlaceOrderCmd(orderCtx, planID, gridCmdPlaceEntry, entryOrder); err != nil {
+		// Executor 队列满等提交失败：立即释放 plan（允许重试该层级），避免卡死
+		s.placeOrderMu.Lock()
+		s.isPlacingOrder = false
+		s.isPlacingOrderSetTime = time.Time{}
+		s.placeOrderMu.Unlock()
+
+		s.planFailed(fmt.Sprintf("submit place entry failed: %v", err), true)
+		return nil
+	}
+	return nil
 }

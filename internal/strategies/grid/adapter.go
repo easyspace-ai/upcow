@@ -36,4 +36,3 @@ func (a *GridConfigAdapter) AdaptConfig(strategyConfig interface{}, proxyConfig 
 
 // 确保 GridConfigAdapter 实现了 ConfigAdapter 接口
 var _ bbgo.ConfigAdapter = (*GridConfigAdapter)(nil)
-

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
@@ -12,12 +13,21 @@ import (
 
 // planTick 在策略 loop 的 tick 中调用，负责超时自愈/重试/强对冲（补仓）等。
 func (s *GridStrategy) planTick(ctx context.Context) {
-	if s.plan == nil || s.config == nil || s.tradingService == nil {
+	if s.config == nil || s.tradingService == nil {
 		return
 	}
 	if s.Executor == nil {
 		// Grid 下一阶段：强制所有交易 IO 走 Executor
-		s.planFailed("Executor 未设置", false)
+		if s.plan != nil {
+			s.planFailed("Executor 未设置", false)
+		}
+		return
+	}
+
+	// 实盘保障：无论是否存在 plan，都允许周期末强对冲（break-even 兜底）
+	s.adhocStrongHedge(ctx)
+
+	if s.plan == nil {
 		return
 	}
 
@@ -33,7 +43,7 @@ func (s *GridStrategy) planTick(ctx context.Context) {
 		return
 	}
 
-	// 进入强对冲窗口/补仓：只在 plan 活跃时做（避免无仓位时瞎补）
+	// plan 活跃时：补仓/强对冲（更激进，允许 plan 内节流/状态跟踪）
 	s.planStrongHedge(ctx)
 
 	// 轻量自愈：如果 entry/hedge 长时间没有更新，触发一次 SyncOrderStatus
@@ -73,6 +83,52 @@ func (s *GridStrategy) planTick(ctx context.Context) {
 		s.planRefreshHedgePrice(ctx)
 		_ = s.submitPlaceOrderCmd(ctx, p.ID, gridCmdPlaceHedge, p.HedgeTemplate)
 	}
+}
+
+// adhocStrongHedge allows end-of-cycle break-even locking even when no active plan exists.
+// It is a safety net for live trading: prevents being stuck in a negative minProfit state
+// due to plan lifecycle ending or missed events.
+func (s *GridStrategy) adhocStrongHedge(ctx context.Context) {
+	if s == nil || s.config == nil || s.tradingService == nil || s.currentMarket == nil {
+		return
+	}
+	// 仅在周期末窗口触发，避免日常频繁“补仓刷单”
+	if !s.isInHedgeLockWindow(s.currentMarket) {
+		return
+	}
+	// 价格未就绪
+	if s.currentPriceUp <= 0 || s.currentPriceDown <= 0 {
+		return
+	}
+	if s.strongHedgeInFlight {
+		return
+	}
+	if s.strongHedgeDebouncer == nil {
+		s.strongHedgeDebouncer = common.NewDebouncer(2 * time.Second)
+	}
+	if ready, _ := s.strongHedgeDebouncer.ReadyNow(); !ready {
+		return
+	}
+
+	upWin, downWin := s.profitsUSDC()
+	// 周期末兜底：至少不亏
+	target := 0.0
+	if upWin >= target && downWin >= target {
+		return
+	}
+
+	tokenType, assetID, fallbackPrice, dQ, maxBuy, ok := s.calcStrongHedgeOrderParams(target, upWin, downWin)
+	if !ok {
+		return
+	}
+
+	bestPrice, _ := orderutil.QuoteBuyPriceOr(ctx, s.tradingService, assetID, maxBuy, fallbackPrice)
+	order := orderutil.NewOrder(s.currentMarket.Slug, assetID, types.SideBuy, bestPrice, dQ, tokenType, false, types.OrderTypeFAK)
+	order.OrderID = fmt.Sprintf("adhoc-supp-%s-%d-%d", tokenType, bestPrice.Cents, time.Now().UnixNano())
+
+	s.strongHedgeInFlight = true
+	s.strongHedgeDebouncer.MarkNow()
+	_ = s.submitPlaceOrderCmd(ctx, "adhoc", gridCmdSupplement, order)
 }
 
 func (s *GridStrategy) planOnOrderUpdate(ctx context.Context, order *domain.Order) {

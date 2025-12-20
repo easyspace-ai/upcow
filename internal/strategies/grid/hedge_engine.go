@@ -70,4 +70,3 @@ func (s *GridStrategy) hasAnyPendingHedgeOrder() bool {
 	}
 	return false
 }
-

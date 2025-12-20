@@ -16,7 +16,7 @@ func (s *GridStrategy) displayGridPosition(event *events.PriceChangedEvent, oldP
 		log.Infof("✅ Price updated (网格未初始化): %s=%dc", event.TokenType, event.NewPrice.Cents)
 		return
 	}
-	
+
 	// 参数验证
 	if event == nil {
 		return
@@ -203,7 +203,7 @@ func (s *GridStrategy) displayStrategyStatus() {
 		currentPriceUp := s.currentPriceUp
 		currentPriceDown := s.currentPriceDown
 		s.mu.RUnlock()
-		
+
 		if pos.TokenType == domain.TokenTypeUp && currentPriceUp > 0 {
 			currentPrice := domain.Price{Cents: currentPriceUp}
 			profit := pos.CalculateProfit(currentPrice)
@@ -303,6 +303,5 @@ func (s *GridStrategy) formatOrdersInfo() string {
 	return ""
 }
 
-// 其他显示和日志方法（logPriceUpdate, logTokenPriceUpdate, logPositionAndProfit, 
+// 其他显示和日志方法（logPriceUpdate, logTokenPriceUpdate, logPositionAndProfit,
 // formatGridPosition, formatPositionInfo）保留在 strategy.go 中，稍后可以继续拆分
-

@@ -112,6 +112,14 @@ func (s *GridStrategy) submitSyncOrderCmd(planID string, orderID string) error {
 }
 
 func (s *GridStrategy) handleCmdResultInternal(_ context.Context, res gridCmdResult) error {
+	// 无 plan 的补仓命令：用作实盘兜底强对冲（adhocStrongHedge）时，需要在这里释放 inFlight
+	if res.kind == gridCmdSupplement && (s.plan == nil || res.planID == "" || (s.plan != nil && s.plan.ID != res.planID)) {
+		s.strongHedgeInFlight = false
+		if s.strongHedgeDebouncer != nil {
+			s.strongHedgeDebouncer.MarkNow()
+		}
+	}
+
 	// 无论是否匹配当前 plan，只要拿到了服务器回包，就优先把本地 order 指针更新成权威信息
 	// 这样即便是“非 plan”路径（例如补充对冲/补仓），也能正确拿到 OrderID，后续订单更新才能对上。
 	if res.order != nil && res.created != nil {

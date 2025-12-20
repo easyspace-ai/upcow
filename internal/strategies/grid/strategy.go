@@ -86,6 +86,10 @@ type GridStrategy struct {
 
 	// HedgePlan：统一的入场/对冲状态机（下一阶段工程化）
 	plan *HedgePlan
+
+	// 实盘保障：无 plan 时也允许周期末强对冲（避免“plan 已结束但仍未锁盈/未 break-even”）
+	strongHedgeInFlight  bool
+	strongHedgeDebouncer *common.Debouncer
 }
 
 type orderUpdate struct {
@@ -180,6 +184,10 @@ func (s *GridStrategy) Initialize(ctx context.Context, config strategies.Strateg
 	// 对冲订单提交防抖：默认 2s（只在成功提交后 Mark）
 	if s.hedgeSubmitDebouncer == nil {
 		s.hedgeSubmitDebouncer = common.NewDebouncer(2 * time.Second)
+	}
+	// 强对冲/补仓节流：默认 2s（避免短时间连续刷单；无 plan 时也可用）
+	if s.strongHedgeDebouncer == nil {
+		s.strongHedgeDebouncer = common.NewDebouncer(2 * time.Second)
 	}
 
 	// 使用手工定义的网格层级创建网格

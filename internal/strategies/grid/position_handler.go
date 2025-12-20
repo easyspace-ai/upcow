@@ -8,6 +8,7 @@ import (
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 )
+
 func (s *GridStrategy) CanOpenPosition(ctx context.Context, market *domain.Market) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
