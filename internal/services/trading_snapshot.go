@@ -118,6 +118,69 @@ func (s *TradingService) saveSnapshot() {
 	metrics.SnapshotSaves.Add(1)
 }
 
+func (s *TradingService) bootstrapOpenOrdersFromExchange(ctx context.Context) {
+	if s.dryRun {
+		return
+	}
+	openOrdersResp, err := s.clobClient.GetOpenOrders(ctx, nil)
+	if err != nil {
+		log.Warnf("🔄 [重启恢复] 获取 open orders 失败: %v", err)
+		return
+	}
+	if len(openOrdersResp) == 0 {
+		return
+	}
+	log.Infof("🔄 [重启恢复] 交易所 open orders=%d，开始注入 OrderEngine", len(openOrdersResp))
+	for _, oo := range openOrdersResp {
+		o := openOrderToDomain(oo)
+		if o == nil || o.OrderID == "" {
+			continue
+		}
+		s.orderEngine.SubmitCommand(&UpdateOrderCommand{
+			id:    fmt.Sprintf("bootstrap_open_%s", o.OrderID),
+			Order: o,
+		})
+	}
+}
+
+func (s *TradingService) startSnapshotLoop(ctx context.Context) {
+	// 每次订单更新触发一次保存（2s debounce）
+	trigger := make(chan struct{}, 1)
+	s.OnOrderUpdate(OrderUpdateHandlerFunc(func(_ context.Context, _ *domain.Order) error {
+		select {
+		case trigger <- struct{}{}:
+		default:
+		}
+		return nil
+	}))
+
+	go func() {
+		var pending bool
+		var timer *time.Timer
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-trigger:
+				if !pending {
+					pending = true
+					timer = time.NewTimer(2 * time.Second)
+				} else if timer != nil {
+					timer.Reset(2 * time.Second)
+				}
+			case <-func() <-chan time.Time {
+				if timer == nil {
+					return make(chan time.Time)
+				}
+				return timer.C
+			}():
+				pending = false
+				s.saveSnapshot()
+			}
+		}
+	}()
+}
+
 func openOrderToDomain(o types.OpenOrder) *domain.Order {
 	price, _ := strconv.ParseFloat(o.Price, 64)
 	orig, _ := strconv.ParseFloat(o.OriginalSize, 64)
