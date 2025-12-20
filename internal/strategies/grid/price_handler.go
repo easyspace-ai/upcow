@@ -40,36 +40,10 @@ func (s *GridStrategy) OnPriceChanged(ctx context.Context, event *events.PriceCh
 func (s *GridStrategy) onPriceChangedInternal(ctx context.Context, event *events.PriceChangedEvent) error {
 	startTime := time.Now()
 
-	// 诊断：检查 isPlacingOrder 状态
-	s.placeOrderMu.Lock()
-	isPlacingOrder := s.isPlacingOrder
-	setTime := s.isPlacingOrderSetTime
-	s.placeOrderMu.Unlock()
-
-	if isPlacingOrder {
-		// 风险13修复：检查是否超时
-		const maxPlacingOrderTimeout = 60 * time.Second
-		if !setTime.IsZero() {
-			timeSinceSet := time.Since(setTime)
-			if timeSinceSet > maxPlacingOrderTimeout {
-				log.Warnf("⚠️ [价格更新诊断] isPlacingOrder标志已持续%v（超过%v），强制重置: %s @ %dc",
-					timeSinceSet, maxPlacingOrderTimeout, event.TokenType, event.NewPrice.Cents)
-				s.placeOrderMu.Lock()
-				s.isPlacingOrder = false
-				s.isPlacingOrderSetTime = time.Time{}
-				s.placeOrderMu.Unlock()
-			} else {
-				log.Warnf("⚠️ [价格更新诊断] onPriceChangedInternal开始处理但 isPlacingOrder=true (已持续%v): %s @ %dc, market=%s",
-					timeSinceSet, event.TokenType, event.NewPrice.Cents, event.Market.Slug)
-			}
-		} else {
-			log.Warnf("⚠️ [价格更新诊断] onPriceChangedInternal开始处理但 isPlacingOrder=true (SetTime未设置): %s @ %dc, market=%s",
-				event.TokenType, event.NewPrice.Cents, event.Market.Slug)
-		}
-	} else {
-		log.Debugf("📊 [价格更新] onPriceChangedInternal开始处理: %s @ %dc, market=%s",
-			event.TokenType, event.NewPrice.Cents, event.Market.Slug)
-	}
+	// 诊断：检查 isPlacingOrder 状态（避免卡死）
+	s.diagnoseAndResetPlacingOrder(event.TokenType, event.NewPrice.Cents, event.Market.Slug)
+	log.Debugf("📊 [价格更新] onPriceChangedInternal开始处理: %s @ %dc, market=%s",
+		event.TokenType, event.NewPrice.Cents, event.Market.Slug)
 
 	// 添加诊断日志：记录价格更新频率（每10次记录一次）
 	s.mu.Lock()
