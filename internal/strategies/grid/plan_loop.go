@@ -19,9 +19,7 @@ func (s *GridStrategy) planTick(ctx context.Context) {
 	}
 	if s.Executor == nil {
 		// Grid 下一阶段：强制所有交易 IO 走 Executor
-		s.plan.State = PlanFailed
-		s.plan.LastError = "Executor 未设置"
-		s.plan = nil
+		s.planFailed("Executor 未设置", false)
 		return
 	}
 
@@ -33,13 +31,7 @@ func (s *GridStrategy) planTick(ctx context.Context) {
 
 	// 通用超时：Submitting 太久就失败并释放（避免卡死）
 	if p.submittingTimedOut(now) {
-		p.State = PlanFailed
-		p.LastError = fmt.Sprintf("submit timeout: state=%s", p.State)
-		// 允许该层级重试
-		if p.LevelKey != "" && s.processedGridLevels != nil {
-			delete(s.processedGridLevels, p.LevelKey)
-		}
-		s.plan = nil
+		s.planFailed(fmt.Sprintf("submit timeout: state=%s", p.State), true)
 		return
 	}
 
@@ -74,19 +66,14 @@ func (s *GridStrategy) planTick(ctx context.Context) {
 	// 重试窗口：到点就重试 hedge（entry 重试由网格触发控制）
 	if p.State == PlanRetryWait && !p.NextRetryAt.IsZero() && now.After(p.NextRetryAt) {
 		if p.HedgeTemplate == nil {
-			p.State = PlanDone
-			s.plan = nil
+			s.planDone()
 			return
 		}
 		if p.HedgeAttempts >= p.MaxAttempts {
-			p.State = PlanFailed
-			p.LastError = "hedge max attempts reached"
-			s.plan = nil
+			s.planFailed("hedge max attempts reached", false)
 			return
 		}
-		p.State = PlanHedgeSubmitting
-		p.StateAt = now
-		p.HedgeAttempts++
+		p.enterHedgeSubmitting(now)
 		// 重试前，按当前盘口/周期窗口刷新 hedge 价格（必要时放宽到 break-even）
 		s.planRefreshHedgePrice(ctx)
 		_ = s.submitPlaceOrderCmd(ctx, p.ID, gridCmdPlaceHedge, p.HedgeTemplate)
@@ -105,19 +92,12 @@ func (s *GridStrategy) planOnOrderUpdate(ctx context.Context, order *domain.Orde
 		p.EntryStatus = order.Status
 		switch order.Status {
 		case domain.OrderStatusCanceled, domain.OrderStatusFailed:
-			p.State = PlanFailed
-			p.LastError = "entry canceled/failed"
-			// 允许该层级重试
-			if p.LevelKey != "" && s.processedGridLevels != nil {
-				delete(s.processedGridLevels, p.LevelKey)
-			}
-			s.plan = nil
+			s.planFailed("entry canceled/failed", true)
 			return
 		case domain.OrderStatusFilled:
 			// 入场完成 -> 对冲提交（如果需要）
 			if p.HedgeTemplate == nil || !s.config.EnableDoubleSide {
-				p.State = PlanDone
-				s.plan = nil
+				s.planDone()
 				return
 			}
 			p.enterHedgeSubmitting(now)
@@ -134,8 +114,7 @@ func (s *GridStrategy) planOnOrderUpdate(ctx context.Context, order *domain.Orde
 		p.HedgeStatus = order.Status
 		switch order.Status {
 		case domain.OrderStatusFilled:
-			p.State = PlanDone
-			s.plan = nil
+			s.planDone()
 			return
 		case domain.OrderStatusCanceled, domain.OrderStatusFailed:
 			// 退避重试
