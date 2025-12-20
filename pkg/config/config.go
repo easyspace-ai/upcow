@@ -61,6 +61,24 @@ type ThresholdConfig struct {
 	MaxSellSlippageCents int  // 卖出允许的最大滑点（分），相对触发价下限（默认0=关闭）
 }
 
+// PairLockConfig 成对锁定（Complete-Set）滚动策略配置
+type PairLockConfig struct {
+	EnableParallel           bool    // 是否开启并行多轮（默认 false）
+	MaxConcurrentPlans       int     // 最大并行轮数（默认 1；仅 EnableParallel=true 时生效）
+	MaxTotalUnhedgedShares   float64 // 全局未锁定风险预算（shares；保守口径：在途轮次 targetSize 总和），默认 0（策略侧会给并行模式设置保守默认）
+	MaxPlanAgeSeconds        int     // 单轮最大存活时间（秒），默认 60
+	OnFailAction             string  // 失败动作：pause/cancel_pause/flatten_pause（默认 pause）
+	FailMaxSellSlippageCents int     // 失败回平（flatten）卖出滑点下限（分，0=关闭）
+	FailFlattenMinShares     float64 // 失败回平最小差额（shares），默认 1.0
+	OrderSize                float64 // 每轮下单 shares（YES/NO 两腿相同）
+	MinOrderSize             float64 // 最小下单金额（USDC），默认 1.1
+	ProfitTargetCents        int     // 锁定利润目标（分），默认 3
+	MaxRoundsPerPeriod       int     // 单周期最多轮数，默认 1
+	CooldownMs               int     // 触发冷却（ms），默认 250
+	MaxSupplementAttempts    int     // 补齐最大尝试次数，默认 3
+	EntryMaxBuySlippageCents int     // 买入最大滑点（分，相对最近观测价上限，0=关闭）
+}
+
 // ArbitrageConfig 套利策略配置
 type ArbitrageConfig struct {
 	LockStartMinutes        int     // 锁盈阶段起始时间（分钟，默认12）
@@ -111,6 +129,7 @@ type StrategyConfig struct {
 	EnabledStrategies []string            // 启用的策略列表，例如 ["grid", "threshold", "arbitrage", "datarecorder"]
 	Grid              *GridConfig         // 网格策略配置（如果启用）
 	Threshold         *ThresholdConfig    // 价格阈值策略配置（如果启用）
+	PairLock          *PairLockConfig     // 成对锁定策略配置（如果启用）
 	Arbitrage         *ArbitrageConfig    // 套利策略配置（如果启用）
 	DataRecorder      *DataRecorderConfig // 数据记录策略配置（如果启用）
 	Momentum          *MomentumConfig     // 动量策略配置（如果启用）
@@ -182,6 +201,22 @@ type ConfigFile struct {
 			MaxBuySlippageCents  int  `yaml:"max_buy_slippage_cents" json:"max_buy_slippage_cents"`
 			MaxSellSlippageCents int  `yaml:"max_sell_slippage_cents" json:"max_sell_slippage_cents"`
 		} `yaml:"threshold" json:"threshold"`
+		PairLock struct {
+			EnableParallel           bool    `yaml:"enable_parallel" json:"enable_parallel"`
+			MaxConcurrentPlans       int     `yaml:"max_concurrent_plans" json:"max_concurrent_plans"`
+			MaxTotalUnhedgedShares   float64 `yaml:"max_total_unhedged_shares" json:"max_total_unhedged_shares"`
+			MaxPlanAgeSeconds        int     `yaml:"max_plan_age_seconds" json:"max_plan_age_seconds"`
+			OnFailAction             string  `yaml:"on_fail_action" json:"on_fail_action"`
+			FailMaxSellSlippageCents int     `yaml:"fail_max_sell_slippage_cents" json:"fail_max_sell_slippage_cents"`
+			FailFlattenMinShares     float64 `yaml:"fail_flatten_min_shares" json:"fail_flatten_min_shares"`
+			OrderSize                float64 `yaml:"order_size" json:"order_size"`
+			MinOrderSize             float64 `yaml:"min_order_size" json:"min_order_size"`
+			ProfitTargetCents        int     `yaml:"profit_target_cents" json:"profit_target_cents"`
+			MaxRoundsPerPeriod       int     `yaml:"max_rounds_per_period" json:"max_rounds_per_period"`
+			CooldownMs               int     `yaml:"cooldown_ms" json:"cooldown_ms"`
+			MaxSupplementAttempts    int     `yaml:"max_supplement_attempts" json:"max_supplement_attempts"`
+			EntryMaxBuySlippageCents int     `yaml:"entry_max_buy_slippage_cents" json:"entry_max_buy_slippage_cents"`
+		} `yaml:"pairlock" json:"pairlock"`
 		Arbitrage struct {
 			LockStartMinutes        int     `yaml:"lock_start_minutes" json:"lock_start_minutes"`
 			EarlyLockPriceThreshold float64 `yaml:"early_lock_price_threshold" json:"early_lock_price_threshold"`
@@ -307,6 +342,78 @@ func LoadFromFile(filePath string) (*Config, error) {
 					configFile != nil,
 					safeGetThresholdInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Threshold.MaxSellSlippageCents }),
 					parseIntEnv("THRESHOLD_MAX_SELL_SLIPPAGE_CENTS", 0),
+				),
+			},
+			PairLock: &PairLockConfig{
+				EnableParallel: getBoolFromSources(
+					configFile != nil,
+					safeGetPairLockBool(configFile, func(cf *ConfigFile) bool { return cf.Strategies.PairLock.EnableParallel }),
+					parseBoolEnv("PAIRLOCK_ENABLE_PARALLEL", false),
+				),
+				MaxConcurrentPlans: getIntFromSources(
+					configFile != nil,
+					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxConcurrentPlans }),
+					parseIntEnv("PAIRLOCK_MAX_CONCURRENT_PLANS", 1),
+				),
+				MaxTotalUnhedgedShares: getFloatFromSources(
+					configFile != nil,
+					safeGetPairLockFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.MaxTotalUnhedgedShares }),
+					parseFloatEnv("PAIRLOCK_MAX_TOTAL_UNHEDGED_SHARES", 0),
+				),
+				MaxPlanAgeSeconds: getIntFromSources(
+					configFile != nil,
+					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxPlanAgeSeconds }),
+					parseIntEnv("PAIRLOCK_MAX_PLAN_AGE_SECONDS", 60),
+				),
+				OnFailAction: getValueFromSources(
+					configFile != nil && safeGetPairLockString(configFile, func(cf *ConfigFile) string { return cf.Strategies.PairLock.OnFailAction }) != "",
+					safeGetPairLockString(configFile, func(cf *ConfigFile) string { return cf.Strategies.PairLock.OnFailAction }),
+					getEnv("PAIRLOCK_ON_FAIL_ACTION", "pause"),
+				),
+				FailMaxSellSlippageCents: getIntFromSources(
+					configFile != nil,
+					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.FailMaxSellSlippageCents }),
+					parseIntEnv("PAIRLOCK_FAIL_MAX_SELL_SLIPPAGE_CENTS", 0),
+				),
+				FailFlattenMinShares: getFloatFromSources(
+					configFile != nil,
+					safeGetPairLockFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.FailFlattenMinShares }),
+					parseFloatEnv("PAIRLOCK_FAIL_FLATTEN_MIN_SHARES", 1.0),
+				),
+				OrderSize: getFloatFromSources(
+					configFile != nil,
+					safeGetPairLockFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.OrderSize }),
+					parseFloatEnv("PAIRLOCK_ORDER_SIZE", 3.0),
+				),
+				MinOrderSize: getFloatFromSources(
+					configFile != nil,
+					safeGetPairLockFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.MinOrderSize }),
+					parseFloatEnv("PAIRLOCK_MIN_ORDER_SIZE", 1.1),
+				),
+				ProfitTargetCents: getIntFromSources(
+					configFile != nil,
+					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.ProfitTargetCents }),
+					parseIntEnv("PAIRLOCK_PROFIT_TARGET_CENTS", 3),
+				),
+				MaxRoundsPerPeriod: getIntFromSources(
+					configFile != nil,
+					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxRoundsPerPeriod }),
+					parseIntEnv("PAIRLOCK_MAX_ROUNDS_PER_PERIOD", 1),
+				),
+				CooldownMs: getIntFromSources(
+					configFile != nil,
+					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.CooldownMs }),
+					parseIntEnv("PAIRLOCK_COOLDOWN_MS", 250),
+				),
+				MaxSupplementAttempts: getIntFromSources(
+					configFile != nil,
+					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxSupplementAttempts }),
+					parseIntEnv("PAIRLOCK_MAX_SUPPLEMENT_ATTEMPTS", 3),
+				),
+				EntryMaxBuySlippageCents: getIntFromSources(
+					configFile != nil,
+					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.EntryMaxBuySlippageCents }),
+					parseIntEnv("PAIRLOCK_ENTRY_MAX_BUY_SLIPPAGE_CENTS", 0),
 				),
 			},
 			Arbitrage: &ArbitrageConfig{
@@ -657,6 +764,37 @@ func safeGetThresholdString(cf *ConfigFile, getter func(*ConfigFile) string) str
 	return getter(cf)
 }
 
+// safeGetPairLockInt 安全地获取 PairLock 配置的整数值
+func safeGetPairLockInt(cf *ConfigFile, getter func(*ConfigFile) int) int {
+	if cf == nil {
+		return 0
+	}
+	return getter(cf)
+}
+
+// safeGetPairLockFloat 安全地获取 PairLock 配置的浮点数值
+func safeGetPairLockFloat(cf *ConfigFile, getter func(*ConfigFile) float64) float64 {
+	if cf == nil {
+		return 0
+	}
+	return getter(cf)
+}
+
+// safeGetPairLockBool 安全地获取 PairLock 配置的布尔值
+func safeGetPairLockBool(cf *ConfigFile, getter func(*ConfigFile) bool) bool {
+	if cf == nil {
+		return false
+	}
+	return getter(cf)
+}
+
+func safeGetPairLockString(cf *ConfigFile, getter func(*ConfigFile) string) string {
+	if cf == nil {
+		return ""
+	}
+	return getter(cf)
+}
+
 // safeGetArbitrageInt 安全地获取 Arbitrage 配置的整数值
 func safeGetArbitrageInt(cf *ConfigFile, getter func(*ConfigFile) int) int {
 	if cf == nil {
@@ -766,6 +904,53 @@ func (c *Config) Validate() error {
 			}
 			if c.Strategies.Threshold.StopLossCents < 0 {
 				return fmt.Errorf("THRESHOLD_STOP_LOSS_CENTS 不能为负数")
+			}
+		case "pairlock":
+			if c.Strategies.PairLock == nil {
+				return fmt.Errorf("pairlock 策略已启用但配置为空")
+			}
+			if c.Strategies.PairLock.OrderSize <= 0 {
+				return fmt.Errorf("PAIRLOCK_ORDER_SIZE 必须大于 0")
+			}
+			if c.Strategies.PairLock.MinOrderSize < 1.0 {
+				return fmt.Errorf("PAIRLOCK_MIN_ORDER_SIZE 必须 >= 1.0")
+			}
+			if c.Strategies.PairLock.ProfitTargetCents < 0 {
+				return fmt.Errorf("PAIRLOCK_PROFIT_TARGET_CENTS 不能为负数")
+			}
+			if c.Strategies.PairLock.MaxRoundsPerPeriod <= 0 {
+				return fmt.Errorf("PAIRLOCK_MAX_ROUNDS_PER_PERIOD 必须 > 0")
+			}
+			if c.Strategies.PairLock.CooldownMs < 0 {
+				return fmt.Errorf("PAIRLOCK_COOLDOWN_MS 不能为负数")
+			}
+			if c.Strategies.PairLock.MaxSupplementAttempts <= 0 {
+				return fmt.Errorf("PAIRLOCK_MAX_SUPPLEMENT_ATTEMPTS 必须 > 0")
+			}
+			if c.Strategies.PairLock.EntryMaxBuySlippageCents < 0 {
+				return fmt.Errorf("PAIRLOCK_ENTRY_MAX_BUY_SLIPPAGE_CENTS 不能为负数")
+			}
+			if c.Strategies.PairLock.EnableParallel {
+				if c.Strategies.PairLock.MaxConcurrentPlans <= 0 {
+					return fmt.Errorf("PAIRLOCK_MAX_CONCURRENT_PLANS 必须 > 0")
+				}
+			}
+			if c.Strategies.PairLock.MaxTotalUnhedgedShares < 0 {
+				return fmt.Errorf("PAIRLOCK_MAX_TOTAL_UNHEDGED_SHARES 不能为负数")
+			}
+			if c.Strategies.PairLock.MaxPlanAgeSeconds <= 0 {
+				return fmt.Errorf("PAIRLOCK_MAX_PLAN_AGE_SECONDS 必须 > 0")
+			}
+			switch c.Strategies.PairLock.OnFailAction {
+			case "", "pause", "cancel_pause", "flatten_pause":
+			default:
+				return fmt.Errorf("PAIRLOCK_ON_FAIL_ACTION 无效: %s", c.Strategies.PairLock.OnFailAction)
+			}
+			if c.Strategies.PairLock.FailMaxSellSlippageCents < 0 {
+				return fmt.Errorf("PAIRLOCK_FAIL_MAX_SELL_SLIPPAGE_CENTS 不能为负数")
+			}
+			if c.Strategies.PairLock.FailFlattenMinShares < 0 {
+				return fmt.Errorf("PAIRLOCK_FAIL_FLATTEN_MIN_SHARES 不能为负数")
 			}
 		case "arbitrage":
 			if c.Strategies.Arbitrage == nil {
