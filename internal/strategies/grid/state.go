@@ -10,7 +10,10 @@ import (
 func (s *GridStrategy) ResetHoldings() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.resetHoldingsLocked()
+}
 
+func (s *GridStrategy) resetHoldingsLocked() {
 	s.upTotalCost = 0
 	s.upHoldings = 0
 	s.downTotalCost = 0
@@ -24,6 +27,12 @@ func (s *GridStrategy) ResetHoldings() {
 func (s *GridStrategy) ResetStateForNewCycle() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// 清理 HedgePlan（避免跨周期复用）
+	if s.plan != nil {
+		log.Infof("🔄 [周期切换] 取消 HedgePlan: id=%s state=%s", s.plan.ID, s.plan.State)
+		s.plan = nil
+	}
 
 	// 清空仓位
 	if s.activePosition != nil {
@@ -77,7 +86,7 @@ func (s *GridStrategy) ResetStateForNewCycle() {
 	log.Infof("🔄 [周期切换] 轮数已重置: 0")
 
 	// 重置双向持仓跟踪
-	s.ResetHoldings()
+	s.resetHoldingsLocked()
 
 	log.Infof("✅ [周期切换] 策略状态已重置，准备开始新周期")
 }

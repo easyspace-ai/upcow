@@ -104,9 +104,6 @@ func (s *GridStrategy) onPriceChangedInternal(ctx context.Context, event *events
 		s.mu.Lock()
 	}
 
-	// 保存市场信息，用于后续对冲检查
-	market := event.Market
-
 	s.mu.Unlock()
 
 	// 先更新价格（需要锁保护）
@@ -135,11 +132,8 @@ func (s *GridStrategy) onPriceChangedInternal(ctx context.Context, event *events
 	lastDisplayTime := s.lastDisplayTime
 	s.mu.Unlock() // 尽快释放锁，避免阻塞
 
-	// 串行执行对冲引擎（确定性优先）
-	// 放在价格更新之后，确保对冲逻辑使用最新价格。
-	hedgeCtx, hedgeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	s.ensureMinProfitLocked(hedgeCtx, market)
-	hedgeCancel()
+	// 强对冲/补仓由 HedgePlan 状态机统一驱动（planTick + planStrongHedge）
+	// 这里不再直接调用旧的 ensureMinProfitLocked（避免绕过 plan 造成重复下单/不可追踪）
 	
 	// 重构后：从 TradingService 查询活跃订单数量（不需要锁）
 	activeOrdersCount := len(s.getActiveOrders())

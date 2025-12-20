@@ -2,13 +2,19 @@ package grid
 
 import (
 	"context"
-	"fmt"
-	"time"
-
-	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 )
 func (s *GridStrategy) checkAndSupplementHedge(ctx context.Context, market *domain.Market) {
+	// 已收敛到 HedgePlan：补仓/强对冲由 planStrongHedge/planTick 统一驱动
+	_ = market
+	s.planStrongHedge(ctx)
+	return
+
+	/*
+	legacy implementation removed:
+	- 不再允许策略逻辑直接同步 PlaceOrder
+	- 不再依赖 pendingHedgeOrders 作为对冲状态机
+	
 	// 检查context是否已取消，如果已取消则快速返回
 	select {
 	case <-ctx.Done():
@@ -258,6 +264,10 @@ func (s *GridStrategy) checkAndSupplementHedge(ctx context.Context, market *doma
 		log.Warnf("交易服务未设置，无法补充对冲订单")
 	}
 }
+*/
+
+}
+
 func (s *GridStrategy) calculateOptimalHedgePrice(
 	ctx context.Context,
 	market *domain.Market,
@@ -326,6 +336,16 @@ func (s *GridStrategy) calculateOptimalHedgePrice(
 	return idealHedgePrice
 }
 func (s *GridStrategy) checkAndAutoHedge(ctx context.Context, market *domain.Market) {
+	// 已收敛到 HedgePlan：补仓/强对冲由 planStrongHedge/planTick 统一驱动
+	_ = market
+	s.planStrongHedge(ctx)
+	return
+
+	/*
+	legacy implementation removed:
+	- 不再允许策略逻辑直接同步 PlaceOrder
+	- 不再依赖 pendingHedgeOrders 作为对冲状态机
+	
 	// 检查context是否已取消，如果已取消则快速返回
 	select {
 	case <-ctx.Done():
@@ -628,6 +648,10 @@ func (s *GridStrategy) checkAndAutoHedge(ctx context.Context, market *domain.Mar
 			}
 		}
 	}
+}
+
+*/
+
 }
 
 // Cleanup 清理资源

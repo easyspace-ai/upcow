@@ -106,6 +106,12 @@ func (s *GridStrategy) handleGridLevelReached(
 	// 下一阶段工程化：统一走 HedgePlan + Executor（单线程 loop，不直接阻塞网络 IO）
 	return s.handleGridLevelReachedWithPlan(ctx, market, tokenType, gridLevel, currentPrice)
 
+	/*
+		legacy implementation removed:
+		- 不再允许策略 loop 里直接同步 PlaceOrder/CancelOrder
+		- 统一由 HedgePlan 状态机 + 全局 Executor 串行执行
+	
+
 	log.Infof("🎯 [网格下单] handleGridLevelReached开始处理: %s币, 网格层级=%dc, 当前价格=%dc (%.4f), market=%s",
 		tokenType, gridLevel, currentPrice.Cents, currentPrice.ToDecimal(), market.Slug)
 	
@@ -631,6 +637,11 @@ func (s *GridStrategy) handleGridLevelReached(
 	}
 	return nil
 }
+
+*/
+
+}
+
 func (s *GridStrategy) OnOrderFilled(ctx context.Context, event *events.OrderFilledEvent) error {
 	log.Debugf("📥 [订单成交] OnOrderFilled开始处理: orderID=%s, status=%s", event.Order.OrderID, event.Order.Status)
 	

@@ -44,13 +44,16 @@ func (s *GridStrategy) startLoop(ctx context.Context) {
 					if upd.order == nil {
 						continue
 					}
+					// 先让 plan 吸收订单更新（用来驱动状态机）
+					s.planOnOrderUpdate(loopCtx, upd.order)
 					_ = s.handleOrderUpdateInternal(loopCtx, upd.ctx, upd.order)
 
 				case res := <-s.cmdResultC:
 					_ = s.handleCmdResultInternal(loopCtx, res)
 
 				case <-ticker.C:
-					// 周期性 tick：预留做 HedgePlan 超时/自愈、周期末强对冲窗口等
+					// 周期性 tick：HedgePlan 超时/自愈、重试、周期末强对冲窗口等
+					s.planTick(loopCtx)
 				}
 			}
 		}()

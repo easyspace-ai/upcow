@@ -14,6 +14,9 @@ type gridCmdKind string
 const (
 	gridCmdPlaceEntry gridCmdKind = "place_entry"
 	gridCmdPlaceHedge gridCmdKind = "place_hedge"
+	gridCmdCancel     gridCmdKind = "cancel"
+	gridCmdSync       gridCmdKind = "sync"
+	gridCmdSupplement gridCmdKind = "supplement"
 )
 
 type gridCmdResult struct {
@@ -48,6 +51,62 @@ func (s *GridStrategy) submitPlaceOrderCmd(ctx context.Context, planID string, k
 	})
 	if !ok {
 		return fmt.Errorf("执行器队列已满，无法提交命令")
+	}
+	return nil
+}
+
+func (s *GridStrategy) submitCancelOrderCmd(planID string, orderID string) error {
+	if s.Executor == nil {
+		return fmt.Errorf("Executor 未设置")
+	}
+	if s.tradingService == nil {
+		return fmt.Errorf("交易服务未设置")
+	}
+	if orderID == "" {
+		return fmt.Errorf("orderID 为空")
+	}
+
+	ok := s.Executor.Submit(bbgo.Command{
+		Name:    fmt.Sprintf("grid_cancel_%s_%s", planID, orderID),
+		Timeout: 20 * time.Second,
+		Do: func(runCtx context.Context) {
+			err := s.tradingService.CancelOrder(runCtx, orderID)
+			select {
+			case s.cmdResultC <- gridCmdResult{planID: planID, kind: gridCmdCancel, err: err}:
+			default:
+			}
+		},
+	})
+	if !ok {
+		return fmt.Errorf("执行器队列已满，无法提交取消命令")
+	}
+	return nil
+}
+
+func (s *GridStrategy) submitSyncOrderCmd(planID string, orderID string) error {
+	if s.Executor == nil {
+		return fmt.Errorf("Executor 未设置")
+	}
+	if s.tradingService == nil {
+		return fmt.Errorf("交易服务未设置")
+	}
+	if orderID == "" {
+		return fmt.Errorf("orderID 为空")
+	}
+
+	ok := s.Executor.Submit(bbgo.Command{
+		Name:    fmt.Sprintf("grid_sync_%s_%s", planID, orderID),
+		Timeout: 20 * time.Second,
+		Do: func(runCtx context.Context) {
+			err := s.tradingService.SyncOrderStatus(runCtx, orderID)
+			select {
+			case s.cmdResultC <- gridCmdResult{planID: planID, kind: gridCmdSync, err: err}:
+			default:
+			}
+		},
+	})
+	if !ok {
+		return fmt.Errorf("执行器队列已满，无法提交同步命令")
 	}
 	return nil
 }
@@ -107,15 +166,12 @@ func (s *GridStrategy) handleCmdResultInternal(_ context.Context, res gridCmdRes
 		s.plan.EntryCreated = res.created
 		s.plan.State = PlanEntryOpen
 
-		// 用服务器返回的 entry orderID 作为 key，衔接既有 pendingHedgeOrders 逻辑
-		if res.created != nil && s.plan.HedgeTemplate != nil {
-			// 如果服务器调整了 entry size，同步调整 hedge size（保持对冲比例一致）
-			if res.order != nil && res.order.Size > 0 && res.created.Size > 0 && res.created.Size != res.order.Size {
-				ratio := res.created.Size / res.order.Size
-				s.plan.HedgeTemplate.Size = s.plan.HedgeTemplate.Size * ratio
-			}
-			s.pendingHedgeOrders[res.created.OrderID] = s.plan.HedgeTemplate
+		if res.created != nil {
+			s.plan.EntryOrderID = res.created.OrderID
+		} else if res.order != nil {
+			s.plan.EntryOrderID = res.order.OrderID
 		}
+		s.plan.StateAt = time.Now()
 
 		s.placeOrderMu.Lock()
 		s.isPlacingOrder = false
@@ -125,9 +181,12 @@ func (s *GridStrategy) handleCmdResultInternal(_ context.Context, res gridCmdRes
 
 	case gridCmdPlaceHedge:
 		if res.err != nil {
-			// 对冲失败：保留 plan，让后续补仓/重试逻辑接管
+			// 对冲失败：进入退避重试
 			s.plan.LastError = res.err.Error()
-			s.plan.State = PlanFailed
+			s.plan.State = PlanRetryWait
+			s.plan.StateAt = time.Now()
+			delay := time.Duration(1<<minInt(s.plan.HedgeAttempts, 3)) * time.Second
+			s.plan.NextRetryAt = time.Now().Add(delay)
 			return nil
 		}
 		// 更新本地 hedge 订单指针为服务器返回的权威信息（尤其是 OrderID）
@@ -142,7 +201,29 @@ func (s *GridStrategy) handleCmdResultInternal(_ context.Context, res gridCmdRes
 			}
 		}
 		s.plan.HedgeCreated = res.created
+		if res.created != nil {
+			s.plan.HedgeOrderID = res.created.OrderID
+		} else if res.order != nil {
+			s.plan.HedgeOrderID = res.order.OrderID
+		}
 		s.plan.State = PlanHedgeOpen
+		s.plan.StateAt = time.Now()
+		return nil
+
+	case gridCmdCancel:
+		s.plan.LastCancelAt = time.Now()
+		s.plan.StateAt = time.Now()
+		return nil
+
+	case gridCmdSync:
+		s.plan.LastSyncAt = time.Now()
+		s.plan.StateAt = time.Now()
+		return nil
+
+	case gridCmdSupplement:
+		// 补仓命令返回：允许后续补仓
+		s.plan.SupplementInFlight = false
+		s.plan.LastSupplementAt = time.Now()
 		return nil
 
 	default:

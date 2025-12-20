@@ -13,6 +13,9 @@ const (
 	PlanEntryOpen       HedgePlanState = "entry_open"
 	PlanHedgeSubmitting HedgePlanState = "hedge_submitting"
 	PlanHedgeOpen       HedgePlanState = "hedge_open"
+	PlanHedgeCanceling  HedgePlanState = "hedge_canceling"
+	PlanRetryWait       HedgePlanState = "retry_wait"
+	PlanSupplementing   HedgePlanState = "supplementing"
 	PlanDone            HedgePlanState = "done"
 	PlanFailed          HedgePlanState = "failed"
 )
@@ -25,12 +28,30 @@ type HedgePlan struct {
 
 	State     HedgePlanState
 	CreatedAt time.Time
+	StateAt   time.Time
 
 	EntryTemplate *domain.Order
 	HedgeTemplate *domain.Order
 
 	EntryCreated *domain.Order
 	HedgeCreated *domain.Order
+
+	EntryOrderID string
+	HedgeOrderID string
+	EntryStatus  domain.OrderStatus
+	HedgeStatus  domain.OrderStatus
+
+	// 重试/超时自愈
+	EntryAttempts int
+	HedgeAttempts int
+	MaxAttempts   int
+	NextRetryAt   time.Time
+	LastSyncAt    time.Time
+	LastCancelAt  time.Time
+
+	// 补仓/强对冲（minProfit 驱动）
+	SupplementInFlight bool
+	LastSupplementAt   time.Time
 
 	LastError string
 }
