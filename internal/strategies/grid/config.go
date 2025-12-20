@@ -18,6 +18,11 @@ type GridStrategyConfig struct {
 	MaxRoundsPerPeriod            int     // 每个周期最大轮数
 	EntryMaxBuySlippageCents      int     // 入场买入最大滑点（分），相对 gridLevel（0=关闭）
 	SupplementMaxBuySlippageCents int     // 补仓/强对冲买入最大滑点（分），相对当前价（0=关闭）
+
+	// 实盘工程化参数
+	HealthLogIntervalSeconds   int  // 健康日志输出间隔（秒），默认 15
+	StrongHedgeDebounceSeconds int  // 强对冲/补仓节流间隔（秒），默认 2
+	EnableAdhocStrongHedge     bool // 是否启用“无 plan 兜底强对冲”（周期末 break-even），默认 true
 }
 
 // GetName 实现 StrategyConfig 接口
@@ -60,6 +65,14 @@ func (c *GridStrategyConfig) Validate() error {
 	}
 	if c.EntryMaxBuySlippageCents < 0 || c.SupplementMaxBuySlippageCents < 0 {
 		return fmt.Errorf("滑点配置不能为负数")
+	}
+
+	// 实盘工程化默认值
+	if c.HealthLogIntervalSeconds <= 0 {
+		c.HealthLogIntervalSeconds = 15
+	}
+	if c.StrongHedgeDebounceSeconds <= 0 {
+		c.StrongHedgeDebounceSeconds = 2
 	}
 	return nil
 }

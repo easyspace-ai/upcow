@@ -65,6 +65,8 @@ type GridStrategy struct {
 
 	// UI/日志输出防抖（避免高频刷屏；不影响交易决策）
 	displayDebouncer *common.Debouncer
+	// 实盘健康日志（低频，默认 15s）
+	healthLogDebouncer *common.Debouncer
 	// 对冲订单提交防抖
 	hedgeSubmitDebouncer *common.Debouncer // 对冲订单提交防抖（默认2s）
 	// 风险8修复：对冲订单提交锁（防止多个对冲机制并发提交）
@@ -188,6 +190,20 @@ func (s *GridStrategy) Initialize(ctx context.Context, config strategies.Strateg
 	// 强对冲/补仓节流：默认 2s（避免短时间连续刷单；无 plan 时也可用）
 	if s.strongHedgeDebouncer == nil {
 		s.strongHedgeDebouncer = common.NewDebouncer(2 * time.Second)
+	}
+	// 健康日志节流：默认 15s
+	if s.healthLogDebouncer == nil {
+		s.healthLogDebouncer = common.NewDebouncer(15 * time.Second)
+	}
+
+	// 覆盖默认节流间隔（落到配置层）
+	if s.config != nil {
+		if s.config.StrongHedgeDebounceSeconds > 0 && s.strongHedgeDebouncer != nil {
+			s.strongHedgeDebouncer.SetInterval(time.Duration(s.config.StrongHedgeDebounceSeconds) * time.Second)
+		}
+		if s.config.HealthLogIntervalSeconds > 0 && s.healthLogDebouncer != nil {
+			s.healthLogDebouncer.SetInterval(time.Duration(s.config.HealthLogIntervalSeconds) * time.Second)
+		}
 	}
 
 	// 使用手工定义的网格层级创建网格

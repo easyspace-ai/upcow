@@ -48,6 +48,11 @@ type GridConfig struct {
 	PriceDeviationThreshold       int     // 价格偏差阈值（分），默认 2 cents，订单价格与订单簿价格偏差超过此值则撤单重新下单
 	EntryMaxBuySlippageCents      int     // 入场买入允许的最大滑点（分），相对 gridLevel 上限（默认0=关闭）
 	SupplementMaxBuySlippageCents int     // 补仓/强对冲买入允许的最大滑点（分），相对当前价上限（默认0=关闭）
+
+	// 实盘工程化参数
+	HealthLogIntervalSeconds   int  // 健康日志输出间隔（秒），默认 15
+	StrongHedgeDebounceSeconds int  // 强对冲/补仓节流间隔（秒），默认 2
+	EnableAdhocStrongHedge     bool // 是否启用“无 plan 兜底强对冲”（周期末 break-even），默认 true
 }
 
 // ThresholdConfig 价格阈值策略配置
@@ -229,6 +234,9 @@ type ConfigFile struct {
 			MaxRoundsPerPeriod            int     `yaml:"max_rounds_per_period" json:"max_rounds_per_period"`
 			EntryMaxBuySlippageCents      int     `yaml:"entry_max_buy_slippage_cents" json:"entry_max_buy_slippage_cents"`
 			SupplementMaxBuySlippageCents int     `yaml:"supplement_max_buy_slippage_cents" json:"supplement_max_buy_slippage_cents"`
+			HealthLogIntervalSeconds      int     `yaml:"health_log_interval_seconds" json:"health_log_interval_seconds"`
+			StrongHedgeDebounceSeconds    int     `yaml:"strong_hedge_debounce_seconds" json:"strong_hedge_debounce_seconds"`
+			EnableAdhocStrongHedge        *bool   `yaml:"enable_adhoc_strong_hedge" json:"enable_adhoc_strong_hedge"`
 		} `yaml:"grid" json:"grid"`
 		Threshold struct {
 			BuyThreshold         float64 `yaml:"buy_threshold" json:"buy_threshold"`
@@ -413,6 +421,28 @@ func LoadFromFile(filePath string) (*Config, error) {
 					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.SupplementMaxBuySlippageCents }),
 					parseIntEnv("GRID_SUPPLEMENT_MAX_BUY_SLIPPAGE_CENTS", 0),
 				),
+				HealthLogIntervalSeconds: getIntFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.HealthLogIntervalSeconds }),
+					parseIntEnv("GRID_HEALTH_LOG_INTERVAL_SECONDS", 15),
+				),
+				StrongHedgeDebounceSeconds: getIntFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.StrongHedgeDebounceSeconds }),
+					parseIntEnv("GRID_STRONG_HEDGE_DEBOUNCE_SECONDS", 2),
+				),
+				EnableAdhocStrongHedge: func() bool {
+					// 优先级：env > config file > 默认 true
+					if envVal := getEnv("GRID_ENABLE_ADHOC_STRONG_HEDGE", ""); envVal != "" {
+						return envVal == "true" || envVal == "1"
+					}
+					if configFile != nil {
+						if v := safeGet(configFile, func(cf *ConfigFile) *bool { return cf.Strategies.Grid.EnableAdhocStrongHedge }); v != nil {
+							return *v
+						}
+					}
+					return true
+				}(),
 			},
 			Threshold: &ThresholdConfig{
 				BuyThreshold:      getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Threshold.BuyThreshold }), parseFloatEnv("THRESHOLD_BUY_THRESHOLD", 0.62)),
@@ -951,6 +981,12 @@ func (c *Config) Validate() error {
 			}
 			if c.Strategies.Grid.OrderSize <= 0 {
 				return fmt.Errorf("ORDER_SIZE 必须大于 0")
+			}
+			if c.Strategies.Grid.HealthLogIntervalSeconds < 0 {
+				return fmt.Errorf("GRID_HEALTH_LOG_INTERVAL_SECONDS 不能为负数")
+			}
+			if c.Strategies.Grid.StrongHedgeDebounceSeconds < 0 {
+				return fmt.Errorf("GRID_STRONG_HEDGE_DEBOUNCE_SECONDS 不能为负数")
 			}
 		case "threshold":
 			if c.Strategies.Threshold == nil {

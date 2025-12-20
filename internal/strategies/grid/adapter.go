@@ -16,6 +16,14 @@ func (a *GridConfigAdapter) AdaptConfig(strategyConfig interface{}, proxyConfig 
 		ID,
 		func(cfg config.StrategyConfig) *config.GridConfig { return cfg.Grid },
 		func(c *config.GridConfig) (*GridStrategyConfig, error) {
+			enableAdhoc := true
+			if c != nil {
+				enableAdhoc = c.EnableAdhocStrongHedge
+				// 兼容：老配置没有该字段时，Go 默认 false；这里强制默认 true
+				if c.HealthLogIntervalSeconds == 0 && c.StrongHedgeDebounceSeconds == 0 && !c.EnableAdhocStrongHedge {
+					enableAdhoc = true
+				}
+			}
 			return &GridStrategyConfig{
 				GridLevels:                    c.GridLevels,
 				OrderSize:                     c.OrderSize,
@@ -29,6 +37,9 @@ func (a *GridConfigAdapter) AdaptConfig(strategyConfig interface{}, proxyConfig 
 				MaxRoundsPerPeriod:            c.MaxRoundsPerPeriod,
 				EntryMaxBuySlippageCents:      c.EntryMaxBuySlippageCents,
 				SupplementMaxBuySlippageCents: c.SupplementMaxBuySlippageCents,
+				HealthLogIntervalSeconds:      c.HealthLogIntervalSeconds,
+				StrongHedgeDebounceSeconds:    c.StrongHedgeDebounceSeconds,
+				EnableAdhocStrongHedge:        enableAdhoc,
 			}, nil
 		},
 	)

@@ -26,6 +26,8 @@ func (s *GridStrategy) planTick(ctx context.Context) {
 
 	// 实盘保障：无论是否存在 plan，都允许周期末强对冲（break-even 兜底）
 	s.adhocStrongHedge(ctx)
+	// 实盘保障：低频健康日志（可配置）
+	s.logHealthTick()
 
 	if s.plan == nil {
 		return
@@ -92,6 +94,9 @@ func (s *GridStrategy) adhocStrongHedge(ctx context.Context) {
 	if s == nil || s.config == nil || s.tradingService == nil || s.currentMarket == nil {
 		return
 	}
+	if !s.config.EnableAdhocStrongHedge {
+		return
+	}
 	// 仅在周期末窗口触发，避免日常频繁“补仓刷单”
 	if !s.isInHedgeLockWindow(s.currentMarket) {
 		return
@@ -105,6 +110,9 @@ func (s *GridStrategy) adhocStrongHedge(ctx context.Context) {
 	}
 	if s.strongHedgeDebouncer == nil {
 		s.strongHedgeDebouncer = common.NewDebouncer(2 * time.Second)
+	}
+	if s.config.StrongHedgeDebounceSeconds > 0 {
+		s.strongHedgeDebouncer.SetInterval(time.Duration(s.config.StrongHedgeDebounceSeconds) * time.Second)
 	}
 	if ready, _ := s.strongHedgeDebouncer.ReadyNow(); !ready {
 		return
