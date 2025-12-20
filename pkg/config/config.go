@@ -82,6 +82,30 @@ type DataRecorderConfig struct {
 	UseRTDSFallback bool   // 是否使用 RTDS 作为目标价备选方案
 }
 
+// MomentumConfig 动量策略配置
+type MomentumConfig struct {
+	// Asset 标的资产：BTC/ETH/SOL/XRP（用于 Polygon 行情订阅与日志标识）
+	Asset string
+
+	// SizeUSDC 每次触发下单的名义金额（USDC）
+	SizeUSDC float64
+
+	// ThresholdBps 触发阈值（bps），例如 15 表示 0.15%
+	ThresholdBps int
+
+	// WindowSecs 计算动量的窗口（秒）
+	WindowSecs int
+
+	// MinEdgeCents 最小“估计优势”（分），例如 3 表示 3¢
+	MinEdgeCents int
+
+	// CooldownSecs 同一市场触发后的冷却时间（秒）
+	CooldownSecs int
+
+	// UsePolygonFeed 是否启用 Polygon 外部行情源（默认 true；没有 API key 时会自动降级为“仅记录不交易”）
+	UsePolygonFeed bool
+}
+
 // StrategyConfig 策略配置（支持多策略）
 type StrategyConfig struct {
 	EnabledStrategies []string            // 启用的策略列表，例如 ["grid", "threshold", "arbitrage", "datarecorder"]
@@ -89,6 +113,7 @@ type StrategyConfig struct {
 	Threshold         *ThresholdConfig    // 价格阈值策略配置（如果启用）
 	Arbitrage         *ArbitrageConfig    // 套利策略配置（如果启用）
 	DataRecorder      *DataRecorderConfig // 数据记录策略配置（如果启用）
+	Momentum          *MomentumConfig     // 动量策略配置（如果启用）
 }
 
 // Config 应用配置
@@ -174,6 +199,16 @@ type ConfigFile struct {
 			OutputDir       string `yaml:"output_dir" json:"output_dir"`
 			UseRTDSFallback bool   `yaml:"use_rtds_fallback" json:"use_rtds_fallback"`
 		} `yaml:"datarecorder" json:"datarecorder"`
+
+		Momentum struct {
+			Asset          string  `yaml:"asset" json:"asset"`
+			SizeUSDC       float64 `yaml:"size_usdc" json:"size_usdc"`
+			ThresholdBps   int     `yaml:"threshold_bps" json:"threshold_bps"`
+			WindowSecs     int     `yaml:"window_secs" json:"window_secs"`
+			MinEdgeCents   int     `yaml:"min_edge_cents" json:"min_edge_cents"`
+			CooldownSecs   int     `yaml:"cooldown_secs" json:"cooldown_secs"`
+			UsePolygonFeed bool    `yaml:"use_polygon_feed" json:"use_polygon_feed"`
+		} `yaml:"momentum" json:"momentum"`
 	} `yaml:"strategies" json:"strategies"`
 	LogLevel                             string `yaml:"log_level" json:"log_level"`
 	LogFile                              string `yaml:"log_file" json:"log_file"`
@@ -294,6 +329,43 @@ func LoadFromFile(filePath string) (*Config, error) {
 			DataRecorder: &DataRecorderConfig{
 				OutputDir:       getValueFromSources(configFile != nil && safeGetDataRecorderString(configFile, func(cf *ConfigFile) string { return cf.Strategies.DataRecorder.OutputDir }) != "", safeGetDataRecorderString(configFile, func(cf *ConfigFile) string { return cf.Strategies.DataRecorder.OutputDir }), getEnv("DATARECORDER_OUTPUT_DIR", "data/recordings")),
 				UseRTDSFallback: getBoolFromSources(configFile != nil, safeGetDataRecorderBool(configFile, func(cf *ConfigFile) bool { return cf.Strategies.DataRecorder.UseRTDSFallback }), parseBoolEnv("DATARECORDER_USE_RTDS_FALLBACK", true)),
+			},
+			Momentum: &MomentumConfig{
+				Asset: getValueFromSources(
+					configFile != nil && safeGetMomentumString(configFile, func(cf *ConfigFile) string { return cf.Strategies.Momentum.Asset }) != "",
+					safeGetMomentumString(configFile, func(cf *ConfigFile) string { return cf.Strategies.Momentum.Asset }),
+					getEnv("MOMENTUM_ASSET", "BTC"),
+				),
+				SizeUSDC: getFloatFromSources(
+					configFile != nil,
+					safeGetMomentumFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Momentum.SizeUSDC }),
+					parseFloatEnv("MOMENTUM_SIZE_USDC", 25.0),
+				),
+				ThresholdBps: getIntFromSources(
+					configFile != nil,
+					safeGetMomentumInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Momentum.ThresholdBps }),
+					parseIntEnv("MOMENTUM_THRESHOLD_BPS", 15),
+				),
+				WindowSecs: getIntFromSources(
+					configFile != nil,
+					safeGetMomentumInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Momentum.WindowSecs }),
+					parseIntEnv("MOMENTUM_WINDOW_SECS", 5),
+				),
+				MinEdgeCents: getIntFromSources(
+					configFile != nil,
+					safeGetMomentumInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Momentum.MinEdgeCents }),
+					parseIntEnv("MOMENTUM_MIN_EDGE_CENTS", 3),
+				),
+				CooldownSecs: getIntFromSources(
+					configFile != nil,
+					safeGetMomentumInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Momentum.CooldownSecs }),
+					parseIntEnv("MOMENTUM_COOLDOWN_SECS", 30),
+				),
+				UsePolygonFeed: getBoolFromSources(
+					configFile != nil,
+					safeGetMomentumBool(configFile, func(cf *ConfigFile) bool { return cf.Strategies.Momentum.UsePolygonFeed }),
+					parseBoolEnv("MOMENTUM_USE_POLYGON_FEED", true),
+				),
 			},
 		},
 		LogLevel: func() string {
@@ -617,6 +689,38 @@ func safeGetDataRecorderBool(cf *ConfigFile, getter func(*ConfigFile) bool) bool
 	return getter(cf)
 }
 
+// safeGetMomentumInt 安全地获取 Momentum 配置的整数值
+func safeGetMomentumInt(cf *ConfigFile, getter func(*ConfigFile) int) int {
+	if cf == nil {
+		return 0
+	}
+	return getter(cf)
+}
+
+// safeGetMomentumFloat 安全地获取 Momentum 配置的浮点数值
+func safeGetMomentumFloat(cf *ConfigFile, getter func(*ConfigFile) float64) float64 {
+	if cf == nil {
+		return 0
+	}
+	return getter(cf)
+}
+
+// safeGetMomentumString 安全地获取 Momentum 配置的字符串值
+func safeGetMomentumString(cf *ConfigFile, getter func(*ConfigFile) string) string {
+	if cf == nil {
+		return ""
+	}
+	return getter(cf)
+}
+
+// safeGetMomentumBool 安全地获取 Momentum 配置的布尔值
+func safeGetMomentumBool(cf *ConfigFile, getter func(*ConfigFile) bool) bool {
+	if cf == nil {
+		return false
+	}
+	return getter(cf)
+}
+
 // Get 获取全局配置（如果已加载）
 func Get() *Config {
 	return globalConfig
@@ -694,6 +798,28 @@ func (c *Config) Validate() error {
 			}
 			if c.Strategies.DataRecorder.OutputDir == "" {
 				return fmt.Errorf("DATARECORDER_OUTPUT_DIR 不能为空")
+			}
+		case "momentum":
+			if c.Strategies.Momentum == nil {
+				return fmt.Errorf("动量策略已启用但配置为空")
+			}
+			if c.Strategies.Momentum.Asset == "" {
+				return fmt.Errorf("MOMENTUM_ASSET 不能为空")
+			}
+			if c.Strategies.Momentum.SizeUSDC <= 0 {
+				return fmt.Errorf("MOMENTUM_SIZE_USDC 必须大于 0")
+			}
+			if c.Strategies.Momentum.ThresholdBps <= 0 {
+				return fmt.Errorf("MOMENTUM_THRESHOLD_BPS 必须大于 0")
+			}
+			if c.Strategies.Momentum.WindowSecs <= 0 {
+				return fmt.Errorf("MOMENTUM_WINDOW_SECS 必须大于 0")
+			}
+			if c.Strategies.Momentum.MinEdgeCents < 0 {
+				return fmt.Errorf("MOMENTUM_MIN_EDGE_CENTS 不能为负数")
+			}
+			if c.Strategies.Momentum.CooldownSecs < 0 {
+				return fmt.Errorf("MOMENTUM_COOLDOWN_SECS 不能为负数")
 			}
 		default:
 			return fmt.Errorf("未知的策略: %s", strategyName)

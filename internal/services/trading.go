@@ -16,7 +16,9 @@ import (
 	"github.com/betbot/gobet/clob/client"
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/execution"
 	"github.com/betbot/gobet/internal/metrics"
+	"github.com/betbot/gobet/internal/risk"
 	"github.com/betbot/gobet/pkg/cache"
 	"github.com/betbot/gobet/pkg/persistence"
 )
@@ -59,6 +61,10 @@ type TradingService struct {
 	orderStatusSyncIntervalWithOrders    int
 	orderStatusSyncIntervalWithoutOrders int
 
+	// 执行层保护（防重复/风控）
+	inFlightDeduper *execution.InFlightDeduper
+	circuitBreaker  *risk.CircuitBreaker
+
 	// 重启恢复/快照
 	persistence   persistence.Service
 	persistenceID string
@@ -89,6 +95,12 @@ func NewTradingService(clobClient *client.Client, dryRun bool) *TradingService {
 		orderStatusCache:                     cache.NewOrderStatusCache(),
 		orderStatusSyncIntervalWithOrders:    3,  // 默认3秒
 		orderStatusSyncIntervalWithoutOrders: 30, // 默认30秒
+		inFlightDeduper:                      execution.NewInFlightDeduper(2*time.Second, 64),
+		circuitBreaker: risk.NewCircuitBreaker(risk.CircuitBreakerConfig{
+			// 默认只启用“连续错误熔断”，避免误伤；当日亏损上限可后续接入完整 PnL 统计后再启用。
+			MaxConsecutiveErrors: 10,
+			DailyLossLimitCents:  0,
+		}),
 	}
 
 	if dryRun {
@@ -1020,14 +1032,52 @@ func (s *TradingService) convertOrderResponseToDomain(orderResp *types.OrderResp
 }
 
 // PlaceOrder 下单（通过 OrderEngine 发送命令）
-func (s *TradingService) PlaceOrder(ctx context.Context, order *domain.Order) (*domain.Order, error) {
+func (s *TradingService) PlaceOrder(ctx context.Context, order *domain.Order) (created *domain.Order, err error) {
+	start := time.Now()
+	metrics.PlaceOrderRuns.Add(1)
+
 	if order == nil {
+		metrics.PlaceOrderBlockedInvalidInput.Add(1)
 		return nil, fmt.Errorf("order 不能为空")
 	}
 	// 只管理本周期：强制要求所有策略下单都带 MarketSlug
 	// 否则订单更新无法可靠过滤，容易跨周期串单
 	if order.MarketSlug == "" {
+		metrics.PlaceOrderBlockedInvalidInput.Add(1)
 		return nil, fmt.Errorf("order.MarketSlug 不能为空（只管理本周期）")
+	}
+
+	// 执行层风控：断路器快路径
+	if s.circuitBreaker != nil {
+		if e := s.circuitBreaker.AllowTrading(); e != nil {
+			metrics.PlaceOrderBlockedCircuit.Add(1)
+			return nil, e
+		}
+	}
+
+	// 执行层去重：同一订单 key 的短窗口去重（避免重复下单/重复 IO）
+	dedupKey := fmt.Sprintf(
+		"%s|%s|%s|%dc|%.4f|%s",
+		order.MarketSlug,
+		order.AssetID,
+		order.Side,
+		order.Price.Cents,
+		order.Size,
+		order.OrderType,
+	)
+	if s.inFlightDeduper != nil {
+		if e := s.inFlightDeduper.TryAcquire(dedupKey); e != nil {
+			if e == execution.ErrDuplicateInFlight {
+				metrics.PlaceOrderBlockedDedup.Add(1)
+			}
+			return nil, e
+		}
+		// 如果下单失败/被取消，允许尽快重试；成功则靠 TTL 自动过期。
+		defer func() {
+			if err != nil {
+				s.inFlightDeduper.Release(dedupKey)
+			}
+		}()
 	}
 
 	// 调整订单大小（在发送命令前）
@@ -1047,10 +1097,34 @@ func (s *TradingService) PlaceOrder(ctx context.Context, order *domain.Order) (*
 	// 等待结果
 	select {
 	case result := <-reply:
-		return result.Order, result.Error
+		created, err = result.Order, result.Error
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		created, err = nil, ctx.Err()
 	}
+
+	// 指标：延迟（毫秒）
+	latencyMs := time.Since(start).Milliseconds()
+	metrics.PlaceOrderLatencyLastMs.Set(latencyMs)
+	metrics.PlaceOrderLatencyTotalMs.Add(latencyMs)
+	metrics.PlaceOrderLatencySamples.Add(1)
+	// 简单 max 统计（非严格原子，但 expvar.Int 内部已加锁；这里读写是串行的）
+	if latencyMs > metrics.PlaceOrderLatencyMaxMs.Value() {
+		metrics.PlaceOrderLatencyMaxMs.Set(latencyMs)
+	}
+
+	// 指标 + 风控：错误计数
+	if err != nil {
+		metrics.PlaceOrderErrors.Add(1)
+		if s.circuitBreaker != nil {
+			s.circuitBreaker.OnError()
+		}
+		return created, err
+	}
+	if s.circuitBreaker != nil {
+		s.circuitBreaker.OnSuccess()
+	}
+
+	return created, nil
 }
 
 // adjustOrderSize 调整订单大小（确保满足最小要求）
