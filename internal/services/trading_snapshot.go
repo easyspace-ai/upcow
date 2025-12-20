@@ -13,10 +13,10 @@ import (
 )
 
 type tradingSnapshot struct {
-	UpdatedAt time.Time          `json:"updated_at"`
-	Balance   float64            `json:"balance"`
+	UpdatedAt  time.Time          `json:"updated_at"`
+	Balance    float64            `json:"balance"`
 	OpenOrders []*domain.Order    `json:"open_orders"`
-	Positions []*domain.Position `json:"positions"`
+	Positions  []*domain.Position `json:"positions"`
 }
 
 func (s *TradingService) SetPersistence(ps persistence.Service, id string) {
@@ -27,7 +27,8 @@ func (s *TradingService) SetPersistence(ps persistence.Service, id string) {
 	}
 }
 
-func (s *TradingService) loadSnapshot() {
+func (ss *SnapshotService) loadSnapshot() {
+	s := ss.s
 	if s.persistence == nil {
 		return
 	}
@@ -73,7 +74,8 @@ func (s *TradingService) loadSnapshot() {
 	}
 }
 
-func (s *TradingService) saveSnapshot() {
+func (ss *SnapshotService) saveSnapshot() {
+	s := ss.s
 	if s.persistence == nil {
 		return
 	}
@@ -110,12 +112,77 @@ func (s *TradingService) saveSnapshot() {
 
 	store := s.persistence.NewStore("trading", s.persistenceID, "snapshot")
 	_ = store.Save(&tradingSnapshot{
-		UpdatedAt: time.Now(),
-		Balance:   balance,
+		UpdatedAt:  time.Now(),
+		Balance:    balance,
 		OpenOrders: openOrders,
-		Positions: positions,
+		Positions:  positions,
 	})
 	metrics.SnapshotSaves.Add(1)
+}
+
+func (ss *SnapshotService) bootstrapOpenOrdersFromExchange(ctx context.Context) {
+	s := ss.s
+	if s.dryRun {
+		return
+	}
+	openOrdersResp, err := s.clobClient.GetOpenOrders(ctx, nil)
+	if err != nil {
+		log.Warnf("🔄 [重启恢复] 获取 open orders 失败: %v", err)
+		return
+	}
+	if len(openOrdersResp) == 0 {
+		return
+	}
+	log.Infof("🔄 [重启恢复] 交易所 open orders=%d，开始注入 OrderEngine", len(openOrdersResp))
+	for _, oo := range openOrdersResp {
+		o := openOrderToDomain(oo)
+		if o == nil || o.OrderID == "" {
+			continue
+		}
+		s.orderEngine.SubmitCommand(&UpdateOrderCommand{
+			id:    fmt.Sprintf("bootstrap_open_%s", o.OrderID),
+			Order: o,
+		})
+	}
+}
+
+func (ss *SnapshotService) startSnapshotLoop(ctx context.Context) {
+	s := ss.s
+	// 每次订单更新触发一次保存（2s debounce）
+	trigger := make(chan struct{}, 1)
+	s.OnOrderUpdate(OrderUpdateHandlerFunc(func(_ context.Context, _ *domain.Order) error {
+		select {
+		case trigger <- struct{}{}:
+		default:
+		}
+		return nil
+	}))
+
+	go func() {
+		var pending bool
+		var timer *time.Timer
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-trigger:
+				if !pending {
+					pending = true
+					timer = time.NewTimer(2 * time.Second)
+				} else if timer != nil {
+					timer.Reset(2 * time.Second)
+				}
+			case <-func() <-chan time.Time {
+				if timer == nil {
+					return make(chan time.Time)
+				}
+				return timer.C
+			}():
+				pending = false
+				ss.saveSnapshot()
+			}
+		}
+	}()
 }
 
 func openOrderToDomain(o types.OpenOrder) *domain.Order {
@@ -169,4 +236,3 @@ func openOrderToDomain(o types.OpenOrder) *domain.Order {
 
 	return d
 }
-

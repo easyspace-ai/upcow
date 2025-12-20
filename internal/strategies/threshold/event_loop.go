@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/strategies/common"
 )
 
 type thresholdCmdResult struct {
@@ -28,14 +29,12 @@ func (s *ThresholdStrategy) initLoopIfNeeded() {
 func (s *ThresholdStrategy) startLoop(ctx context.Context) {
 	s.initLoopIfNeeded()
 
-	s.loopOnce.Do(func() {
-		loopCtx, cancel := context.WithCancel(ctx)
-		s.loopCancel = cancel
-
-		go func() {
-			ticker := time.NewTicker(1 * time.Second)
-			defer ticker.Stop()
-
+	common.StartLoopOnce(
+		ctx,
+		&s.loopOnce,
+		func(cancel context.CancelFunc) { s.loopCancel = cancel },
+		1*time.Second,
+		func(loopCtx context.Context, tickC <-chan time.Time) {
 			for {
 				select {
 				case <-loopCtx.Done():
@@ -59,12 +58,12 @@ func (s *ThresholdStrategy) startLoop(ctx context.Context) {
 				case res := <-s.cmdResultC:
 					_ = s.handleCmdResultInternal(loopCtx, res)
 
-				case <-ticker.C:
+				case <-tickC:
 					// 预留：做一些周期性检查/监控
 				}
 			}
-		}()
-	})
+		},
+	)
 }
 
 func (s *ThresholdStrategy) stopLoop() {
@@ -72,4 +71,3 @@ func (s *ThresholdStrategy) stopLoop() {
 		s.loopCancel()
 	}
 }
-

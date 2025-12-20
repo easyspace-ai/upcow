@@ -7,6 +7,7 @@ import (
 
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 )
 
@@ -36,14 +37,17 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 	// 简化防重复：单线程 loop 下无需锁；保留时间窗口避免抖动重复触发
 	levelKey := fmt.Sprintf("%s:%d", tokenType, gridLevel)
 	if s.processedGridLevels == nil {
-		s.processedGridLevels = make(map[string]time.Time)
+		s.processedGridLevels = make(map[string]*common.Debouncer)
 	}
-	if last, ok := s.processedGridLevels[levelKey]; ok {
-		if time.Since(last) < 30*time.Second {
-			return nil
-		}
+	deb := s.processedGridLevels[levelKey]
+	if deb == nil {
+		deb = common.NewDebouncer(30 * time.Second)
+		s.processedGridLevels[levelKey] = deb
 	}
-	s.processedGridLevels[levelKey] = time.Now()
+	if ready, _ := deb.ReadyNow(); !ready {
+		return nil
+	}
+	deb.MarkNow()
 
 	orderCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -57,13 +61,11 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 		entryMax = gridLevel + s.config.EntryMaxBuySlippageCents
 	}
 	if tokenType == domain.TokenTypeUp {
-		if p, err := orderutil.QuoteBuyPrice(orderCtx, s.tradingService, market.YesAssetID, entryMax); err == nil {
-			entryPrice = p
-		}
+		p, _ := orderutil.QuoteBuyPriceOr(orderCtx, s.tradingService, market.YesAssetID, entryMax, entryPrice)
+		entryPrice = p
 	} else if tokenType == domain.TokenTypeDown {
-		if p, err := orderutil.QuoteBuyPrice(orderCtx, s.tradingService, market.NoAssetID, entryMax); err == nil {
-			entryPrice = p
-		}
+		p, _ := orderutil.QuoteBuyPriceOr(orderCtx, s.tradingService, market.NoAssetID, entryMax, entryPrice)
+		entryPrice = p
 	}
 
 	// 仍沿用既有“锁定利润目标”规则：hedgePrice <= 100 - entryPrice - ProfitTarget
@@ -87,12 +89,9 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 		if s.config.EnableDoubleSide {
 			_, hedgeShare := s.calculateOrderSize(hedgePrice)
 			// 对冲价格：优先取 bestAsk，但不超过 lock-in 上限（hedgePriceCents）
-			hp := hedgePrice
-			if p, err := orderutil.QuoteBuyPrice(orderCtx, s.tradingService, market.NoAssetID, hedgePriceCents); err == nil {
-				hp = p
-				if hp.Cents > hedgePriceCents {
-					hp.Cents = hedgePriceCents
-				}
+			hp, _ := orderutil.QuoteBuyPriceOr(orderCtx, s.tradingService, market.NoAssetID, hedgePriceCents, hedgePrice)
+			if hp.Cents > hedgePriceCents {
+				hp.Cents = hedgePriceCents
 			}
 			hedgeOrder = orderutil.NewOrder(market.Slug, market.NoAssetID, types.SideBuy, hp, hedgeShare, domain.TokenTypeDown, false, types.OrderTypeFAK)
 			hedgeOrder.OrderID = fmt.Sprintf("plan-hedge-down-%d-%d", gridLevel, now.UnixNano())
@@ -104,12 +103,9 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 		entryOrder.GridLevel = hedgePriceCents // 维持原有语义：记录对冲层级
 		if s.config.EnableDoubleSide {
 			_, hedgeShare := s.calculateOrderSize(hedgePrice)
-			hp := hedgePrice
-			if p, err := orderutil.QuoteBuyPrice(orderCtx, s.tradingService, market.YesAssetID, hedgePriceCents); err == nil {
-				hp = p
-				if hp.Cents > hedgePriceCents {
-					hp.Cents = hedgePriceCents
-				}
+			hp, _ := orderutil.QuoteBuyPriceOr(orderCtx, s.tradingService, market.YesAssetID, hedgePriceCents, hedgePrice)
+			if hp.Cents > hedgePriceCents {
+				hp.Cents = hedgePriceCents
 			}
 			hedgeOrder = orderutil.NewOrder(market.Slug, market.YesAssetID, types.SideBuy, hp, hedgeShare, domain.TokenTypeUp, false, types.OrderTypeFAK)
 			hedgeOrder.OrderID = fmt.Sprintf("plan-hedge-up-%d-%d", gridLevel, now.UnixNano())
@@ -122,18 +118,25 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 	planID := fmt.Sprintf("%s-%s-%d-%d", market.Slug, tokenType, gridLevel, now.UnixNano())
 	s.plan = &HedgePlan{
 		ID:            planID,
-		LevelKey:       levelKey,
-		State:          PlanEntrySubmitting,
-		CreatedAt:      now,
-		StateAt:        now,
-		EntryAttempts:  1,
-		HedgeAttempts:  0,
-		MaxAttempts:    3,
-		EntryTemplate:  entryOrder,
-		HedgeTemplate:  hedgeOrder,
-		EntryCreated:   nil,
-		HedgeCreated:   nil,
-		LastError:      "",
+		LevelKey:      levelKey,
+		State:         PlanEntrySubmitting,
+		CreatedAt:     now,
+		StateAt:       now,
+		EntryAttempts: 1,
+		HedgeAttempts: 0,
+		MaxAttempts:   3,
+		EntryTemplate: entryOrder,
+		HedgeTemplate: hedgeOrder,
+		EntryCreated:  nil,
+		HedgeCreated:  nil,
+		LastError:     "",
+		// 补仓/强对冲节流：避免短时间内连续补仓刷单（落到配置层）
+		SupplementDebouncer: common.NewDebouncer(func() time.Duration {
+			if s.config == nil || s.config.StrongHedgeDebounceSeconds <= 0 {
+				return 2 * time.Second
+			}
+			return time.Duration(s.config.StrongHedgeDebounceSeconds) * time.Second
+		}()),
 	}
 
 	// 标记正在下单（用于诊断/兼容旧逻辑）
@@ -143,6 +146,15 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 	s.placeOrderMu.Unlock()
 
 	_ = currentPrice
-	return s.submitPlaceOrderCmd(orderCtx, planID, gridCmdPlaceEntry, entryOrder)
-}
+	if err := s.submitPlaceOrderCmd(orderCtx, planID, gridCmdPlaceEntry, entryOrder); err != nil {
+		// Executor 队列满等提交失败：立即释放 plan（允许重试该层级），避免卡死
+		s.placeOrderMu.Lock()
+		s.isPlacingOrder = false
+		s.isPlacingOrderSetTime = time.Time{}
+		s.placeOrderMu.Unlock()
 
+		s.planFailed(fmt.Sprintf("submit place entry failed: %v", err), true)
+		return nil
+	}
+	return nil
+}

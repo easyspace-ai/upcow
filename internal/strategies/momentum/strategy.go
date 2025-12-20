@@ -11,7 +11,9 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/strategies"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
+	strategyports "github.com/betbot/gobet/internal/strategies/ports"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
 )
@@ -41,12 +43,6 @@ type MomentumSignal struct {
 	Threshold int
 }
 
-// TradingServiceInterface 交易服务接口（避免循环依赖）
-type TradingServiceInterface interface {
-	PlaceOrder(ctx context.Context, order *domain.Order) (*domain.Order, error)
-	GetBestPrice(ctx context.Context, assetID string) (bestBid float64, bestAsk float64, err error)
-}
-
 // MomentumStrategy 动量策略（基于外部快行情信号触发快速下单）。
 //
 // 说明：
@@ -55,7 +51,7 @@ type TradingServiceInterface interface {
 // - 执行使用 FAK，尽量减少挂单风险。
 type MomentumStrategy struct {
 	Executor       bbgo.CommandExecutor
-	tradingService TradingServiceInterface
+	tradingService strategyports.MomentumTradingService
 	config         *MomentumStrategyConfig
 
 	loopOnce   sync.Once
@@ -63,15 +59,16 @@ type MomentumStrategy struct {
 	signalC    chan MomentumSignal
 
 	// 当前周期 market（用于 MarketSlug/assetID）
-	mu           sync.RWMutex
+	mu            sync.RWMutex
 	currentMarket *domain.Market
-	lastTradeAt  time.Time
+	marketGuard   common.MarketSlugGuard
+	tradeCooldown *common.Debouncer
 }
 
 func (s *MomentumStrategy) ID() string   { return ID }
 func (s *MomentumStrategy) Name() string { return ID }
 
-func (s *MomentumStrategy) SetTradingService(ts TradingServiceInterface) {
+func (s *MomentumStrategy) SetTradingService(ts strategyports.MomentumTradingService) {
 	s.mu.Lock()
 	s.tradingService = ts
 	s.mu.Unlock()
@@ -102,6 +99,12 @@ func (s *MomentumStrategy) InitializeWithConfig(ctx context.Context, cfg strateg
 		return err
 	}
 	s.config = c
+	if s.tradeCooldown == nil {
+		s.tradeCooldown = common.NewDebouncer(time.Duration(c.CooldownSecs) * time.Second)
+	} else {
+		s.tradeCooldown.SetInterval(time.Duration(c.CooldownSecs) * time.Second)
+		s.tradeCooldown.Reset()
+	}
 	log.Infof("动量策略初始化: asset=%s size=$%.2f threshold=%dbps window=%ds edge=%dc cooldown=%ds polygon=%v",
 		c.Asset, c.SizeUSDC, c.ThresholdBps, c.WindowSecs, c.MinEdgeCents, c.CooldownSecs, c.UsePolygonFeed)
 	return nil
@@ -119,6 +122,12 @@ func (s *MomentumStrategy) OnPriceChanged(ctx context.Context, event *events.Pri
 		return nil
 	}
 	s.mu.Lock()
+	if s.marketGuard.Update(event.Market.Slug) {
+		// 周期切换：重置冷却，避免新周期被旧周期的 cooldown 误伤
+		if s.tradeCooldown != nil {
+			s.tradeCooldown.Reset()
+		}
+	}
 	s.currentMarket = event.Market
 	s.mu.Unlock()
 	return nil
@@ -131,6 +140,11 @@ func (s *MomentumStrategy) Run(ctx context.Context, orderExecutor bbgo.OrderExec
 	if session != nil {
 		if m := session.Market(); m != nil {
 			s.mu.Lock()
+			if s.marketGuard.Update(m.Slug) {
+				if s.tradeCooldown != nil {
+					s.tradeCooldown.Reset()
+				}
+			}
 			s.currentMarket = m
 			s.mu.Unlock()
 		}
@@ -147,18 +161,22 @@ func (s *MomentumStrategy) Shutdown(ctx context.Context, wg *sync.WaitGroup) {
 }
 
 func (s *MomentumStrategy) startLoop(parent context.Context) {
-	s.loopOnce.Do(func() {
-		loopCtx, cancel := context.WithCancel(parent)
-		s.loopCancel = cancel
-		s.signalC = make(chan MomentumSignal, 1024)
+	common.StartLoopOnce(
+		parent,
+		&s.loopOnce,
+		func(cancel context.CancelFunc) { s.loopCancel = cancel },
+		0,
+		func(loopCtx context.Context, _ <-chan time.Time) {
+			s.signalC = make(chan MomentumSignal, 1024)
 
-		// 外部行情源：Polygon
-		if s.config != nil && s.config.UsePolygonFeed {
-			go runPolygonFeed(loopCtx, s.config.Asset, s.config.ThresholdBps, s.config.WindowSecs, s.signalC, log)
-		}
+			// 外部行情源：Polygon
+			if s.config != nil && s.config.UsePolygonFeed {
+				go runPolygonFeed(loopCtx, s.config.Asset, s.config.ThresholdBps, s.config.WindowSecs, s.signalC, log)
+			}
 
-		go s.loop(loopCtx)
-	})
+			s.loop(loopCtx)
+		},
+	)
 }
 
 func (s *MomentumStrategy) loop(ctx context.Context) {
@@ -177,16 +195,17 @@ func (s *MomentumStrategy) handleSignal(ctx context.Context, sig MomentumSignal)
 	ts := s.tradingService
 	cfg := s.config
 	market := s.currentMarket
-	lastTradeAt := s.lastTradeAt
+	cooldown := s.tradeCooldown
 	s.mu.RUnlock()
 
 	if ts == nil || cfg == nil || market == nil {
 		return nil
 	}
 
-	// 冷却（按“单 market 会话”设计，只需要一个 lastTradeAt）
-	if cfg.CooldownSecs > 0 && !lastTradeAt.IsZero() {
-		if time.Since(lastTradeAt) < time.Duration(cfg.CooldownSecs)*time.Second {
+	// 冷却：通过 Debouncer 统一实现；interval=0 等价于不冷却
+	if cooldown != nil {
+		ready, _ := cooldown.ReadyNow()
+		if !ready {
 			return nil
 		}
 	}
@@ -212,7 +231,9 @@ func (s *MomentumStrategy) handleSignal(ctx context.Context, sig MomentumSignal)
 			return err
 		}
 		s.mu.Lock()
-		s.lastTradeAt = time.Now()
+		if s.tradeCooldown != nil {
+			s.tradeCooldown.MarkNow()
+		}
 		s.mu.Unlock()
 		return nil
 	}
@@ -228,14 +249,16 @@ func (s *MomentumStrategy) handleSignal(ctx context.Context, sig MomentumSignal)
 		return fmt.Errorf("执行器队列已满，无法提交动量订单")
 	}
 
-	// 成功投递后记录 lastTradeAt（避免同一信号风暴提交大量 command）
+	// 成功投递后记录 cooldown（避免同一信号风暴提交大量 command）
 	s.mu.Lock()
-	s.lastTradeAt = time.Now()
+	if s.tradeCooldown != nil {
+		s.tradeCooldown.MarkNow()
+	}
 	s.mu.Unlock()
 	return nil
 }
 
-func (s *MomentumStrategy) placeFAK(ctx context.Context, ts TradingServiceInterface, market *domain.Market, tokenType domain.TokenType, assetID string, sizeUSDC float64, maxPayCents int, sig MomentumSignal) error {
+func (s *MomentumStrategy) placeFAK(ctx context.Context, ts strategyports.MomentumTradingService, market *domain.Market, tokenType domain.TokenType, assetID string, sizeUSDC float64, maxPayCents int, sig MomentumSignal) error {
 	// 价格取 bestAsk，并用 maxPayCents 做上限保护
 	price, err := orderutil.QuoteBuyPrice(ctx, ts, assetID, maxPayCents)
 	if err != nil {
@@ -262,4 +285,3 @@ func (s *MomentumStrategy) placeFAK(ctx context.Context, ts TradingServiceInterf
 	}
 	return nil
 }
-

@@ -11,6 +11,7 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/strategies"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/logger"
 	"github.com/sirupsen/logrus"
@@ -53,12 +54,12 @@ type DataRecorderStrategy struct {
 	priceMu      sync.Mutex
 	latestPrices map[domain.TokenType]*events.PriceChangedEvent
 
-	mu                 sync.RWMutex
-	ctx                context.Context
-	cancel             context.CancelFunc
-	cycleCheckStop     chan struct{}  // 用于停止周期检查 goroutine
-	cycleCheckWg       sync.WaitGroup // 等待周期检查 goroutine 退出
-	switchingCycle     bool           // 是否正在切换周期（防止重复切换）
+	mu             sync.RWMutex
+	ctx            context.Context
+	cancel         context.CancelFunc
+	cycleCheckStop chan struct{}  // 用于停止周期检查 goroutine
+	cycleCheckWg   sync.WaitGroup // 等待周期检查 goroutine 退出
+	switchingCycle bool           // 是否正在切换周期（防止重复切换）
 }
 
 // NewDataRecorderStrategy 创建新的数据记录策略
@@ -211,10 +212,7 @@ func (s *DataRecorderStrategy) OnPriceChanged(ctx context.Context, event *events
 	}
 	s.latestPrices[event.TokenType] = event
 	s.priceMu.Unlock()
-	select {
-	case s.priceSignalC <- struct{}{}:
-	default:
-	}
+	common.TrySignal(s.priceSignalC)
 	return nil
 }
 

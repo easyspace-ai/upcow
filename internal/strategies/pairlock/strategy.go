@@ -13,7 +13,9 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/strategies"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
+	strategyports "github.com/betbot/gobet/internal/strategies/ports"
 	"github.com/betbot/gobet/pkg/bbgo"
 )
 
@@ -45,27 +47,19 @@ type orderUpdate struct {
 type cmdKind string
 
 const (
-	cmdPlaceYes cmdKind = "place_yes"
-	cmdPlaceNo  cmdKind = "place_no"
+	cmdPlaceYes   cmdKind = "place_yes"
+	cmdPlaceNo    cmdKind = "place_no"
 	cmdSupplement cmdKind = "supplement"
-	cmdCancel   cmdKind = "cancel"
-	cmdFlatten  cmdKind = "flatten"
+	cmdCancel     cmdKind = "cancel"
+	cmdFlatten    cmdKind = "flatten"
 )
 
 type cmdResult struct {
 	kind    cmdKind
 	planID  string
-	order   *domain.Order   // template
+	order   *domain.Order // template
 	created *domain.Order
 	err     error
-}
-
-// TradingServiceInterface 交易服务接口（避免循环依赖）
-type TradingServiceInterface interface {
-	PlaceOrder(ctx context.Context, order *domain.Order) (*domain.Order, error)
-	CancelOrder(ctx context.Context, orderID string) error
-	GetActiveOrders() []*domain.Order
-	GetBestPrice(ctx context.Context, assetID string) (bestBid float64, bestAsk float64, err error)
 }
 
 // PairLockStrategy 周期内多轮“成对锁定”策略
@@ -78,7 +72,7 @@ type PairLockStrategy struct {
 	Executor bbgo.CommandExecutor
 
 	config         *PairLockStrategyConfig
-	tradingService TradingServiceInterface
+	tradingService strategyports.PairLockTradingService
 
 	// 单线程 loop
 	loopOnce     sync.Once
@@ -90,10 +84,10 @@ type PairLockStrategy struct {
 	cmdResultC   chan cmdResult
 
 	// market / cycle
-	currentMarketSlug string
-	currentMarket     *domain.Market
-	roundsThisPeriod  int
-	lastAttemptAt     time.Time
+	currentMarket    *domain.Market
+	marketGuard      common.MarketSlugGuard
+	roundsThisPeriod int
+	attemptCooldown  *common.Debouncer
 
 	// last seen price (用于 slippage cap)
 	lastSeenUpCents   int
@@ -121,7 +115,9 @@ type PairLockStrategy struct {
 	lastCountedFilled map[string]float64
 }
 
-func (s *PairLockStrategy) SetTradingService(ts TradingServiceInterface) { s.tradingService = ts }
+func (s *PairLockStrategy) SetTradingService(ts strategyports.PairLockTradingService) {
+	s.tradingService = ts
+}
 
 func (s *PairLockStrategy) ID() string   { return ID }
 func (s *PairLockStrategy) Name() string { return ID }
@@ -143,6 +139,12 @@ func (s *PairLockStrategy) Initialize(ctx context.Context, conf strategies.Strat
 	s.config = cfg
 	if err := s.Validate(); err != nil {
 		return err
+	}
+	if s.attemptCooldown == nil {
+		s.attemptCooldown = common.NewDebouncer(time.Duration(s.config.CooldownMs) * time.Millisecond)
+	} else {
+		s.attemptCooldown.SetInterval(time.Duration(s.config.CooldownMs) * time.Millisecond)
+		s.attemptCooldown.Reset()
 	}
 
 	// init channels/maps
@@ -228,10 +230,7 @@ func (s *PairLockStrategy) OnPriceChanged(ctx context.Context, ev *events.PriceC
 	s.priceMu.Lock()
 	s.latestPrice[key] = &priceEvent{ctx: ctx, event: ev}
 	s.priceMu.Unlock()
-	select {
-	case s.priceSignalC <- struct{}{}:
-	default:
-	}
+	common.TrySignal(s.priceSignalC)
 	return nil
 }
 
@@ -253,10 +252,9 @@ func (s *PairLockStrategy) onPriceChangedInternal(loopCtx context.Context, ctx c
 	}
 
 	// 周期切换：market slug 变化则重置
-	if s.currentMarketSlug != "" && s.currentMarketSlug != ev.Market.Slug {
+	if s.marketGuard.Update(ev.Market.Slug) {
 		s.resetForNewCycle()
 	}
-	s.currentMarketSlug = ev.Market.Slug
 	s.currentMarket = ev.Market
 
 	// 记录最近观测价（用于 slippage cap）
@@ -283,8 +281,11 @@ func (s *PairLockStrategy) onPriceChangedInternal(loopCtx context.Context, ctx c
 	}
 
 	// cooldown
-	if !s.lastAttemptAt.IsZero() && time.Since(s.lastAttemptAt) < time.Duration(s.config.CooldownMs)*time.Millisecond {
-		return nil
+	if s.attemptCooldown != nil {
+		ready, _ := s.attemptCooldown.ReadyNow()
+		if !ready {
+			return nil
+		}
 	}
 
 	// 并行模式：一次信号允许尽量补满并发额度（但仍受 cooldown 限制）
@@ -296,9 +297,12 @@ func (s *PairLockStrategy) onPriceChangedInternal(loopCtx context.Context, ctx c
 			// 不因为一次失败就中断循环（除非策略被标记 paused）
 			break
 		}
-		// cooldown：避免一次循环内过快连续开轮
-		if !s.lastAttemptAt.IsZero() && time.Since(s.lastAttemptAt) < time.Duration(s.config.CooldownMs)*time.Millisecond {
-			break
+		// cooldown：避免一次循环内过快连续开轮（interval<=0 则永远 Ready）
+		if s.attemptCooldown != nil {
+			ready, _ := s.attemptCooldown.ReadyNow()
+			if !ready {
+				break
+			}
 		}
 	}
 	return nil
@@ -313,8 +317,9 @@ func (s *PairLockStrategy) tryStartNewPlan(ctx context.Context) error {
 		// 你们的工程化方向是“交易 IO 走 Executor”，这里直接强约束，避免 loop 阻塞
 		return fmt.Errorf("pairlock: Executor 未设置")
 	}
-
-	s.lastAttemptAt = time.Now()
+	if s.attemptCooldown != nil {
+		s.attemptCooldown.MarkNow()
+	}
 
 	// quote 两腿 bestAsk（可选 slippage cap）
 	yesMax := 0
@@ -606,6 +611,11 @@ func (s *PairLockStrategy) onTick(ctx context.Context) {
 		if maxPriceCents < 0 {
 			maxPriceCents = 0
 		}
+		if maxPriceCents <= 0 {
+			p.SupplementAttempts++
+			p.LastSupplementAt = time.Now()
+			continue
+		}
 
 		assetID := s.currentMarket.YesAssetID
 		tokenType := domain.TokenTypeUp
@@ -617,7 +627,7 @@ func (s *PairLockStrategy) onTick(ctx context.Context) {
 		orderCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		price, err := orderutil.QuoteBuyPrice(orderCtx, s.tradingService, assetID, maxPriceCents)
 		cancel()
-		if err != nil || price.Cents > maxPriceCents {
+		if err != nil {
 			p.SupplementAttempts++
 			p.LastSupplementAt = time.Now()
 			continue
@@ -653,10 +663,11 @@ func (s *PairLockStrategy) onTick(ctx context.Context) {
 }
 
 func (s *PairLockStrategy) resetForNewCycle() {
-	s.currentMarketSlug = ""
 	s.currentMarket = nil
 	s.roundsThisPeriod = 0
-	s.lastAttemptAt = time.Time{}
+	if s.attemptCooldown != nil {
+		s.attemptCooldown.Reset()
+	}
 	s.lastSeenUpCents = 0
 	s.lastSeenDownCents = 0
 	s.plans = make(map[string]*pairLockPlan)
@@ -914,4 +925,3 @@ func (s *PairLockStrategy) estimateLockedProfit() float64 {
 func almostEqual(a, b float64) bool {
 	return math.Abs(a-b) <= 1e-6
 }
-

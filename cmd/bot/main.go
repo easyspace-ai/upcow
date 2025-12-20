@@ -260,7 +260,7 @@ func main() {
 		}
 
 		// 使用策略加载器加载策略
-		strategy, err := loader.LoadStrategy(strategyName, adaptedConfig)
+		strategy, err := loader.LoadStrategy(initCtx, strategyName, adaptedConfig)
 		if err != nil {
 			logrus.Errorf("加载策略 %s 失败: %v", strategyName, err)
 			continue

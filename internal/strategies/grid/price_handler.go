@@ -6,6 +6,7 @@ import (
 
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
+	"github.com/betbot/gobet/internal/strategies/common"
 )
 
 // OnPriceChanged 处理价格变化事件
@@ -31,61 +32,35 @@ func (s *GridStrategy) OnPriceChanged(ctx context.Context, event *events.PriceCh
 	// 确保事件循环已启动
 	s.startLoop(ctx)
 
-	select {
-	case s.priceSignalC <- struct{}{}:
-		// 信号已发送
-	default:
-		// 已经有信号在队列里，合并即可
-	}
+	common.TrySignal(s.priceSignalC)
 	return nil
 }
 
 // onPriceChangedInternal 内部价格变化处理逻辑（直接回调模式）
 func (s *GridStrategy) onPriceChangedInternal(ctx context.Context, event *events.PriceChangedEvent) error {
 	startTime := time.Now()
-	
-	// 诊断：检查 isPlacingOrder 状态
-	s.placeOrderMu.Lock()
-	isPlacingOrder := s.isPlacingOrder
-	setTime := s.isPlacingOrderSetTime
-	s.placeOrderMu.Unlock()
-	
-	if isPlacingOrder {
-		// 风险13修复：检查是否超时
-		const maxPlacingOrderTimeout = 60 * time.Second
-		if !setTime.IsZero() {
-			timeSinceSet := time.Since(setTime)
-			if timeSinceSet > maxPlacingOrderTimeout {
-				log.Warnf("⚠️ [价格更新诊断] isPlacingOrder标志已持续%v（超过%v），强制重置: %s @ %dc",
-					timeSinceSet, maxPlacingOrderTimeout, event.TokenType, event.NewPrice.Cents)
-				s.placeOrderMu.Lock()
-				s.isPlacingOrder = false
-				s.isPlacingOrderSetTime = time.Time{}
-				s.placeOrderMu.Unlock()
-			} else {
-				log.Warnf("⚠️ [价格更新诊断] onPriceChangedInternal开始处理但 isPlacingOrder=true (已持续%v): %s @ %dc, market=%s",
-					timeSinceSet, event.TokenType, event.NewPrice.Cents, event.Market.Slug)
-			}
-		} else {
-			log.Warnf("⚠️ [价格更新诊断] onPriceChangedInternal开始处理但 isPlacingOrder=true (SetTime未设置): %s @ %dc, market=%s",
-				event.TokenType, event.NewPrice.Cents, event.Market.Slug)
-		}
-	} else {
-		log.Debugf("📊 [价格更新] onPriceChangedInternal开始处理: %s @ %dc, market=%s",
-			event.TokenType, event.NewPrice.Cents, event.Market.Slug)
-	}
-	
+
+	// 诊断：检查 isPlacingOrder 状态（避免卡死）
+	s.diagnoseAndResetPlacingOrder(event.TokenType, event.NewPrice.Cents, event.Market.Slug)
+	log.Debugf("📊 [价格更新] onPriceChangedInternal开始处理: %s @ %dc, market=%s",
+		event.TokenType, event.NewPrice.Cents, event.Market.Slug)
+
 	// 添加诊断日志：记录价格更新频率（每10次记录一次）
 	s.mu.Lock()
+	if s.priceUpdateLogDebouncer == nil {
+		// 兜底：避免未初始化导致 nil；这里的 interval 只用于“首次总是 Ready”语义
+		s.priceUpdateLogDebouncer = common.NewDebouncer(0)
+	}
 	if s.priceUpdateCount == 0 {
 		s.priceUpdateCount = 1
-		s.lastPriceUpdateLogTime = time.Now()
+		s.priceUpdateLogDebouncer.Reset()
+		s.priceUpdateLogDebouncer.MarkNow()
 	} else {
 		s.priceUpdateCount++
 		if s.priceUpdateCount%10 == 0 {
-			elapsed := time.Since(s.lastPriceUpdateLogTime)
+			_, elapsed := s.priceUpdateLogDebouncer.ReadyNow()
 			log.Debugf("📊 [价格更新] 已处理%d次价格更新，最近10次耗时=%v", s.priceUpdateCount, elapsed)
-			s.lastPriceUpdateLogTime = time.Now()
+			s.priceUpdateLogDebouncer.MarkNow()
 		}
 	}
 	s.mu.Unlock()
@@ -93,9 +68,8 @@ func (s *GridStrategy) onPriceChangedInternal(ctx context.Context, event *events
 	s.mu.Lock()
 
 	// 检测周期切换：如果市场 Slug 变化，说明切换到新周期
-	if s.currentMarketSlug != event.Market.Slug {
-		oldSlug := s.currentMarketSlug
-		s.currentMarketSlug = event.Market.Slug
+	oldSlug := s.marketGuard.Current()
+	if s.marketGuard.Update(event.Market.Slug) {
 		s.mu.Unlock() // 先解锁，避免在 ResetStateForNewCycle 中再次加锁
 
 		if oldSlug != "" {
@@ -118,7 +92,7 @@ func (s *GridStrategy) onPriceChangedInternal(ctx context.Context, event *events
 	now := time.Now()
 	oldPriceUp := s.currentPriceUp
 	oldPriceDown := s.currentPriceDown
-	
+
 	// 判断是否为首次价格更新（启动时）
 	// 如果旧价格为 0，说明是首次更新（启动时）
 	isFirstUpdateUp := (event.TokenType == domain.TokenTypeUp && oldPriceUp == 0)
@@ -145,20 +119,32 @@ func (s *GridStrategy) onPriceChangedInternal(ctx context.Context, event *events
 
 	// 强对冲/补仓由 HedgePlan 状态机统一驱动（planTick + planStrongHedge）
 	// 这里不再直接调用旧的 ensureMinProfitLocked（避免绕过 plan 造成重复下单/不可追踪）
-	
+
 	// 重构后：从 TradingService 查询活跃订单数量（不需要锁）
 	activeOrdersCount := len(s.getActiveOrders())
 
-	// 显示格式化的价格更新信息到控制台（使用 fmt.Printf 直接输出到终端）
-	// 直接传递更新后的价格，避免在 displayGridPosition 中再次读取（可能不一致）
-	s.displayGridPosition(event, oldPriceUp, oldPriceDown, newPriceUp, newPriceDown)
-	
-	// 同时写入日志文件（使用 log.Infof）
-	s.logPriceUpdate(event, oldPriceUp, oldPriceDown)
+	// UI/日志输出防抖（不影响交易决策，只防刷屏）
+	shouldOutput := true
+	if s.displayDebouncer != nil {
+		ready, _ := s.displayDebouncer.Ready(now)
+		shouldOutput = ready
+	}
+	if shouldOutput {
+		// 显示格式化的价格更新信息到控制台（使用 fmt.Printf 直接输出到终端）
+		// 直接传递更新后的价格，避免在 displayGridPosition 中再次读取（可能不一致）
+		s.displayGridPosition(event, oldPriceUp, oldPriceDown, newPriceUp, newPriceDown)
 
-	// 检测价格更新异常（需要锁，但快速检查）
-	s.checkPriceUpdateAnomaly(ctx, now)
-	
+		// 同时写入日志文件（使用 log.Infof）
+		s.logPriceUpdate(event, oldPriceUp, oldPriceDown)
+
+		// 检测价格更新异常（需要锁，但快速检查）
+		s.checkPriceUpdateAnomaly(ctx, now)
+
+		if s.displayDebouncer != nil {
+			s.displayDebouncer.Mark(now)
+		}
+	}
+
 	// 诊断：记录价格更新处理完成时间
 	processDuration := time.Since(startTime)
 	if processDuration > 50*time.Millisecond {
@@ -330,4 +316,3 @@ func (s *GridStrategy) checkPriceUpdateAnomaly(ctx context.Context, now time.Tim
 		}
 	}
 }
-

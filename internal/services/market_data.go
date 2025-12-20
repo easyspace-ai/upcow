@@ -21,7 +21,7 @@ type MarketDataService struct {
 	cache      *marketCache
 	ctx        context.Context
 	cancel     context.CancelFunc
-	
+
 	// 预加载任务去重：正在预加载的 slug
 	preloadingSlugs map[string]bool
 	preloadingMu    sync.RWMutex

@@ -11,7 +11,9 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/strategies"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
+	strategyports "github.com/betbot/gobet/internal/strategies/ports"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/logger"
 	"github.com/sirupsen/logrus"
@@ -30,34 +32,27 @@ func init() {
 type ArbitrageStrategy struct {
 	Executor       bbgo.CommandExecutor
 	config         *ArbitrageStrategyConfig
-	tradingService TradingServiceInterface
+	tradingService strategyports.BasicTradingService
 	positionState  *domain.ArbitragePositionState
 	currentMarket  *domain.Market
+	marketGuard    common.MarketSlugGuard
 	priceUp        float64 // 当前UP价格
 	priceDown      float64 // 当前DOWN价格
 
 	// 统一：单线程 loop（价格合并 + 订单更新 + 命令结果）
-	loopOnce     sync.Once
-	loopCancel   context.CancelFunc
-	priceSignalC chan struct{}
-	priceMu      sync.Mutex
-	latestPrices map[domain.TokenType]*events.PriceChangedEvent
-	orderC       chan *domain.Order
-	cmdResultC   chan arbitrageCmdResult
-	inFlight     int
-	maxInFlight  int
+	loopOnce        sync.Once
+	loopCancel      context.CancelFunc
+	priceSignalC    chan struct{}
+	priceMu         sync.Mutex
+	latestPrices    map[domain.TokenType]*events.PriceChangedEvent
+	orderC          chan *domain.Order
+	cmdResultC      chan arbitrageCmdResult
+	maxInFlight     int
+	inFlightLimiter *common.InFlightLimiter
 
 	mu             sync.RWMutex
 	isPlacingOrder bool
 	placeOrderMu   sync.Mutex
-}
-
-// TradingServiceInterface 交易服务接口（避免循环依赖）
-type TradingServiceInterface interface {
-	PlaceOrder(ctx context.Context, order *domain.Order) (*domain.Order, error)
-	CancelOrder(ctx context.Context, orderID string) error
-	GetOpenPositions() []*domain.Position
-	GetBestPrice(ctx context.Context, assetID string) (bestBid float64, bestAsk float64, err error)
 }
 
 // NewArbitrageStrategy 创建新的套利策略
@@ -66,7 +61,7 @@ func NewArbitrageStrategy() *ArbitrageStrategy {
 }
 
 // SetTradingService 设置交易服务（在初始化后调用）
-func (s *ArbitrageStrategy) SetTradingService(ts TradingServiceInterface) {
+func (s *ArbitrageStrategy) SetTradingService(ts strategyports.BasicTradingService) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tradingService = ts
@@ -120,6 +115,12 @@ func (s *ArbitrageStrategy) InitializeWithConfig(ctx context.Context, config str
 		// 参考 CSV：单秒可出现 10-30 笔成交，策略侧至少要允许小并发，避免“只能一笔一笔慢慢下”
 		s.maxInFlight = 8
 	}
+	if s.inFlightLimiter == nil {
+		s.inFlightLimiter = common.NewInFlightLimiter(s.maxInFlight)
+	} else {
+		s.inFlightLimiter.SetMax(s.maxInFlight)
+	}
+	s.inFlightLimiter.Reset()
 
 	logger.Infof("套利策略已初始化: 周期时长=%v, 锁盈起始=%v, UP目标=%v, DOWN目标=%v",
 		arbitrageConfig.CycleDuration,
@@ -142,10 +143,7 @@ func (s *ArbitrageStrategy) OnPriceChanged(ctx context.Context, event *events.Pr
 	}
 	s.latestPrices[event.TokenType] = event
 	s.priceMu.Unlock()
-	select {
-	case s.priceSignalC <- struct{}{}:
-	default:
-	}
+	common.TrySignal(s.priceSignalC)
 	return nil
 }
 
@@ -177,9 +175,11 @@ func (s *ArbitrageStrategy) onPricesChangedInternal(ctx context.Context, upEvent
 	}
 
 	// 初始化或更新市场信息
-	if s.currentMarket == nil || s.currentMarket.Slug != event.Market.Slug {
+	if event.Market != nil && s.marketGuard.Update(event.Market.Slug) {
 		// 周期切换：清理 in-flight 计数，避免新周期被旧状态卡住
-		s.inFlight = 0
+		if s.inFlightLimiter != nil {
+			s.inFlightLimiter.Reset()
+		}
 		s.currentMarket = event.Market
 		s.positionState = domain.NewArbitragePositionState(event.Market)
 		logger.Infof("套利策略: 初始化新市场 %s, 周期开始时间=%d", event.Market.Slug, event.Market.Timestamp)
@@ -335,7 +335,7 @@ func (s *ArbitrageStrategy) OnOrderFilled(ctx context.Context, event *events.Ord
 	}
 
 	// 只处理当前市场的订单
-	if s.currentMarket == nil || s.currentMarket.Slug != event.Market.Slug {
+	if event == nil || event.Market == nil || s.marketGuard.Current() == "" || event.Market.Slug != s.marketGuard.Current() {
 		return nil
 	}
 
@@ -726,7 +726,7 @@ func (s *ArbitrageStrategy) placeBuyOrderSplit(ctx context.Context, market *doma
 	}
 	remaining := size
 	for remaining > 0 {
-		if s.maxInFlight > 0 && s.inFlight >= s.maxInFlight {
+		if s.inFlightLimiter != nil && s.inFlightLimiter.AtLimit() {
 			return nil
 		}
 		q := remaining
@@ -744,7 +744,7 @@ func (s *ArbitrageStrategy) placeBuyOrderSplit(ctx context.Context, market *doma
 // placeBuyOrder 下买入订单
 func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Market, tokenType domain.TokenType, size float64, reason string) error {
 	// 统一：loop 内限并发，避免在高频价格下无限投递
-	if s.maxInFlight > 0 && s.inFlight >= s.maxInFlight {
+	if s.inFlightLimiter != nil && s.inFlightLimiter.AtLimit() {
 		return nil
 	}
 	if market == nil || s.tradingService == nil || s.config == nil {
@@ -773,30 +773,55 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 
 	// 没有 executor 时仍保持兼容（但会阻塞 loop，不推荐）
 	if exec == nil {
-		bestAskPrice, err := orderutil.QuoteBuyPrice(ctx, ts, assetID, maxCents)
-		if err != nil {
-			return fmt.Errorf("获取订单簿失败: %w", err)
+		if s.inFlightLimiter != nil && !s.inFlightLimiter.TryAcquire() {
+			return nil
+		}
+		if s.inFlightLimiter != nil {
+			defer s.inFlightLimiter.Release()
 		}
 
-		orderAmount := size * bestAskPrice.ToDecimal()
-		if orderAmount < minOrderUSDC {
+		bestAskPrice, adjustedSize, skipped, _, _, orderAmount, _, err := common.QuoteAndAdjustBuy(
+			ctx,
+			ts,
+			assetID,
+			maxCents,
+			size,
+			minOrderUSDC,
+			false,
+			0,
+		)
+		if err != nil {
+			return err
+		}
+		if skipped {
 			logger.Warnf("套利策略: %s - 订单金额 %.2f USDC 小于最小要求 %.2f USDC，跳过下单（数量=%.2f, 价格=%.4f）",
 				reason, orderAmount, minOrderUSDC, size, bestAskPrice.ToDecimal())
 			return nil
 		}
 
-		order := orderutil.NewOrder(market.Slug, assetID, types.SideBuy, bestAskPrice, size, tokenType, true, types.OrderTypeFAK)
+		order := orderutil.NewOrder(market.Slug, assetID, types.SideBuy, bestAskPrice, adjustedSize, tokenType, true, types.OrderTypeFAK)
 		_, err = ts.PlaceOrder(ctx, order)
 		return err
 	}
 
 	s.initLoopIfNeeded()
-	s.inFlight++
+	if s.inFlightLimiter != nil && !s.inFlightLimiter.TryAcquire() {
+		return nil
+	}
 	ok := exec.Submit(bbgo.Command{
 		Name:    fmt.Sprintf("arbitrage_buy_%s_%s", tokenType, reason),
 		Timeout: 25 * time.Second,
 		Do: func(runCtx context.Context) {
-			bestAskPrice, err := orderutil.QuoteBuyPrice(runCtx, ts, assetID, maxCents)
+			bestAskPrice, adjustedSize, skipped, _, _, _, _, err := common.QuoteAndAdjustBuy(
+				runCtx,
+				ts,
+				assetID,
+				maxCents,
+				size,
+				minOrderUSDC,
+				false,
+				0,
+			)
 			if err != nil {
 				select {
 				case s.cmdResultC <- arbitrageCmdResult{tokenType: tokenType, reason: reason, err: err}:
@@ -804,9 +829,7 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 				}
 				return
 			}
-
-			orderAmount := size * bestAskPrice.ToDecimal()
-			if orderAmount < minOrderUSDC {
+			if skipped {
 				select {
 				case s.cmdResultC <- arbitrageCmdResult{tokenType: tokenType, reason: reason, skipped: true}:
 				default:
@@ -819,7 +842,7 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 			if s.currentMarket != nil {
 				mSlug = s.currentMarket.Slug
 			}
-			order := orderutil.NewOrder(mSlug, assetID, types.SideBuy, bestAskPrice, size, tokenType, true, types.OrderTypeFAK)
+			order := orderutil.NewOrder(mSlug, assetID, types.SideBuy, bestAskPrice, adjustedSize, tokenType, true, types.OrderTypeFAK)
 
 			created, err := ts.PlaceOrder(runCtx, order)
 			select {
@@ -829,8 +852,8 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 		},
 	})
 	if !ok {
-		if s.inFlight > 0 {
-			s.inFlight--
+		if s.inFlightLimiter != nil {
+			s.inFlightLimiter.Release()
 		}
 		return fmt.Errorf("执行器队列已满，无法提交订单")
 	}

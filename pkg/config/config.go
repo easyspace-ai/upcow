@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -34,31 +35,36 @@ type ProxyConfig struct {
 
 // GridConfig 网格策略配置
 type GridConfig struct {
-	GridLevels              []int   // 手工定义的网格层级列表（分），例如 [62, 65, 71, ...]，第一个值即为最小交易价格
-	OrderSize               float64 // 订单大小
-	MinOrderSize            float64 // 最小下单金额（USDC），默认1.1，交易所要求不能小于1
-	EnableRebuy             bool    // 允许重新买入
-	EnableDoubleSide        bool    // 双向交易
-	ProfitTarget            int     // 止盈目标（分），默认 3 cents，用于对冲锁定利润
-	MaxUnhedgedLoss         int     // 最大未对冲损失（分），默认 10 cents
-	HardStopPrice           int     // 硬止损价格（分），默认 50c - 价格跌到此价格以下必须止损（因为50以上才是win）
-	ElasticStopPrice        int     // 弹性止损价格（分），默认 40c - 弹性止损价格，考虑波动性
-	MaxRoundsPerPeriod      int     // 每个 15 分钟周期内允许开启的「网格轮数」上限，默认 1
-	PriceDeviationThreshold int     // 价格偏差阈值（分），默认 2 cents，订单价格与订单簿价格偏差超过此值则撤单重新下单
-	EntryMaxBuySlippageCents      int // 入场买入允许的最大滑点（分），相对 gridLevel 上限（默认0=关闭）
-	SupplementMaxBuySlippageCents int // 补仓/强对冲买入允许的最大滑点（分），相对当前价上限（默认0=关闭）
+	GridLevels                    []int   // 手工定义的网格层级列表（分），例如 [62, 65, 71, ...]，第一个值即为最小交易价格
+	OrderSize                     float64 // 订单大小
+	MinOrderSize                  float64 // 最小下单金额（USDC），默认1.1，交易所要求不能小于1
+	EnableRebuy                   bool    // 允许重新买入
+	EnableDoubleSide              bool    // 双向交易
+	ProfitTarget                  int     // 止盈目标（分），默认 3 cents，用于对冲锁定利润
+	MaxUnhedgedLoss               int     // 最大未对冲损失（分），默认 10 cents
+	HardStopPrice                 int     // 硬止损价格（分），默认 50c - 价格跌到此价格以下必须止损（因为50以上才是win）
+	ElasticStopPrice              int     // 弹性止损价格（分），默认 40c - 弹性止损价格，考虑波动性
+	MaxRoundsPerPeriod            int     // 每个 15 分钟周期内允许开启的「网格轮数」上限，默认 1
+	PriceDeviationThreshold       int     // 价格偏差阈值（分），默认 2 cents，订单价格与订单簿价格偏差超过此值则撤单重新下单
+	EntryMaxBuySlippageCents      int     // 入场买入允许的最大滑点（分），相对 gridLevel 上限（默认0=关闭）
+	SupplementMaxBuySlippageCents int     // 补仓/强对冲买入允许的最大滑点（分），相对当前价上限（默认0=关闭）
+
+	// 实盘工程化参数
+	HealthLogIntervalSeconds   int  // 健康日志输出间隔（秒），默认 15
+	StrongHedgeDebounceSeconds int  // 强对冲/补仓节流间隔（秒），默认 2
+	EnableAdhocStrongHedge     bool // 是否启用“无 plan 兜底强对冲”（周期末 break-even），默认 true
 }
 
 // ThresholdConfig 价格阈值策略配置
 type ThresholdConfig struct {
-	BuyThreshold      float64 // 买入阈值（小数，例如 0.62）
-	SellThreshold     float64 // 卖出阈值（小数，可选，如果为 0 则不卖出）
-	OrderSize         float64 // 订单大小
-	TokenType         string  // Token 类型：YES 或 NO，空字符串表示两者都监控
-	ProfitTargetCents int     // 止盈目标（分），例如 3 表示 +3 cents
-	StopLossCents     int     // 止损目标（分），例如 10 表示 -10 cents
-	MaxBuySlippageCents  int  // 买入允许的最大滑点（分），相对触发价上限（默认0=关闭）
-	MaxSellSlippageCents int  // 卖出允许的最大滑点（分），相对触发价下限（默认0=关闭）
+	BuyThreshold         float64 // 买入阈值（小数，例如 0.62）
+	SellThreshold        float64 // 卖出阈值（小数，可选，如果为 0 则不卖出）
+	OrderSize            float64 // 订单大小
+	TokenType            string  // Token 类型：YES 或 NO，空字符串表示两者都监控
+	ProfitTargetCents    int     // 止盈目标（分），例如 3 表示 +3 cents
+	StopLossCents        int     // 止损目标（分），例如 10 表示 -10 cents
+	MaxBuySlippageCents  int     // 买入允许的最大滑点（分），相对触发价上限（默认0=关闭）
+	MaxSellSlippageCents int     // 卖出允许的最大滑点（分），相对触发价下限（默认0=关闭）
 }
 
 // PairLockConfig 成对锁定（Complete-Set）滚动策略配置
@@ -77,6 +83,43 @@ type PairLockConfig struct {
 	CooldownMs               int     // 触发冷却（ms），默认 250
 	MaxSupplementAttempts    int     // 补齐最大尝试次数，默认 3
 	EntryMaxBuySlippageCents int     // 买入最大滑点（分，相对最近观测价上限，0=关闭）
+}
+
+// PairedTradingConfig 成对交易策略配置（用于 config.yaml/config.json）
+type PairedTradingConfig struct {
+	// 阶段控制参数
+	BuildDuration     time.Duration
+	LockStart         time.Duration
+	AmplifyStart      time.Duration
+	CycleDuration     time.Duration
+	EarlyLockPrice    float64
+	EarlyAmplifyPrice float64
+
+	// 建仓参数
+	BaseTarget     float64
+	BuildLotSize   float64
+	BuildThreshold float64
+	MinRatio       float64
+	MaxRatio       float64
+
+	// 锁定参数
+	LockThreshold    float64
+	LockPriceMax     float64
+	ExtremeHigh      float64
+	TargetProfitBase float64
+	InsuranceSize    float64
+
+	// 放大参数
+	AmplifyTarget      float64
+	AmplifyPriceMax    float64
+	InsurancePriceMax  float64
+	DirectionThreshold float64
+
+	// 通用参数
+	MinOrderSize        float64
+	MaxBuySlippageCents int
+	AutoAdjustSize      bool
+	MaxSizeAdjustRatio  float64
 }
 
 // ArbitrageConfig 套利策略配置
@@ -126,13 +169,14 @@ type MomentumConfig struct {
 
 // StrategyConfig 策略配置（支持多策略）
 type StrategyConfig struct {
-	EnabledStrategies []string            // 启用的策略列表，例如 ["grid", "threshold", "arbitrage", "datarecorder"]
-	Grid              *GridConfig         // 网格策略配置（如果启用）
-	Threshold         *ThresholdConfig    // 价格阈值策略配置（如果启用）
-	PairLock          *PairLockConfig     // 成对锁定策略配置（如果启用）
-	Arbitrage         *ArbitrageConfig    // 套利策略配置（如果启用）
-	DataRecorder      *DataRecorderConfig // 数据记录策略配置（如果启用）
-	Momentum          *MomentumConfig     // 动量策略配置（如果启用）
+	EnabledStrategies []string             // 启用的策略列表，例如 ["grid", "threshold", "arbitrage", "datarecorder"]
+	Grid              *GridConfig          // 网格策略配置（如果启用）
+	Threshold         *ThresholdConfig     // 价格阈值策略配置（如果启用）
+	PairLock          *PairLockConfig      // 成对锁定策略配置（如果启用）
+	PairedTrading     *PairedTradingConfig // 成对交易策略配置（如果启用）
+	Arbitrage         *ArbitrageConfig     // 套利策略配置（如果启用）
+	DataRecorder      *DataRecorderConfig  // 数据记录策略配置（如果启用）
+	Momentum          *MomentumConfig      // 动量策略配置（如果启用）
 }
 
 // Config 应用配置
@@ -178,28 +222,31 @@ type ConfigFile struct {
 	Strategies struct {
 		Enabled []string `yaml:"enabled" json:"enabled"`
 		Grid    struct {
-			GridLevels         []int   `yaml:"grid_levels" json:"grid_levels"` // 手工定义的网格层级列表，例如 [62, 65, 71]，第一个值即为最小交易价格
-			OrderSize          float64 `yaml:"order_size" json:"order_size"`
-			MinOrderSize       float64 `yaml:"min_order_size" json:"min_order_size"` // 最小下单金额（USDC），默认1.1
-			EnableRebuy        bool    `yaml:"enable_rebuy" json:"enable_rebuy"`
-			EnableDoubleSide   bool    `yaml:"enable_double_side" json:"enable_double_side"`
-			ProfitTarget       int     `yaml:"profit_target" json:"profit_target"`
-			MaxUnhedgedLoss    int     `yaml:"max_unhedged_loss" json:"max_unhedged_loss"`
-			HardStopPrice      int     `yaml:"hard_stop_price" json:"hard_stop_price"`
-			ElasticStopPrice   int     `yaml:"elastic_stop_price" json:"elastic_stop_price"`
-			MaxRoundsPerPeriod int     `yaml:"max_rounds_per_period" json:"max_rounds_per_period"`
-			EntryMaxBuySlippageCents      int `yaml:"entry_max_buy_slippage_cents" json:"entry_max_buy_slippage_cents"`
-			SupplementMaxBuySlippageCents int `yaml:"supplement_max_buy_slippage_cents" json:"supplement_max_buy_slippage_cents"`
+			GridLevels                    []int   `yaml:"grid_levels" json:"grid_levels"` // 手工定义的网格层级列表，例如 [62, 65, 71]，第一个值即为最小交易价格
+			OrderSize                     float64 `yaml:"order_size" json:"order_size"`
+			MinOrderSize                  float64 `yaml:"min_order_size" json:"min_order_size"` // 最小下单金额（USDC），默认1.1
+			EnableRebuy                   bool    `yaml:"enable_rebuy" json:"enable_rebuy"`
+			EnableDoubleSide              bool    `yaml:"enable_double_side" json:"enable_double_side"`
+			ProfitTarget                  int     `yaml:"profit_target" json:"profit_target"`
+			MaxUnhedgedLoss               int     `yaml:"max_unhedged_loss" json:"max_unhedged_loss"`
+			HardStopPrice                 int     `yaml:"hard_stop_price" json:"hard_stop_price"`
+			ElasticStopPrice              int     `yaml:"elastic_stop_price" json:"elastic_stop_price"`
+			MaxRoundsPerPeriod            int     `yaml:"max_rounds_per_period" json:"max_rounds_per_period"`
+			EntryMaxBuySlippageCents      int     `yaml:"entry_max_buy_slippage_cents" json:"entry_max_buy_slippage_cents"`
+			SupplementMaxBuySlippageCents int     `yaml:"supplement_max_buy_slippage_cents" json:"supplement_max_buy_slippage_cents"`
+			HealthLogIntervalSeconds      int     `yaml:"health_log_interval_seconds" json:"health_log_interval_seconds"`
+			StrongHedgeDebounceSeconds    int     `yaml:"strong_hedge_debounce_seconds" json:"strong_hedge_debounce_seconds"`
+			EnableAdhocStrongHedge        *bool   `yaml:"enable_adhoc_strong_hedge" json:"enable_adhoc_strong_hedge"`
 		} `yaml:"grid" json:"grid"`
 		Threshold struct {
-			BuyThreshold      float64 `yaml:"buy_threshold" json:"buy_threshold"`
-			SellThreshold     float64 `yaml:"sell_threshold" json:"sell_threshold"`
-			OrderSize         float64 `yaml:"order_size" json:"order_size"`
-			TokenType         string  `yaml:"token_type" json:"token_type"`
-			ProfitTargetCents int     `yaml:"profit_target_cents" json:"profit_target_cents"`
-			StopLossCents     int     `yaml:"stop_loss_cents" json:"stop_loss_cents"`
-			MaxBuySlippageCents  int  `yaml:"max_buy_slippage_cents" json:"max_buy_slippage_cents"`
-			MaxSellSlippageCents int  `yaml:"max_sell_slippage_cents" json:"max_sell_slippage_cents"`
+			BuyThreshold         float64 `yaml:"buy_threshold" json:"buy_threshold"`
+			SellThreshold        float64 `yaml:"sell_threshold" json:"sell_threshold"`
+			OrderSize            float64 `yaml:"order_size" json:"order_size"`
+			TokenType            string  `yaml:"token_type" json:"token_type"`
+			ProfitTargetCents    int     `yaml:"profit_target_cents" json:"profit_target_cents"`
+			StopLossCents        int     `yaml:"stop_loss_cents" json:"stop_loss_cents"`
+			MaxBuySlippageCents  int     `yaml:"max_buy_slippage_cents" json:"max_buy_slippage_cents"`
+			MaxSellSlippageCents int     `yaml:"max_sell_slippage_cents" json:"max_sell_slippage_cents"`
 		} `yaml:"threshold" json:"threshold"`
 		PairLock struct {
 			EnableParallel           bool    `yaml:"enable_parallel" json:"enable_parallel"`
@@ -217,6 +264,42 @@ type ConfigFile struct {
 			MaxSupplementAttempts    int     `yaml:"max_supplement_attempts" json:"max_supplement_attempts"`
 			EntryMaxBuySlippageCents int     `yaml:"entry_max_buy_slippage_cents" json:"entry_max_buy_slippage_cents"`
 		} `yaml:"pairlock" json:"pairlock"`
+		PairedTrading struct {
+			// 阶段控制参数（单位：秒；与 legacy map 配置保持一致）
+			BuildDuration int `yaml:"build_duration" json:"build_duration"`
+			LockStart     int `yaml:"lock_start" json:"lock_start"`
+			AmplifyStart  int `yaml:"amplify_start" json:"amplify_start"`
+			CycleDuration int `yaml:"cycle_duration" json:"cycle_duration"`
+
+			EarlyLockPrice    float64 `yaml:"early_lock_price" json:"early_lock_price"`
+			EarlyAmplifyPrice float64 `yaml:"early_amplify_price" json:"early_amplify_price"`
+
+			// 建仓参数
+			BaseTarget     float64 `yaml:"base_target" json:"base_target"`
+			BuildLotSize   float64 `yaml:"build_lot_size" json:"build_lot_size"`
+			BuildThreshold float64 `yaml:"build_threshold" json:"build_threshold"`
+			MinRatio       float64 `yaml:"min_ratio" json:"min_ratio"`
+			MaxRatio       float64 `yaml:"max_ratio" json:"max_ratio"`
+
+			// 锁定参数
+			LockThreshold    float64 `yaml:"lock_threshold" json:"lock_threshold"`
+			LockPriceMax     float64 `yaml:"lock_price_max" json:"lock_price_max"`
+			ExtremeHigh      float64 `yaml:"extreme_high" json:"extreme_high"`
+			TargetProfitBase float64 `yaml:"target_profit_base" json:"target_profit_base"`
+			InsuranceSize    float64 `yaml:"insurance_size" json:"insurance_size"`
+
+			// 放大参数
+			AmplifyTarget      float64 `yaml:"amplify_target" json:"amplify_target"`
+			AmplifyPriceMax    float64 `yaml:"amplify_price_max" json:"amplify_price_max"`
+			InsurancePriceMax  float64 `yaml:"insurance_price_max" json:"insurance_price_max"`
+			DirectionThreshold float64 `yaml:"direction_threshold" json:"direction_threshold"`
+
+			// 通用参数
+			MinOrderSize        float64 `yaml:"min_order_size" json:"min_order_size"`
+			MaxBuySlippageCents int     `yaml:"max_buy_slippage_cents" json:"max_buy_slippage_cents"`
+			AutoAdjustSize      *bool   `yaml:"auto_adjust_size" json:"auto_adjust_size"`
+			MaxSizeAdjustRatio  float64 `yaml:"max_size_adjust_ratio" json:"max_size_adjust_ratio"`
+		} `yaml:"paired_trading" json:"paired_trading"`
 		Arbitrage struct {
 			LockStartMinutes        int     `yaml:"lock_start_minutes" json:"lock_start_minutes"`
 			EarlyLockPriceThreshold float64 `yaml:"early_lock_price_threshold" json:"early_lock_price_threshold"`
@@ -294,6 +377,19 @@ func LoadFromFile(filePath string) (*Config, error) {
 	// 解析启用的策略列表（优先级：配置文件 > 环境变量 > 默认值）
 	enabledStrategies := parseEnabledStrategies(configFile)
 
+	pairedTradingAutoAdjust := func() bool {
+		// 优先级：env > config file > 默认值(true)
+		if envVal := getEnv("PAIRED_TRADING_AUTO_ADJUST_SIZE", ""); envVal != "" {
+			return envVal == "true" || envVal == "1"
+		}
+		if configFile != nil {
+			if v := safeGet(configFile, func(cf *ConfigFile) *bool { return cf.Strategies.PairedTrading.AutoAdjustSize }); v != nil {
+				return *v
+			}
+		}
+		return true
+	}()
+
 	// 构建配置（优先级：环境变量 > user.json > 配置文件 > 默认值）
 	// 注意：钱包信息优先从 user.json 加载，配置文件中的钱包配置会被忽略
 	config := &Config{
@@ -305,172 +401,312 @@ func LoadFromFile(filePath string) (*Config, error) {
 		Strategies: StrategyConfig{
 			EnabledStrategies: enabledStrategies,
 			Grid: &GridConfig{
-				GridLevels:         safeGetGridIntSlice(configFile, func(cf *ConfigFile) []int { return cf.Strategies.Grid.GridLevels }),
-				OrderSize:          getFloatFromSources(configFile != nil, safeGetGridFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Grid.OrderSize }), parseFloatEnv("ORDER_SIZE", 1)),
-				MinOrderSize:       getFloatFromSources(configFile != nil, safeGetGridFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Grid.MinOrderSize }), parseFloatEnv("GRID_MIN_ORDER_SIZE", 1.1)),
-				EnableRebuy:        getBoolFromSources(configFile != nil, safeGetGridBool(configFile, func(cf *ConfigFile) bool { return cf.Strategies.Grid.EnableRebuy }), parseBoolEnv("ENABLE_REBUY", true)),
-				EnableDoubleSide:   getBoolFromSources(configFile != nil, safeGetGridBool(configFile, func(cf *ConfigFile) bool { return cf.Strategies.Grid.EnableDoubleSide }), parseBoolEnv("ENABLE_DOUBLE_SIDE", true)),
-				ProfitTarget:       getIntFromSources(configFile != nil, safeGetGridInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.ProfitTarget }), parseIntEnv("PROFIT_TARGET", 3)),
-				MaxUnhedgedLoss:    getIntFromSources(configFile != nil, safeGetGridInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.MaxUnhedgedLoss }), parseIntEnv("MAX_UNHEDGED_LOSS", 10)),
-				HardStopPrice:      getIntFromSources(configFile != nil, safeGetGridInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.HardStopPrice }), parseIntEnv("HARD_STOP_PRICE", 50)),
-				ElasticStopPrice:   getIntFromSources(configFile != nil, safeGetGridInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.ElasticStopPrice }), parseIntEnv("ELASTIC_STOP_PRICE", 40)),
-				MaxRoundsPerPeriod: getIntFromSources(configFile != nil, safeGetGridInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.MaxRoundsPerPeriod }), parseIntEnv("MAX_ROUNDS_PER_PERIOD", 1)),
+				GridLevels:         safeGet(configFile, func(cf *ConfigFile) []int { return cf.Strategies.Grid.GridLevels }),
+				OrderSize:          getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Grid.OrderSize }), parseFloatEnv("ORDER_SIZE", 1)),
+				MinOrderSize:       getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Grid.MinOrderSize }), parseFloatEnv("GRID_MIN_ORDER_SIZE", 1.1)),
+				EnableRebuy:        getBoolFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) bool { return cf.Strategies.Grid.EnableRebuy }), parseBoolEnv("ENABLE_REBUY", true)),
+				EnableDoubleSide:   getBoolFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) bool { return cf.Strategies.Grid.EnableDoubleSide }), parseBoolEnv("ENABLE_DOUBLE_SIDE", true)),
+				ProfitTarget:       getIntFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.ProfitTarget }), parseIntEnv("PROFIT_TARGET", 3)),
+				MaxUnhedgedLoss:    getIntFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.MaxUnhedgedLoss }), parseIntEnv("MAX_UNHEDGED_LOSS", 10)),
+				HardStopPrice:      getIntFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.HardStopPrice }), parseIntEnv("HARD_STOP_PRICE", 50)),
+				ElasticStopPrice:   getIntFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.ElasticStopPrice }), parseIntEnv("ELASTIC_STOP_PRICE", 40)),
+				MaxRoundsPerPeriod: getIntFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.MaxRoundsPerPeriod }), parseIntEnv("MAX_ROUNDS_PER_PERIOD", 1)),
 				EntryMaxBuySlippageCents: getIntFromSources(
 					configFile != nil,
-					safeGetGridInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.EntryMaxBuySlippageCents }),
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.EntryMaxBuySlippageCents }),
 					parseIntEnv("GRID_ENTRY_MAX_BUY_SLIPPAGE_CENTS", 0),
 				),
 				SupplementMaxBuySlippageCents: getIntFromSources(
 					configFile != nil,
-					safeGetGridInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.SupplementMaxBuySlippageCents }),
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.SupplementMaxBuySlippageCents }),
 					parseIntEnv("GRID_SUPPLEMENT_MAX_BUY_SLIPPAGE_CENTS", 0),
 				),
+				HealthLogIntervalSeconds: getIntFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.HealthLogIntervalSeconds }),
+					parseIntEnv("GRID_HEALTH_LOG_INTERVAL_SECONDS", 15),
+				),
+				StrongHedgeDebounceSeconds: getIntFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.StrongHedgeDebounceSeconds }),
+					parseIntEnv("GRID_STRONG_HEDGE_DEBOUNCE_SECONDS", 2),
+				),
+				EnableAdhocStrongHedge: func() bool {
+					// 优先级：env > config file > 默认 true
+					if envVal := getEnv("GRID_ENABLE_ADHOC_STRONG_HEDGE", ""); envVal != "" {
+						return envVal == "true" || envVal == "1"
+					}
+					if configFile != nil {
+						if v := safeGet(configFile, func(cf *ConfigFile) *bool { return cf.Strategies.Grid.EnableAdhocStrongHedge }); v != nil {
+							return *v
+						}
+					}
+					return true
+				}(),
 			},
 			Threshold: &ThresholdConfig{
-				BuyThreshold:      getFloatFromSources(configFile != nil, safeGetThresholdFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Threshold.BuyThreshold }), parseFloatEnv("THRESHOLD_BUY_THRESHOLD", 0.62)),
-				SellThreshold:     getFloatFromSources(configFile != nil, safeGetThresholdFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Threshold.SellThreshold }), parseFloatEnv("THRESHOLD_SELL_THRESHOLD", 0)),
-				OrderSize:         getFloatFromSources(configFile != nil, safeGetThresholdFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Threshold.OrderSize }), parseFloatEnv("THRESHOLD_ORDER_SIZE", 3.0)),
-				TokenType:         getValueFromSources(configFile != nil && safeGetThresholdString(configFile, func(cf *ConfigFile) string { return cf.Strategies.Threshold.TokenType }) != "", safeGetThresholdString(configFile, func(cf *ConfigFile) string { return cf.Strategies.Threshold.TokenType }), getEnv("THRESHOLD_TOKEN_TYPE", "")),
-				ProfitTargetCents: getIntFromSources(configFile != nil, safeGetThresholdInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Threshold.ProfitTargetCents }), parseIntEnv("THRESHOLD_PROFIT_TARGET_CENTS", 3)),
-				StopLossCents:     getIntFromSources(configFile != nil, safeGetThresholdInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Threshold.StopLossCents }), parseIntEnv("THRESHOLD_STOP_LOSS_CENTS", 10)),
+				BuyThreshold:      getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Threshold.BuyThreshold }), parseFloatEnv("THRESHOLD_BUY_THRESHOLD", 0.62)),
+				SellThreshold:     getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Threshold.SellThreshold }), parseFloatEnv("THRESHOLD_SELL_THRESHOLD", 0)),
+				OrderSize:         getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Threshold.OrderSize }), parseFloatEnv("THRESHOLD_ORDER_SIZE", 3.0)),
+				TokenType:         getValueFromSources(configFile != nil && safeGet(configFile, func(cf *ConfigFile) string { return cf.Strategies.Threshold.TokenType }) != "", safeGet(configFile, func(cf *ConfigFile) string { return cf.Strategies.Threshold.TokenType }), getEnv("THRESHOLD_TOKEN_TYPE", "")),
+				ProfitTargetCents: getIntFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Threshold.ProfitTargetCents }), parseIntEnv("THRESHOLD_PROFIT_TARGET_CENTS", 3)),
+				StopLossCents:     getIntFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Threshold.StopLossCents }), parseIntEnv("THRESHOLD_STOP_LOSS_CENTS", 10)),
 				MaxBuySlippageCents: getIntFromSources(
 					configFile != nil,
-					safeGetThresholdInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Threshold.MaxBuySlippageCents }),
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Threshold.MaxBuySlippageCents }),
 					parseIntEnv("THRESHOLD_MAX_BUY_SLIPPAGE_CENTS", 0),
 				),
 				MaxSellSlippageCents: getIntFromSources(
 					configFile != nil,
-					safeGetThresholdInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Threshold.MaxSellSlippageCents }),
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Threshold.MaxSellSlippageCents }),
 					parseIntEnv("THRESHOLD_MAX_SELL_SLIPPAGE_CENTS", 0),
 				),
 			},
 			PairLock: &PairLockConfig{
 				EnableParallel: getBoolFromSources(
 					configFile != nil,
-					safeGetPairLockBool(configFile, func(cf *ConfigFile) bool { return cf.Strategies.PairLock.EnableParallel }),
+					safeGet(configFile, func(cf *ConfigFile) bool { return cf.Strategies.PairLock.EnableParallel }),
 					parseBoolEnv("PAIRLOCK_ENABLE_PARALLEL", false),
 				),
 				MaxConcurrentPlans: getIntFromSources(
 					configFile != nil,
-					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxConcurrentPlans }),
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxConcurrentPlans }),
 					parseIntEnv("PAIRLOCK_MAX_CONCURRENT_PLANS", 1),
 				),
 				MaxTotalUnhedgedShares: getFloatFromSources(
 					configFile != nil,
-					safeGetPairLockFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.MaxTotalUnhedgedShares }),
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.MaxTotalUnhedgedShares }),
 					parseFloatEnv("PAIRLOCK_MAX_TOTAL_UNHEDGED_SHARES", 0),
 				),
 				MaxPlanAgeSeconds: getIntFromSources(
 					configFile != nil,
-					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxPlanAgeSeconds }),
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxPlanAgeSeconds }),
 					parseIntEnv("PAIRLOCK_MAX_PLAN_AGE_SECONDS", 60),
 				),
 				OnFailAction: getValueFromSources(
-					configFile != nil && safeGetPairLockString(configFile, func(cf *ConfigFile) string { return cf.Strategies.PairLock.OnFailAction }) != "",
-					safeGetPairLockString(configFile, func(cf *ConfigFile) string { return cf.Strategies.PairLock.OnFailAction }),
+					configFile != nil && safeGet(configFile, func(cf *ConfigFile) string { return cf.Strategies.PairLock.OnFailAction }) != "",
+					safeGet(configFile, func(cf *ConfigFile) string { return cf.Strategies.PairLock.OnFailAction }),
 					getEnv("PAIRLOCK_ON_FAIL_ACTION", "pause"),
 				),
 				FailMaxSellSlippageCents: getIntFromSources(
 					configFile != nil,
-					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.FailMaxSellSlippageCents }),
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.FailMaxSellSlippageCents }),
 					parseIntEnv("PAIRLOCK_FAIL_MAX_SELL_SLIPPAGE_CENTS", 0),
 				),
 				FailFlattenMinShares: getFloatFromSources(
 					configFile != nil,
-					safeGetPairLockFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.FailFlattenMinShares }),
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.FailFlattenMinShares }),
 					parseFloatEnv("PAIRLOCK_FAIL_FLATTEN_MIN_SHARES", 1.0),
 				),
 				OrderSize: getFloatFromSources(
 					configFile != nil,
-					safeGetPairLockFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.OrderSize }),
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.OrderSize }),
 					parseFloatEnv("PAIRLOCK_ORDER_SIZE", 3.0),
 				),
 				MinOrderSize: getFloatFromSources(
 					configFile != nil,
-					safeGetPairLockFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.MinOrderSize }),
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.MinOrderSize }),
 					parseFloatEnv("PAIRLOCK_MIN_ORDER_SIZE", 1.1),
 				),
 				ProfitTargetCents: getIntFromSources(
 					configFile != nil,
-					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.ProfitTargetCents }),
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.ProfitTargetCents }),
 					parseIntEnv("PAIRLOCK_PROFIT_TARGET_CENTS", 3),
 				),
 				MaxRoundsPerPeriod: getIntFromSources(
 					configFile != nil,
-					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxRoundsPerPeriod }),
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxRoundsPerPeriod }),
 					parseIntEnv("PAIRLOCK_MAX_ROUNDS_PER_PERIOD", 1),
 				),
 				CooldownMs: getIntFromSources(
 					configFile != nil,
-					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.CooldownMs }),
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.CooldownMs }),
 					parseIntEnv("PAIRLOCK_COOLDOWN_MS", 250),
 				),
 				MaxSupplementAttempts: getIntFromSources(
 					configFile != nil,
-					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxSupplementAttempts }),
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxSupplementAttempts }),
 					parseIntEnv("PAIRLOCK_MAX_SUPPLEMENT_ATTEMPTS", 3),
 				),
 				EntryMaxBuySlippageCents: getIntFromSources(
 					configFile != nil,
-					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.EntryMaxBuySlippageCents }),
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.EntryMaxBuySlippageCents }),
 					parseIntEnv("PAIRLOCK_ENTRY_MAX_BUY_SLIPPAGE_CENTS", 0),
 				),
 			},
-			Arbitrage: &ArbitrageConfig{
-				LockStartMinutes:        getIntFromSources(configFile != nil, safeGetArbitrageInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Arbitrage.LockStartMinutes }), parseIntEnv("ARBITRAGE_LOCK_START_MINUTES", 12)),
-				EarlyLockPriceThreshold: getFloatFromSources(configFile != nil, safeGetArbitrageFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.EarlyLockPriceThreshold }), parseFloatEnv("ARBITRAGE_EARLY_LOCK_PRICE_THRESHOLD", 0.85)),
-				TargetUpBase:            getFloatFromSources(configFile != nil, safeGetArbitrageFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.TargetUpBase }), parseFloatEnv("ARBITRAGE_TARGET_UP_BASE", 100.0)),
-				TargetDownBase:          getFloatFromSources(configFile != nil, safeGetArbitrageFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.TargetDownBase }), parseFloatEnv("ARBITRAGE_TARGET_DOWN_BASE", 60.0)),
-				BaseTarget:              getFloatFromSources(configFile != nil, safeGetArbitrageFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.BaseTarget }), parseFloatEnv("ARBITRAGE_BASE_TARGET", 1500.0)),
-				BuildLotSize:            getFloatFromSources(configFile != nil, safeGetArbitrageFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.BuildLotSize }), parseFloatEnv("ARBITRAGE_BUILD_LOT_SIZE", 18.0)),
-				MaxUpIncrement:          getFloatFromSources(configFile != nil, safeGetArbitrageFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.MaxUpIncrement }), parseFloatEnv("ARBITRAGE_MAX_UP_INCREMENT", 100.0)),
-				MaxDownIncrement:        getFloatFromSources(configFile != nil, safeGetArbitrageFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.MaxDownIncrement }), parseFloatEnv("ARBITRAGE_MAX_DOWN_INCREMENT", 100.0)),
-				SmallIncrement:          getFloatFromSources(configFile != nil, safeGetArbitrageFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.SmallIncrement }), parseFloatEnv("ARBITRAGE_SMALL_INCREMENT", 20.0)),
-				MinOrderSize:            getFloatFromSources(configFile != nil, safeGetArbitrageFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.MinOrderSize }), parseFloatEnv("ARBITRAGE_MIN_ORDER_SIZE", 1.2)),
+			PairedTrading: &PairedTradingConfig{
+				BuildDuration: time.Duration(getIntFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairedTrading.BuildDuration }),
+					parseIntEnv("PAIRED_TRADING_BUILD_DURATION", 300),
+				)) * time.Second,
+				LockStart: time.Duration(getIntFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairedTrading.LockStart }),
+					parseIntEnv("PAIRED_TRADING_LOCK_START", 300),
+				)) * time.Second,
+				AmplifyStart: time.Duration(getIntFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairedTrading.AmplifyStart }),
+					parseIntEnv("PAIRED_TRADING_AMPLIFY_START", 600),
+				)) * time.Second,
+				CycleDuration: time.Duration(getIntFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairedTrading.CycleDuration }),
+					parseIntEnv("PAIRED_TRADING_CYCLE_DURATION", 900),
+				)) * time.Second,
+				EarlyLockPrice: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.EarlyLockPrice }),
+					parseFloatEnv("PAIRED_TRADING_EARLY_LOCK_PRICE", 0.85),
+				),
+				EarlyAmplifyPrice: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.EarlyAmplifyPrice }),
+					parseFloatEnv("PAIRED_TRADING_EARLY_AMPLIFY_PRICE", 0.90),
+				),
+				BaseTarget: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.BaseTarget }),
+					parseFloatEnv("PAIRED_TRADING_BASE_TARGET", 30.0),
+				),
+				BuildLotSize: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.BuildLotSize }),
+					parseFloatEnv("PAIRED_TRADING_BUILD_LOT_SIZE", 3.0),
+				),
+				BuildThreshold: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.BuildThreshold }),
+					parseFloatEnv("PAIRED_TRADING_BUILD_THRESHOLD", 0.60),
+				),
+				MinRatio: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.MinRatio }),
+					parseFloatEnv("PAIRED_TRADING_MIN_RATIO", 0.40),
+				),
+				MaxRatio: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.MaxRatio }),
+					parseFloatEnv("PAIRED_TRADING_MAX_RATIO", 0.60),
+				),
+				LockThreshold: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.LockThreshold }),
+					parseFloatEnv("PAIRED_TRADING_LOCK_THRESHOLD", 5.0),
+				),
+				LockPriceMax: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.LockPriceMax }),
+					parseFloatEnv("PAIRED_TRADING_LOCK_PRICE_MAX", 0.70),
+				),
+				ExtremeHigh: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.ExtremeHigh }),
+					parseFloatEnv("PAIRED_TRADING_EXTREME_HIGH", 0.80),
+				),
+				TargetProfitBase: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.TargetProfitBase }),
+					parseFloatEnv("PAIRED_TRADING_TARGET_PROFIT_BASE", 2.0),
+				),
+				InsuranceSize: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.InsuranceSize }),
+					parseFloatEnv("PAIRED_TRADING_INSURANCE_SIZE", 1.5),
+				),
+				AmplifyTarget: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.AmplifyTarget }),
+					parseFloatEnv("PAIRED_TRADING_AMPLIFY_TARGET", 5.0),
+				),
+				AmplifyPriceMax: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.AmplifyPriceMax }),
+					parseFloatEnv("PAIRED_TRADING_AMPLIFY_PRICE_MAX", 0.85),
+				),
+				InsurancePriceMax: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.InsurancePriceMax }),
+					parseFloatEnv("PAIRED_TRADING_INSURANCE_PRICE_MAX", 0.20),
+				),
+				DirectionThreshold: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.DirectionThreshold }),
+					parseFloatEnv("PAIRED_TRADING_DIRECTION_THRESHOLD", 0.70),
+				),
+				MinOrderSize: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.MinOrderSize }),
+					parseFloatEnv("PAIRED_TRADING_MIN_ORDER_SIZE", 1.1),
+				),
 				MaxBuySlippageCents: getIntFromSources(
 					configFile != nil,
-					safeGetArbitrageInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Arbitrage.MaxBuySlippageCents }),
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairedTrading.MaxBuySlippageCents }),
+					parseIntEnv("PAIRED_TRADING_MAX_BUY_SLIPPAGE_CENTS", 3),
+				),
+				AutoAdjustSize: pairedTradingAutoAdjust,
+				MaxSizeAdjustRatio: getFloatFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairedTrading.MaxSizeAdjustRatio }),
+					parseFloatEnv("PAIRED_TRADING_MAX_SIZE_ADJUST_RATIO", 5.0),
+				),
+			},
+			Arbitrage: &ArbitrageConfig{
+				LockStartMinutes:        getIntFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Arbitrage.LockStartMinutes }), parseIntEnv("ARBITRAGE_LOCK_START_MINUTES", 12)),
+				EarlyLockPriceThreshold: getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.EarlyLockPriceThreshold }), parseFloatEnv("ARBITRAGE_EARLY_LOCK_PRICE_THRESHOLD", 0.85)),
+				TargetUpBase:            getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.TargetUpBase }), parseFloatEnv("ARBITRAGE_TARGET_UP_BASE", 100.0)),
+				TargetDownBase:          getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.TargetDownBase }), parseFloatEnv("ARBITRAGE_TARGET_DOWN_BASE", 60.0)),
+				BaseTarget:              getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.BaseTarget }), parseFloatEnv("ARBITRAGE_BASE_TARGET", 1500.0)),
+				BuildLotSize:            getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.BuildLotSize }), parseFloatEnv("ARBITRAGE_BUILD_LOT_SIZE", 18.0)),
+				MaxUpIncrement:          getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.MaxUpIncrement }), parseFloatEnv("ARBITRAGE_MAX_UP_INCREMENT", 100.0)),
+				MaxDownIncrement:        getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.MaxDownIncrement }), parseFloatEnv("ARBITRAGE_MAX_DOWN_INCREMENT", 100.0)),
+				SmallIncrement:          getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.SmallIncrement }), parseFloatEnv("ARBITRAGE_SMALL_INCREMENT", 20.0)),
+				MinOrderSize:            getFloatFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.MinOrderSize }), parseFloatEnv("ARBITRAGE_MIN_ORDER_SIZE", 1.2)),
+				MaxBuySlippageCents: getIntFromSources(
+					configFile != nil,
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Arbitrage.MaxBuySlippageCents }),
 					parseIntEnv("ARBITRAGE_MAX_BUY_SLIPPAGE_CENTS", 0),
 				),
 			},
 			DataRecorder: &DataRecorderConfig{
-				OutputDir:       getValueFromSources(configFile != nil && safeGetDataRecorderString(configFile, func(cf *ConfigFile) string { return cf.Strategies.DataRecorder.OutputDir }) != "", safeGetDataRecorderString(configFile, func(cf *ConfigFile) string { return cf.Strategies.DataRecorder.OutputDir }), getEnv("DATARECORDER_OUTPUT_DIR", "data/recordings")),
-				UseRTDSFallback: getBoolFromSources(configFile != nil, safeGetDataRecorderBool(configFile, func(cf *ConfigFile) bool { return cf.Strategies.DataRecorder.UseRTDSFallback }), parseBoolEnv("DATARECORDER_USE_RTDS_FALLBACK", true)),
+				OutputDir:       getValueFromSources(configFile != nil && safeGet(configFile, func(cf *ConfigFile) string { return cf.Strategies.DataRecorder.OutputDir }) != "", safeGet(configFile, func(cf *ConfigFile) string { return cf.Strategies.DataRecorder.OutputDir }), getEnv("DATARECORDER_OUTPUT_DIR", "data/recordings")),
+				UseRTDSFallback: getBoolFromSources(configFile != nil, safeGet(configFile, func(cf *ConfigFile) bool { return cf.Strategies.DataRecorder.UseRTDSFallback }), parseBoolEnv("DATARECORDER_USE_RTDS_FALLBACK", true)),
 			},
 			Momentum: &MomentumConfig{
 				Asset: getValueFromSources(
-					configFile != nil && safeGetMomentumString(configFile, func(cf *ConfigFile) string { return cf.Strategies.Momentum.Asset }) != "",
-					safeGetMomentumString(configFile, func(cf *ConfigFile) string { return cf.Strategies.Momentum.Asset }),
+					configFile != nil && safeGet(configFile, func(cf *ConfigFile) string { return cf.Strategies.Momentum.Asset }) != "",
+					safeGet(configFile, func(cf *ConfigFile) string { return cf.Strategies.Momentum.Asset }),
 					getEnv("MOMENTUM_ASSET", "BTC"),
 				),
 				SizeUSDC: getFloatFromSources(
 					configFile != nil,
-					safeGetMomentumFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Momentum.SizeUSDC }),
+					safeGet(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Momentum.SizeUSDC }),
 					parseFloatEnv("MOMENTUM_SIZE_USDC", 25.0),
 				),
 				ThresholdBps: getIntFromSources(
 					configFile != nil,
-					safeGetMomentumInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Momentum.ThresholdBps }),
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Momentum.ThresholdBps }),
 					parseIntEnv("MOMENTUM_THRESHOLD_BPS", 15),
 				),
 				WindowSecs: getIntFromSources(
 					configFile != nil,
-					safeGetMomentumInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Momentum.WindowSecs }),
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Momentum.WindowSecs }),
 					parseIntEnv("MOMENTUM_WINDOW_SECS", 5),
 				),
 				MinEdgeCents: getIntFromSources(
 					configFile != nil,
-					safeGetMomentumInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Momentum.MinEdgeCents }),
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Momentum.MinEdgeCents }),
 					parseIntEnv("MOMENTUM_MIN_EDGE_CENTS", 3),
 				),
 				CooldownSecs: getIntFromSources(
 					configFile != nil,
-					safeGetMomentumInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Momentum.CooldownSecs }),
+					safeGet(configFile, func(cf *ConfigFile) int { return cf.Strategies.Momentum.CooldownSecs }),
 					parseIntEnv("MOMENTUM_COOLDOWN_SECS", 30),
 				),
 				UsePolygonFeed: getBoolFromSources(
 					configFile != nil,
-					safeGetMomentumBool(configFile, func(cf *ConfigFile) bool { return cf.Strategies.Momentum.UsePolygonFeed }),
+					safeGet(configFile, func(cf *ConfigFile) bool { return cf.Strategies.Momentum.UsePolygonFeed }),
 					parseBoolEnv("MOMENTUM_USE_POLYGON_FEED", true),
 				),
 			},
@@ -708,153 +944,10 @@ func getBoolFromSources(hasConfigValue bool, configValue, envValue bool) bool {
 	return envValue
 }
 
-// safeGetGridInt 安全地获取 Grid 配置的整数值
-func safeGetGridInt(cf *ConfigFile, getter func(*ConfigFile) int) int {
+// safeGet 安全地从 ConfigFile 取值（cf 为 nil 时返回零值）。
+func safeGet[T any](cf *ConfigFile, getter func(*ConfigFile) T) (zero T) {
 	if cf == nil {
-		return 0
-	}
-	return getter(cf)
-}
-
-// safeGetGridFloat 安全地获取 Grid 配置的浮点数值
-func safeGetGridFloat(cf *ConfigFile, getter func(*ConfigFile) float64) float64 {
-	if cf == nil {
-		return 0
-	}
-	return getter(cf)
-}
-
-// safeGetGridBool 安全地获取 Grid 配置的布尔值
-func safeGetGridBool(cf *ConfigFile, getter func(*ConfigFile) bool) bool {
-	if cf == nil {
-		return false
-	}
-	return getter(cf)
-}
-
-// safeGetGridIntSlice 安全地获取 Grid 配置的整数切片
-func safeGetGridIntSlice(cf *ConfigFile, getter func(*ConfigFile) []int) []int {
-	if cf == nil {
-		return nil
-	}
-	return getter(cf)
-}
-
-// safeGetThresholdInt 安全地获取 Threshold 配置的整数值
-func safeGetThresholdInt(cf *ConfigFile, getter func(*ConfigFile) int) int {
-	if cf == nil {
-		return 0
-	}
-	return getter(cf)
-}
-
-// safeGetThresholdFloat 安全地获取 Threshold 配置的浮点数值
-func safeGetThresholdFloat(cf *ConfigFile, getter func(*ConfigFile) float64) float64 {
-	if cf == nil {
-		return 0
-	}
-	return getter(cf)
-}
-
-// safeGetThresholdString 安全地获取 Threshold 配置的字符串值
-func safeGetThresholdString(cf *ConfigFile, getter func(*ConfigFile) string) string {
-	if cf == nil {
-		return ""
-	}
-	return getter(cf)
-}
-
-// safeGetPairLockInt 安全地获取 PairLock 配置的整数值
-func safeGetPairLockInt(cf *ConfigFile, getter func(*ConfigFile) int) int {
-	if cf == nil {
-		return 0
-	}
-	return getter(cf)
-}
-
-// safeGetPairLockFloat 安全地获取 PairLock 配置的浮点数值
-func safeGetPairLockFloat(cf *ConfigFile, getter func(*ConfigFile) float64) float64 {
-	if cf == nil {
-		return 0
-	}
-	return getter(cf)
-}
-
-// safeGetPairLockBool 安全地获取 PairLock 配置的布尔值
-func safeGetPairLockBool(cf *ConfigFile, getter func(*ConfigFile) bool) bool {
-	if cf == nil {
-		return false
-	}
-	return getter(cf)
-}
-
-func safeGetPairLockString(cf *ConfigFile, getter func(*ConfigFile) string) string {
-	if cf == nil {
-		return ""
-	}
-	return getter(cf)
-}
-
-// safeGetArbitrageInt 安全地获取 Arbitrage 配置的整数值
-func safeGetArbitrageInt(cf *ConfigFile, getter func(*ConfigFile) int) int {
-	if cf == nil {
-		return 0
-	}
-	return getter(cf)
-}
-
-// safeGetArbitrageFloat 安全地获取 Arbitrage 配置的浮点数值
-func safeGetArbitrageFloat(cf *ConfigFile, getter func(*ConfigFile) float64) float64 {
-	if cf == nil {
-		return 0
-	}
-	return getter(cf)
-}
-
-// safeGetDataRecorderString 安全地获取 DataRecorder 配置的字符串值
-func safeGetDataRecorderString(cf *ConfigFile, getter func(*ConfigFile) string) string {
-	if cf == nil {
-		return ""
-	}
-	return getter(cf)
-}
-
-// safeGetDataRecorderBool 安全地获取 DataRecorder 配置的布尔值
-func safeGetDataRecorderBool(cf *ConfigFile, getter func(*ConfigFile) bool) bool {
-	if cf == nil {
-		return false
-	}
-	return getter(cf)
-}
-
-// safeGetMomentumInt 安全地获取 Momentum 配置的整数值
-func safeGetMomentumInt(cf *ConfigFile, getter func(*ConfigFile) int) int {
-	if cf == nil {
-		return 0
-	}
-	return getter(cf)
-}
-
-// safeGetMomentumFloat 安全地获取 Momentum 配置的浮点数值
-func safeGetMomentumFloat(cf *ConfigFile, getter func(*ConfigFile) float64) float64 {
-	if cf == nil {
-		return 0
-	}
-	return getter(cf)
-}
-
-// safeGetMomentumString 安全地获取 Momentum 配置的字符串值
-func safeGetMomentumString(cf *ConfigFile, getter func(*ConfigFile) string) string {
-	if cf == nil {
-		return ""
-	}
-	return getter(cf)
-}
-
-// safeGetMomentumBool 安全地获取 Momentum 配置的布尔值
-func safeGetMomentumBool(cf *ConfigFile, getter func(*ConfigFile) bool) bool {
-	if cf == nil {
-		return false
+		return zero
 	}
 	return getter(cf)
 }
@@ -888,6 +981,12 @@ func (c *Config) Validate() error {
 			}
 			if c.Strategies.Grid.OrderSize <= 0 {
 				return fmt.Errorf("ORDER_SIZE 必须大于 0")
+			}
+			if c.Strategies.Grid.HealthLogIntervalSeconds < 0 {
+				return fmt.Errorf("GRID_HEALTH_LOG_INTERVAL_SECONDS 不能为负数")
+			}
+			if c.Strategies.Grid.StrongHedgeDebounceSeconds < 0 {
+				return fmt.Errorf("GRID_STRONG_HEDGE_DEBOUNCE_SECONDS 不能为负数")
 			}
 		case "threshold":
 			if c.Strategies.Threshold == nil {
@@ -951,6 +1050,28 @@ func (c *Config) Validate() error {
 			}
 			if c.Strategies.PairLock.FailFlattenMinShares < 0 {
 				return fmt.Errorf("PAIRLOCK_FAIL_FLATTEN_MIN_SHARES 不能为负数")
+			}
+		case "paired_trading":
+			if c.Strategies.PairedTrading == nil {
+				return fmt.Errorf("paired_trading 策略已启用但配置为空")
+			}
+			if c.Strategies.PairedTrading.CycleDuration <= 0 {
+				return fmt.Errorf("paired_trading.cycle_duration 必须 > 0")
+			}
+			if c.Strategies.PairedTrading.LockStart < 0 || c.Strategies.PairedTrading.AmplifyStart < 0 || c.Strategies.PairedTrading.BuildDuration < 0 {
+				return fmt.Errorf("paired_trading 阶段时间不能为负数")
+			}
+			if c.Strategies.PairedTrading.LockStart > c.Strategies.PairedTrading.CycleDuration || c.Strategies.PairedTrading.AmplifyStart > c.Strategies.PairedTrading.CycleDuration {
+				return fmt.Errorf("paired_trading 阶段时间必须在 cycle_duration 内")
+			}
+			if c.Strategies.PairedTrading.MinOrderSize <= 0 {
+				return fmt.Errorf("paired_trading.min_order_size 必须 > 0")
+			}
+			if c.Strategies.PairedTrading.MaxBuySlippageCents < 0 {
+				return fmt.Errorf("paired_trading.max_buy_slippage_cents 不能为负数")
+			}
+			if c.Strategies.PairedTrading.MaxSizeAdjustRatio < 0 {
+				return fmt.Errorf("paired_trading.max_size_adjust_ratio 不能为负数")
 			}
 		case "arbitrage":
 			if c.Strategies.Arbitrage == nil {

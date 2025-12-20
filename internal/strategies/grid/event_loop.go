@@ -6,18 +6,18 @@ import (
 
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
+	"github.com/betbot/gobet/internal/strategies/common"
 )
 
 // startLoop 启动策略内部单线程事件循环（只启动一次）
 // 目标：策略状态只在一个 goroutine 中变更，避免并发竞态与过度加锁。
 func (s *GridStrategy) startLoop(ctx context.Context) {
-	s.loopOnce.Do(func() {
-		loopCtx, cancel := context.WithCancel(ctx)
-		s.loopCancel = cancel
-
-		go func() {
-			ticker := time.NewTicker(1 * time.Second)
-			defer ticker.Stop()
+	common.StartLoopOnce(
+		ctx,
+		&s.loopOnce,
+		func(cancel context.CancelFunc) { s.loopCancel = cancel },
+		1*time.Second,
+		func(loopCtx context.Context, tickC <-chan time.Time) {
 			for {
 				select {
 				case <-loopCtx.Done():
@@ -51,12 +51,11 @@ func (s *GridStrategy) startLoop(ctx context.Context) {
 				case res := <-s.cmdResultC:
 					_ = s.handleCmdResultInternal(loopCtx, res)
 
-				case <-ticker.C:
+				case <-tickC:
 					// 周期性 tick：HedgePlan 超时/自愈、重试、周期末强对冲窗口等
 					s.planTick(loopCtx)
 				}
 			}
-		}()
-	})
+		},
+	)
 }
-

@@ -6,6 +6,7 @@ import (
 
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
+	"github.com/betbot/gobet/internal/strategies/common"
 )
 
 func (s *DataRecorderStrategy) initLoopIfNeeded() {
@@ -19,12 +20,12 @@ func (s *DataRecorderStrategy) initLoopIfNeeded() {
 
 func (s *DataRecorderStrategy) startLoop(ctx context.Context) {
 	s.initLoopIfNeeded()
-	s.loopOnce.Do(func() {
-		loopCtx, cancel := context.WithCancel(ctx)
-		s.loopCancel = cancel
-		go func() {
-			ticker := time.NewTicker(1 * time.Second)
-			defer ticker.Stop()
+	common.StartLoopOnce(
+		ctx,
+		&s.loopOnce,
+		func(cancel context.CancelFunc) { s.loopCancel = cancel },
+		1*time.Second,
+		func(loopCtx context.Context, tickC <-chan time.Time) {
 			for {
 				select {
 				case <-loopCtx.Done():
@@ -41,13 +42,13 @@ func (s *DataRecorderStrategy) startLoop(ctx context.Context) {
 					if down != nil {
 						_ = s.onPriceChangedInternal(loopCtx, down)
 					}
-				case <-ticker.C:
+				case <-tickC:
 					// 周期检测：即使没有新的 market 事件，也能触发切换
 					_ = s.cycleCheckTick(loopCtx)
 				}
 			}
-		}()
-	})
+		},
+	)
 }
 
 func (s *DataRecorderStrategy) stopLoop() {
@@ -55,4 +56,3 @@ func (s *DataRecorderStrategy) stopLoop() {
 		s.loopCancel()
 	}
 }
-

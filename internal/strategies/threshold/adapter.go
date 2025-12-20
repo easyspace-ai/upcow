@@ -1,8 +1,7 @@
 package threshold
 
 import (
-	"fmt"
-
+	"github.com/betbot/gobet/internal/strategies/configadapter"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/config"
 )
@@ -12,25 +11,23 @@ type ThresholdConfigAdapter struct{}
 
 // AdaptConfig 从通用配置适配为价格阈值策略配置
 func (a *ThresholdConfigAdapter) AdaptConfig(strategyConfig interface{}, proxyConfig interface{}) (interface{}, error) {
-	cfg, ok := strategyConfig.(config.StrategyConfig)
-	if !ok {
-		return nil, fmt.Errorf("无效的策略配置类型: %T", strategyConfig)
-	}
-
-	if cfg.Threshold == nil {
-		return nil, fmt.Errorf("价格阈值策略已启用但配置为空")
-	}
-
-	return &ThresholdStrategyConfig{
-		BuyThreshold:      cfg.Threshold.BuyThreshold,
-		SellThreshold:     cfg.Threshold.SellThreshold,
-		OrderSize:         cfg.Threshold.OrderSize,
-		TokenType:         cfg.Threshold.TokenType,
-		ProfitTargetCents: cfg.Threshold.ProfitTargetCents,
-		StopLossCents:     cfg.Threshold.StopLossCents,
-		MaxBuySlippageCents:  cfg.Threshold.MaxBuySlippageCents,
-		MaxSellSlippageCents: cfg.Threshold.MaxSellSlippageCents,
-	}, nil
+	return configadapter.AdaptRequired[config.ThresholdConfig, ThresholdStrategyConfig](
+		strategyConfig,
+		ID,
+		func(cfg config.StrategyConfig) *config.ThresholdConfig { return cfg.Threshold },
+		func(c *config.ThresholdConfig) (*ThresholdStrategyConfig, error) {
+			return &ThresholdStrategyConfig{
+				BuyThreshold:         c.BuyThreshold,
+				SellThreshold:        c.SellThreshold,
+				OrderSize:            c.OrderSize,
+				TokenType:            c.TokenType,
+				ProfitTargetCents:    c.ProfitTargetCents,
+				StopLossCents:        c.StopLossCents,
+				MaxBuySlippageCents:  c.MaxBuySlippageCents,
+				MaxSellSlippageCents: c.MaxSellSlippageCents,
+			}, nil
+		},
+	)
 }
 
 // 确保 ThresholdConfigAdapter 实现了 ConfigAdapter 接口

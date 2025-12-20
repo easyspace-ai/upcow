@@ -1,0 +1,24 @@
+## 标准策略模板（新策略一律按此结构）
+
+### 目录结构（推荐）
+```
+internal/strategies/<strategy_name>/
+  - adapter.go          # bbgo.ConfigAdapter（使用 internal/strategies/configadapter 的泛型助手）
+  - config.go           # 配置结构体 + Validate + GetName
+  - strategy.go         # Strategy struct + 生命周期 + 核心状态机入口
+  - event_loop.go       # 单 goroutine loop（使用 common.StartLoopOnce）
+  - order_loop_handlers.go / handlers.go  # 事件处理拆分（保持 strategy.go 不膨胀）
+```
+
+### 必须遵守的工程规范（实盘标准）
+- **单线程 loop**：所有状态机推进在单 goroutine 中完成（避免锁与竞态）
+- **不阻塞 loop**：网络 IO 一律通过 `bbgo.CommandExecutor` 投递；无 executor 时允许兼容，但要避免高频触发
+- **下单统一入口**：报价/滑点/最小金额调整要复用 `internal/strategies/common` 的通用组件（例如 `QuoteAndAdjustBuy`）
+- **限并发**：必须使用 `common.InFlightLimiter`
+- **非阻塞信号**：必须使用 `common.TrySignal` / `common.TrySend`
+- **跨周期隔离**：必须使用 `common.MarketSlugGuard`，订单必须携带 `MarketSlug`
+- **配置适配**：bbgo adapter 使用 `internal/strategies/configadapter.AdaptRequired`
+
+### 可直接复制的代码骨架
+- 见：`internal/strategies/template/`（该包**不注册**，仅用于复制/参考，确保可编译）
+

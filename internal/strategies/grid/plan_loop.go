@@ -3,24 +3,33 @@ package grid
 import (
 	"context"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 )
 
 // planTick 在策略 loop 的 tick 中调用，负责超时自愈/重试/强对冲（补仓）等。
 func (s *GridStrategy) planTick(ctx context.Context) {
-	if s.plan == nil || s.config == nil || s.tradingService == nil {
+	if s.config == nil || s.tradingService == nil {
 		return
 	}
 	if s.Executor == nil {
 		// Grid 下一阶段：强制所有交易 IO 走 Executor
-		s.plan.State = PlanFailed
-		s.plan.LastError = "Executor 未设置"
-		s.plan = nil
+		if s.plan != nil {
+			s.planFailed("Executor 未设置", false)
+		}
+		return
+	}
+
+	// 实盘保障：无论是否存在 plan，都允许周期末强对冲（break-even 兜底）
+	s.adhocStrongHedge(ctx)
+	// 实盘保障：低频健康日志（可配置）
+	s.logHealthTick()
+
+	if s.plan == nil {
 		return
 	}
 
@@ -31,70 +40,103 @@ func (s *GridStrategy) planTick(ctx context.Context) {
 	now := time.Now()
 
 	// 通用超时：Submitting 太久就失败并释放（避免卡死）
-	const submitTimeout = 35 * time.Second
-	if (p.State == PlanEntrySubmitting || p.State == PlanHedgeSubmitting) && now.Sub(p.StateAt) > submitTimeout {
-		p.State = PlanFailed
-		p.LastError = fmt.Sprintf("submit timeout: state=%s", p.State)
-		// 允许该层级重试
-		if p.LevelKey != "" && s.processedGridLevels != nil {
-			delete(s.processedGridLevels, p.LevelKey)
-		}
-		s.plan = nil
+	if p.submittingTimedOut(now) {
+		s.planFailed(fmt.Sprintf("submit timeout: state=%s", p.State), true)
 		return
 	}
 
-	// 进入强对冲窗口/补仓：只在 plan 活跃时做（避免无仓位时瞎补）
+	// plan 活跃时：补仓/强对冲（更激进，允许 plan 内节流/状态跟踪）
 	s.planStrongHedge(ctx)
 
 	// 轻量自愈：如果 entry/hedge 长时间没有更新，触发一次 SyncOrderStatus
-	const syncInterval = 5 * time.Second
 	switch p.State {
 	case PlanEntryOpen:
-		if p.EntryOrderID != "" && now.Sub(p.LastSyncAt) > syncInterval && now.Sub(p.StateAt) > syncInterval {
+		if p.shouldSyncEntry(now) {
 			_ = s.submitSyncOrderCmd(p.ID, p.EntryOrderID)
 		}
 	case PlanHedgeOpen:
-		if p.HedgeOrderID != "" && now.Sub(p.LastSyncAt) > syncInterval && now.Sub(p.StateAt) > syncInterval {
+		if p.shouldSyncHedge(now) {
 			_ = s.submitSyncOrderCmd(p.ID, p.HedgeOrderID)
 		}
 		// 如果对冲单长时间未成交，撤单并进入重试（撤单重挂）
-		const hedgeOpenTimeout = 10 * time.Second
-		if p.HedgeOrderID != "" && (p.HedgeStatus == domain.OrderStatusOpen || p.HedgeStatus == domain.OrderStatusPending) &&
-			now.Sub(p.StateAt) > hedgeOpenTimeout && now.Sub(p.LastCancelAt) > hedgeOpenTimeout {
-			p.State = PlanHedgeCanceling
-			p.StateAt = now
+		if p.shouldCancelStaleHedge(now) {
+			p.enterHedgeCanceling(now)
 			_ = s.submitCancelOrderCmd(p.ID, p.HedgeOrderID)
 		}
 	case PlanHedgeCanceling:
 		// 撤单长时间无反馈：进入重试窗口自愈
-		const cancelTimeout = 12 * time.Second
-		if now.Sub(p.StateAt) > cancelTimeout {
-			p.State = PlanRetryWait
-			p.StateAt = now
-			p.NextRetryAt = now.Add(2 * time.Second)
+		if p.cancelTimedOut(now) {
+			p.enterRetryWaitFixed(now, planRetryAfterCancelTimeoutDelay)
 		}
 	}
 
 	// 重试窗口：到点就重试 hedge（entry 重试由网格触发控制）
-	if p.State == PlanRetryWait && !p.NextRetryAt.IsZero() && now.After(p.NextRetryAt) {
+	if p.retryDue(now) {
 		if p.HedgeTemplate == nil {
-			p.State = PlanDone
-			s.plan = nil
+			s.planDone()
 			return
 		}
 		if p.HedgeAttempts >= p.MaxAttempts {
-			p.State = PlanFailed
-			p.LastError = "hedge max attempts reached"
-			s.plan = nil
+			s.planFailed("hedge max attempts reached", false)
 			return
 		}
-		p.State = PlanHedgeSubmitting
-		p.StateAt = now
-		p.HedgeAttempts++
+		p.enterHedgeSubmitting(now)
 		// 重试前，按当前盘口/周期窗口刷新 hedge 价格（必要时放宽到 break-even）
 		s.planRefreshHedgePrice(ctx)
 		_ = s.submitPlaceOrderCmd(ctx, p.ID, gridCmdPlaceHedge, p.HedgeTemplate)
 	}
+}
+
+// adhocStrongHedge allows end-of-cycle break-even locking even when no active plan exists.
+// It is a safety net for live trading: prevents being stuck in a negative minProfit state
+// due to plan lifecycle ending or missed events.
+func (s *GridStrategy) adhocStrongHedge(ctx context.Context) {
+	if s == nil || s.config == nil || s.tradingService == nil || s.currentMarket == nil {
+		return
+	}
+	if !s.config.EnableAdhocStrongHedge {
+		return
+	}
+	// 仅在周期末窗口触发，避免日常频繁“补仓刷单”
+	if !s.isInHedgeLockWindow(s.currentMarket) {
+		return
+	}
+	// 价格未就绪
+	if s.currentPriceUp <= 0 || s.currentPriceDown <= 0 {
+		return
+	}
+	if s.strongHedgeInFlight {
+		return
+	}
+	if s.strongHedgeDebouncer == nil {
+		s.strongHedgeDebouncer = common.NewDebouncer(2 * time.Second)
+	}
+	if s.config.StrongHedgeDebounceSeconds > 0 {
+		s.strongHedgeDebouncer.SetInterval(time.Duration(s.config.StrongHedgeDebounceSeconds) * time.Second)
+	}
+	if ready, _ := s.strongHedgeDebouncer.ReadyNow(); !ready {
+		return
+	}
+
+	upWin, downWin := s.profitsUSDC()
+	// 周期末兜底：至少不亏
+	target := 0.0
+	if upWin >= target && downWin >= target {
+		return
+	}
+
+	tokenType, assetID, fallbackPrice, dQ, maxBuy, ok := s.calcStrongHedgeOrderParams(target, upWin, downWin)
+	if !ok {
+		return
+	}
+
+	bestPrice, _ := orderutil.QuoteBuyPriceOr(ctx, s.tradingService, assetID, maxBuy, fallbackPrice)
+	order := orderutil.NewOrder(s.currentMarket.Slug, assetID, types.SideBuy, bestPrice, dQ, tokenType, false, types.OrderTypeFAK)
+	order.OrderID = fmt.Sprintf("adhoc-supp-%s-%d-%d", tokenType, bestPrice.Cents, time.Now().UnixNano())
+
+	s.strongHedgeInFlight = true
+	s.strongHedgeDebouncer.MarkNow()
+	_ = s.submitPlaceOrderCmd(ctx, "adhoc", gridCmdSupplement, order)
 }
 
 func (s *GridStrategy) planOnOrderUpdate(ctx context.Context, order *domain.Order) {
@@ -102,30 +144,22 @@ func (s *GridStrategy) planOnOrderUpdate(ctx context.Context, order *domain.Orde
 		return
 	}
 	p := s.plan
+	now := time.Now()
 
 	// entry 订单更新
 	if p.EntryOrderID != "" && order.OrderID == p.EntryOrderID {
 		p.EntryStatus = order.Status
 		switch order.Status {
 		case domain.OrderStatusCanceled, domain.OrderStatusFailed:
-			p.State = PlanFailed
-			p.LastError = "entry canceled/failed"
-			// 允许该层级重试
-			if p.LevelKey != "" && s.processedGridLevels != nil {
-				delete(s.processedGridLevels, p.LevelKey)
-			}
-			s.plan = nil
+			s.planFailed("entry canceled/failed", true)
 			return
 		case domain.OrderStatusFilled:
 			// 入场完成 -> 对冲提交（如果需要）
 			if p.HedgeTemplate == nil || !s.config.EnableDoubleSide {
-				p.State = PlanDone
-				s.plan = nil
+				s.planDone()
 				return
 			}
-			p.State = PlanHedgeSubmitting
-			p.StateAt = time.Now()
-			p.HedgeAttempts++
+			p.enterHedgeSubmitting(now)
 			s.planRefreshHedgePrice(ctx)
 			_ = s.submitPlaceOrderCmd(ctx, p.ID, gridCmdPlaceHedge, p.HedgeTemplate)
 			return
@@ -139,15 +173,11 @@ func (s *GridStrategy) planOnOrderUpdate(ctx context.Context, order *domain.Orde
 		p.HedgeStatus = order.Status
 		switch order.Status {
 		case domain.OrderStatusFilled:
-			p.State = PlanDone
-			s.plan = nil
+			s.planDone()
 			return
 		case domain.OrderStatusCanceled, domain.OrderStatusFailed:
 			// 退避重试
-			p.StateAt = time.Now()
-			delay := time.Duration(1<<minInt(p.HedgeAttempts, 3)) * time.Second // 2s/4s/8s...
-			p.NextRetryAt = time.Now().Add(delay)
-			p.State = PlanRetryWait
+			p.enterRetryWait(now)
 			return
 		default:
 			return
@@ -175,12 +205,7 @@ func (s *GridStrategy) planRefreshHedgePrice(ctx context.Context) {
 	}
 
 	assetID := p.HedgeTemplate.AssetID
-	askPrice, err := orderutil.QuoteBuyPrice(ctx, s.tradingService, assetID, 0)
-	if err != nil {
-		// 取不到盘口时，退化为 maxHedgeCents（保证不破坏锁盈/不亏目标）
-		p.HedgeTemplate.Price = domain.Price{Cents: maxHedgeCents}
-		return
-	}
+	askPrice, _ := orderutil.QuoteBuyPriceOr(ctx, s.tradingService, assetID, 0, domain.Price{Cents: maxHedgeCents})
 
 	// 锁盈约束：hedge 价格不能超过 maxHedgeCents，否则锁亏
 	if askPrice.Cents > maxHedgeCents {
@@ -200,7 +225,10 @@ func (s *GridStrategy) planStrongHedge(ctx context.Context) {
 	if p.SupplementInFlight {
 		return
 	}
-	if !p.LastSupplementAt.IsZero() && time.Since(p.LastSupplementAt) < 2*time.Second {
+	if p.SupplementDebouncer == nil {
+		p.SupplementDebouncer = common.NewDebouncer(2 * time.Second)
+	}
+	if ready, _ := p.SupplementDebouncer.ReadyNow(); !ready {
 		return
 	}
 
@@ -220,69 +248,15 @@ func (s *GridStrategy) planStrongHedge(ctx context.Context) {
 		return
 	}
 
-	needUp := math.Max(0, target-upWin)
-	needDown := math.Max(0, target-downWin)
-	var tokenType domain.TokenType
-	var assetID string
-	var priceCents int
-	var needed float64
-	if needUp >= needDown {
-		tokenType = domain.TokenTypeUp
-		assetID = s.currentMarket.YesAssetID
-		priceCents = s.currentPriceUp
-		needed = needUp
-	} else {
-		tokenType = domain.TokenTypeDown
-		assetID = s.currentMarket.NoAssetID
-		priceCents = s.currentPriceDown
-		needed = needDown
-	}
-
-	price := domain.Price{Cents: priceCents}
-	priceDec := price.ToDecimal()
-	if priceDec <= 0 || priceDec >= 1 {
+	tokenType, assetID, price, dQ, maxBuy, ok := s.calcStrongHedgeOrderParams(target, upWin, downWin)
+	if !ok {
 		return
-	}
-
-	dQ := needed / (1.0 - priceDec)
-	if dQ <= 0 || math.IsNaN(dQ) || math.IsInf(dQ, 0) {
-		return
-	}
-
-	minOrderUSDC := s.config.MinOrderSize
-	if minOrderUSDC <= 0 {
-		minOrderUSDC = 1.1
-	}
-	if dQ*priceDec < minOrderUSDC {
-		dQ = minOrderUSDC / priceDec
-	}
-
-	// 限制单次补仓
-	maxDQ := 50.0
-	if s.isInHedgeLockWindow(s.currentMarket) {
-		maxDQ = math.Max(50.0, dQ)
-	}
-	if dQ > maxDQ {
-		dQ = maxDQ
 	}
 
 	// 取 bestAsk，优先成交
-	maxBuy := 0
-	if s.config.SupplementMaxBuySlippageCents > 0 {
-		maxBuy = price.Cents + s.config.SupplementMaxBuySlippageCents
-	}
-	bestPrice, err := orderutil.QuoteBuyPrice(ctx, s.tradingService, assetID, maxBuy)
-	if err != nil {
-		// 盘口不可用则用当前价格兜底（避免完全停摆）
-		bestPrice = price
-	}
+	bestPrice, _ := orderutil.QuoteBuyPriceOr(ctx, s.tradingService, assetID, maxBuy, price)
 
-	order := orderutil.NewOrder(s.currentMarket.Slug, assetID, types.SideBuy, bestPrice, dQ, tokenType, false, types.OrderTypeFAK)
-	order.OrderID = fmt.Sprintf("plan-supp-%s-%d-%d", tokenType, bestPrice.Cents, time.Now().UnixNano())
-
-	p.SupplementInFlight = true
-	p.StateAt = time.Now()
-	_ = s.submitPlaceOrderCmd(ctx, p.ID, gridCmdSupplement, order)
+	s.submitStrongHedgeSupplement(ctx, p, tokenType, assetID, bestPrice, dQ)
 }
 
 func minInt(a, b int) int {
@@ -291,4 +265,3 @@ func minInt(a, b int) int {
 	}
 	return b
 }
-
