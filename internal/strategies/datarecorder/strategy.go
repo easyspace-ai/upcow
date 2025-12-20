@@ -34,6 +34,7 @@ func (l *rtdsLoggerAdapter) Printf(format string, v ...interface{}) {
 
 // DataRecorderStrategy 数据记录策略
 type DataRecorderStrategy struct {
+	Executor           bbgo.CommandExecutor
 	config             *DataRecorderStrategyConfig
 	recorder           *DataRecorder
 	targetPriceFetcher *TargetPriceFetcher
@@ -44,6 +45,14 @@ type DataRecorderStrategy struct {
 	btcRealtimePrice   float64 // BTC 实时价
 	upPrice            float64 // UP 价格
 	downPrice          float64 // DOWN 价格
+
+	// 统一：单线程 loop（价格合并 + tick 周期检测）
+	loopOnce     sync.Once
+	loopCancel   context.CancelFunc
+	priceSignalC chan struct{}
+	priceMu      sync.Mutex
+	latestPrices map[domain.TokenType]*events.PriceChangedEvent
+
 	mu                 sync.RWMutex
 	ctx                context.Context
 	cancel             context.CancelFunc
@@ -187,16 +196,29 @@ func (s *DataRecorderStrategy) InitializeWithConfig(ctx context.Context, config 
 	logger.Infof("数据记录策略已初始化: 输出目录=%s, RTDS备选=%v, 实时价格源=Chainlink",
 		recorderConfig.OutputDir, recorderConfig.UseRTDSFallback)
 
-	// 启动周期检查 goroutine，每秒检查当前时间，主动触发周期切换
-	s.cycleCheckStop = make(chan struct{})
-	s.cycleCheckWg.Add(1)
-	go s.cycleCheckLoop(ctx)
-
 	return nil
 }
 
-// OnPriceChanged 处理价格变化事件
+// OnPriceChanged 处理价格变化事件（快路径：只合并信号，实际逻辑在 loop 内串行执行）
 func (s *DataRecorderStrategy) OnPriceChanged(ctx context.Context, event *events.PriceChangedEvent) error {
+	if event == nil {
+		return nil
+	}
+	s.startLoop(ctx)
+	s.priceMu.Lock()
+	if s.latestPrices == nil {
+		s.latestPrices = make(map[domain.TokenType]*events.PriceChangedEvent)
+	}
+	s.latestPrices[event.TokenType] = event
+	s.priceMu.Unlock()
+	select {
+	case s.priceSignalC <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event *events.PriceChangedEvent) error {
 	// 只处理 btc-updown-15m-* 市场
 	if !s.isBTC15mMarket(event.Market) {
 		return nil
@@ -571,7 +593,7 @@ func (s *DataRecorderStrategy) Subscribe(session *bbgo.ExchangeSession) {
 // Run 运行策略（BBGO 风格）
 func (s *DataRecorderStrategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, session *bbgo.ExchangeSession) error {
 	log.Infof("数据记录策略已启动")
-	// 策略已经在 Subscribe 中注册了回调，这里可以做一些启动后的初始化工作
+	s.startLoop(ctx)
 	return nil
 }
 
@@ -580,6 +602,7 @@ func (s *DataRecorderStrategy) Run(ctx context.Context, orderExecutor bbgo.Order
 // 注意：wg 参数由 shutdown.Manager 统一管理，策略的 Shutdown 方法不应该调用 wg.Done()
 func (s *DataRecorderStrategy) Shutdown(ctx context.Context, wg *sync.WaitGroup) {
 	log.Infof("数据记录策略: 开始优雅关闭...")
+	s.stopLoop()
 	if err := s.Cleanup(ctx); err != nil {
 		log.Errorf("数据记录策略清理失败: %v", err)
 	}

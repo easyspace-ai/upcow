@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"time"
 
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/strategies"
+	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/logger"
 	"github.com/sirupsen/logrus"
@@ -26,12 +28,24 @@ func init() {
 
 // ArbitrageStrategy 套利策略实现
 type ArbitrageStrategy struct {
+	Executor       bbgo.CommandExecutor
 	config         *ArbitrageStrategyConfig
 	tradingService TradingServiceInterface
 	positionState  *domain.ArbitragePositionState
 	currentMarket  *domain.Market
 	priceUp        float64 // 当前UP价格
 	priceDown      float64 // 当前DOWN价格
+
+	// 统一：单线程 loop（价格合并 + 订单更新 + 命令结果）
+	loopOnce     sync.Once
+	loopCancel   context.CancelFunc
+	priceSignalC chan struct{}
+	priceMu      sync.Mutex
+	latestPrices map[domain.TokenType]*events.PriceChangedEvent
+	orderC       chan *domain.Order
+	cmdResultC   chan arbitrageCmdResult
+	pendingPlace bool
+
 	mu             sync.RWMutex
 	isPlacingOrder bool
 	placeOrderMu   sync.Mutex
@@ -111,8 +125,26 @@ func (s *ArbitrageStrategy) InitializeWithConfig(ctx context.Context, config str
 	return nil
 }
 
-// OnPriceChanged 处理价格变化事件
+// OnPriceChanged 处理价格变化事件（快路径：只合并信号，实际逻辑在 loop 内串行执行）
 func (s *ArbitrageStrategy) OnPriceChanged(ctx context.Context, event *events.PriceChangedEvent) error {
+	if event == nil {
+		return nil
+	}
+	s.startLoop(ctx)
+	s.priceMu.Lock()
+	if s.latestPrices == nil {
+		s.latestPrices = make(map[domain.TokenType]*events.PriceChangedEvent)
+	}
+	s.latestPrices[event.TokenType] = event
+	s.priceMu.Unlock()
+	select {
+	case s.priceSignalC <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (s *ArbitrageStrategy) onPriceChangedInternal(ctx context.Context, event *events.PriceChangedEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -127,6 +159,8 @@ func (s *ArbitrageStrategy) OnPriceChanged(ctx context.Context, event *events.Pr
 
 	// 初始化或更新市场信息
 	if s.currentMarket == nil || s.currentMarket.Slug != event.Market.Slug {
+		// 周期切换：清理 pending 标记，避免新周期被旧状态卡住
+		s.pendingPlace = false
 		s.currentMarket = event.Market
 		s.positionState = domain.NewArbitragePositionState(event.Market)
 		logger.Infof("套利策略: 初始化新市场 %s, 周期开始时间=%d", event.Market.Slug, event.Market.Timestamp)
@@ -280,13 +314,14 @@ func (s *ArbitrageStrategy) Cleanup(ctx context.Context) error {
 func (s *ArbitrageStrategy) Subscribe(session *bbgo.ExchangeSession) {
 	// 注册价格变化回调
 	session.OnPriceChanged(s)
+	session.OnOrderUpdate(s)
 	log.Infof("套利策略已订阅价格变化事件")
 }
 
 // Run 运行策略（BBGO 风格）
 func (s *ArbitrageStrategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, session *bbgo.ExchangeSession) error {
 	log.Infof("套利策略已启动")
-	// 策略已经在 Subscribe 中注册了回调，这里可以做一些启动后的初始化工作
+	s.startLoop(ctx)
 	return nil
 }
 
@@ -295,6 +330,7 @@ func (s *ArbitrageStrategy) Run(ctx context.Context, orderExecutor bbgo.OrderExe
 // 注意：wg 参数由 shutdown.Manager 统一管理，策略的 Shutdown 方法不应该调用 wg.Done()
 func (s *ArbitrageStrategy) Shutdown(ctx context.Context, wg *sync.WaitGroup) {
 	log.Infof("套利策略: 开始优雅关闭...")
+	s.stopLoop()
 	if err := s.Cleanup(ctx); err != nil {
 		log.Errorf("套利策略清理失败: %v", err)
 	}
@@ -589,57 +625,94 @@ func (s *ArbitrageStrategy) handleProfitAmplification(ctx context.Context, event
 
 // placeBuyOrder 下买入订单
 func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Market, tokenType domain.TokenType, size float64, reason string) error {
-	if s.isPlacingOrder {
-		return nil // 正在下单，跳过
+	// 统一：loop 内节流，避免在高频价格下重复投递
+	if s.pendingPlace {
+		return nil
 	}
-
-	s.placeOrderMu.Lock()
-	defer s.placeOrderMu.Unlock()
-
-	if s.isPlacingOrder {
+	if market == nil || s.tradingService == nil || s.config == nil {
 		return nil
 	}
 
-	s.isPlacingOrder = true
-	defer func() {
-		s.isPlacingOrder = false
-	}()
-
-	// 获取订单簿的卖一价作为买入价格
 	assetID := market.GetAssetID(tokenType)
-	_, bestAsk, err := s.tradingService.GetBestPrice(ctx, assetID)
-	if err != nil {
-		return fmt.Errorf("获取订单簿失败: %w", err)
+	minOrderUSDC := s.config.MinOrderSize
+	ts := s.tradingService
+	exec := s.Executor
+
+	// 滑点保护：相对当前观测价（非盘口价）设置上限
+	maxCents := 0
+	if s.config.MaxBuySlippageCents > 0 {
+		ref := 0.0
+		if tokenType == domain.TokenTypeUp {
+			ref = s.priceUp
+		} else if tokenType == domain.TokenTypeDown {
+			ref = s.priceDown
+		}
+		if ref > 0 {
+			refCents := int(ref*100 + 0.5)
+			maxCents = refCents + s.config.MaxBuySlippageCents
+		}
 	}
 
-	if bestAsk <= 0 {
-		return fmt.Errorf("订单簿卖一价无效: %.4f", bestAsk)
+	// 没有 executor 时仍保持兼容（但会阻塞 loop，不推荐）
+	if exec == nil {
+		bestAskPrice, err := orderutil.QuoteBuyPrice(ctx, ts, assetID, maxCents)
+		if err != nil {
+			return fmt.Errorf("获取订单簿失败: %w", err)
+		}
+
+		orderAmount := size * bestAskPrice.ToDecimal()
+		if orderAmount < minOrderUSDC {
+			logger.Warnf("套利策略: %s - 订单金额 %.2f USDC 小于最小要求 %.2f USDC，跳过下单（数量=%.2f, 价格=%.4f）",
+				reason, orderAmount, minOrderUSDC, size, bestAskPrice.ToDecimal())
+			return nil
+		}
+
+		order := orderutil.NewOrder(market.Slug, assetID, types.SideBuy, bestAskPrice, size, tokenType, true, types.OrderTypeFAK)
+		_, err = ts.PlaceOrder(ctx, order)
+		return err
 	}
 
-	buyPrice := domain.PriceFromDecimal(bestAsk)
+	s.pendingPlace = true
+	s.initLoopIfNeeded()
+	ok := exec.Submit(bbgo.Command{
+		Name:    fmt.Sprintf("arbitrage_buy_%s_%s", tokenType, reason),
+		Timeout: 25 * time.Second,
+		Do: func(runCtx context.Context) {
+			bestAskPrice, err := orderutil.QuoteBuyPrice(runCtx, ts, assetID, maxCents)
+			if err != nil {
+				select {
+				case s.cmdResultC <- arbitrageCmdResult{tokenType: tokenType, reason: reason, err: err}:
+				default:
+				}
+				return
+			}
 
-	// 计算订单金额（USDC）= 数量 * 价格
-	orderAmount := size * bestAsk
+			orderAmount := size * bestAskPrice.ToDecimal()
+			if orderAmount < minOrderUSDC {
+				select {
+				case s.cmdResultC <- arbitrageCmdResult{tokenType: tokenType, reason: reason, skipped: true}:
+				default:
+				}
+				return
+			}
 
-	// 检查订单金额是否满足最小要求
-	if orderAmount < s.config.MinOrderSize {
-		logger.Warnf("套利策略: %s - 订单金额 %.2f USDC 小于最小要求 %.2f USDC，跳过下单（数量=%.2f, 价格=%.4f）",
-			reason, orderAmount, s.config.MinOrderSize, size, bestAsk)
-		return nil // 不返回错误，只是跳过这个订单
+			// marketSlug 通过当前 market 注入，确保只管理本周期
+			mSlug := ""
+			if s.currentMarket != nil {
+				mSlug = s.currentMarket.Slug
+			}
+			order := orderutil.NewOrder(mSlug, assetID, types.SideBuy, bestAskPrice, size, tokenType, true, types.OrderTypeFAK)
+
+			created, err := ts.PlaceOrder(runCtx, order)
+			select {
+			case s.cmdResultC <- arbitrageCmdResult{tokenType: tokenType, reason: reason, created: created, err: err}:
+			default:
+			}
+		},
+	})
+	if !ok {
+		s.pendingPlace = false
+		return fmt.Errorf("执行器队列已满，无法提交订单")
 	}
-
-	logger.Infof("套利策略: %s - 买入 %s, 数量=%.2f, 价格=%.4f, 金额=%.2f USDC (卖一价)", reason, tokenType, size, bestAsk, orderAmount)
-
-	order := &domain.Order{
-		AssetID:      assetID,
-		Side:         types.SideBuy,
-		Price:        buyPrice,
-		Size:         size,
-		TokenType:    tokenType,
-		IsEntryOrder: true,
-		Status:       domain.OrderStatusPending,
-	}
-
-	_, err = s.tradingService.PlaceOrder(ctx, order)
-	return err
+	return nil
 }

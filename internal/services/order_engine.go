@@ -454,35 +454,39 @@ func (e *OrderEngine) handleCancelOrder(cmd *CancelOrderCommand) {
 
 	// 更新状态：标记为取消中
 	order.Status = domain.OrderStatusCanceled
+	e.orderStore[order.OrderID] = order
+	e.emitOrderUpdate(order)
 
-	// 异步执行 IO 操作
+	// 异步执行 IO 操作（结果回流到状态循环）
 	go e.ioExecutor.CancelOrderAsync(cmd.Context, cmd.OrderID, func(err error) {
-		if err != nil {
-			// 取消失败，恢复订单状态
-			order.Status = domain.OrderStatusOpen
-			orderEngineLog.Errorf("取消订单失败: %v", err)
-		} else {
-			// 取消成功，从活跃订单中移除
-			delete(e.openOrders, cmd.OrderID)
-			orderEngineLog.Infof("订单已取消: %s", cmd.OrderID)
+		updateCmd := &UpdateOrderCommand{
+			id:    fmt.Sprintf("cancel_result_%s", cmd.OrderID),
+			Order: order,
+			Error: err,
 		}
+		e.SubmitCommand(updateCmd)
 
-		// 回复原始命令
 		select {
 		case cmd.Reply <- err:
 		default:
 		}
 	})
-
-	// 立即返回
-	select {
-	case cmd.Reply <- nil:
-	default:
-	}
 }
 
 // handleUpdateOrder 处理更新订单命令（IO 操作完成后调用）
 func (e *OrderEngine) handleUpdateOrder(cmd *UpdateOrderCommand) {
+	// CancelOrderAsync 也复用 UpdateOrderCommand 回流：这里区分“取消失败”与“下单失败”
+	if cmd.Error != nil && cmd.Order != nil && cmd.Order.Status == domain.OrderStatusCanceled {
+		// 取消失败：恢复为 open，并保留在 openOrders
+		if existing, ok := e.openOrders[cmd.Order.OrderID]; ok {
+			existing.Status = domain.OrderStatusOpen
+			e.orderStore[existing.OrderID] = existing
+			e.emitOrderUpdate(existing)
+		}
+		e.stats.Errors++
+		return
+	}
+
 	if cmd.Error != nil {
 		// IO 操作失败，标记订单为失败状态
 		order := cmd.Order
@@ -521,6 +525,9 @@ func (e *OrderEngine) handleUpdateOrder(cmd *UpdateOrderCommand) {
 		// 更新现有订单
 		existingOrder.Status = order.Status
 		existingOrder.OrderID = order.OrderID
+		if order.FilledSize > 0 {
+			existingOrder.FilledSize = order.FilledSize
+		}
 		if order.FilledAt != nil {
 			existingOrder.FilledAt = order.FilledAt
 		}
@@ -533,8 +540,8 @@ func (e *OrderEngine) handleUpdateOrder(cmd *UpdateOrderCommand) {
 	// 更新订单存储
 	e.orderStore[order.OrderID] = order
 
-	// 如果订单已成交，从活跃订单中移除
-	if order.Status == domain.OrderStatusFilled {
+	// 如果订单已成交/已取消，从活跃订单中移除
+	if order.Status == domain.OrderStatusFilled || order.Status == domain.OrderStatusCanceled {
 		delete(e.openOrders, order.OrderID)
 	}
 
@@ -558,11 +565,20 @@ func (e *OrderEngine) handleProcessTrade(cmd *ProcessTradeCommand) {
 	}
 
 	// 2. 更新订单状态
-	if order.Status != domain.OrderStatusFilled {
-		order.Status = domain.OrderStatusFilled
-		now := time.Now()
-		order.FilledAt = &now
-		order.Size = trade.Size // 使用实际成交数量
+	// 支持部分成交：累计 FilledSize，只有 FilledSize >= Size 才标记为 filled
+	if trade.Size > 0 {
+		order.FilledSize += trade.Size
+		if order.FilledSize >= order.Size && order.Size > 0 {
+			order.Status = domain.OrderStatusFilled
+			now := time.Now()
+			order.FilledAt = &now
+			order.FilledSize = order.Size
+		} else {
+			// 仍未完全成交
+			if order.Status != domain.OrderStatusFilled {
+				order.Status = domain.OrderStatusPartial
+			}
+		}
 	}
 
 	// 3. 从活跃订单中移除
@@ -593,6 +609,7 @@ func (e *OrderEngine) updatePositionFromTrade(trade *domain.Trade, order *domain
 		// 创建新仓位
 		position = &domain.Position{
 			ID:        positionID,
+			MarketSlug: order.MarketSlug,
 			Market:    trade.Market,
 			EntryOrder: order,
 			EntryPrice: trade.Price,
@@ -626,7 +643,8 @@ func (e *OrderEngine) updatePositionFromTrade(trade *domain.Trade, order *domain
 
 // getPositionID 获取仓位ID
 func (e *OrderEngine) getPositionID(order *domain.Order) string {
-	return fmt.Sprintf("%s_%s", order.AssetID, order.TokenType)
+	// 只管理本周期：positionID 按 MarketSlug 分桶
+	return fmt.Sprintf("%s_%s_%s", order.MarketSlug, order.AssetID, order.TokenType)
 }
 
 // processPendingTrades 处理待处理的交易
@@ -823,17 +841,25 @@ func (e *OrderEngine) handleQueryStats(cmd *QueryStatsCommand) {
 // emitOrderUpdate 触发订单更新回调
 func (e *OrderEngine) emitOrderUpdate(order *domain.Order) {
 	handlers := e.orderHandlers
-	if len(handlers) == 0 {
+	if len(handlers) == 0 || order == nil {
 		return
 	}
 
-	// 异步执行回调，避免阻塞状态循环
-	for _, handler := range handlers {
-		go func(h OrderUpdateHandler) {
-			if err := h.OnOrderUpdate(context.Background(), order); err != nil {
+	// 串行执行（确定性优先；避免并发导致策略状态竞态）
+	for _, h := range handlers {
+		if h == nil {
+			continue
+		}
+		func(handler OrderUpdateHandler) {
+			defer func() {
+				if r := recover(); r != nil {
+					orderEngineLog.Errorf("订单更新回调 panic: %v", r)
+				}
+			}()
+			if err := handler.OnOrderUpdate(context.Background(), order); err != nil {
 				orderEngineLog.Errorf("订单更新回调执行失败: %v", err)
 			}
-		}(handler)
+		}(h)
 	}
 }
 

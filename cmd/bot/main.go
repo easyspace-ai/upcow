@@ -14,6 +14,7 @@ import (
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/infrastructure/websocket"
+	"github.com/betbot/gobet/internal/metrics"
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
@@ -36,6 +37,19 @@ type sessionOrderHandler struct {
 }
 
 func (h *sessionOrderHandler) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
+	// 只把“当前周期”的订单更新转发给 Session/策略，避免跨周期串单
+	if order != nil && h.market != nil {
+		// 1) 有 MarketSlug：严格匹配
+		if order.MarketSlug != "" && order.MarketSlug != h.market.Slug {
+			return nil
+		}
+		// 2) 没有 MarketSlug：用 assetID 兜底匹配（当前 market 的 yes/no assetID 必须命中其一）
+		if order.MarketSlug == "" && order.AssetID != "" {
+			if order.AssetID != h.market.YesAssetID && order.AssetID != h.market.NoAssetID {
+				return nil
+			}
+		}
+	}
 	h.session.EmitOrderUpdate(ctx, order)
 	return nil
 }
@@ -107,7 +121,7 @@ func main() {
 		MaxAge:        30,
 		Compress:      true,
 		LogByCycle:    cfg.LogByCycle,
-		CycleDuration: 1 * time.Minute, // 测试模式：1分钟周期
+		CycleDuration: 15 * time.Minute,
 	}
 	if err := logger.Init(logConfig); err != nil {
 		logrus.Errorf("重新初始化日志失败: %v", err)
@@ -205,6 +219,9 @@ func main() {
 	environ.SetMarketDataService(marketDataService)
 	environ.SetTradingService(tradingService)
 
+	// 创建并注入全局命令执行器（串行执行交易/网络 IO，策略 loop 不直接阻塞在网络调用上）
+	environ.SetExecutor(bbgo.NewSerialCommandExecutor(2048))
+
 	// 设置系统级配置（直接回调模式防抖间隔，BBGO风格：只支持直接模式）
 	if cfg.DirectModeDebounce > 0 {
 		environ.SetDirectModeDebounce(cfg.DirectModeDebounce)
@@ -214,6 +231,18 @@ func main() {
 	// 创建持久化服务
 	persistenceService := persistence.NewJSONFileService("data/persistence")
 	environ.SetPersistenceService(persistenceService)
+	// 交易服务使用同一套持久化（用于重启恢复快照）
+	tradingService.SetPersistence(persistenceService, "bot")
+
+	// 可选：启动 metrics/pprof（默认关闭，通过环境变量启用）
+	if addr := os.Getenv("METRICS_ADDR"); addr != "" {
+		go func() {
+			logrus.Infof("📊 metrics/pprof 启用: listen=%s (expvar:/debug/vars, pprof:/debug/pprof)", addr)
+			if err := metrics.Start(addr); err != nil {
+				logrus.Errorf("metrics server 启动失败: %v", err)
+			}
+		}()
+	}
 
 	// 创建 Trader
 	trader := bbgo.NewTrader(environ)
@@ -340,6 +369,14 @@ func main() {
 	// 设置会话切换回调，当周期切换时重新注册策略
 	marketScheduler.OnSessionSwitch(func(oldSession *bbgo.ExchangeSession, newSession *bbgo.ExchangeSession, newMarket *domain.Market) {
 		logrus.Infof("🔄 [周期切换] 检测到会话切换，重新注册策略到新会话: %s", newMarket.Slug)
+		// 只管理本周期：先取消上一周期残留的 open orders，避免跨周期串单
+		cancelCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		tradingService.CancelOrdersNotInMarket(cancelCtx, newMarket.Slug)
+		// 可选：周期开始时也清空“本周期残留 open orders”（例如重启后同周期还有挂单）
+		if cfg.CancelOpenOrdersOnCycleStart {
+			tradingService.CancelOrdersForMarket(cancelCtx, newMarket.Slug)
+		}
+		cancel()
 		registerStrategiesToSession(newSession, newMarket)
 	})
 

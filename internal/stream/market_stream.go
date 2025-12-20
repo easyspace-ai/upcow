@@ -49,12 +49,19 @@ func (h *HandlerList) Add(handler PriceChangeHandler) {
 	h.handlers = append(h.handlers, handler)
 }
 
+// Snapshot 返回处理器快照（用于在无锁状态下遍历，避免长时间持锁）
+func (h *HandlerList) Snapshot() []PriceChangeHandler {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make([]PriceChangeHandler, len(h.handlers))
+	copy(out, h.handlers)
+	return out
+}
+
 // Emit 触发所有处理器
 func (h *HandlerList) Emit(ctx context.Context, event *events.PriceChangedEvent) {
-	h.mu.RLock()
-	handlers := h.handlers
+	handlers := h.Snapshot()
 	handlerCount := len(handlers)
-	h.mu.RUnlock()
 
 	if handlerCount == 0 {
 		log.Warnf("⚠️ [Emit] HandlerList 为空，没有处理器可触发！事件: %s @ %dc", 
@@ -65,9 +72,17 @@ func (h *HandlerList) Emit(ctx context.Context, event *events.PriceChangedEvent)
 	log.Debugf("📤 [Emit] 触发 %d 个价格变化处理器: %s @ %dc", 
 		handlerCount, event.TokenType, event.NewPrice.Cents)
 
-	// 异步执行，避免阻塞
+	// 串行执行（确定性优先，避免并发导致的状态竞态）
 	for i, handler := range handlers {
-		go func(idx int, h PriceChangeHandler) {
+		if handler == nil {
+			continue
+		}
+		func(idx int, h PriceChangeHandler) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Errorf("价格变化处理器 %d panic: %v", idx, r)
+				}
+			}()
 			if err := h.OnPriceChanged(ctx, event); err != nil {
 				log.Errorf("价格变化处理器 %d 执行失败: %v", idx, err)
 			} else {

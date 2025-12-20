@@ -32,6 +32,8 @@ func (a *GridConfigAdapter) AdaptConfig(strategyConfig interface{}, proxyConfig 
 		HardStopPrice:      cfg.Grid.HardStopPrice,
 		ElasticStopPrice:   cfg.Grid.ElasticStopPrice,
 		MaxRoundsPerPeriod: cfg.Grid.MaxRoundsPerPeriod,
+		EntryMaxBuySlippageCents:      cfg.Grid.EntryMaxBuySlippageCents,
+		SupplementMaxBuySlippageCents: cfg.Grid.SupplementMaxBuySlippageCents,
 	}, nil
 }
 

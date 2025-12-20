@@ -16,6 +16,8 @@ type GridStrategyConfig struct {
 	HardStopPrice      int     // 硬止损价格（分）
 	ElasticStopPrice   int     // 弹性止损价格（分）
 	MaxRoundsPerPeriod int     // 每个周期最大轮数
+	EntryMaxBuySlippageCents      int // 入场买入最大滑点（分），相对 gridLevel（0=关闭）
+	SupplementMaxBuySlippageCents int // 补仓/强对冲买入最大滑点（分），相对当前价（0=关闭）
 }
 
 // GetName 实现 StrategyConfig 接口
@@ -55,6 +57,9 @@ func (c *GridStrategyConfig) Validate() error {
 	// 验证订单大小
 	if c.OrderSize <= 0 {
 		return fmt.Errorf("订单大小 order_size 必须大于 0")
+	}
+	if c.EntryMaxBuySlippageCents < 0 || c.SupplementMaxBuySlippageCents < 0 {
+		return fmt.Errorf("滑点配置不能为负数")
 	}
 	return nil
 }

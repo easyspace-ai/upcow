@@ -34,6 +34,7 @@ func (a *ArbitrageConfigAdapter) AdaptConfig(strategyConfig interface{}, proxyCo
 		MaxDownIncrement:        cfg.Arbitrage.MaxDownIncrement,
 		SmallIncrement:          cfg.Arbitrage.SmallIncrement,
 		MinOrderSize:            cfg.Arbitrage.MinOrderSize,
+		MaxBuySlippageCents:     cfg.Arbitrage.MaxBuySlippageCents,
 	}, nil
 }
 

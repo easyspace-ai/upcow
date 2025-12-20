@@ -2,13 +2,19 @@ package grid
 
 import (
 	"context"
-	"fmt"
-	"time"
-
-	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 )
 func (s *GridStrategy) checkAndSupplementHedge(ctx context.Context, market *domain.Market) {
+	// 已收敛到 HedgePlan：补仓/强对冲由 planStrongHedge/planTick 统一驱动
+	_ = market
+	s.planStrongHedge(ctx)
+	return
+
+	/*
+	legacy implementation removed:
+	- 不再允许策略逻辑直接同步 PlaceOrder
+	- 不再依赖 pendingHedgeOrders 作为对冲状态机
+	
 	// 检查context是否已取消，如果已取消则快速返回
 	select {
 	case <-ctx.Done():
@@ -229,12 +235,19 @@ func (s *GridStrategy) checkAndSupplementHedge(ctx context.Context, market *doma
 
 	// 提交对冲订单
 	if s.tradingService != nil {
-		orderCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-
-		if _, err := s.tradingService.PlaceOrder(orderCtx, hedgeOrder); err != nil {
-			log.Errorf("🛡️ [智能对冲] 补充对冲订单失败: %v", err)
-			return
+		// 统一：通过 Executor 串行执行 IO（并回传 cmdResult 更新 OrderID）
+		if s.Executor != nil {
+			if err := s.submitPlaceOrderCmd(context.Background(), "adhoc", gridCmdPlaceHedge, hedgeOrder); err != nil {
+				log.Errorf("🛡️ [智能对冲] 补充对冲订单提交失败（执行器）: %v", err)
+				return
+			}
+		} else {
+			orderCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			if _, err := s.tradingService.PlaceOrder(orderCtx, hedgeOrder); err != nil {
+				log.Errorf("🛡️ [智能对冲] 补充对冲订单失败: %v", err)
+				return
+			}
 		}
 
 		// 重构后：activeOrders 由 OrderEngine 管理，无需手动保存
@@ -251,6 +264,10 @@ func (s *GridStrategy) checkAndSupplementHedge(ctx context.Context, market *doma
 		log.Warnf("交易服务未设置，无法补充对冲订单")
 	}
 }
+*/
+
+}
+
 func (s *GridStrategy) calculateOptimalHedgePrice(
 	ctx context.Context,
 	market *domain.Market,
@@ -319,6 +336,16 @@ func (s *GridStrategy) calculateOptimalHedgePrice(
 	return idealHedgePrice
 }
 func (s *GridStrategy) checkAndAutoHedge(ctx context.Context, market *domain.Market) {
+	// 已收敛到 HedgePlan：补仓/强对冲由 planStrongHedge/planTick 统一驱动
+	_ = market
+	s.planStrongHedge(ctx)
+	return
+
+	/*
+	legacy implementation removed:
+	- 不再允许策略逻辑直接同步 PlaceOrder
+	- 不再依赖 pendingHedgeOrders 作为对冲状态机
+	
 	// 检查context是否已取消，如果已取消则快速返回
 	select {
 	case <-ctx.Done():
@@ -472,20 +499,34 @@ func (s *GridStrategy) checkAndAutoHedge(ctx context.Context, market *domain.Mar
 								timeSinceLastSubmit, minHedgeSubmitInterval)
 							// 继续处理DOWN订单（如果有）
 						} else {
-							orderCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-							defer cancel()
+							if s.Executor != nil {
+								if err := s.submitPlaceOrderCmd(context.Background(), "adhoc", gridCmdPlaceHedge, hedgeOrder); err != nil {
+									s.hedgeOrderSubmitMu.Unlock()
+									log.Errorf("🛡️ [自动对冲] 补充UP订单提交失败（执行器）: %v", err)
+								} else {
+									// 更新最后提交时间
+									s.lastHedgeOrderSubmitMu.Lock()
+									s.lastHedgeOrderSubmitTime = time.Now()
+									s.lastHedgeOrderSubmitMu.Unlock()
 
-							if _, err := s.tradingService.PlaceOrder(orderCtx, hedgeOrder); err != nil {
-								s.hedgeOrderSubmitMu.Unlock()
-								log.Errorf("🛡️ [自动对冲] 补充UP订单失败: %v", err)
+									s.hedgeOrderSubmitMu.Unlock()
+									log.Infof("✅ [自动对冲] 已投递补充UP订单: 数量=%.4f, 金额=%.2f USDC", dQ, dQ*priceUpDecimal)
+								}
 							} else {
-								// 更新最后提交时间
-								s.lastHedgeOrderSubmitMu.Lock()
-								s.lastHedgeOrderSubmitTime = time.Now()
-								s.lastHedgeOrderSubmitMu.Unlock()
+								orderCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+								defer cancel()
+								if _, err := s.tradingService.PlaceOrder(orderCtx, hedgeOrder); err != nil {
+									s.hedgeOrderSubmitMu.Unlock()
+									log.Errorf("🛡️ [自动对冲] 补充UP订单失败: %v", err)
+								} else {
+									// 更新最后提交时间
+									s.lastHedgeOrderSubmitMu.Lock()
+									s.lastHedgeOrderSubmitTime = time.Now()
+									s.lastHedgeOrderSubmitMu.Unlock()
 
-								s.hedgeOrderSubmitMu.Unlock()
-								log.Infof("✅ [自动对冲] 已补充UP订单: 数量=%.4f, 金额=%.2f USDC", dQ, dQ*priceUpDecimal)
+									s.hedgeOrderSubmitMu.Unlock()
+									log.Infof("✅ [自动对冲] 已补充UP订单: 数量=%.4f, 金额=%.2f USDC", dQ, dQ*priceUpDecimal)
+								}
 							}
 						}
 					}
@@ -575,24 +616,42 @@ func (s *GridStrategy) checkAndAutoHedge(ctx context.Context, market *domain.Mar
 					return
 				}
 
-				orderCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				defer cancel()
+				if s.Executor != nil {
+					if err := s.submitPlaceOrderCmd(context.Background(), "adhoc", gridCmdPlaceHedge, hedgeOrder); err != nil {
+						s.hedgeOrderSubmitMu.Unlock()
+						log.Errorf("🛡️ [自动对冲] 补充DOWN订单提交失败（执行器）: %v", err)
+					} else {
+						// 更新最后提交时间
+						s.lastHedgeOrderSubmitMu.Lock()
+						s.lastHedgeOrderSubmitTime = time.Now()
+						s.lastHedgeOrderSubmitMu.Unlock()
 
-				if _, err := s.tradingService.PlaceOrder(orderCtx, hedgeOrder); err != nil {
-					s.hedgeOrderSubmitMu.Unlock()
-					log.Errorf("🛡️ [自动对冲] 补充DOWN订单失败: %v", err)
+						s.hedgeOrderSubmitMu.Unlock()
+						log.Infof("✅ [自动对冲] 已投递补充DOWN订单: 数量=%.4f, 金额=%.2f USDC", dQ, dQ*priceDownDecimal)
+					}
 				} else {
-					// 更新最后提交时间
-					s.lastHedgeOrderSubmitMu.Lock()
-					s.lastHedgeOrderSubmitTime = time.Now()
-					s.lastHedgeOrderSubmitMu.Unlock()
+					orderCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+					defer cancel()
+					if _, err := s.tradingService.PlaceOrder(orderCtx, hedgeOrder); err != nil {
+						s.hedgeOrderSubmitMu.Unlock()
+						log.Errorf("🛡️ [自动对冲] 补充DOWN订单失败: %v", err)
+					} else {
+						// 更新最后提交时间
+						s.lastHedgeOrderSubmitMu.Lock()
+						s.lastHedgeOrderSubmitTime = time.Now()
+						s.lastHedgeOrderSubmitMu.Unlock()
 
-					s.hedgeOrderSubmitMu.Unlock()
-					log.Infof("✅ [自动对冲] 已补充DOWN订单: 数量=%.4f, 金额=%.2f USDC", dQ, dQ*priceDownDecimal)
+						s.hedgeOrderSubmitMu.Unlock()
+						log.Infof("✅ [自动对冲] 已补充DOWN订单: 数量=%.4f, 金额=%.2f USDC", dQ, dQ*priceDownDecimal)
+					}
 				}
 			}
 		}
 	}
+}
+
+*/
+
 }
 
 // Cleanup 清理资源

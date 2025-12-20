@@ -7,6 +7,7 @@ import (
 // Position 仓位领域模型
 type Position struct {
 	ID              string     // 仓位 ID
+	MarketSlug      string     // 所属市场周期（便于只管理本周期）
 	Market          *Market    // 市场
 	EntryOrder      *Order     // 入场订单
 	HedgeOrder      *Order     // 对冲订单（可选）

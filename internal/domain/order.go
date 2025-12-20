@@ -8,10 +8,12 @@ import (
 // Order 订单领域模型
 type Order struct {
 	OrderID      string          // 订单 ID
+	MarketSlug   string          // 订单所属市场周期（btc-updown-15m-xxxx），用于只管理本周期
 	AssetID      string          // 资产 ID
 	Side         types.Side      // 订单方向
 	Price        Price           // 订单价格
-	Size         float64         // 订单数量
+	Size         float64         // 订单原始数量（requested size）
+	FilledSize   float64         // 已成交数量（partial fill 累计）
 	GridLevel    int             // 网格层级（分）
 	TokenType    TokenType       // Token 类型
 	HedgeOrderID *string        // 对冲订单 ID（可选）
@@ -29,6 +31,7 @@ type OrderStatus string
 const (
 	OrderStatusPending   OrderStatus = "pending"   // 待处理
 	OrderStatusOpen      OrderStatus = "open"     // 开放中
+	OrderStatusPartial   OrderStatus = "partial"  // 部分成交
 	OrderStatusFilled    OrderStatus = "filled"   // 已成交
 	OrderStatusCanceled  OrderStatus = "canceled" // 已取消
 	OrderStatusFailed    OrderStatus = "failed"   // 失败
@@ -37,6 +40,21 @@ const (
 // IsFilled 检查订单是否已成交
 func (o *Order) IsFilled() bool {
 	return o.Status == OrderStatusFilled && o.FilledAt != nil
+}
+
+func (o *Order) IsPartiallyFilled() bool {
+	return o.Status == OrderStatusPartial && o.FilledSize > 0 && o.FilledSize < o.Size
+}
+
+// ExecutedSize 返回已成交数量（优先 FilledSize）
+func (o *Order) ExecutedSize() float64 {
+	if o == nil {
+		return 0
+	}
+	if o.FilledSize > 0 {
+		return o.FilledSize
+	}
+	return o.Size
 }
 
 // IsOpen 检查订单是否开放中

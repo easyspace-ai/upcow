@@ -16,7 +16,9 @@ import (
 	"github.com/betbot/gobet/clob/client"
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/metrics"
 	"github.com/betbot/gobet/pkg/cache"
+	"github.com/betbot/gobet/pkg/persistence"
 )
 
 var log = logrus.WithField("component", "trading_service")
@@ -56,6 +58,10 @@ type TradingService struct {
 	// 订单状态同步配置
 	orderStatusSyncIntervalWithOrders    int
 	orderStatusSyncIntervalWithoutOrders int
+
+	// 重启恢复/快照
+	persistence   persistence.Service
+	persistenceID string
 }
 
 // NewTradingService 创建新的交易服务（使用 OrderEngine）
@@ -128,6 +134,19 @@ func (s *TradingService) Start(ctx context.Context) error {
 	// 启动 OrderEngine 主循环
 	go s.orderEngine.Run(s.ctx)
 
+	// 重启恢复：先加载快照（热启动），后续再用交易所 open orders 对账纠偏
+	s.loadSnapshot()
+	go func() {
+		// 等待 OrderEngine 就绪
+		time.Sleep(200 * time.Millisecond)
+		s.bootstrapOpenOrdersFromExchange(s.ctx)
+	}()
+
+	// 快照持久化：订单/仓位有变化时做一次 debounce 保存
+	if s.persistence != nil {
+		s.startSnapshotLoop(s.ctx)
+	}
+
 	// 初始化余额（从 API 获取）
 	if !s.dryRun {
 		go s.initializeBalance(ctx)
@@ -146,6 +165,71 @@ func (s *TradingService) Start(ctx context.Context) error {
 	go s.startOrderStatusSync(s.ctx)
 
 	return nil
+}
+
+func (s *TradingService) bootstrapOpenOrdersFromExchange(ctx context.Context) {
+	if s.dryRun {
+		return
+	}
+	openOrdersResp, err := s.clobClient.GetOpenOrders(ctx, nil)
+	if err != nil {
+		log.Warnf("🔄 [重启恢复] 获取 open orders 失败: %v", err)
+		return
+	}
+	if len(openOrdersResp) == 0 {
+		return
+	}
+	log.Infof("🔄 [重启恢复] 交易所 open orders=%d，开始注入 OrderEngine", len(openOrdersResp))
+	for _, oo := range openOrdersResp {
+		o := openOrderToDomain(oo)
+		if o == nil || o.OrderID == "" {
+			continue
+		}
+		s.orderEngine.SubmitCommand(&UpdateOrderCommand{
+			id:    fmt.Sprintf("bootstrap_open_%s", o.OrderID),
+			Order: o,
+		})
+	}
+}
+
+func (s *TradingService) startSnapshotLoop(ctx context.Context) {
+	// 每次订单更新触发一次保存（2s debounce）
+	trigger := make(chan struct{}, 1)
+	s.OnOrderUpdate(OrderUpdateHandlerFunc(func(_ context.Context, _ *domain.Order) error {
+		select {
+		case trigger <- struct{}{}:
+		default:
+		}
+		return nil
+	}))
+
+	go func() {
+		var pending bool
+		var timer *time.Timer
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-trigger:
+				if !pending {
+					pending = true
+					timer = time.NewTimer(2 * time.Second)
+				} else {
+					if timer != nil {
+						timer.Reset(2 * time.Second)
+					}
+				}
+			case <-func() <-chan time.Time {
+				if timer == nil {
+					return make(chan time.Time)
+				}
+				return timer.C
+			}():
+				pending = false
+				s.saveSnapshot()
+			}
+		}
+	}()
 }
 
 // initializeBalance 初始化余额（优先从链上查询，然后从 API 获取授权）
@@ -488,6 +572,7 @@ func (s *TradingService) startOrderStatusSync(ctx context.Context) {
 
 // syncAllOrderStatus 同步所有活跃订单的状态
 func (s *TradingService) syncAllOrderStatus(ctx context.Context) {
+	metrics.ReconcileRuns.Add(1)
 	// 通过 OrderEngine 获取活跃订单
 	openOrders := s.GetActiveOrders()
 	orderIDs := make([]string, 0, len(openOrders))
@@ -506,6 +591,7 @@ func (s *TradingService) syncAllOrderStatus(ctx context.Context) {
 	openOrdersResp, err := s.clobClient.GetOpenOrders(ctx, nil)
 	if err != nil {
 		log.Warnf("🔄 [订单状态同步] 获取开放订单失败: %v", err)
+		metrics.ReconcileErrors.Add(1)
 		return
 	}
 
@@ -599,6 +685,17 @@ func (s *TradingService) syncAllOrderStatus(ctx context.Context) {
 					orderID, order.Status)
 			}
 			continue
+		}
+
+		// 告警：订单长时间不在 open 列表，触发一次 SyncOrderStatus（并记录卡单）
+		// 注意：这里不做并发，避免 API 打爆；让 startOrderStatusSync 的节奏控制整体调用频率
+		if order != nil && !s.dryRun {
+			age := time.Since(order.CreatedAt)
+			if age > 20*time.Second {
+				log.Warnf("⚠️ [对账告警] 本地订单不在交易所 open 列表，触发 SyncOrderStatus: orderID=%s status=%s age=%v",
+					orderID, order.Status, age)
+			}
+			_ = s.SyncOrderStatus(ctx, orderID)
 		}
 
 		// 如果订单 ID 不匹配，尝试通过属性匹配（assetID + side + price）
@@ -901,10 +998,12 @@ func (s *TradingService) convertOrderResponseToDomain(orderResp *types.OrderResp
 
 	createdOrder := &domain.Order{
 		OrderID:      orderResp.OrderID,
+		MarketSlug:   originalOrder.MarketSlug,
 		AssetID:      originalOrder.AssetID,
 		Side:         originalOrder.Side,
 		Price:        originalOrder.Price,
 		Size:         actualSize, // 使用实际成交数量（如果是 matched）或原始数量
+		FilledSize:   originalOrder.FilledSize,
 		Status:       status,
 		FilledAt:     filledAt,
 		CreatedAt:    time.Now(),
@@ -914,11 +1013,23 @@ func (s *TradingService) convertOrderResponseToDomain(orderResp *types.OrderResp
 		HedgeOrderID: originalOrder.HedgeOrderID,
 		PairOrderID:  originalOrder.PairOrderID,
 	}
+	if status == domain.OrderStatusFilled {
+		createdOrder.FilledSize = createdOrder.Size
+	}
 	return createdOrder
 }
 
 // PlaceOrder 下单（通过 OrderEngine 发送命令）
 func (s *TradingService) PlaceOrder(ctx context.Context, order *domain.Order) (*domain.Order, error) {
+	if order == nil {
+		return nil, fmt.Errorf("order 不能为空")
+	}
+	// 只管理本周期：强制要求所有策略下单都带 MarketSlug
+	// 否则订单更新无法可靠过滤，容易跨周期串单
+	if order.MarketSlug == "" {
+		return nil, fmt.Errorf("order.MarketSlug 不能为空（只管理本周期）")
+	}
+
 	// 调整订单大小（在发送命令前）
 	order = s.adjustOrderSize(order)
 
@@ -1201,6 +1312,7 @@ func (s *TradingService) checkAndCorrectOrderPrice(ctx context.Context, order *d
 		// 创建新的订单（使用新的订单 ID）
 		newOrder := &domain.Order{
 			OrderID:      fmt.Sprintf("%s-corrected-%d", order.OrderID, time.Now().UnixNano()),
+			MarketSlug:   order.MarketSlug,
 			AssetID:      order.AssetID,
 			Side:         order.Side,
 			Price:        newPrice,
@@ -1261,6 +1373,7 @@ func (s *TradingService) checkAndCorrectOrderPrice(ctx context.Context, order *d
 							hedgeNewPrice := domain.PriceFromDecimal(hedgeBestPrice)
 							newHedgeOrder := &domain.Order{
 								OrderID:      fmt.Sprintf("%s-corrected-%d", pairOrder.OrderID, time.Now().UnixNano()),
+								MarketSlug:   pairOrder.MarketSlug,
 								AssetID:      pairOrder.AssetID,
 								Side:         pairOrder.Side,
 								Price:        hedgeNewPrice,
@@ -1320,9 +1433,13 @@ func (s *TradingService) handleOrderFilled(order *domain.Order, market *domain.M
 		now := time.Now()
 		order.FilledAt = &now
 	}
+	if order.MarketSlug == "" && market != nil {
+		order.MarketSlug = market.Slug
+	}
 
 	// 更新订单状态
 	order.Status = domain.OrderStatusFilled
+	order.FilledSize = order.Size
 
 	// 发送 UpdateOrderCommand 到 OrderEngine
 	updateCmd := &UpdateOrderCommand{
@@ -1355,6 +1472,10 @@ func (s *TradingService) HandleTrade(ctx context.Context, trade *domain.Trade) {
 func (s *TradingService) handleOrderCanceled(order *domain.Order) error {
 	// 更新订单状态
 	order.Status = domain.OrderStatusCanceled
+	// 尽量补齐 market slug，避免跨周期串单
+	if order.MarketSlug == "" {
+		// 这里无法可靠拿到 market，只能保留为空
+	}
 
 	// 发送 UpdateOrderCommand 到 OrderEngine
 	updateCmd := &UpdateOrderCommand{
@@ -1393,6 +1514,39 @@ func (s *TradingService) CancelOrder(ctx context.Context, orderID string) error 
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// CancelOrdersNotInMarket 只管理本周期：取消所有 MarketSlug != currentSlug 的活跃订单（MarketSlug 为空也会取消）
+func (s *TradingService) CancelOrdersNotInMarket(ctx context.Context, currentSlug string) {
+	orders := s.GetActiveOrders()
+	for _, o := range orders {
+		if o == nil || o.OrderID == "" {
+			continue
+		}
+		if currentSlug == "" {
+			_ = s.CancelOrder(ctx, o.OrderID)
+			continue
+		}
+		if o.MarketSlug == "" || o.MarketSlug != currentSlug {
+			_ = s.CancelOrder(ctx, o.OrderID)
+		}
+	}
+}
+
+// CancelOrdersForMarket 取消指定 marketSlug 的活跃订单
+func (s *TradingService) CancelOrdersForMarket(ctx context.Context, marketSlug string) {
+	if marketSlug == "" {
+		return
+	}
+	orders := s.GetActiveOrders()
+	for _, o := range orders {
+		if o == nil || o.OrderID == "" {
+			continue
+		}
+		if o.MarketSlug == marketSlug {
+			_ = s.CancelOrder(ctx, o.OrderID)
+		}
 	}
 }
 
@@ -1535,6 +1689,31 @@ func (s *TradingService) GetOpenPositions() []*domain.Position {
 	}
 }
 
+// GetOpenPositionsForMarket 只返回指定 marketSlug 的开放仓位
+func (s *TradingService) GetOpenPositionsForMarket(marketSlug string) []*domain.Position {
+	positions := s.GetOpenPositions()
+	if marketSlug == "" {
+		return positions
+	}
+	out := make([]*domain.Position, 0, len(positions))
+	for _, p := range positions {
+		if p == nil {
+			continue
+		}
+		slug := p.MarketSlug
+		if slug == "" && p.Market != nil {
+			slug = p.Market.Slug
+		}
+		if slug == "" && p.EntryOrder != nil {
+			slug = p.EntryOrder.MarketSlug
+		}
+		if slug == marketSlug {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // GetBestPrice 获取订单簿的最佳买卖价格（买一价和卖一价）
 // SyncOrderStatus 同步订单状态（通过 API 查询，然后通过 OrderEngine 更新）
 func (s *TradingService) SyncOrderStatus(ctx context.Context, orderID string) error {
@@ -1562,15 +1741,33 @@ func (s *TradingService) SyncOrderStatus(ctx context.Context, orderID string) er
 	originalSize, _ := strconv.ParseFloat(order.OriginalSize, 64)
 	sizeMatched, _ := strconv.ParseFloat(order.SizeMatched, 64)
 
+	// 部分成交/完全成交都要同步
+	if originalSize > 0 && sizeMatched > 0 && sizeMatched < originalSize {
+		// 部分成交
+		if localOrder.Status != domain.OrderStatusFilled {
+			localOrder.Status = domain.OrderStatusPartial
+		}
+		localOrder.Size = originalSize
+		localOrder.FilledSize = sizeMatched
+
+		updateCmd := &UpdateOrderCommand{
+			id:    fmt.Sprintf("sync_status_%s", orderID),
+			Order: localOrder,
+		}
+		s.orderEngine.SubmitCommand(updateCmd)
+		return nil
+	}
+
 	// 如果订单已完全成交（sizeMatched >= originalSize），更新状态
-	if sizeMatched >= originalSize && localOrder.Status != domain.OrderStatusFilled {
+	if originalSize > 0 && sizeMatched >= originalSize && localOrder.Status != domain.OrderStatusFilled {
 		log.Infof("🔄 [订单状态同步] 订单已完全成交: orderID=%s, sizeMatched=%.2f, originalSize=%.2f",
 			orderID, sizeMatched, originalSize)
 
 		localOrder.Status = domain.OrderStatusFilled
 		now := time.Now()
 		localOrder.FilledAt = &now
-		localOrder.Size = sizeMatched
+		localOrder.Size = originalSize
+		localOrder.FilledSize = originalSize
 
 		// 发送 UpdateOrderCommand 到 OrderEngine
 		updateCmd := &UpdateOrderCommand{

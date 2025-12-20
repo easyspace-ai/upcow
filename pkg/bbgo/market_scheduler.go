@@ -84,10 +84,9 @@ func (s *MarketScheduler) Start(ctx context.Context) error {
 	// 更新日志系统的市场周期时间戳
 	logger.SetMarketTimestamp(market.Timestamp)
 	// 强制切换日志文件（使用市场周期时间戳命名）
-	// 测试模式：1分钟周期
 	if err := logger.CheckAndRotateLogWithForce(logger.Config{
 		LogByCycle:    true,
-		CycleDuration: 1 * time.Minute, // 测试模式：1分钟
+		CycleDuration: 15 * time.Minute,
 		OutputFile:    "", // 空字符串表示使用保存的基础路径
 	}, true); err != nil {
 		schedulerLog.Errorf("切换日志文件失败: %v", err)
@@ -189,16 +188,12 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 	}
 
 	now := time.Now().Unix()
-	// 测试模式：强制每1分钟切换一次（不管周期是否真的结束）
 	// 正常周期结束时间（15分钟后）
 	normalEndTs := currentMarket.Timestamp + 900
-	// 测试模式：1分钟后强制切换
-	testModeSwitchTs := currentMarket.Timestamp + 60
 	
 	// 检查是否需要切换到下一个市场
-	// 条件1：正常周期结束（15分钟后）
-	// 条件2：测试模式：1分钟后强制切换
-	if now >= normalEndTs || now >= testModeSwitchTs {
+	// 条件：正常周期结束（15分钟后）
+	if now >= normalEndTs {
 		schedulerLog.Infof("当前市场周期结束: %s", currentMarket.Slug)
 
 		// 关闭当前会话
@@ -218,7 +213,7 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 		nextSlug := services.Generate15MinSlug(nextPeriodTs)
 
 		// 从缓存获取下一个市场
-		schedulerLog.Infof("🔄 [测试模式] 准备切换到下一个市场: %s (当前周期=%d, 下一个周期=%d)", 
+		schedulerLog.Infof("准备切换到下一个市场: %s (当前周期=%d, 下一个周期=%d)",
 			nextSlug, currentMarket.Timestamp, nextPeriodTs)
 		nextMarket, err := s.marketDataService.FetchMarketInfo(s.ctx, nextSlug)
 		if err != nil {
@@ -229,10 +224,9 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 		// 更新日志系统的市场周期时间戳（在创建新会话之前，确保新会话的连接日志写入新周期的日志文件）
 		logger.SetMarketTimestamp(nextMarket.Timestamp)
 		// 强制切换日志文件（在创建新会话之前）
-		// 测试模式：1分钟周期
 		if err := logger.CheckAndRotateLogWithForce(logger.Config{
 			LogByCycle:    true,
-			CycleDuration: 1 * time.Minute, // 测试模式：1分钟
+			CycleDuration: 15 * time.Minute,
 			OutputFile:    "",
 		}, true); err != nil {
 			schedulerLog.Errorf("切换日志文件失败: %v", err)

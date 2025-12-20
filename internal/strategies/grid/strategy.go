@@ -26,6 +26,8 @@ func init() {
 
 // GridStrategy 网格策略实现
 type GridStrategy struct {
+	// Executor 串行 IO 执行器（由 Environment 注入）
+	Executor              bbgo.CommandExecutor
 	config                *GridStrategyConfig
 	grid                  *domain.Grid
 	tradingService        TradingServiceInterface // 交易服务接口
@@ -69,6 +71,25 @@ type GridStrategy struct {
 	// 订单成交事件去重：orderID -> filledAt timestamp
 	processedFilledOrders map[string]time.Time // 已处理的订单成交事件（用于去重）
 	processedFilledOrdersMu sync.RWMutex // 保护 processedFilledOrders 的锁
+
+	// 单线程事件循环（确定性优先）
+	loopOnce     sync.Once
+	loopCancel   context.CancelFunc
+	priceSignalC chan struct{}
+	priceMu      sync.Mutex
+	latestPrice  map[domain.TokenType]*events.PriceChangedEvent
+	orderC       chan orderUpdate
+
+	// 命令执行结果（由全局 Executor 回传到策略 loop）
+	cmdResultC chan gridCmdResult
+
+	// HedgePlan：统一的入场/对冲状态机（下一阶段工程化）
+	plan *HedgePlan
+}
+
+type orderUpdate struct {
+	ctx   context.Context
+	order *domain.Order
 }
 
 // TradingServiceInterface 交易服务接口（避免循环依赖）
@@ -94,6 +115,10 @@ func NewGridStrategy() *GridStrategy {
 		upHoldings:            0,
 		downTotalCost:         0,
 		downHoldings:          0,
+		priceSignalC:          make(chan struct{}, 1),
+		latestPrice:           make(map[domain.TokenType]*events.PriceChangedEvent),
+		orderC:                make(chan orderUpdate, 4096),
+		cmdResultC:            make(chan gridCmdResult, 4096),
 	}
 }
 
@@ -540,34 +565,9 @@ func (s *GridStrategy) formatPositionInfo() string {
 // Cleanup 清理资源
 func (s *GridStrategy) Cleanup(ctx context.Context) error {
 	log.Infof("网格策略: 开始清理资源...")
-
-	// 使用带超时的锁获取，避免死锁
-	lockAcquired := make(chan struct{})
-	go func() {
-		s.mu.Lock()
-		close(lockAcquired)
-	}()
-
-	select {
-	case <-lockAcquired:
-		// 成功获取锁
-		defer s.mu.Unlock()
-	case <-ctx.Done():
-		// Context已取消，记录警告但继续尝试
-		log.Warnf("网格策略: 清理时context已取消，等待锁释放...")
-		// 等待一小段时间让其他goroutine释放锁
-		select {
-		case <-lockAcquired:
-			defer s.mu.Unlock()
-		case <-time.After(1 * time.Second):
-			log.Warnf("网格策略: 等待锁超时（1秒），跳过清理（可能有goroutine正在运行）")
-			return nil
-		}
-	case <-time.After(2 * time.Second):
-		// 超时，记录警告
-		log.Warnf("网格策略: 获取锁超时（2秒），可能有goroutine正在运行，跳过清理")
-		return nil
-	}
+	// 策略已改为单线程事件循环，清理无需使用“带超时抢锁”的并发技巧
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	// 注意：智能对冲检查在每次价格变化时实时触发，无需清理定时器
 
@@ -659,8 +659,8 @@ func (s *GridStrategy) Subscribe(session *bbgo.ExchangeSession) {
 // Run 运行策略（BBGO 风格）
 func (s *GridStrategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, session *bbgo.ExchangeSession) error {
 	log.Infof("网格策略已启动")
-	// 策略已经在 Subscribe 中注册了回调，这里可以做一些启动后的初始化工作
-	// 注意：orderExecutor 可以用于提交订单，但当前策略使用 TradingService 直接提交
+	// 启动策略内部单线程事件循环（只启动一次）
+	s.startLoop(ctx)
 	return nil
 }
 
@@ -669,6 +669,11 @@ func (s *GridStrategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor
 // 除非策略启动了新的 goroutine 并需要等待它们完成
 func (s *GridStrategy) Shutdown(ctx context.Context, wg *sync.WaitGroup) {
 	log.Infof("网格策略: 开始优雅关闭...")
+
+	// 停止内部事件循环（不关闭 channel，避免并发发送 panic）
+	if s.loopCancel != nil {
+		s.loopCancel()
+	}
 
 	// 清理资源
 	if err := s.Cleanup(ctx); err != nil {

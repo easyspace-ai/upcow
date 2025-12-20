@@ -12,6 +12,8 @@ type ThresholdStrategyConfig struct {
 	TokenType         string  // Token 类型：YES 或 NO，空字符串表示两者都监控
 	ProfitTargetCents int     // 止盈目标（分），例如 3 表示 +3 cents
 	StopLossCents     int     // 止损目标（分），例如 10 表示 -10 cents
+	MaxBuySlippageCents  int  // 买入最大滑点（分），相对触发价上限（0=关闭）
+	MaxSellSlippageCents int  // 卖出最大滑点（分），相对触发价下限（0=关闭）
 }
 
 // GetName 实现 StrategyConfig 接口
@@ -35,6 +37,9 @@ func (c *ThresholdStrategyConfig) Validate() error {
 	}
 	if c.StopLossCents < 0 {
 		return fmt.Errorf("止损目标不能为负数")
+	}
+	if c.MaxBuySlippageCents < 0 || c.MaxSellSlippageCents < 0 {
+		return fmt.Errorf("滑点配置不能为负数")
 	}
 	return nil
 }

@@ -25,6 +25,13 @@ type ExchangeSession struct {
 	// 市场信息
 	market *domain.Market
 
+	// 价格事件合并与串行分发（避免行情线程被策略阻塞，且保证确定性）
+	priceSignalC chan struct{}
+	priceMu      sync.Mutex
+	latestPrices map[domain.TokenType]priceEvent
+	loopOnce     sync.Once
+	loopCancel   context.CancelFunc
+
 	// 订阅管理
 	subscriptions []Subscription
 	subscriptionsMu sync.RWMutex
@@ -35,6 +42,11 @@ type ExchangeSession struct {
 	tradeHandlers       []TradeHandler
 
 	mu sync.RWMutex
+}
+
+type priceEvent struct {
+	ctx   context.Context
+	event *events.PriceChangedEvent
 }
 
 // Subscription 订阅信息
@@ -62,6 +74,8 @@ func NewExchangeSession(name string) *ExchangeSession {
 		priceChangeHandlers: stream.NewHandlerList(),
 		orderHandlers:       make([]OrderHandler, 0),
 		tradeHandlers:       make([]TradeHandler, 0),
+		priceSignalC:        make(chan struct{}, 1),
+		latestPrices:        make(map[domain.TokenType]priceEvent),
 	}
 }
 
@@ -102,6 +116,8 @@ func (s *ExchangeSession) Subscribe(channel, symbol string, options map[string]i
 
 // Connect 连接到交易所
 func (s *ExchangeSession) Connect(ctx context.Context) error {
+	s.startPriceLoop(ctx)
+
 	if s.MarketDataStream != nil {
 		market := s.Market()
 		if market != nil {
@@ -144,6 +160,73 @@ func (s *ExchangeSession) Connect(ctx context.Context) error {
 	return nil
 }
 
+func (s *ExchangeSession) startPriceLoop(ctx context.Context) {
+	s.loopOnce.Do(func() {
+		loopCtx, cancel := context.WithCancel(ctx)
+		s.loopCancel = cancel
+
+		go func() {
+			for {
+				select {
+				case <-loopCtx.Done():
+					return
+				case <-s.priceSignalC:
+					// 合并：每次只处理最新 UP/DOWN（或其他 tokenType）的事件
+					s.priceMu.Lock()
+					batch := make([]priceEvent, 0, len(s.latestPrices))
+					// 为确定性：固定顺序处理
+					if pe, ok := s.latestPrices[domain.TokenTypeUp]; ok && pe.event != nil {
+						batch = append(batch, pe)
+					}
+					if pe, ok := s.latestPrices[domain.TokenTypeDown]; ok && pe.event != nil {
+						batch = append(batch, pe)
+					}
+					// 处理完清空（下一轮继续合并）
+					s.latestPrices = make(map[domain.TokenType]priceEvent)
+					s.priceMu.Unlock()
+
+					if len(batch) == 0 {
+						continue
+					}
+
+					handlers := s.priceChangeHandlers.Snapshot()
+					if len(handlers) == 0 {
+						// 保留原有诊断日志
+						last := batch[len(batch)-1]
+						if last.event != nil {
+							sessionLog.Warnf("⚠️ [Session %s] priceChangeHandlers 为空，价格更新将被丢弃！事件: %s @ %dc",
+								s.Name, last.event.TokenType, last.event.NewPrice.Cents)
+						}
+						continue
+					}
+
+					// 串行分发（确定性优先）
+					for _, pe := range batch {
+						if pe.event == nil {
+							continue
+						}
+						for i, h := range handlers {
+							if h == nil {
+								continue
+							}
+							func(idx int, handler stream.PriceChangeHandler, ev priceEvent) {
+								defer func() {
+									if r := recover(); r != nil {
+										sessionLog.Errorf("价格变化处理器 %d panic: %v", idx, r)
+									}
+								}()
+								if err := handler.OnPriceChanged(ev.ctx, ev.event); err != nil {
+									sessionLog.Errorf("价格变化处理器 %d 执行失败: %v", idx, err)
+								}
+							}(i, h, pe)
+						}
+					}
+				}
+			}
+		}()
+	})
+}
+
 // sessionPriceHandler 将 MarketStream 的价格变化转发到 Session
 type sessionPriceHandler struct {
 	session *ExchangeSession
@@ -158,6 +241,11 @@ func (h *sessionPriceHandler) OnPriceChanged(ctx context.Context, event *events.
 
 // Close 关闭会话
 func (s *ExchangeSession) Close() error {
+	// 停止价格事件分发 loop（不关闭 channel，避免并发发送 panic）
+	if s.loopCancel != nil {
+		s.loopCancel()
+	}
+
 	if s.MarketDataStream != nil {
 		if err := s.MarketDataStream.Close(); err != nil {
 			return err
@@ -180,15 +268,20 @@ func (s *ExchangeSession) OnPriceChanged(handler stream.PriceChangeHandler) {
 
 // EmitPriceChanged 触发价格变化事件
 func (s *ExchangeSession) EmitPriceChanged(ctx context.Context, event *events.PriceChangedEvent) {
-	handlerCount := s.priceChangeHandlers.Count()
-	if handlerCount == 0 {
-		sessionLog.Warnf("⚠️ [Session %s] priceChangeHandlers 为空，价格更新将被丢弃！事件: %s @ %dc", 
-			s.Name, event.TokenType, event.NewPrice.Cents)
-	} else {
-		sessionLog.Debugf("📊 [Session %s] 触发价格变化事件: %s @ %dc (handlers=%d)", 
-			s.Name, event.TokenType, event.NewPrice.Cents, handlerCount)
+	// 快路径：只做合并与信号，避免阻塞 MarketStream 的读循环
+	if event == nil {
+		return
 	}
-	s.priceChangeHandlers.Emit(ctx, event)
+
+	s.priceMu.Lock()
+	s.latestPrices[event.TokenType] = priceEvent{ctx: ctx, event: event}
+	s.priceMu.Unlock()
+
+	select {
+	case s.priceSignalC <- struct{}{}:
+	default:
+		// 已经有信号在队列里，合并即可
+	}
 }
 
 // OnOrderUpdate 注册订单更新处理器
@@ -205,10 +298,18 @@ func (s *ExchangeSession) EmitOrderUpdate(ctx context.Context, order *domain.Ord
 	s.mu.RUnlock()
 
 	sessionLog.Debugf("📊 Session %s 触发订单更新事件: orderID=%s, status=%s", s.Name, order.OrderID, order.Status)
-	
-	// 异步执行，避免阻塞
+
+	// 串行执行（确定性优先，避免并发导致的状态竞态）
 	for _, handler := range handlers {
-		go func(h OrderHandler) {
+		if handler == nil {
+			continue
+		}
+		func(h OrderHandler) {
+			defer func() {
+				if r := recover(); r != nil {
+					sessionLog.Errorf("订单更新处理器 panic: %v", r)
+				}
+			}()
 			if err := h.OnOrderUpdate(ctx, order); err != nil {
 				sessionLog.Errorf("订单更新处理器执行失败: %v", err)
 			}

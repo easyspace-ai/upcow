@@ -16,52 +16,20 @@ import (
 // 4. 如果买了 UP 币，对冲买入 DOWN 币
 // 5. 如果买了 DOWN 币，对冲买入 UP 币
 func (s *GridStrategy) OnPriceChanged(ctx context.Context, event *events.PriceChangedEvent) error {
-	// BBGO风格：直接回调模式，带防抖
-	s.lastDirectProcessMu.Lock()
-	lastTime := s.lastDirectProcessTime
-	debounceDuration := time.Duration(s.directModeDebounce) * time.Millisecond
-	s.lastDirectProcessMu.Unlock()
-
-	// 防抖检查：如果距离上次处理时间太短，跳过
-	if time.Since(lastTime) < debounceDuration {
-		log.Debugf("📊 [价格更新] 防抖跳过: %s @ %dc (距离上次处理时间=%v < 防抖间隔=%v)",
-			event.TokenType, event.NewPrice.Cents, time.Since(lastTime), debounceDuration)
+	// 策略内部单线程循环会启动并处理事件；这里仅做合并入队（不做任何业务逻辑）
+	if event == nil {
 		return nil
 	}
 
-	// 更新处理时间
-	s.lastDirectProcessMu.Lock()
-	s.lastDirectProcessTime = time.Now()
-	s.lastDirectProcessMu.Unlock()
+	s.priceMu.Lock()
+	s.latestPrice[event.TokenType] = event
+	s.priceMu.Unlock()
 
-	// 诊断：检查 isPlacingOrder 状态
-	s.placeOrderMu.Lock()
-	isPlacingOrder := s.isPlacingOrder
-	s.placeOrderMu.Unlock()
-	
-	if isPlacingOrder {
-		log.Warnf("⚠️ [价格更新诊断] OnPriceChanged收到价格变化但 isPlacingOrder=true，可能影响处理: %s @ %dc, market=%s",
-			event.TokenType, event.NewPrice.Cents, event.Market.Slug)
-	} else {
-		log.Debugf("📊 [价格更新] OnPriceChanged收到价格变化: %s @ %dc, market=%s",
-			event.TokenType, event.NewPrice.Cents, event.Market.Slug)
+	select {
+	case s.priceSignalC <- struct{}{}:
+	default:
+		// 已经有信号在队列里，合并即可
 	}
-
-	// 直接处理（异步，避免阻塞 WebSocket）
-	go func() {
-		processStartTime := time.Now()
-		if err := s.onPriceChangedInternal(context.Background(), event); err != nil {
-			log.Errorf("❌ [价格更新] onPriceChangedInternal处理失败: %s @ %dc, error=%v, 耗时=%v",
-				event.TokenType, event.NewPrice.Cents, err, time.Since(processStartTime))
-		} else {
-			processDuration := time.Since(processStartTime)
-			if processDuration > 100*time.Millisecond {
-				log.Warnf("⚠️ [价格更新诊断] onPriceChangedInternal处理耗时较长: %s @ %dc, 耗时=%v",
-					event.TokenType, event.NewPrice.Cents, processDuration)
-			}
-		}
-	}()
-
 	return nil
 }
 
@@ -136,29 +104,7 @@ func (s *GridStrategy) onPriceChangedInternal(ctx context.Context, event *events
 		s.mu.Lock()
 	}
 
-	// 保存市场信息，用于后续对冲检查
-	market := event.Market
-
 	s.mu.Unlock()
-
-	// 风险14修复：优化异步处理逻辑，减少锁竞争
-	// 在价格变化时，异步检查并补充对冲订单（不阻塞价格处理）
-	// 使用独立的goroutine，避免阻塞主流程
-	go func() {
-		// 使用独立的context，避免使用已取消的ctx
-		hedgeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		s.checkAndSupplementHedge(hedgeCtx, market)
-	}()
-
-	// 实时计算利润并检查是否需要自动对冲
-	// 使用独立的goroutine，避免阻塞主流程
-	go func() {
-		// 使用独立的context，避免使用已取消的ctx
-		autoHedgeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		s.checkAndAutoHedge(autoHedgeCtx, market)
-	}()
 
 	// 先更新价格（需要锁保护）
 	s.mu.Lock()
@@ -185,6 +131,9 @@ func (s *GridStrategy) onPriceChangedInternal(ctx context.Context, event *events
 	activePosition := s.activePosition
 	lastDisplayTime := s.lastDisplayTime
 	s.mu.Unlock() // 尽快释放锁，避免阻塞
+
+	// 强对冲/补仓由 HedgePlan 状态机统一驱动（planTick + planStrongHedge）
+	// 这里不再直接调用旧的 ensureMinProfitLocked（避免绕过 plan 造成重复下单/不可追踪）
 	
 	// 重构后：从 TradingService 查询活跃订单数量（不需要锁）
 	activeOrdersCount := len(s.getActiveOrders())
