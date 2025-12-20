@@ -45,6 +45,8 @@ type GridConfig struct {
 	ElasticStopPrice        int     // 弹性止损价格（分），默认 40c - 弹性止损价格，考虑波动性
 	MaxRoundsPerPeriod      int     // 每个 15 分钟周期内允许开启的「网格轮数」上限，默认 1
 	PriceDeviationThreshold int     // 价格偏差阈值（分），默认 2 cents，订单价格与订单簿价格偏差超过此值则撤单重新下单
+	EntryMaxBuySlippageCents      int // 入场买入允许的最大滑点（分），相对 gridLevel 上限（默认0=关闭）
+	SupplementMaxBuySlippageCents int // 补仓/强对冲买入允许的最大滑点（分），相对当前价上限（默认0=关闭）
 }
 
 // ThresholdConfig 价格阈值策略配置
@@ -55,6 +57,8 @@ type ThresholdConfig struct {
 	TokenType         string  // Token 类型：YES 或 NO，空字符串表示两者都监控
 	ProfitTargetCents int     // 止盈目标（分），例如 3 表示 +3 cents
 	StopLossCents     int     // 止损目标（分），例如 10 表示 -10 cents
+	MaxBuySlippageCents  int  // 买入允许的最大滑点（分），相对触发价上限（默认0=关闭）
+	MaxSellSlippageCents int  // 卖出允许的最大滑点（分），相对触发价下限（默认0=关闭）
 }
 
 // ArbitrageConfig 套利策略配置
@@ -69,6 +73,7 @@ type ArbitrageConfig struct {
 	MaxDownIncrement        float64 // 锁盈阶段单次最大DOWN加仓量（默认100）
 	SmallIncrement          float64 // 反向保险小额加仓量（默认20）
 	MinOrderSize            float64 // 最小下单规模（默认1.0）
+	MaxBuySlippageCents     int     // 买入允许的最大滑点（分），相对当前观测价上限（默认0=关闭）
 }
 
 // DataRecorderConfig 数据记录策略配置
@@ -139,6 +144,8 @@ type ConfigFile struct {
 			HardStopPrice      int     `yaml:"hard_stop_price" json:"hard_stop_price"`
 			ElasticStopPrice   int     `yaml:"elastic_stop_price" json:"elastic_stop_price"`
 			MaxRoundsPerPeriod int     `yaml:"max_rounds_per_period" json:"max_rounds_per_period"`
+			EntryMaxBuySlippageCents      int `yaml:"entry_max_buy_slippage_cents" json:"entry_max_buy_slippage_cents"`
+			SupplementMaxBuySlippageCents int `yaml:"supplement_max_buy_slippage_cents" json:"supplement_max_buy_slippage_cents"`
 		} `yaml:"grid" json:"grid"`
 		Threshold struct {
 			BuyThreshold      float64 `yaml:"buy_threshold" json:"buy_threshold"`
@@ -147,6 +154,8 @@ type ConfigFile struct {
 			TokenType         string  `yaml:"token_type" json:"token_type"`
 			ProfitTargetCents int     `yaml:"profit_target_cents" json:"profit_target_cents"`
 			StopLossCents     int     `yaml:"stop_loss_cents" json:"stop_loss_cents"`
+			MaxBuySlippageCents  int  `yaml:"max_buy_slippage_cents" json:"max_buy_slippage_cents"`
+			MaxSellSlippageCents int  `yaml:"max_sell_slippage_cents" json:"max_sell_slippage_cents"`
 		} `yaml:"threshold" json:"threshold"`
 		Arbitrage struct {
 			LockStartMinutes        int     `yaml:"lock_start_minutes" json:"lock_start_minutes"`
@@ -159,6 +168,7 @@ type ConfigFile struct {
 			MaxDownIncrement        float64 `yaml:"max_down_increment" json:"max_down_increment"`
 			SmallIncrement          float64 `yaml:"small_increment" json:"small_increment"`
 			MinOrderSize            float64 `yaml:"min_order_size" json:"min_order_size"`
+			MaxBuySlippageCents     int     `yaml:"max_buy_slippage_cents" json:"max_buy_slippage_cents"`
 		} `yaml:"arbitrage" json:"arbitrage"`
 		DataRecorder struct {
 			OutputDir       string `yaml:"output_dir" json:"output_dir"`
@@ -235,6 +245,16 @@ func LoadFromFile(filePath string) (*Config, error) {
 				HardStopPrice:      getIntFromSources(configFile != nil, safeGetGridInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.HardStopPrice }), parseIntEnv("HARD_STOP_PRICE", 50)),
 				ElasticStopPrice:   getIntFromSources(configFile != nil, safeGetGridInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.ElasticStopPrice }), parseIntEnv("ELASTIC_STOP_PRICE", 40)),
 				MaxRoundsPerPeriod: getIntFromSources(configFile != nil, safeGetGridInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.MaxRoundsPerPeriod }), parseIntEnv("MAX_ROUNDS_PER_PERIOD", 1)),
+				EntryMaxBuySlippageCents: getIntFromSources(
+					configFile != nil,
+					safeGetGridInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.EntryMaxBuySlippageCents }),
+					parseIntEnv("GRID_ENTRY_MAX_BUY_SLIPPAGE_CENTS", 0),
+				),
+				SupplementMaxBuySlippageCents: getIntFromSources(
+					configFile != nil,
+					safeGetGridInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Grid.SupplementMaxBuySlippageCents }),
+					parseIntEnv("GRID_SUPPLEMENT_MAX_BUY_SLIPPAGE_CENTS", 0),
+				),
 			},
 			Threshold: &ThresholdConfig{
 				BuyThreshold:      getFloatFromSources(configFile != nil, safeGetThresholdFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Threshold.BuyThreshold }), parseFloatEnv("THRESHOLD_BUY_THRESHOLD", 0.62)),
@@ -243,6 +263,16 @@ func LoadFromFile(filePath string) (*Config, error) {
 				TokenType:         getValueFromSources(configFile != nil && safeGetThresholdString(configFile, func(cf *ConfigFile) string { return cf.Strategies.Threshold.TokenType }) != "", safeGetThresholdString(configFile, func(cf *ConfigFile) string { return cf.Strategies.Threshold.TokenType }), getEnv("THRESHOLD_TOKEN_TYPE", "")),
 				ProfitTargetCents: getIntFromSources(configFile != nil, safeGetThresholdInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Threshold.ProfitTargetCents }), parseIntEnv("THRESHOLD_PROFIT_TARGET_CENTS", 3)),
 				StopLossCents:     getIntFromSources(configFile != nil, safeGetThresholdInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Threshold.StopLossCents }), parseIntEnv("THRESHOLD_STOP_LOSS_CENTS", 10)),
+				MaxBuySlippageCents: getIntFromSources(
+					configFile != nil,
+					safeGetThresholdInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Threshold.MaxBuySlippageCents }),
+					parseIntEnv("THRESHOLD_MAX_BUY_SLIPPAGE_CENTS", 0),
+				),
+				MaxSellSlippageCents: getIntFromSources(
+					configFile != nil,
+					safeGetThresholdInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Threshold.MaxSellSlippageCents }),
+					parseIntEnv("THRESHOLD_MAX_SELL_SLIPPAGE_CENTS", 0),
+				),
 			},
 			Arbitrage: &ArbitrageConfig{
 				LockStartMinutes:        getIntFromSources(configFile != nil, safeGetArbitrageInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Arbitrage.LockStartMinutes }), parseIntEnv("ARBITRAGE_LOCK_START_MINUTES", 12)),
@@ -255,6 +285,11 @@ func LoadFromFile(filePath string) (*Config, error) {
 				MaxDownIncrement:        getFloatFromSources(configFile != nil, safeGetArbitrageFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.MaxDownIncrement }), parseFloatEnv("ARBITRAGE_MAX_DOWN_INCREMENT", 100.0)),
 				SmallIncrement:          getFloatFromSources(configFile != nil, safeGetArbitrageFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.SmallIncrement }), parseFloatEnv("ARBITRAGE_SMALL_INCREMENT", 20.0)),
 				MinOrderSize:            getFloatFromSources(configFile != nil, safeGetArbitrageFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.Arbitrage.MinOrderSize }), parseFloatEnv("ARBITRAGE_MIN_ORDER_SIZE", 1.2)),
+				MaxBuySlippageCents: getIntFromSources(
+					configFile != nil,
+					safeGetArbitrageInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.Arbitrage.MaxBuySlippageCents }),
+					parseIntEnv("ARBITRAGE_MAX_BUY_SLIPPAGE_CENTS", 0),
+				),
 			},
 			DataRecorder: &DataRecorderConfig{
 				OutputDir:       getValueFromSources(configFile != nil && safeGetDataRecorderString(configFile, func(cf *ConfigFile) string { return cf.Strategies.DataRecorder.OutputDir }) != "", safeGetDataRecorderString(configFile, func(cf *ConfigFile) string { return cf.Strategies.DataRecorder.OutputDir }), getEnv("DATARECORDER_OUTPUT_DIR", "data/recordings")),

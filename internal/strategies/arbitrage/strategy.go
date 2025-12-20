@@ -638,9 +638,24 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 	ts := s.tradingService
 	exec := s.Executor
 
+	// 滑点保护：相对当前观测价（非盘口价）设置上限
+	maxCents := 0
+	if s.config.MaxBuySlippageCents > 0 {
+		ref := 0.0
+		if tokenType == domain.TokenTypeUp {
+			ref = s.priceUp
+		} else if tokenType == domain.TokenTypeDown {
+			ref = s.priceDown
+		}
+		if ref > 0 {
+			refCents := int(ref*100 + 0.5)
+			maxCents = refCents + s.config.MaxBuySlippageCents
+		}
+	}
+
 	// 没有 executor 时仍保持兼容（但会阻塞 loop，不推荐）
 	if exec == nil {
-		bestAskPrice, err := orderutil.QuoteBuyPrice(ctx, ts, assetID, 0)
+		bestAskPrice, err := orderutil.QuoteBuyPrice(ctx, ts, assetID, maxCents)
 		if err != nil {
 			return fmt.Errorf("获取订单簿失败: %w", err)
 		}
@@ -663,7 +678,7 @@ func (s *ArbitrageStrategy) placeBuyOrder(ctx context.Context, market *domain.Ma
 		Name:    fmt.Sprintf("arbitrage_buy_%s_%s", tokenType, reason),
 		Timeout: 25 * time.Second,
 		Do: func(runCtx context.Context) {
-			bestAskPrice, err := orderutil.QuoteBuyPrice(runCtx, ts, assetID, 0)
+			bestAskPrice, err := orderutil.QuoteBuyPrice(runCtx, ts, assetID, maxCents)
 			if err != nil {
 				select {
 				case s.cmdResultC <- arbitrageCmdResult{tokenType: tokenType, reason: reason, err: err}:

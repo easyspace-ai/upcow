@@ -18,6 +18,7 @@ type ArbitrageStrategyConfig struct {
 	MaxDownIncrement        float64       // 锁盈阶段单次最大DOWN加仓量（默认总持仓的5%）
 	SmallIncrement          float64       // 反向保险小额加仓量（默认总持仓的1%）
 	MinOrderSize            float64       // 最小下单金额（USDC，默认1.2，交易所要求不能小于1）
+	MaxBuySlippageCents     int           // 买入最大滑点（分），相对当前观测价上限（0=关闭）
 }
 
 // GetName 实现 StrategyConfig 接口
@@ -50,6 +51,9 @@ func (c *ArbitrageStrategyConfig) Validate() error {
 	}
 	if c.MinOrderSize <= 0 {
 		return fmt.Errorf("最小下单规模必须大于0")
+	}
+	if c.MaxBuySlippageCents < 0 {
+		return fmt.Errorf("滑点配置不能为负数")
 	}
 	return nil
 }

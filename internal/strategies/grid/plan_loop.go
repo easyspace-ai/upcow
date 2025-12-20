@@ -267,7 +267,11 @@ func (s *GridStrategy) planStrongHedge(ctx context.Context) {
 	}
 
 	// 取 bestAsk，优先成交
-	bestPrice, err := orderutil.QuoteBuyPrice(ctx, s.tradingService, assetID, 0)
+	maxBuy := 0
+	if s.config.SupplementMaxBuySlippageCents > 0 {
+		maxBuy = price.Cents + s.config.SupplementMaxBuySlippageCents
+	}
+	bestPrice, err := orderutil.QuoteBuyPrice(ctx, s.tradingService, assetID, maxBuy)
 	if err != nil {
 		// 盘口不可用则用当前价格兜底（避免完全停摆）
 		bestPrice = price

@@ -28,6 +28,8 @@ func (a *ThresholdConfigAdapter) AdaptConfig(strategyConfig interface{}, proxyCo
 		TokenType:         cfg.Threshold.TokenType,
 		ProfitTargetCents: cfg.Threshold.ProfitTargetCents,
 		StopLossCents:     cfg.Threshold.StopLossCents,
+		MaxBuySlippageCents:  cfg.Threshold.MaxBuySlippageCents,
+		MaxSellSlippageCents: cfg.Threshold.MaxSellSlippageCents,
 	}, nil
 }
 

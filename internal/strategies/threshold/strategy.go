@@ -213,7 +213,11 @@ func (s *ThresholdStrategy) onPriceChangedInternal(ctx context.Context, event *e
 				assetID := event.Market.GetAssetID(tokenType)
 
 				// 统一下单模板：买入默认取 bestAsk（可选滑点保护，threshold 这里默认不设上限）
-				askPrice, err := orderutil.QuoteBuyPrice(ctx, tradingService, assetID, 0)
+				maxBuy := 0
+				if config.MaxBuySlippageCents > 0 {
+					maxBuy = buyThresholdPrice.Cents + config.MaxBuySlippageCents
+				}
+				askPrice, err := orderutil.QuoteBuyPrice(ctx, tradingService, assetID, maxBuy)
 				if err != nil {
 					logger.Errorf("价格阈值策略: 获取订单簿失败: %v", err)
 					return err
@@ -255,8 +259,16 @@ func (s *ThresholdStrategy) onPriceChangedInternal(ctx context.Context, event *e
 
 				assetID := event.Market.GetAssetID(entryTokenType)
 
-				// 止盈卖出：默认取 bestBid（更容易成交）
-				bidPrice, err := orderutil.QuoteSellPrice(ctx, tradingService, assetID, 0)
+				// 止盈卖出：默认取 bestBid（更容易成交），可选滑点保护（不低于触发价-滑点）
+				minSell := 0
+				if config.MaxSellSlippageCents > 0 {
+					trigger := entryPrice.Cents + config.ProfitTargetCents
+					minSell = trigger - config.MaxSellSlippageCents
+					if minSell < 0 {
+						minSell = 0
+					}
+				}
+				bidPrice, err := orderutil.QuoteSellPrice(ctx, tradingService, assetID, minSell)
 				if err != nil {
 					logger.Errorf("价格阈值策略: 获取订单簿失败: %v", err)
 					return err
@@ -281,8 +293,16 @@ func (s *ThresholdStrategy) onPriceChangedInternal(ctx context.Context, event *e
 
 				assetID := event.Market.GetAssetID(entryTokenType)
 
-				// 止损卖出：也用 bestBid（成交优先）
-				bidPrice, err := orderutil.QuoteSellPrice(ctx, tradingService, assetID, 0)
+				// 止损卖出：bestBid（成交优先），可选滑点保护
+				minSell := 0
+				if config.MaxSellSlippageCents > 0 {
+					trigger := entryPrice.Cents - config.StopLossCents
+					minSell = trigger - config.MaxSellSlippageCents
+					if minSell < 0 {
+						minSell = 0
+					}
+				}
+				bidPrice, err := orderutil.QuoteSellPrice(ctx, tradingService, assetID, minSell)
 				if err != nil {
 					logger.Errorf("价格阈值策略: 获取订单簿失败: %v", err)
 					return err
@@ -317,7 +337,14 @@ func (s *ThresholdStrategy) onPriceChangedInternal(ctx context.Context, event *e
 
 				assetID := event.Market.GetAssetID(entryTokenType)
 				// 卖出使用买一价（更容易成交）
-				bidPrice, err := orderutil.QuoteSellPrice(ctx, tradingService, assetID, 0)
+				minSell := 0
+				if config.MaxSellSlippageCents > 0 {
+					minSell = sellThresholdPrice.Cents - config.MaxSellSlippageCents
+					if minSell < 0 {
+						minSell = 0
+					}
+				}
+				bidPrice, err := orderutil.QuoteSellPrice(ctx, tradingService, assetID, minSell)
 				if err != nil {
 					logger.Errorf("价格阈值策略: 获取订单簿失败: %v", err)
 					return err
