@@ -47,8 +47,8 @@ type MarketStream struct {
 	handlers *stream.HandlerList
 
 	// Goroutine 管理
-	sg          *syncgroup.SyncGroup // 长期运行的 goroutine（如 reconnector）
-	connSg      *syncgroup.SyncGroup // 连接相关的 goroutine（如 Read, ping）
+	sg     *syncgroup.SyncGroup // 长期运行的 goroutine（如 reconnector）
+	connSg *syncgroup.SyncGroup // 连接相关的 goroutine（如 Read, ping）
 
 	// 健康检查
 	lastPong      time.Time
@@ -62,12 +62,12 @@ type MarketStream struct {
 // NewMarketStream 创建新的市场数据流
 func NewMarketStream() *MarketStream {
 	return &MarketStream{
-		reconnectC: make(chan struct{}, 1),
-		closeC:     make(chan struct{}),
-		handlers:   stream.NewHandlerList(),
-		sg:         syncgroup.NewSyncGroup(), // 长期运行的 goroutine
-		connSg:     syncgroup.NewSyncGroup(), // 连接相关的 goroutine
-		lastPong:   time.Now(),
+		reconnectC:    make(chan struct{}, 1),
+		closeC:        make(chan struct{}),
+		handlers:      stream.NewHandlerList(),
+		sg:            syncgroup.NewSyncGroup(), // 长期运行的 goroutine
+		connSg:        syncgroup.NewSyncGroup(), // 连接相关的 goroutine
+		lastPong:      time.Now(),
 		lastMessageAt: time.Now(),
 	}
 }
@@ -103,7 +103,7 @@ func (m *MarketStream) OnPriceChanged(handler stream.PriceChangeHandler) {
 	if m.market != nil {
 		marketSlug = m.market.Slug
 	}
-	marketLog.Infof("✅ [注册] MarketStream 注册价格变化处理器，当前 handlers 数量=%d，市场=%s", 
+	marketLog.Infof("✅ [注册] MarketStream 注册价格变化处理器，当前 handlers 数量=%d，市场=%s",
 		handlerCount, marketSlug)
 	if handlerCount == 0 {
 		marketLog.Errorf("❌ [注册] MarketStream handlers 仍为空！注册失败！")
@@ -146,7 +146,7 @@ func (m *MarketStream) DialAndConnect(ctx context.Context) error {
 		m.connSg.WaitAndClear()
 		close(done)
 	}()
-	
+
 	select {
 	case <-done:
 		// 旧的 goroutine 已完成
@@ -412,6 +412,22 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 		}
 	}
 
+	// 兼容：服务器可能发送 JSON 数组（例如初始 book 快照会是数组）。
+	// 这种情况下逐条展开处理，避免“策略完全收不到价格”的情况。
+	// 参考：clob/examples/place_order_auto.go
+	if len(message) > 0 && message[0] == '[' {
+		var rawMsgs []json.RawMessage
+		if err := json.Unmarshal(message, &rawMsgs); err == nil && len(rawMsgs) > 0 {
+			for _, raw := range rawMsgs {
+				if len(raw) == 0 {
+					continue
+				}
+				m.handleMessage(ctx, raw)
+			}
+			return
+		}
+	}
+
 	var msgType struct {
 		EventType string `json:"event_type"`
 	}
@@ -483,11 +499,11 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 	}
 
 	type bookMessage struct {
-		EventType string `json:"event_type"`
-		AssetID   string `json:"asset_id"`
-		BestBid   string `json:"best_bid"`
-		BestAsk   string `json:"best_ask"`
-		Price     string `json:"price"`
+		EventType string       `json:"event_type"`
+		AssetID   string       `json:"asset_id"`
+		BestBid   string       `json:"best_bid"`
+		BestAsk   string       `json:"best_ask"`
+		Price     string       `json:"price"`
 		Bids      []orderLevel `json:"bids"`
 		Asks      []orderLevel `json:"asks"`
 	}
@@ -631,7 +647,7 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 
 		// 直接触发回调（不使用事件总线）
 		// 注意：这里使用 handlerCount（在函数开头定义）
-		marketLog.Debugf("📤 [价格处理] 触发价格变化回调: %s @ %dc (handlers=%d, 市场=%s)", 
+		marketLog.Debugf("📤 [价格处理] 触发价格变化回调: %s @ %dc (handlers=%d, 市场=%s)",
 			tokenType, latest.price.Cents, handlerCount, m.market.Slug)
 		m.handlers.Emit(ctx, event)
 	}
@@ -664,7 +680,7 @@ func (m *MarketStream) Close() error {
 		m.connSg.WaitAndClear()
 		close(done1)
 	}()
-	
+
 	select {
 	case <-done1:
 		// 正常完成
@@ -678,7 +694,7 @@ func (m *MarketStream) Close() error {
 		m.sg.WaitAndClear()
 		close(done2)
 	}()
-	
+
 	select {
 	case <-done2:
 		// 正常完成
