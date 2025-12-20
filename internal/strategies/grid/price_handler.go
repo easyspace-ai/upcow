@@ -29,7 +29,8 @@ func (s *GridStrategy) OnPriceChanged(ctx context.Context, event *events.PriceCh
 	s.priceMu.Unlock()
 
 	// 确保事件循环已启动
-	s.startLoop(ctx)
+	// 注意：移除此处 startLoop 调用，统一由 Run 方法启动（避免因回调 context 取消导致 loop 退出）
+	// s.startLoop(ctx)
 
 	select {
 	case s.priceSignalC <- struct{}{}:

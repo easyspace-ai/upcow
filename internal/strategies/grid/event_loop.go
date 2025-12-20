@@ -12,15 +12,23 @@ import (
 // 目标：策略状态只在一个 goroutine 中变更，避免并发竞态与过度加锁。
 func (s *GridStrategy) startLoop(ctx context.Context) {
 	s.loopOnce.Do(func() {
+		log.Infof("🔄 [GridLoop] 正在启动策略事件循环...")
 		loopCtx, cancel := context.WithCancel(ctx)
 		s.loopCancel = cancel
 
 		go func() {
+			log.Infof("✅ [GridLoop] 策略事件循环已启动")
 			ticker := time.NewTicker(1 * time.Second)
 			defer ticker.Stop()
+			
+			defer func() {
+				log.Infof("🛑 [GridLoop] 策略事件循环已退出")
+			}()
+
 			for {
 				select {
 				case <-loopCtx.Done():
+					log.Warnf("🛑 [GridLoop] Context已取消，正在退出循环: %v", loopCtx.Err())
 					return
 
 				case <-s.priceSignalC:
