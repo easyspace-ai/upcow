@@ -32,8 +32,7 @@ func (s *GridStrategy) planTick(ctx context.Context) {
 	now := time.Now()
 
 	// 通用超时：Submitting 太久就失败并释放（避免卡死）
-	const submitTimeout = 35 * time.Second
-	if (p.State == PlanEntrySubmitting || p.State == PlanHedgeSubmitting) && now.Sub(p.StateAt) > submitTimeout {
+	if p.submittingTimedOut(now) {
 		p.State = PlanFailed
 		p.LastError = fmt.Sprintf("submit timeout: state=%s", p.State)
 		// 允许该层级重试
@@ -48,28 +47,24 @@ func (s *GridStrategy) planTick(ctx context.Context) {
 	s.planStrongHedge(ctx)
 
 	// 轻量自愈：如果 entry/hedge 长时间没有更新，触发一次 SyncOrderStatus
-	const syncInterval = 5 * time.Second
 	switch p.State {
 	case PlanEntryOpen:
-		if p.EntryOrderID != "" && now.Sub(p.LastSyncAt) > syncInterval && now.Sub(p.StateAt) > syncInterval {
+		if p.shouldSyncEntry(now) {
 			_ = s.submitSyncOrderCmd(p.ID, p.EntryOrderID)
 		}
 	case PlanHedgeOpen:
-		if p.HedgeOrderID != "" && now.Sub(p.LastSyncAt) > syncInterval && now.Sub(p.StateAt) > syncInterval {
+		if p.shouldSyncHedge(now) {
 			_ = s.submitSyncOrderCmd(p.ID, p.HedgeOrderID)
 		}
 		// 如果对冲单长时间未成交，撤单并进入重试（撤单重挂）
-		const hedgeOpenTimeout = 10 * time.Second
-		if p.HedgeOrderID != "" && (p.HedgeStatus == domain.OrderStatusOpen || p.HedgeStatus == domain.OrderStatusPending) &&
-			now.Sub(p.StateAt) > hedgeOpenTimeout && now.Sub(p.LastCancelAt) > hedgeOpenTimeout {
+		if p.shouldCancelStaleHedge(now) {
 			p.State = PlanHedgeCanceling
 			p.StateAt = now
 			_ = s.submitCancelOrderCmd(p.ID, p.HedgeOrderID)
 		}
 	case PlanHedgeCanceling:
 		// 撤单长时间无反馈：进入重试窗口自愈
-		const cancelTimeout = 12 * time.Second
-		if now.Sub(p.StateAt) > cancelTimeout {
+		if p.cancelTimedOut(now) {
 			p.State = PlanRetryWait
 			p.StateAt = now
 			p.NextRetryAt = now.Add(2 * time.Second)
