@@ -69,8 +69,8 @@ type GridStrategy struct {
 	// 风险8修复：对冲订单提交锁（防止多个对冲机制并发提交）
 	hedgeOrderSubmitMu sync.Mutex // 保护对冲订单提交的锁，确保同一时间只有一个goroutine提交对冲订单
 	// 订单成交事件去重：orderID -> filledAt timestamp
-	processedFilledOrders   map[string]time.Time // 已处理的订单成交事件（用于去重）
-	processedFilledOrdersMu sync.RWMutex         // 保护 processedFilledOrders 的锁
+	processedFilledOrders   map[string]*common.Debouncer // 已处理的订单成交事件（用于去重；每个 orderID 记录最后一次 filledAt）
+	processedFilledOrdersMu sync.RWMutex                 // 保护 processedFilledOrders 的锁
 
 	// 单线程事件循环（确定性优先）
 	loopOnce     sync.Once
@@ -110,7 +110,7 @@ func NewGridStrategy() *GridStrategy {
 	return &GridStrategy{
 		// activeOrders 已移除：现在由 OrderEngine 管理
 		pendingHedgeOrders:    make(map[string]*domain.Order),
-		processedFilledOrders: make(map[string]time.Time),
+		processedFilledOrders: make(map[string]*common.Debouncer),
 		upTotalCost:           0,
 		upHoldings:            0,
 		downTotalCost:         0,

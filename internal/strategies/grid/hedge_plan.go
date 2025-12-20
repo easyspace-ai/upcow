@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/strategies/common"
 )
 
 type HedgePlanState string
@@ -50,9 +51,8 @@ type HedgePlan struct {
 	LastCancelAt  time.Time
 
 	// 补仓/强对冲（minProfit 驱动）
-	SupplementInFlight bool
-	LastSupplementAt   time.Time
+	SupplementInFlight  bool
+	SupplementDebouncer *common.Debouncer // 补仓节流（例如2s），防止连续强对冲刷单
 
 	LastError string
 }
-

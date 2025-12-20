@@ -1,8 +1,6 @@
 package grid
 
 import (
-	"time"
-
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/strategies/common"
 )
@@ -76,10 +74,10 @@ func (s *GridStrategy) ResetStateForNewCycle() {
 
 	// 清空已处理的订单成交事件
 	if s.processedFilledOrders == nil {
-		s.processedFilledOrders = make(map[string]time.Time)
+		s.processedFilledOrders = make(map[string]*common.Debouncer)
 	} else if len(s.processedFilledOrders) > 0 {
 		log.Infof("🔄 [周期切换] 清空 %d 个已处理的订单成交事件", len(s.processedFilledOrders))
-		s.processedFilledOrders = make(map[string]time.Time)
+		s.processedFilledOrders = make(map[string]*common.Debouncer)
 	}
 
 	// 重置轮数

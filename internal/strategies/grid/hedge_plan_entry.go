@@ -138,6 +138,8 @@ func (s *GridStrategy) handleGridLevelReachedWithPlan(
 		EntryCreated:  nil,
 		HedgeCreated:  nil,
 		LastError:     "",
+		// 补仓/强对冲节流：避免短时间内连续补仓刷单
+		SupplementDebouncer: common.NewDebouncer(2 * time.Second),
 	}
 
 	// 标记正在下单（用于诊断/兼容旧逻辑）

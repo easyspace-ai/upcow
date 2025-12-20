@@ -20,11 +20,11 @@ const (
 )
 
 type gridCmdResult struct {
-	planID string
-	kind   gridCmdKind
-	order  *domain.Order
+	planID  string
+	kind    gridCmdKind
+	order   *domain.Order
 	created *domain.Order
-	err    error
+	err     error
 }
 
 func (s *GridStrategy) submitPlaceOrderCmd(ctx context.Context, planID string, kind gridCmdKind, order *domain.Order) error {
@@ -223,11 +223,12 @@ func (s *GridStrategy) handleCmdResultInternal(_ context.Context, res gridCmdRes
 	case gridCmdSupplement:
 		// 补仓命令返回：允许后续补仓
 		s.plan.SupplementInFlight = false
-		s.plan.LastSupplementAt = time.Now()
+		if s.plan.SupplementDebouncer != nil {
+			s.plan.SupplementDebouncer.MarkNow()
+		}
 		return nil
 
 	default:
 		return nil
 	}
 }
-

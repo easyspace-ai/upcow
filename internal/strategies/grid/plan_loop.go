@@ -8,6 +8,7 @@ import (
 
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 )
 
@@ -200,7 +201,10 @@ func (s *GridStrategy) planStrongHedge(ctx context.Context) {
 	if p.SupplementInFlight {
 		return
 	}
-	if !p.LastSupplementAt.IsZero() && time.Since(p.LastSupplementAt) < 2*time.Second {
+	if p.SupplementDebouncer == nil {
+		p.SupplementDebouncer = common.NewDebouncer(2 * time.Second)
+	}
+	if ready, _ := p.SupplementDebouncer.ReadyNow(); !ready {
 		return
 	}
 
@@ -281,6 +285,9 @@ func (s *GridStrategy) planStrongHedge(ctx context.Context) {
 	order.OrderID = fmt.Sprintf("plan-supp-%s-%d-%d", tokenType, bestPrice.Cents, time.Now().UnixNano())
 
 	p.SupplementInFlight = true
+	if p.SupplementDebouncer != nil {
+		p.SupplementDebouncer.MarkNow()
+	}
 	p.StateAt = time.Now()
 	_ = s.submitPlaceOrderCmd(ctx, p.ID, gridCmdSupplement, order)
 }
@@ -291,4 +298,3 @@ func minInt(a, b int) int {
 	}
 	return b
 }
-

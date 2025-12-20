@@ -667,9 +667,16 @@ func (s *GridStrategy) OnOrderFilled(ctx context.Context, event *events.OrderFil
 	s.processedFilledOrdersMu.Lock()
 	// 确保 map 已初始化（防止 nil map panic）
 	if s.processedFilledOrders == nil {
-		s.processedFilledOrders = make(map[string]time.Time)
+		s.processedFilledOrders = make(map[string]*common.Debouncer)
 	}
-	if existingFilledAt, exists := s.processedFilledOrders[event.Order.OrderID]; exists {
+	deb := s.processedFilledOrders[event.Order.OrderID]
+	if deb == nil {
+		// interval 只用于保持该 Debouncer 的“Ready 语义”，这里并不依赖 interval 判定
+		deb = common.NewDebouncer(0)
+		s.processedFilledOrders[event.Order.OrderID] = deb
+	}
+	existingFilledAt := deb.Last()
+	if !existingFilledAt.IsZero() {
 		// 检查是否是同一个成交事件（相同的时间戳，允许1秒误差）
 		timeDiff := existingFilledAt.Sub(*event.Order.FilledAt)
 		if timeDiff < 0 {
@@ -686,12 +693,17 @@ func (s *GridStrategy) OnOrderFilled(ctx context.Context, event *events.OrderFil
 			event.Order.OrderID, existingFilledAt, event.Order.FilledAt, timeDiff)
 	}
 	// 记录已处理的订单成交事件
-	s.processedFilledOrders[event.Order.OrderID] = *event.Order.FilledAt
+	deb.Mark(*event.Order.FilledAt)
 
 	// 清理旧的记录（保留最近1小时的记录，避免内存泄漏）
 	now := time.Now()
-	for orderID, filledAt := range s.processedFilledOrders {
-		if now.Sub(filledAt) > time.Hour {
+	for orderID, d := range s.processedFilledOrders {
+		if d == nil {
+			delete(s.processedFilledOrders, orderID)
+			continue
+		}
+		filledAt := d.Last()
+		if filledAt.IsZero() || now.Sub(filledAt) > time.Hour {
 			delete(s.processedFilledOrders, orderID)
 		}
 	}

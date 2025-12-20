@@ -32,6 +32,13 @@ func (d *Debouncer) Interval() time.Duration {
 	return d.interval
 }
 
+// Last returns the last marked time.
+func (d *Debouncer) Last() time.Time {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.last
+}
+
 // Ready reports whether the action should run now, based on last successful Mark.
 // It does NOT update internal state.
 func (d *Debouncer) Ready(now time.Time) (ready bool, since time.Duration) {
