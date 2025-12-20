@@ -27,6 +27,11 @@ type PairLockStrategyConfig struct {
 	// MaxConcurrentPlans 最大并行轮数（EnableParallel=true 时生效，默认 1）
 	MaxConcurrentPlans int
 
+	// MaxTotalUnhedgedShares 全局未锁定风险预算（shares）。
+	// 含义（保守口径）：所有“在途轮次”的 TargetSize 之和不超过该值，避免最坏情况下单腿成交导致累计裸露过大。
+	// 默认（当 EnableParallel=true 且未显式配置时）：等于 OrderSize（即最多允许“一个轮次规模”的最坏未对冲风险）。
+	MaxTotalUnhedgedShares float64
+
 	// CooldownMs 信号触发冷却时间（毫秒），避免高频重复开轮
 	CooldownMs int
 
@@ -61,6 +66,17 @@ func (c *PairLockStrategyConfig) Validate() error {
 	}
 	if c.EnableParallel && c.MaxConcurrentPlans <= 0 {
 		c.MaxConcurrentPlans = 2
+	}
+	if c.EnableParallel {
+		if c.MaxTotalUnhedgedShares <= 0 {
+			// 默认保守：只允许一个轮次规模的“最坏未锁定风险”
+			c.MaxTotalUnhedgedShares = c.OrderSize
+		}
+	} else {
+		// 串行模式下该参数不生效，但保持为 0 以表达“无需预算”
+		if c.MaxTotalUnhedgedShares < 0 {
+			return fmt.Errorf("max_total_unhedged_shares 不能为负数")
+		}
 	}
 	if c.CooldownMs <= 0 {
 		c.CooldownMs = 250

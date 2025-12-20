@@ -27,6 +27,7 @@ func (a *PairLockConfigAdapter) AdaptConfig(strategyConfig interface{}, proxyCon
 		MaxRoundsPerPeriod:      cfg.PairLock.MaxRoundsPerPeriod,
 		EnableParallel:          cfg.PairLock.EnableParallel,
 		MaxConcurrentPlans:      cfg.PairLock.MaxConcurrentPlans,
+		MaxTotalUnhedgedShares:  cfg.PairLock.MaxTotalUnhedgedShares,
 		CooldownMs:              cfg.PairLock.CooldownMs,
 		MaxSupplementAttempts:   cfg.PairLock.MaxSupplementAttempts,
 		EntryMaxBuySlippageCents: cfg.PairLock.EntryMaxBuySlippageCents,

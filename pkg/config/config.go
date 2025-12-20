@@ -65,6 +65,7 @@ type ThresholdConfig struct {
 type PairLockConfig struct {
 	EnableParallel           bool    // 是否开启并行多轮（默认 false）
 	MaxConcurrentPlans       int     // 最大并行轮数（默认 1；仅 EnableParallel=true 时生效）
+	MaxTotalUnhedgedShares   float64 // 全局未锁定风险预算（shares；保守口径：在途轮次 targetSize 总和），默认 0（策略侧会给并行模式设置保守默认）
 	OrderSize                float64 // 每轮下单 shares（YES/NO 两腿相同）
 	MinOrderSize             float64 // 最小下单金额（USDC），默认 1.1
 	ProfitTargetCents        int     // 锁定利润目标（分），默认 3
@@ -199,6 +200,7 @@ type ConfigFile struct {
 		PairLock struct {
 			EnableParallel           bool    `yaml:"enable_parallel" json:"enable_parallel"`
 			MaxConcurrentPlans       int     `yaml:"max_concurrent_plans" json:"max_concurrent_plans"`
+			MaxTotalUnhedgedShares   float64 `yaml:"max_total_unhedged_shares" json:"max_total_unhedged_shares"`
 			OrderSize                float64 `yaml:"order_size" json:"order_size"`
 			MinOrderSize             float64 `yaml:"min_order_size" json:"min_order_size"`
 			ProfitTargetCents        int     `yaml:"profit_target_cents" json:"profit_target_cents"`
@@ -344,6 +346,11 @@ func LoadFromFile(filePath string) (*Config, error) {
 					configFile != nil,
 					safeGetPairLockInt(configFile, func(cf *ConfigFile) int { return cf.Strategies.PairLock.MaxConcurrentPlans }),
 					parseIntEnv("PAIRLOCK_MAX_CONCURRENT_PLANS", 1),
+				),
+				MaxTotalUnhedgedShares: getFloatFromSources(
+					configFile != nil,
+					safeGetPairLockFloat(configFile, func(cf *ConfigFile) float64 { return cf.Strategies.PairLock.MaxTotalUnhedgedShares }),
+					parseFloatEnv("PAIRLOCK_MAX_TOTAL_UNHEDGED_SHARES", 0),
 				),
 				OrderSize: getFloatFromSources(
 					configFile != nil,
@@ -892,6 +899,9 @@ func (c *Config) Validate() error {
 				if c.Strategies.PairLock.MaxConcurrentPlans <= 0 {
 					return fmt.Errorf("PAIRLOCK_MAX_CONCURRENT_PLANS 必须 > 0")
 				}
+			}
+			if c.Strategies.PairLock.MaxTotalUnhedgedShares < 0 {
+				return fmt.Errorf("PAIRLOCK_MAX_TOTAL_UNHEDGED_SHARES 不能为负数")
 			}
 		case "arbitrage":
 			if c.Strategies.Arbitrage == nil {

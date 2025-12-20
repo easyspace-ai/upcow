@@ -180,6 +180,10 @@ func (s *PairLockStrategy) Initialize(ctx context.Context, conf strategies.Strat
 	)
 	log.Infof("pairlock 并行配置: enable_parallel=%v, max_concurrent_plans=%d",
 		s.config.EnableParallel, s.config.MaxConcurrentPlans)
+	if s.config.EnableParallel {
+		log.Infof("pairlock 风控: max_total_unhedged_shares=%.4f (保守口径：在途轮次 targetSize 总和)",
+			s.config.MaxTotalUnhedgedShares)
+	}
 
 	return nil
 }
@@ -269,6 +273,9 @@ func (s *PairLockStrategy) onPriceChangedInternal(loopCtx context.Context, ctx c
 	if s.inflightPlans() >= s.maxConcurrentPlans() {
 		return nil
 	}
+	if !s.canStartMorePlans() {
+		return nil
+	}
 
 	// cooldown
 	if !s.lastAttemptAt.IsZero() && time.Since(s.lastAttemptAt) < time.Duration(s.config.CooldownMs)*time.Millisecond {
@@ -277,6 +284,9 @@ func (s *PairLockStrategy) onPriceChangedInternal(loopCtx context.Context, ctx c
 
 	// 并行模式：一次信号允许尽量补满并发额度（但仍受 cooldown 限制）
 	for s.inflightPlans() < s.maxConcurrentPlans() && s.roundsThisPeriod < s.config.MaxRoundsPerPeriod {
+		if !s.canStartMorePlans() {
+			break
+		}
 		if err := s.tryStartNewPlan(loopCtx); err != nil {
 			// 不因为一次失败就中断循环（除非策略被标记 paused）
 			break
@@ -334,6 +344,10 @@ func (s *PairLockStrategy) tryStartNewPlan(ctx context.Context) error {
 	// 计算统一 size：同时满足两腿最小金额
 	size := s.calcUnifiedSize(yesAsk, noAsk)
 	if size <= 0 {
+		return nil
+	}
+	// 全局未锁定预算（保守口径：新增一个 in-flight 轮次，最坏会增加 size 的未对冲风险）
+	if !s.canStartPlanWithSize(size) {
 		return nil
 	}
 
@@ -678,6 +692,42 @@ func (s *PairLockStrategy) maxConcurrentPlans() int {
 		return 1
 	}
 	return s.config.MaxConcurrentPlans
+}
+
+func (s *PairLockStrategy) inflightTargetShares() float64 {
+	sum := 0.0
+	for _, p := range s.plans {
+		if p == nil {
+			continue
+		}
+		if p.State == planSubmitting || p.State == planWaiting || p.State == planSupplementing {
+			sum += p.TargetSize
+		}
+	}
+	return sum
+}
+
+func (s *PairLockStrategy) canStartMorePlans() bool {
+	if s.config == nil || !s.config.EnableParallel {
+		return true
+	}
+	limit := s.config.MaxTotalUnhedgedShares
+	if limit <= 0 {
+		// 并行模式下策略侧会设置保守默认；这里兜底放行
+		return true
+	}
+	return s.inflightTargetShares() < limit-1e-9
+}
+
+func (s *PairLockStrategy) canStartPlanWithSize(size float64) bool {
+	if s.config == nil || !s.config.EnableParallel {
+		return true
+	}
+	limit := s.config.MaxTotalUnhedgedShares
+	if limit <= 0 {
+		return true
+	}
+	return s.inflightTargetShares()+size <= limit+1e-9
 }
 
 func (s *PairLockStrategy) isFilledDuplicate(orderID string, filledAt time.Time) bool {
