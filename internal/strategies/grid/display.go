@@ -13,8 +13,7 @@ func (s *GridStrategy) displayGridPosition(event *events.PriceChangedEvent, oldP
 	if s.grid == nil {
 		log.Warnf("⚠️ 网格未初始化，跳过显示")
 		// 即使 grid 为 nil，也显示基本信息
-		fmt.Printf("✅ Price updated (网格未初始化):\n")
-		fmt.Printf("   %s: %dc\n", event.TokenType, event.NewPrice.Cents)
+		log.Infof("✅ Price updated (网格未初始化): %s=%dc", event.TokenType, event.NewPrice.Cents)
 		return
 	}
 	
@@ -82,14 +81,15 @@ func (s *GridStrategy) displayGridPosition(event *events.PriceChangedEvent, oldP
 		lines = append(lines, "DOWN: 等待价格更新...")
 	}
 
-	// 输出到终端
-	fmt.Printf("✅ Price updated:\n")
+	// 输出到日志（避免 stdout 未被采集导致“看不到实时信息”）
+	log.Infof("✅ Price updated:")
 	for _, line := range lines {
-		fmt.Printf("   %s\n", line)
+		log.Infof("   %s", line)
 	}
-	// 显示双向持仓和利润信息
+
+	// 显示双向持仓和利润信息（内部会短暂 RLock）
 	s.displayHoldingsAndProfit()
-	// 显示策略状态信息到终端
+	// 显示策略状态信息（内部会短暂 RLock + 读活跃订单）
 	s.displayStrategyStatus()
 
 	// 仓位和订单信息写入日志文件（交易相关信息）
@@ -228,17 +228,18 @@ func (s *GridStrategy) displayStrategyStatus() {
 		positionStatus = "无持仓"
 	}
 
-	// 输出到终端
-	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-	fmt.Printf("   %s %s\n", statusEmoji, statusInfo)
-	fmt.Printf("   %s\n", roundInfo)
-	fmt.Printf("   📋 订单: %s\n", strings.Join(orderStatusLines, " | "))
-	fmt.Printf("   💼 持仓: %s\n", positionStatus)
+	// 输出到日志（同一日志流可见）
+	log.Infof("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	log.Infof("   %s %s", statusEmoji, statusInfo)
+	log.Infof("   %s", roundInfo)
+	log.Infof("   📋 订单: %s", strings.Join(orderStatusLines, " | "))
+	log.Infof("   💼 持仓: %s", positionStatus)
 
-	// 显示双向持仓和利润信息
+	// 显示双向持仓和利润信息（注意：这里会导致与 displayGridPosition 的调用产生重复输出，
+	// 但能保证无论调用链如何都可见；如需去重可再做一次优化）
 	s.displayHoldingsAndProfit()
 
-	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	log.Infof("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 }
 
 // displayHoldingsAndProfit 显示双向持仓和利润信息
@@ -268,11 +269,11 @@ func (s *GridStrategy) displayHoldingsAndProfit() {
 	// DOWN胜利润 = DOWN持仓量 * 1 USDC - UP总成本 - DOWN总成本
 	downWinProfit := downHoldings*1.0 - upTotalCost - downTotalCost
 
-	// 输出到终端
-	fmt.Printf("   📊 双向持仓:\n")
-	fmt.Printf("      UP:   总成本=%.8f USDC, 持仓=%.8f, 均价=%.8f\n", upTotalCost, upHoldings, upAvgPrice)
-	fmt.Printf("      DOWN: 总成本=%.8f USDC, 持仓=%.8f, 均价=%.8f\n", downTotalCost, downHoldings, downAvgPrice)
-	fmt.Printf("      💰 利润: UP胜=%.8f USDC, DOWN胜=%.8f USDC\n", upWinProfit, downWinProfit)
+	// 输出到日志（同一日志流可见）
+	log.Infof("   📊 双向持仓:")
+	log.Infof("      UP:   总成本=%.8f USDC, 持仓=%.8f, 均价=%.8f", upTotalCost, upHoldings, upAvgPrice)
+	log.Infof("      DOWN: 总成本=%.8f USDC, 持仓=%.8f, 均价=%.8f", downTotalCost, downHoldings, downAvgPrice)
+	log.Infof("      💰 利润: UP胜=%.8f USDC, DOWN胜=%.8f USDC", upWinProfit, downWinProfit)
 }
 
 // formatOrdersInfo 格式化待成交订单信息
