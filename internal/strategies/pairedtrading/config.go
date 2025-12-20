@@ -11,19 +11,19 @@ import (
 // PairedTradingConfig 成对交易策略配置
 type PairedTradingConfig struct {
 	// 阶段控制参数
-	BuildDuration  time.Duration `yaml:"build_duration"`  // 建仓阶段持续时间
-	LockStart      time.Duration `yaml:"lock_start"`      // 锁定阶段开始时间
-	AmplifyStart   time.Duration `yaml:"amplify_start"`   // 放大阶段开始时间
-	CycleDuration  time.Duration `yaml:"cycle_duration"`  // 周期总时长
-	EarlyLockPrice float64       `yaml:"early_lock_price"` // 提前进入锁定阶段的价格阈值
-	EarlyAmplifyPrice float64    `yaml:"early_amplify_price"` // 提前进入放大阶段的价格阈值
+	BuildDuration     time.Duration `yaml:"build_duration"`      // 建仓阶段持续时间
+	LockStart         time.Duration `yaml:"lock_start"`          // 锁定阶段开始时间
+	AmplifyStart      time.Duration `yaml:"amplify_start"`       // 放大阶段开始时间
+	CycleDuration     time.Duration `yaml:"cycle_duration"`      // 周期总时长
+	EarlyLockPrice    float64       `yaml:"early_lock_price"`    // 提前进入锁定阶段的价格阈值
+	EarlyAmplifyPrice float64       `yaml:"early_amplify_price"` // 提前进入放大阶段的价格阈值
 
 	// 建仓参数
-	BaseTarget      float64 `yaml:"base_target"`       // 基础建仓目标（shares）
-	BuildLotSize    float64 `yaml:"build_lot_size"`    // 单次建仓数量
-	BuildThreshold  float64 `yaml:"build_threshold"`   // 建仓价格上限
-	MinRatio        float64 `yaml:"min_ratio"`         // 最小持仓比例
-	MaxRatio        float64 `yaml:"max_ratio"`         // 最大持仓比例
+	BaseTarget     float64 `yaml:"base_target"`     // 基础建仓目标（shares）
+	BuildLotSize   float64 `yaml:"build_lot_size"`  // 单次建仓数量
+	BuildThreshold float64 `yaml:"build_threshold"` // 建仓价格上限
+	MinRatio       float64 `yaml:"min_ratio"`       // 最小持仓比例
+	MaxRatio       float64 `yaml:"max_ratio"`       // 最大持仓比例
 
 	// 锁定参数
 	LockThreshold    float64 `yaml:"lock_threshold"`     // 触发锁定的风险阈值（USDC）
@@ -33,16 +33,16 @@ type PairedTradingConfig struct {
 	InsuranceSize    float64 `yaml:"insurance_size"`     // 反向保险数量
 
 	// 放大参数
-	AmplifyTarget        float64 `yaml:"amplify_target"`         // 放大目标利润（USDC）
-	AmplifyPriceMax      float64 `yaml:"amplify_price_max"`      // 放大阶段最高买入价格
-	InsurancePriceMax    float64 `yaml:"insurance_price_max"`    // 反向保险最高价格
-	DirectionThreshold   float64 `yaml:"direction_threshold"`    // 主方向判定阈值
+	AmplifyTarget      float64 `yaml:"amplify_target"`      // 放大目标利润（USDC）
+	AmplifyPriceMax    float64 `yaml:"amplify_price_max"`   // 放大阶段最高买入价格
+	InsurancePriceMax  float64 `yaml:"insurance_price_max"` // 反向保险最高价格
+	DirectionThreshold float64 `yaml:"direction_threshold"` // 主方向判定阈值
 
 	// 通用参数
-	MinOrderSize         float64 `yaml:"min_order_size"`          // 最小下单金额（USDC）
-	MaxBuySlippageCents  int     `yaml:"max_buy_slippage_cents"`  // 最大买入滑点（分）
-	AutoAdjustSize       bool    `yaml:"auto_adjust_size"`        // 是否自动调整数量以满足最小金额（默认true）
-	MaxSizeAdjustRatio   float64 `yaml:"max_size_adjust_ratio"`   // 最大数量调整倍数（默认5.0）
+	MinOrderSize        float64 `yaml:"min_order_size"`         // 最小下单金额（USDC）
+	MaxBuySlippageCents int     `yaml:"max_buy_slippage_cents"` // 最大买入滑点（分）
+	AutoAdjustSize      bool    `yaml:"auto_adjust_size"`       // 是否自动调整数量以满足最小金额（默认true）
+	MaxSizeAdjustRatio  float64 `yaml:"max_size_adjust_ratio"`  // 最大数量调整倍数（默认5.0）
 }
 
 // GetName implements strategies.StrategyConfig (compat).
@@ -130,7 +130,7 @@ func (c *PairedTradingConfig) Validate() error {
 	if c.MinOrderSize <= 0 {
 		return fmt.Errorf("min_order_size 必须大于 0")
 	}
-	
+
 	// 验证数量调整参数
 	if c.MaxSizeAdjustRatio <= 0 {
 		return fmt.Errorf("max_size_adjust_ratio 必须大于 0")
@@ -171,8 +171,8 @@ func DefaultPairedTradingConfig() *PairedTradingConfig {
 		DirectionThreshold: 0.70, // 主方向判定阈值0.70
 
 		// 通用参数
-		MinOrderSize:        1.1, // 最小下单1.1 USDC
-		MaxBuySlippageCents: 3,   // 最大滑点3分
+		MinOrderSize:        1.1,  // 最小下单1.1 USDC
+		MaxBuySlippageCents: 3,    // 最大滑点3分
 		AutoAdjustSize:      true, // 自动调整数量
 		MaxSizeAdjustRatio:  5.0,  // 最大调整5倍
 	}
@@ -182,15 +182,49 @@ func DefaultPairedTradingConfig() *PairedTradingConfig {
 type PairedTradingConfigAdapter struct{}
 
 // AdaptConfig implements bbgo.ConfigAdapter.
-//
-// NOTE: this strategy is currently not wired into pkg/config.ConfigFile / config.StrategyConfig.
-// If you want to enable it via config.yaml, we should extend pkg/config first.
 func (a *PairedTradingConfigAdapter) AdaptConfig(strategyConfig interface{}, proxyConfig interface{}) (interface{}, error) {
 	switch v := strategyConfig.(type) {
 	case map[string]interface{}:
 		return a.AdaptFromMap(v)
 	case config.StrategyConfig:
-		return nil, fmt.Errorf("paired_trading 策略暂未接入 pkg/config（config.yaml），请先扩展 pkg/config.StrategyConfig")
+		if v.PairedTrading == nil {
+			return nil, fmt.Errorf("paired_trading 策略已启用但配置为空")
+		}
+		pc := v.PairedTrading
+		cfg := &PairedTradingConfig{
+			BuildDuration:     pc.BuildDuration,
+			LockStart:         pc.LockStart,
+			AmplifyStart:      pc.AmplifyStart,
+			CycleDuration:     pc.CycleDuration,
+			EarlyLockPrice:    pc.EarlyLockPrice,
+			EarlyAmplifyPrice: pc.EarlyAmplifyPrice,
+
+			BaseTarget:     pc.BaseTarget,
+			BuildLotSize:   pc.BuildLotSize,
+			BuildThreshold: pc.BuildThreshold,
+			MinRatio:       pc.MinRatio,
+			MaxRatio:       pc.MaxRatio,
+
+			LockThreshold:    pc.LockThreshold,
+			LockPriceMax:     pc.LockPriceMax,
+			ExtremeHigh:      pc.ExtremeHigh,
+			TargetProfitBase: pc.TargetProfitBase,
+			InsuranceSize:    pc.InsuranceSize,
+
+			AmplifyTarget:      pc.AmplifyTarget,
+			AmplifyPriceMax:    pc.AmplifyPriceMax,
+			InsurancePriceMax:  pc.InsurancePriceMax,
+			DirectionThreshold: pc.DirectionThreshold,
+
+			MinOrderSize:        pc.MinOrderSize,
+			MaxBuySlippageCents: pc.MaxBuySlippageCents,
+			AutoAdjustSize:      pc.AutoAdjustSize,
+			MaxSizeAdjustRatio:  pc.MaxSizeAdjustRatio,
+		}
+		if err := cfg.Validate(); err != nil {
+			return nil, err
+		}
+		return cfg, nil
 	default:
 		return nil, fmt.Errorf("无效的策略配置类型: %T", strategyConfig)
 	}

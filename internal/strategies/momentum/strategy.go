@@ -66,7 +66,8 @@ type MomentumStrategy struct {
 	// 当前周期 market（用于 MarketSlug/assetID）
 	mu            sync.RWMutex
 	currentMarket *domain.Market
-	lastTradeAt   time.Time
+	marketGuard   common.MarketSlugGuard
+	tradeCooldown *common.Debouncer
 }
 
 func (s *MomentumStrategy) ID() string   { return ID }
@@ -103,6 +104,12 @@ func (s *MomentumStrategy) InitializeWithConfig(ctx context.Context, cfg strateg
 		return err
 	}
 	s.config = c
+	if s.tradeCooldown == nil {
+		s.tradeCooldown = common.NewDebouncer(time.Duration(c.CooldownSecs) * time.Second)
+	} else {
+		s.tradeCooldown.SetInterval(time.Duration(c.CooldownSecs) * time.Second)
+		s.tradeCooldown.Reset()
+	}
 	log.Infof("动量策略初始化: asset=%s size=$%.2f threshold=%dbps window=%ds edge=%dc cooldown=%ds polygon=%v",
 		c.Asset, c.SizeUSDC, c.ThresholdBps, c.WindowSecs, c.MinEdgeCents, c.CooldownSecs, c.UsePolygonFeed)
 	return nil
@@ -120,6 +127,12 @@ func (s *MomentumStrategy) OnPriceChanged(ctx context.Context, event *events.Pri
 		return nil
 	}
 	s.mu.Lock()
+	if s.marketGuard.Update(event.Market.Slug) {
+		// 周期切换：重置冷却，避免新周期被旧周期的 cooldown 误伤
+		if s.tradeCooldown != nil {
+			s.tradeCooldown.Reset()
+		}
+	}
 	s.currentMarket = event.Market
 	s.mu.Unlock()
 	return nil
@@ -132,6 +145,11 @@ func (s *MomentumStrategy) Run(ctx context.Context, orderExecutor bbgo.OrderExec
 	if session != nil {
 		if m := session.Market(); m != nil {
 			s.mu.Lock()
+			if s.marketGuard.Update(m.Slug) {
+				if s.tradeCooldown != nil {
+					s.tradeCooldown.Reset()
+				}
+			}
 			s.currentMarket = m
 			s.mu.Unlock()
 		}
@@ -182,16 +200,17 @@ func (s *MomentumStrategy) handleSignal(ctx context.Context, sig MomentumSignal)
 	ts := s.tradingService
 	cfg := s.config
 	market := s.currentMarket
-	lastTradeAt := s.lastTradeAt
+	cooldown := s.tradeCooldown
 	s.mu.RUnlock()
 
 	if ts == nil || cfg == nil || market == nil {
 		return nil
 	}
 
-	// 冷却（按“单 market 会话”设计，只需要一个 lastTradeAt）
-	if cfg.CooldownSecs > 0 && !lastTradeAt.IsZero() {
-		if time.Since(lastTradeAt) < time.Duration(cfg.CooldownSecs)*time.Second {
+	// 冷却：通过 Debouncer 统一实现；interval=0 等价于不冷却
+	if cooldown != nil {
+		ready, _ := cooldown.ReadyNow()
+		if !ready {
 			return nil
 		}
 	}
@@ -217,7 +236,9 @@ func (s *MomentumStrategy) handleSignal(ctx context.Context, sig MomentumSignal)
 			return err
 		}
 		s.mu.Lock()
-		s.lastTradeAt = time.Now()
+		if s.tradeCooldown != nil {
+			s.tradeCooldown.MarkNow()
+		}
 		s.mu.Unlock()
 		return nil
 	}
@@ -233,9 +254,11 @@ func (s *MomentumStrategy) handleSignal(ctx context.Context, sig MomentumSignal)
 		return fmt.Errorf("执行器队列已满，无法提交动量订单")
 	}
 
-	// 成功投递后记录 lastTradeAt（避免同一信号风暴提交大量 command）
+	// 成功投递后记录 cooldown（避免同一信号风暴提交大量 command）
 	s.mu.Lock()
-	s.lastTradeAt = time.Now()
+	if s.tradeCooldown != nil {
+		s.tradeCooldown.MarkNow()
+	}
 	s.mu.Unlock()
 	return nil
 }
