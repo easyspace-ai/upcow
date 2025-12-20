@@ -98,6 +98,7 @@ func (s *GridStrategy) planOnOrderUpdate(ctx context.Context, order *domain.Orde
 		return
 	}
 	p := s.plan
+	now := time.Now()
 
 	// entry 订单更新
 	if p.EntryOrderID != "" && order.OrderID == p.EntryOrderID {
@@ -119,9 +120,7 @@ func (s *GridStrategy) planOnOrderUpdate(ctx context.Context, order *domain.Orde
 				s.plan = nil
 				return
 			}
-			p.State = PlanHedgeSubmitting
-			p.StateAt = time.Now()
-			p.HedgeAttempts++
+			p.enterHedgeSubmitting(now)
 			s.planRefreshHedgePrice(ctx)
 			_ = s.submitPlaceOrderCmd(ctx, p.ID, gridCmdPlaceHedge, p.HedgeTemplate)
 			return
@@ -140,10 +139,7 @@ func (s *GridStrategy) planOnOrderUpdate(ctx context.Context, order *domain.Orde
 			return
 		case domain.OrderStatusCanceled, domain.OrderStatusFailed:
 			// 退避重试
-			p.StateAt = time.Now()
-			delay := time.Duration(1<<minInt(p.HedgeAttempts, 3)) * time.Second // 2s/4s/8s...
-			p.NextRetryAt = time.Now().Add(delay)
-			p.State = PlanRetryWait
+			p.enterRetryWait(now)
 			return
 		default:
 			return
