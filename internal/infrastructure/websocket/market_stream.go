@@ -53,6 +53,13 @@ type MarketStream struct {
 	// 健康检查
 	lastPong      time.Time
 	healthCheckMu sync.RWMutex
+
+	// 诊断：消息/价格事件统计（用于排查“WS连接但没有价格更新”）
+	diagMu       sync.Mutex
+	lastMsgAt    time.Time
+	lastPriceAt  time.Time
+	msgCount     int64
+	priceEvCount int64
 }
 
 // NewMarketStream 创建新的市场数据流
@@ -64,6 +71,8 @@ func NewMarketStream() *MarketStream {
 		sg:         syncgroup.NewSyncGroup(), // 长期运行的 goroutine
 		connSg:     syncgroup.NewSyncGroup(), // 连接相关的 goroutine
 		lastPong:   time.Now(),
+		lastMsgAt:  time.Time{},
+		lastPriceAt: time.Time{},
 	}
 }
 
@@ -138,6 +147,10 @@ func (m *MarketStream) DialAndConnect(ctx context.Context) error {
 	m.connSg.Add(func() {
 		m.ping(connCtx, conn, connCancel)
 	})
+	// 诊断：周期性输出“是否收到 WS 消息/价格事件”的汇总（INFO，低频）
+	m.connSg.Add(func() {
+		m.diagLoop(connCtx)
+	})
 	m.connSg.Run()
 
 	// 订阅市场（使用 m.market）
@@ -152,6 +165,54 @@ func (m *MarketStream) DialAndConnect(ctx context.Context) error {
 
 	marketLog.Infof("市场价格 WebSocket 已连接: %s", m.market.Slug)
 	return nil
+}
+
+func (m *MarketStream) diagLoop(ctx context.Context) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-m.closeC:
+			return
+		case <-ticker.C:
+			m.diagMu.Lock()
+			lastMsgAt := m.lastMsgAt
+			lastPriceAt := m.lastPriceAt
+			msgCount := m.msgCount
+			priceEvCount := m.priceEvCount
+			m.diagMu.Unlock()
+
+			marketSlug := ""
+			if m.market != nil {
+				marketSlug = m.market.Slug
+			}
+
+			if lastMsgAt.IsZero() {
+				marketLog.Infof("🛰️ [WS诊断] 尚未收到任何 WS 消息：market=%s msgCount=%d priceEvents=%d", marketSlug, msgCount, priceEvCount)
+				continue
+			}
+
+			ageMsg := time.Since(lastMsgAt)
+			agePrice := time.Duration(0)
+			if !lastPriceAt.IsZero() {
+				agePrice = time.Since(lastPriceAt)
+			}
+
+			// 只要出现“长时间无消息/无价格事件”，用 INFO 提醒（方便线上排查）
+			if ageMsg > 45*time.Second {
+				marketLog.Infof("🛰️ [WS诊断] 45s 内未收到任何 WS 消息：market=%s msgCount=%d priceEvents=%d lastMsgAgo=%v lastPriceAgo=%v",
+					marketSlug, msgCount, priceEvCount, ageMsg, agePrice)
+				continue
+			}
+			if lastPriceAt.IsZero() || agePrice > 45*time.Second {
+				marketLog.Infof("🛰️ [WS诊断] 45s 内未产生价格事件（策略将无价格更新）：market=%s msgCount=%d priceEvents=%d lastMsgAgo=%v lastPriceAgo=%v",
+					marketSlug, msgCount, priceEvCount, ageMsg, agePrice)
+			}
+		}
+	}
 }
 
 // SetConn 原子替换连接
@@ -374,6 +435,12 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 		return
 	}
 
+	// 诊断：记录收到消息时间与计数（不打印每条，避免刷屏）
+	m.diagMu.Lock()
+	m.lastMsgAt = time.Now()
+	m.msgCount++
+	m.diagMu.Unlock()
+
 	switch msgType.EventType {
 	case "price_change":
 		// 检查 handlers 数量（用于调试）
@@ -397,16 +464,15 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 		m.healthCheckMu.Unlock()
 		marketLog.Debugf("收到 PONG 响应")
 	case "book":
-		// 订单簿快照消息（可选处理）
-		// 订单簿消息可能包含价格信息，但通常价格变化会通过 price_change 事件发送
-		// 这里只记录 Debug 级别日志，避免日志过多
-		marketLog.Debugf("📚 收到订单簿快照消息（价格变化应通过 price_change 事件发送）")
+		// 订单簿快照/增量：很多时候 WS 可能只推 book（而 price_change 很少/没有）
+		// 这里将 book 的 best ask/bid 也转换为 PriceChangedEvent，保证策略能收到“价格变化”。
+		m.handleBook(ctx, message)
 	case "tick_size_change":
 		// Tick size 变化（可选处理）
 		marketLog.Debugf("收到 tick size 变化消息")
 	case "last_trade_price":
-		// 最后交易价格（可选处理）
-		marketLog.Debugf("💰 收到最后交易价格消息（价格变化应通过 price_change 事件发送）")
+		// 最后成交价：也转换为 PriceChangedEvent 作为兜底
+		m.handleLastTradePrice(ctx, message)
 	default:
 		msgPreview := message
 		if len(msgPreview) > 200 {
@@ -414,6 +480,125 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 		}
 		marketLog.Infof("收到未知消息类型: %s (消息内容: %s)", msgType.EventType, string(msgPreview))
 	}
+}
+
+type bookLevel struct {
+	Price string `json:"price"`
+	Size  string `json:"size"`
+}
+
+type bookMessage struct {
+	EventType string      `json:"event_type"`
+	Market    string      `json:"market"`
+	AssetID   string      `json:"asset_id"`
+	Bids      []bookLevel `json:"bids"`
+	Asks      []bookLevel `json:"asks"`
+	Timestamp string      `json:"timestamp"`
+}
+
+func (m *MarketStream) handleBook(ctx context.Context, raw []byte) {
+	if m.market == nil {
+		return
+	}
+
+	var bm bookMessage
+	if err := json.Unmarshal(raw, &bm); err != nil {
+		marketLog.Debugf("解析 book 消息失败: %v", err)
+		return
+	}
+	if bm.AssetID == "" {
+		return
+	}
+
+	// 选择“更适合做买入触发”的价格：优先 best ask，否则 best bid
+	var priceStr string
+	if len(bm.Asks) > 0 && bm.Asks[0].Price != "" {
+		priceStr = bm.Asks[0].Price
+	} else if len(bm.Bids) > 0 && bm.Bids[0].Price != "" {
+		priceStr = bm.Bids[0].Price
+	} else {
+		return
+	}
+
+	newPrice, err := parsePriceString(priceStr)
+	if err != nil {
+		return
+	}
+
+	var tokenType domain.TokenType
+	if bm.AssetID == m.market.YesAssetID {
+		tokenType = domain.TokenTypeUp
+	} else if bm.AssetID == m.market.NoAssetID {
+		tokenType = domain.TokenTypeDown
+	} else {
+		return
+	}
+
+	ev := &events.PriceChangedEvent{
+		Market:    m.market,
+		TokenType: tokenType,
+		OldPrice:  nil,
+		NewPrice:  newPrice,
+		Timestamp: time.Now(),
+	}
+
+	m.diagMu.Lock()
+	m.lastPriceAt = time.Now()
+	m.priceEvCount++
+	m.diagMu.Unlock()
+
+	m.handlers.Emit(ctx, ev)
+}
+
+type lastTradePriceMessage struct {
+	EventType string `json:"event_type"`
+	Market    string `json:"market"`
+	AssetID   string `json:"asset_id"`
+	Price     string `json:"price"`
+	Timestamp string `json:"timestamp"`
+}
+
+func (m *MarketStream) handleLastTradePrice(ctx context.Context, raw []byte) {
+	if m.market == nil {
+		return
+	}
+
+	var tm lastTradePriceMessage
+	if err := json.Unmarshal(raw, &tm); err != nil {
+		marketLog.Debugf("解析 last_trade_price 消息失败: %v", err)
+		return
+	}
+	if tm.AssetID == "" || tm.Price == "" {
+		return
+	}
+	newPrice, err := parsePriceString(tm.Price)
+	if err != nil {
+		return
+	}
+
+	var tokenType domain.TokenType
+	if tm.AssetID == m.market.YesAssetID {
+		tokenType = domain.TokenTypeUp
+	} else if tm.AssetID == m.market.NoAssetID {
+		tokenType = domain.TokenTypeDown
+	} else {
+		return
+	}
+
+	ev := &events.PriceChangedEvent{
+		Market:    m.market,
+		TokenType: tokenType,
+		OldPrice:  nil,
+		NewPrice:  newPrice,
+		Timestamp: time.Now(),
+	}
+
+	m.diagMu.Lock()
+	m.lastPriceAt = time.Now()
+	m.priceEvCount++
+	m.diagMu.Unlock()
+
+	m.handlers.Emit(ctx, ev)
 }
 
 // handlePriceChange 处理价格变化（直接回调，不使用事件总线）
@@ -495,6 +680,11 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 			NewPrice:  latest.price,
 			Timestamp: time.Now(),
 		}
+
+		m.diagMu.Lock()
+		m.lastPriceAt = time.Now()
+		m.priceEvCount++
+		m.diagMu.Unlock()
 
 		// 直接触发回调（不使用事件总线）
 		// 注意：这里使用 handlerCount（在函数开头定义）
