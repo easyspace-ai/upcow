@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
@@ -202,15 +201,7 @@ func (s *GridStrategy) planStrongHedge(ctx context.Context) {
 		bestPrice = price
 	}
 
-	order := orderutil.NewOrder(s.currentMarket.Slug, assetID, types.SideBuy, bestPrice, dQ, tokenType, false, types.OrderTypeFAK)
-	order.OrderID = fmt.Sprintf("plan-supp-%s-%d-%d", tokenType, bestPrice.Cents, time.Now().UnixNano())
-
-	p.SupplementInFlight = true
-	if p.SupplementDebouncer != nil {
-		p.SupplementDebouncer.MarkNow()
-	}
-	p.StateAt = time.Now()
-	_ = s.submitPlaceOrderCmd(ctx, p.ID, gridCmdSupplement, order)
+	s.submitStrongHedgeSupplement(ctx, p, tokenType, assetID, bestPrice, dQ)
 }
 
 func minInt(a, b int) int {
