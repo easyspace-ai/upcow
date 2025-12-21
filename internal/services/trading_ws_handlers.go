@@ -16,6 +16,7 @@ func (s *TradingService) handleOrderPlaced(order *domain.Order, market *domain.M
 	// 发送 UpdateOrderCommand 到 OrderEngine
 	updateCmd := &UpdateOrderCommand{
 		id:    fmt.Sprintf("websocket_placed_%s", order.OrderID),
+		Gen:   s.currentEngineGeneration(),
 		Order: order,
 	}
 	s.orderEngine.SubmitCommand(updateCmd)
@@ -235,6 +236,7 @@ func (s *TradingService) handleOrderFilled(order *domain.Order, market *domain.M
 	// 发送 UpdateOrderCommand 到 OrderEngine
 	updateCmd := &UpdateOrderCommand{
 		id:    fmt.Sprintf("websocket_filled_%s", order.OrderID),
+		Gen:   s.currentEngineGeneration(),
 		Order: order,
 	}
 	s.orderEngine.SubmitCommand(updateCmd)
@@ -254,6 +256,7 @@ func (s *TradingService) HandleTrade(ctx context.Context, trade *domain.Trade) {
 	// 发送 ProcessTradeCommand 到 OrderEngine
 	cmd := &ProcessTradeCommand{
 		id:    fmt.Sprintf("process_trade_%d", time.Now().UnixNano()),
+		Gen:   s.currentEngineGeneration(),
 		Trade: trade,
 	}
 	s.orderEngine.SubmitCommand(cmd)
@@ -271,6 +274,7 @@ func (s *TradingService) handleOrderCanceled(order *domain.Order) error {
 	// 发送 UpdateOrderCommand 到 OrderEngine
 	updateCmd := &UpdateOrderCommand{
 		id:    fmt.Sprintf("websocket_canceled_%s", order.OrderID),
+		Gen:   s.currentEngineGeneration(),
 		Order: order,
 	}
 	s.orderEngine.SubmitCommand(updateCmd)

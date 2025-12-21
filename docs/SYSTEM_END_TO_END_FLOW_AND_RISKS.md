@@ -274,11 +274,9 @@ sequenceDiagram
 - **现象/影响**
   - reset 之后，旧周期的异步 IO 回调仍可能提交 `UpdateOrderCommand` 回流，污染新周期状态。
 - **现状（高风险）**
-  - 当前 `IOExecutor.PlaceOrderAsync/CancelOrderAsync` 回流是“无周期标识”的。
-  - 虽然 OrderEngine reset 清空了状态，但回流命令仍会被处理，可能重新写入 store/openOrders。
-- **建议（下一步应做）**
-  - 给每个下单/撤单命令携带 `CycleToken`（例如 `marketSlug` 或单调递增 generation），OrderEngine 在处理回流时校验 generation，不匹配直接丢弃。
-  - 或者在 reset 时更新一个 `engineGeneration`，回流 update 带 generation。
+  - 已修复：引入 **generation/cycle token**，所有写入 OrderEngine 的命令都携带 `Gen`；OrderEngine 对 `Gen` 严格校验，不匹配直接丢弃（Place/Cancel 会返回错误）。
+  - 覆盖范围：`Place/Cancel/UpdateOrder/ProcessTrade/CreatePosition/UpdatePosition/ClosePosition` 以及 IO 回流与对账回流。
+  - 结果：周期切换后，旧周期的异步回流无法再污染新周期 state。
 
 ### 3.5 Snapshot 与重启恢复的一致性边界
 
@@ -314,6 +312,6 @@ sequenceDiagram
 
 ## 5. 建议的下一步（最值的 2 项）
 
-1) **给 OrderEngine 引入 generation/cycle token，丢弃旧 IO 回流命令**（解决 3.4 的核心风险）
-2) **把 snapshot 分桶到 marketSlug/generation**（让重启恢复更严格、更可审计）
+1) **把 snapshot 分桶到 marketSlug/generation**（让重启恢复更严格、更可审计）
+2) **为 WS 分发队列丢弃增加“补偿对账”**（trade/fill 丢弃触发一次 API 对账，避免静默失真）
 

@@ -37,6 +37,7 @@ func (p *PositionsService) CreatePosition(ctx context.Context, position *domain.
 	reply := make(chan error, 1)
 	cmd := &CreatePositionCommand{
 		id:       fmt.Sprintf("create_position_%d", time.Now().UnixNano()),
+		Gen:      s.currentEngineGeneration(),
 		Position: position,
 		Reply:    reply,
 	}
@@ -57,6 +58,7 @@ func (p *PositionsService) UpdatePosition(ctx context.Context, positionID string
 	reply := make(chan error, 1)
 	cmd := &UpdatePositionCommand{
 		id:         fmt.Sprintf("update_position_%d", time.Now().UnixNano()),
+		Gen:        s.currentEngineGeneration(),
 		PositionID: positionID,
 		Updater:    updater,
 		Reply:      reply,
@@ -78,6 +80,7 @@ func (p *PositionsService) ClosePosition(ctx context.Context, positionID string,
 	reply := make(chan error, 1)
 	cmd := &ClosePositionCommand{
 		id:         fmt.Sprintf("close_position_%d", time.Now().UnixNano()),
+		Gen:        s.currentEngineGeneration(),
 		PositionID: positionID,
 		ExitPrice:  exitPrice,
 		ExitOrder:  exitOrder,

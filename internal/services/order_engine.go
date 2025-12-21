@@ -39,6 +39,7 @@ const (
 // PlaceOrderCommand 下单命令
 type PlaceOrderCommand struct {
 	id      string
+	Gen     int64 // 周期代号：用于防止周期切换后旧命令/旧 IO 回流污染状态
 	Order   *domain.Order
 	Reply   chan *PlaceOrderResult
 	Context context.Context
@@ -56,6 +57,7 @@ type PlaceOrderResult struct {
 // CancelOrderCommand 取消订单命令
 type CancelOrderCommand struct {
 	id      string
+	Gen     int64 // 周期代号
 	OrderID string
 	Reply   chan error
 	Context context.Context
@@ -67,6 +69,7 @@ func (c *CancelOrderCommand) ID() string                    { return c.id }
 // UpdateOrderCommand 更新订单命令
 type UpdateOrderCommand struct {
 	id    string
+	Gen   int64 // 周期代号（必须与引擎当前一致，否则丢弃）
 	Order *domain.Order
 	Error error
 }
@@ -77,6 +80,7 @@ func (c *UpdateOrderCommand) ID() string                    { return c.id }
 // ProcessTradeCommand 处理交易命令
 type ProcessTradeCommand struct {
 	id    string
+	Gen   int64 // 周期代号
 	Trade *domain.Trade
 }
 
@@ -96,6 +100,7 @@ func (c *UpdateBalanceCommand) ID() string                    { return c.id }
 // CreatePositionCommand 创建仓位命令
 type CreatePositionCommand struct {
 	id       string
+	Gen      int64 // 周期代号
 	Position *domain.Position
 	Reply    chan error
 }
@@ -106,6 +111,7 @@ func (c *CreatePositionCommand) ID() string                    { return c.id }
 // UpdatePositionCommand 更新仓位命令
 type UpdatePositionCommand struct {
 	id         string
+	Gen        int64 // 周期代号
 	PositionID string
 	Updater    func(*domain.Position)
 	Reply      chan error
@@ -117,6 +123,7 @@ func (c *UpdatePositionCommand) ID() string                    { return c.id }
 // ClosePositionCommand 关闭仓位命令
 type ClosePositionCommand struct {
 	id         string
+	Gen        int64 // 周期代号
 	PositionID string
 	ExitPrice  domain.Price
 	ExitOrder  *domain.Order
@@ -156,6 +163,7 @@ type ResetCycleCommand struct {
 	id            string
 	NewMarketSlug string
 	Reason        string
+	NewGeneration int64 // 新周期代号（必须单调递增，避免旧回流污染）
 	Reply         chan error
 }
 
@@ -209,6 +217,9 @@ type OrderEngine struct {
 
 	// 统计
 	stats *EngineStats
+
+	// 周期代号（generation）：每次周期切换递增，用于丢弃旧周期的异步回流命令
+	generation int64
 }
 
 // NewOrderEngine 创建新的订单引擎
@@ -225,6 +236,7 @@ func NewOrderEngine(ioExecutor *IOExecutor, minOrderSize float64, dryRun bool) *
 		ioExecutor:    ioExecutor,
 		orderHandlers: make([]ports.OrderUpdateHandler, 0),
 		stats:         &EngineStats{},
+		generation:    1,
 	}
 }
 
@@ -240,7 +252,7 @@ func (e *OrderEngine) SubmitCommand(cmd OrderCommand) {
 
 // ResetForNewCycle 在周期切换时清空引擎内的“周期状态”。
 // 注意：这是非阻塞触发（通过命令进入 engine goroutine），避免外部加锁/竞态。
-func (e *OrderEngine) ResetForNewCycle(newMarketSlug, reason string) {
+func (e *OrderEngine) ResetForNewCycle(newMarketSlug, reason string, newGeneration int64) {
 	if e == nil {
 		return
 	}
@@ -248,6 +260,7 @@ func (e *OrderEngine) ResetForNewCycle(newMarketSlug, reason string) {
 		id:            fmt.Sprintf("reset_cycle_%d", time.Now().UnixNano()),
 		NewMarketSlug: newMarketSlug,
 		Reason:        reason,
+		NewGeneration: newGeneration,
 		Reply:         nil,
 	})
 }
@@ -363,6 +376,17 @@ const CmdQueryStats OrderCommandType = "query_stats"
 
 // handlePlaceOrder 处理下单命令
 func (e *OrderEngine) handlePlaceOrder(cmd *PlaceOrderCommand) {
+	// 周期隔离：旧周期命令直接拒绝（避免切周期后仍下单/回流）
+	if cmd.Gen != e.generation {
+		e.stats.Errors++
+		select {
+		case cmd.Reply <- &PlaceOrderResult{
+			Error: fmt.Errorf("stale cycle command: place order dropped (cmdGen=%d engineGen=%d)", cmd.Gen, e.generation),
+		}:
+		default:
+		}
+		return
+	}
 	// 1. 风控校验（在状态循环中同步执行）
 	if err := e.validatePlaceOrder(cmd.Order); err != nil {
 		select {
@@ -411,6 +435,7 @@ func (e *OrderEngine) handlePlaceOrder(cmd *PlaceOrderCommand) {
 		}
 		updateCmd := &UpdateOrderCommand{
 			id:    fmt.Sprintf("update_%s", cmd.Order.OrderID),
+			Gen:   cmd.Gen,
 			Order: orderToUpdate,
 			Error: result.Error,
 		}
@@ -456,6 +481,15 @@ func (e *OrderEngine) validatePlaceOrder(order *domain.Order) error {
 
 // handleCancelOrder 处理取消订单命令
 func (e *OrderEngine) handleCancelOrder(cmd *CancelOrderCommand) {
+	// 周期隔离：旧周期命令直接拒绝
+	if cmd.Gen != e.generation {
+		e.stats.Errors++
+		select {
+		case cmd.Reply <- fmt.Errorf("stale cycle command: cancel dropped (cmdGen=%d engineGen=%d)", cmd.Gen, e.generation):
+		default:
+		}
+		return
+	}
 	// 检查订单是否存在（先检查活跃订单，再检查订单存储）
 	order, exists := e.openOrders[cmd.OrderID]
 	if !exists {
@@ -492,6 +526,7 @@ func (e *OrderEngine) handleCancelOrder(cmd *CancelOrderCommand) {
 	go e.ioExecutor.CancelOrderAsync(cmd.Context, cmd.OrderID, func(err error) {
 		updateCmd := &UpdateOrderCommand{
 			id:    fmt.Sprintf("cancel_result_%s", cmd.OrderID),
+			Gen:   cmd.Gen,
 			Order: order,
 			Error: err,
 		}
@@ -506,6 +541,16 @@ func (e *OrderEngine) handleCancelOrder(cmd *CancelOrderCommand) {
 
 // handleUpdateOrder 处理更新订单命令（IO 操作完成后调用）
 func (e *OrderEngine) handleUpdateOrder(cmd *UpdateOrderCommand) {
+	// 关键防护：丢弃旧周期的 UpdateOrderCommand（包括旧 IO 回流、旧同步回流）
+	if cmd.Gen != e.generation {
+		orderID := ""
+		if cmd.Order != nil {
+			orderID = cmd.Order.OrderID
+		}
+		orderEngineLog.Warnf("⚠️ [周期隔离] 丢弃旧周期 UpdateOrderCommand: cmdGen=%d engineGen=%d orderID=%s",
+			cmd.Gen, e.generation, orderID)
+		return
+	}
 	// CancelOrderAsync 也复用 UpdateOrderCommand 回流：这里区分“取消失败”与“下单失败”
 	if cmd.Error != nil && cmd.Order != nil && cmd.Order.Status == domain.OrderStatusCanceled {
 		// 取消失败：恢复为 open，并保留在 openOrders
@@ -584,6 +629,16 @@ func (e *OrderEngine) handleUpdateOrder(cmd *UpdateOrderCommand) {
 
 // handleProcessTrade 处理交易命令
 func (e *OrderEngine) handleProcessTrade(cmd *ProcessTradeCommand) {
+	// 周期隔离：丢弃旧周期 trade（保险起见；上游 session gate 应已隔离）
+	if cmd.Gen != e.generation {
+		tradeID := ""
+		if cmd.Trade != nil {
+			tradeID = cmd.Trade.ID
+		}
+		orderEngineLog.Warnf("⚠️ [周期隔离] 丢弃旧周期 ProcessTradeCommand: cmdGen=%d engineGen=%d tradeID=%s",
+			cmd.Gen, e.generation, tradeID)
+		return
+	}
 	trade := cmd.Trade
 
 	// 1. 检查订单是否存在
@@ -692,6 +747,7 @@ func (e *OrderEngine) processPendingTrades() {
 		// 重新处理交易
 		cmd := &ProcessTradeCommand{
 			id:    fmt.Sprintf("process_trade_%d", time.Now().UnixNano()),
+			Gen:   e.generation,
 			Trade: trade,
 		}
 		e.handleProcessTrade(cmd)
@@ -708,6 +764,14 @@ func (e *OrderEngine) handleUpdateBalance(cmd *UpdateBalanceCommand) {
 
 // handleCreatePosition 处理创建仓位命令
 func (e *OrderEngine) handleCreatePosition(cmd *CreatePositionCommand) {
+	// 周期隔离：旧周期命令直接拒绝
+	if cmd.Gen != e.generation {
+		select {
+		case cmd.Reply <- fmt.Errorf("stale cycle command: create position dropped (cmdGen=%d engineGen=%d)", cmd.Gen, e.generation):
+		default:
+		}
+		return
+	}
 	if cmd.Position.ID == "" {
 		select {
 		case cmd.Reply <- fmt.Errorf("仓位ID不能为空"):
@@ -737,6 +801,14 @@ func (e *OrderEngine) handleCreatePosition(cmd *CreatePositionCommand) {
 
 // handleUpdatePosition 处理更新仓位命令
 func (e *OrderEngine) handleUpdatePosition(cmd *UpdatePositionCommand) {
+	// 周期隔离：旧周期命令直接拒绝
+	if cmd.Gen != e.generation {
+		select {
+		case cmd.Reply <- fmt.Errorf("stale cycle command: update position dropped (cmdGen=%d engineGen=%d)", cmd.Gen, e.generation):
+		default:
+		}
+		return
+	}
 	position, exists := e.positions[cmd.PositionID]
 	if !exists {
 		select {
@@ -760,6 +832,14 @@ func (e *OrderEngine) handleUpdatePosition(cmd *UpdatePositionCommand) {
 
 // handleClosePosition 处理关闭仓位命令
 func (e *OrderEngine) handleClosePosition(cmd *ClosePositionCommand) {
+	// 周期隔离：旧周期命令直接拒绝
+	if cmd.Gen != e.generation {
+		select {
+		case cmd.Reply <- fmt.Errorf("stale cycle command: close position dropped (cmdGen=%d engineGen=%d)", cmd.Gen, e.generation):
+		default:
+		}
+		return
+	}
 	position, exists := e.positions[cmd.PositionID]
 	if !exists {
 		select {
@@ -877,8 +957,15 @@ func (e *OrderEngine) handleResetCycle(cmd *ResetCycleCommand) {
 	e.orderStore = make(map[string]*domain.Order)
 	e.pendingTrades = make(map[string]*domain.Trade)
 
-	orderEngineLog.Warnf("🔄 [周期切换] OrderEngine 已重置运行时状态: newMarket=%s reason=%s",
-		cmd.NewMarketSlug, cmd.Reason)
+	// 更新周期代号（必须单调递增）
+	if cmd.NewGeneration > 0 {
+		e.generation = cmd.NewGeneration
+	} else {
+		e.generation++
+	}
+
+	orderEngineLog.Warnf("🔄 [周期切换] OrderEngine 已重置运行时状态: newMarket=%s reason=%s gen=%d",
+		cmd.NewMarketSlug, cmd.Reason, e.generation)
 
 	if cmd.Reply != nil {
 		select {

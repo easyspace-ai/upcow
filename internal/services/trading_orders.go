@@ -74,6 +74,7 @@ func (o *OrdersService) PlaceOrder(ctx context.Context, order *domain.Order) (cr
 	reply := make(chan *PlaceOrderResult, 1)
 	cmd := &PlaceOrderCommand{
 		id:      fmt.Sprintf("place_%d", time.Now().UnixNano()),
+		Gen:     s.currentEngineGeneration(),
 		Order:   order,
 		Reply:   reply,
 		Context: ctx,
@@ -199,6 +200,7 @@ func (o *OrdersService) CancelOrder(ctx context.Context, orderID string) error {
 	reply := make(chan error, 1)
 	cmd := &CancelOrderCommand{
 		id:      fmt.Sprintf("cancel_%d", time.Now().UnixNano()),
+		Gen:     s.currentEngineGeneration(),
 		OrderID: orderID,
 		Reply:   reply,
 		Context: ctx,

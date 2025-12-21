@@ -69,6 +69,7 @@ func (ss *SnapshotService) loadSnapshot() {
 		}
 		s.orderEngine.SubmitCommand(&UpdateOrderCommand{
 			id:    fmt.Sprintf("restore_order_%s", o.OrderID),
+			Gen:   s.currentEngineGeneration(),
 			Order: o,
 		})
 		restoredCount++
@@ -183,6 +184,7 @@ func (ss *SnapshotService) bootstrapOpenOrdersFromExchange(ctx context.Context) 
 		}
 		s.orderEngine.SubmitCommand(&UpdateOrderCommand{
 			id:    fmt.Sprintf("bootstrap_open_%s", o.OrderID),
+			Gen:   s.currentEngineGeneration(),
 			Order: o,
 		})
 		restoredCount++

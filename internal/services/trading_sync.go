@@ -169,6 +169,7 @@ func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 			// 发送 UpdateOrderCommand 更新 OrderEngine 状态
 			updateCmd := &UpdateOrderCommand{
 				id:    fmt.Sprintf("sync_update_%s", orderID),
+				Gen:   s.currentEngineGeneration(),
 				Order: order,
 			}
 			s.orderEngine.SubmitCommand(updateCmd)
@@ -221,6 +222,7 @@ func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 
 			updateCmd := &UpdateOrderCommand{
 				id:    fmt.Sprintf("sync_update_%s", orderID),
+				Gen:   s.currentEngineGeneration(),
 				Order: order,
 			}
 			s.orderEngine.SubmitCommand(updateCmd)
@@ -321,6 +323,7 @@ func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 
 			updateCmd := &UpdateOrderCommand{
 				id:    fmt.Sprintf("sync_update_%s", orderID),
+				Gen:   s.currentEngineGeneration(),
 				Order: order,
 			}
 			s.orderEngine.SubmitCommand(updateCmd)
@@ -360,6 +363,7 @@ func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 			order.Status = domain.OrderStatusFailed
 			s.orderEngine.SubmitCommand(&UpdateOrderCommand{
 				id:    fmt.Sprintf("sync_failed_%s", orderID),
+				Gen:   s.currentEngineGeneration(),
 				Order: order,
 			})
 			s.orderStatusCache.Set(orderID, false)
@@ -383,6 +387,7 @@ func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 
 		s.orderEngine.SubmitCommand(&UpdateOrderCommand{
 			id:    fmt.Sprintf("sync_filled_%s", orderID),
+			Gen:   s.currentEngineGeneration(),
 			Order: order,
 		})
 		filledCount++
@@ -427,6 +432,7 @@ func (os *OrderSyncService) syncOrderStatusImpl(ctx context.Context, orderID str
 
 		s.orderEngine.SubmitCommand(&UpdateOrderCommand{
 			id:    fmt.Sprintf("sync_status_%s", orderID),
+			Gen:   s.currentEngineGeneration(),
 			Order: localOrder,
 		})
 		return nil
@@ -444,6 +450,7 @@ func (os *OrderSyncService) syncOrderStatusImpl(ctx context.Context, orderID str
 
 		s.orderEngine.SubmitCommand(&UpdateOrderCommand{
 			id:    fmt.Sprintf("sync_status_%s", orderID),
+			Gen:   s.currentEngineGeneration(),
 			Order: localOrder,
 		})
 	} else if order.Status == "CANCELLED" && localOrder.Status != domain.OrderStatusCanceled {
@@ -452,6 +459,7 @@ func (os *OrderSyncService) syncOrderStatusImpl(ctx context.Context, orderID str
 
 		s.orderEngine.SubmitCommand(&UpdateOrderCommand{
 			id:    fmt.Sprintf("sync_status_%s", orderID),
+			Gen:   s.currentEngineGeneration(),
 			Order: localOrder,
 		})
 	}
