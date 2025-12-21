@@ -248,7 +248,7 @@ func (s *DataRecorderStrategy) OnPriceChanged(ctx context.Context, event *events
 
 func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event *events.PriceChangedEvent) error {
 
-	fmt.Println("=========", event.NewPrice.ToDecimal())
+	// NOTE: 不要在高频回调里 fmt.Println，会污染日志且影响性能
 	// 只处理 btc-updown-15m-* 市场
 	if !s.isBTC15mMarket(event.Market) {
 		logger.Debugf("数据记录策略: 跳过非 BTC 15分钟市场 - %s", getSlugOrEmpty(event.Market))
@@ -266,6 +266,19 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 			s.currentMarket.Slug, event.Market.Slug, event.TokenType, event.NewPrice.ToDecimal())
 		s.mu.Unlock()
 		return nil // 直接返回，不处理旧周期的事件
+	}
+
+	// 二次防护：即使 slug 相同，也要求事件时间不早于周期开始时间（避免对象复用/乱序导致的“旧事件混入”）
+	// - event.Timestamp 来自 MarketStream 侧的 time.Now()，可作为“接收时间”近似
+	// - Market.Timestamp 来自 slug 解析，代表周期开始时间
+	if s.currentMarket != nil && s.currentMarket.Timestamp > 0 && !event.Timestamp.IsZero() {
+		evtTs := event.Timestamp.Unix()
+		if evtTs < s.currentMarket.Timestamp-1 {
+			logger.Warnf("数据记录策略: ⚠️ 忽略疑似旧周期/乱序的价格事件 - 当前周期=%s(start=%d), eventTs=%d, Token=%s, 价格=%.4f",
+				s.currentMarket.Slug, s.currentMarket.Timestamp, evtTs, event.TokenType, event.NewPrice.ToDecimal())
+			s.mu.Unlock()
+			return nil
+		}
 	}
 
 	// 检查是否切换到新周期（基于 Market.Slug 变化）
@@ -313,8 +326,8 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 		// 重置所有价格状态（新周期需要重新获取）
 		s.btcTargetPrice = 0
 		s.btcTargetPriceSet = false
-		s.upPrice = 0        // 清理旧周期的 UP 价格
-		s.downPrice = 0     // 清理旧周期的 DOWN 价格
+		s.upPrice = 0   // 清理旧周期的 UP 价格
+		s.downPrice = 0 // 清理旧周期的 DOWN 价格
 		logger.Debugf("数据记录策略: 周期切换时已清理所有价格状态")
 
 		// 开始新周期（按 slug 打开对应 CSV 文件，后续实时追加）
@@ -391,15 +404,21 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 		logger.Debugf("数据记录策略: RTDS 价格未更新，使用目标价作为实时价格 (目标价=%.2f)", btcTarget)
 		btcRealtime = btcTarget
 	}
-	
-	// 验证价格合理性（防止旧周期的异常价格被记录）
-	// 0.99 或更高的价格通常表示接近结算，可能是旧周期的价格
-	if upPrice >= 0.99 || downPrice >= 0.99 {
-		logger.Warnf("数据记录策略: ⚠️ 检测到异常价格（可能来自旧周期），跳过记录 - UP=%.4f, DOWN=%.4f, 当前周期=%s",
-			upPrice, downPrice, getSlugOrEmpty(s.currentMarket))
-		return nil
+
+	// 价格合理性保护（更严格/可控）：
+	// - 0.99+ 在真实市场也可能出现（并不一定是旧周期）
+	// - 真正“像旧周期残留”的情况通常发生在【刚切换到新周期的很短窗口】内收到接近 1 的价格
+	// 因此仅在“周期开始后短窗口”触发该保护，避免误杀正常数据。
+	if s.currentMarket != nil && s.currentMarket.Timestamp > 0 && (upPrice >= 0.99 || downPrice >= 0.99) {
+		now := time.Now().Unix()
+		// 默认窗口：新周期开始 45 秒内
+		if now-s.currentMarket.Timestamp <= 45 {
+			logger.Warnf("数据记录策略: ⚠️ 新周期早期检测到异常高价（更可能是旧订阅残留），跳过记录 - UP=%.4f, DOWN=%.4f, 当前周期=%s(start=%d, now=%d)",
+				upPrice, downPrice, getSlugOrEmpty(s.currentMarket), s.currentMarket.Timestamp, now)
+			return nil
+		}
 	}
-	
+
 	// 只有在目标价已设置时才记录数据，避免记录0值
 	if btcRealtime > 0 && upPrice > 0 && downPrice > 0 {
 		if !btcTargetSet || btcTarget <= 0 {
@@ -553,8 +572,8 @@ func (s *DataRecorderStrategy) checkAndSwitchCycleByTime(ctx context.Context) {
 			// 重置所有价格状态（新周期需要重新获取）
 			s.btcTargetPrice = 0
 			s.btcTargetPriceSet = false
-			s.upPrice = 0        // 清理旧周期的 UP 价格
-			s.downPrice = 0     // 清理旧周期的 DOWN 价格
+			s.upPrice = 0   // 清理旧周期的 UP 价格
+			s.downPrice = 0 // 清理旧周期的 DOWN 价格
 			logger.Debugf("数据记录策略: 定时检查周期切换时已清理所有价格状态")
 
 			// 开始新周期
