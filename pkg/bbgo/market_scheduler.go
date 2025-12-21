@@ -21,24 +21,24 @@ type SessionSwitchCallback func(oldSession *ExchangeSession, newSession *Exchang
 // MarketScheduler 市场调度器（BBGO风格）
 // 负责每15分钟自动切换到下一个市场周期
 type MarketScheduler struct {
-	environment      *Environment
+	environment       *Environment
 	marketDataService *services.MarketDataService
 	proxyURL          string
-	userCreds        *websocket.UserCredentials
-	
+	userCreds         *websocket.UserCredentials
+
 	// 当前会话
-	currentSession   *ExchangeSession
-	currentMarket    *domain.Market
-	sessionName      string
-	
+	currentSession *ExchangeSession
+	currentMarket  *domain.Market
+	sessionName    string
+
 	// 会话切换回调
 	sessionSwitchCallback SessionSwitchCallback
-	
+
 	// 控制
-	ctx              context.Context
-	cancel           context.CancelFunc
-	wg               sync.WaitGroup
-	mu               sync.RWMutex
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+	mu     sync.RWMutex
 }
 
 // NewMarketScheduler 创建新的市场调度器
@@ -51,13 +51,13 @@ func NewMarketScheduler(
 ) *MarketScheduler {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &MarketScheduler{
-		environment:      environ,
+		environment:       environ,
 		marketDataService: marketDataService,
-		sessionName:      sessionName,
-		proxyURL:         proxyURL,
-		userCreds:        userCreds,
-		ctx:              ctx,
-		cancel:           cancel,
+		sessionName:       sessionName,
+		proxyURL:          proxyURL,
+		userCreds:         userCreds,
+		ctx:               ctx,
+		cancel:            cancel,
 	}
 }
 
@@ -126,7 +126,7 @@ func (s *MarketScheduler) createSession(ctx context.Context, market *domain.Mark
 	if s.userCreds != nil {
 		userWebSocket := websocket.NewUserWebSocket()
 		session.SetUserDataStream(userWebSocket)
-		
+
 		// 异步连接 UserWebSocket
 		go func() {
 			if err := userWebSocket.Connect(ctx, s.userCreds, s.proxyURL); err != nil {
@@ -162,7 +162,7 @@ func (s *MarketScheduler) createSession(ctx context.Context, market *domain.Mark
 // scheduleLoop 调度循环
 func (s *MarketScheduler) scheduleLoop() {
 	defer s.wg.Done()
-	
+
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -190,7 +190,7 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 	now := time.Now().Unix()
 	// 正常周期结束时间（15分钟后）
 	normalEndTs := currentMarket.Timestamp + 900
-	
+
 	// 检查是否需要切换到下一个市场
 	// 条件：正常周期结束（15分钟后）
 	if now >= normalEndTs {
@@ -198,8 +198,11 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 
 		// 关闭当前会话
 		if currentSession != nil {
+			schedulerLog.Infof("🔕 [unsubscribe] 准备关闭旧会话并退订：session=%s, market=%s", s.sessionName, currentMarket.Slug)
 			if err := currentSession.Close(); err != nil {
 				schedulerLog.Errorf("关闭当前会话失败: %v", err)
+			} else {
+				schedulerLog.Infof("✅ [unsubscribe] 旧会话退订完成：session=%s, market=%s", s.sessionName, currentMarket.Slug)
 			}
 		}
 
@@ -261,17 +264,17 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 // Stop 停止市场调度器
 func (s *MarketScheduler) Stop(ctx context.Context) error {
 	schedulerLog.Info("停止市场调度器...")
-	
+
 	// 取消上下文
 	s.cancel()
-	
+
 	// 等待调度循环退出
 	done := make(chan struct{})
 	go func() {
 		s.wg.Wait()
 		close(done)
 	}()
-	
+
 	select {
 	case <-done:
 		schedulerLog.Info("市场调度器已停止")
@@ -283,7 +286,7 @@ func (s *MarketScheduler) Stop(ctx context.Context) error {
 	s.mu.RLock()
 	currentSession := s.currentSession
 	s.mu.RUnlock()
-	
+
 	if currentSession != nil {
 		if err := currentSession.Close(); err != nil {
 			schedulerLog.Errorf("关闭当前会话失败: %v", err)
@@ -306,4 +309,3 @@ func (s *MarketScheduler) CurrentMarket() *domain.Market {
 	defer s.mu.RUnlock()
 	return s.currentMarket
 }
-

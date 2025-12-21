@@ -21,7 +21,7 @@ func main() {
 		timestamp := time.Unix(price.Timestamp/1000, (price.Timestamp%1000)*1000000)
 		fmt.Printf("[Binance] %s: $%.2f (time: %s)\n",
 			price.Symbol,
-			price.Value,
+			price.Value.Float64(),
 			timestamp.Format(time.RFC3339))
 		return nil
 	})
@@ -32,7 +32,7 @@ func main() {
 		timestamp := time.Unix(price.Timestamp/1000, (price.Timestamp%1000)*1000000)
 		fmt.Printf("[Chainlink] %s: $%.2f (time: %s)\n",
 			price.Symbol,
-			price.Value,
+			price.Value.Float64(),
 			timestamp.Format(time.RFC3339))
 		return nil
 	})

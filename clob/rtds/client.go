@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,27 +16,94 @@ import (
 
 // Client represents a RTDS WebSocket client
 type Client struct {
-	conn                *websocket.Conn
-	url                 string
-	proxyURL            string
-	pingInterval        time.Duration
-	writeTimeout        time.Duration
-	readTimeout         time.Duration
-	messageHandlers     map[string]MessageHandler
-	handlersMutex       sync.RWMutex
-	ctx                 context.Context
-	cancel              context.CancelFunc
-	wg                  sync.WaitGroup
-	connected           bool
-	connectedMutex      sync.RWMutex
-	reconnect           bool
-	reconnectDelay      time.Duration
-	maxReconnect        int
-	reconnectCount      int
-	reconnectMutex      sync.Mutex
-	activeSubscriptions []Subscription
-	subscriptionsMutex  sync.RWMutex
-	logger              Logger
+	conn                 *websocket.Conn
+	url                  string
+	proxyURL             string
+	pingInterval         time.Duration
+	writeTimeout         time.Duration
+	readTimeout          time.Duration
+	messageHandlers      map[string]MessageHandler
+	handlersMutex        sync.RWMutex
+	statsMutex           sync.RWMutex
+	lastMessageAt        time.Time
+	lastParseErrorAt     time.Time
+	parseErrorCount      uint64
+	lastSubscribeAckAt   time.Time
+	lastUnsubscribeAckAt time.Time
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	wg                   sync.WaitGroup
+	connected            bool
+	connectedMutex       sync.RWMutex
+	reconnect            bool
+	reconnectDelay       time.Duration
+	maxReconnect         int
+	reconnectCount       int
+	reconnectMutex       sync.Mutex
+	activeSubscriptions  []Subscription
+	subscriptionsMutex   sync.RWMutex
+	logger               Logger
+}
+
+// DebugSnapshot returns a concise snapshot for troubleshooting.
+// It is safe to call concurrently.
+func (c *Client) DebugSnapshot() string {
+	c.connectedMutex.RLock()
+	connected := c.connected
+	c.connectedMutex.RUnlock()
+
+	c.subscriptionsMutex.RLock()
+	subs := make([]Subscription, 0, len(c.activeSubscriptions))
+	subs = append(subs, c.activeSubscriptions...)
+	c.subscriptionsMutex.RUnlock()
+
+	c.handlersMutex.RLock()
+	topics := make([]string, 0, len(c.messageHandlers))
+	for topic := range c.messageHandlers {
+		topics = append(topics, topic)
+	}
+	c.handlersMutex.RUnlock()
+
+	c.statsMutex.RLock()
+	lastMsgAt := c.lastMessageAt
+	lastParseErrAt := c.lastParseErrorAt
+	parseErrCnt := c.parseErrorCount
+	lastSubAckAt := c.lastSubscribeAckAt
+	lastUnsubAckAt := c.lastUnsubscribeAckAt
+	c.statsMutex.RUnlock()
+
+	return fmt.Sprintf(
+		"connected=%v url=%s proxy=%s subs=%d handlers=%d lastMsgAt=%s parseErrCnt=%d lastParseErrAt=%s lastSubAckAt=%s lastUnsubAckAt=%s topics=%v subs=%v",
+		connected,
+		c.url,
+		c.proxyURL,
+		len(subs),
+		len(topics),
+		formatTimeOrEmpty(lastMsgAt),
+		parseErrCnt,
+		formatTimeOrEmpty(lastParseErrAt),
+		formatTimeOrEmpty(lastSubAckAt),
+		formatTimeOrEmpty(lastUnsubAckAt),
+		topics,
+		subs,
+	)
+}
+
+func formatTimeOrEmpty(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339Nano)
+}
+
+func truncateForLog(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "...(truncated)"
 }
 
 // ClientConfig represents configuration for the RTDS client
@@ -175,7 +243,7 @@ func (c *Client) Disconnect() error {
 	c.reconnectMutex.Unlock()
 
 	c.setConnected(false)
-	
+
 	// 先取消 context，让 goroutine 知道要退出
 	c.cancel()
 
@@ -189,14 +257,14 @@ func (c *Client) Disconnect() error {
 		// 关闭连接，这会中断 ReadMessage 和 WriteMessage 的阻塞
 		err := c.conn.Close()
 		c.conn = nil
-		
+
 		// 等待 goroutine 退出，但设置超时避免无限期等待
 		done := make(chan struct{})
 		go func() {
 			c.wg.Wait()
 			close(done)
 		}()
-		
+
 		select {
 		case <-done:
 			// goroutine 已退出
@@ -206,7 +274,7 @@ func (c *Client) Disconnect() error {
 				c.logger.Printf("等待 goroutine 退出超时（3秒），继续断开连接\n")
 			}
 		}
-		
+
 		return err
 	}
 
@@ -216,7 +284,7 @@ func (c *Client) Disconnect() error {
 		c.wg.Wait()
 		close(done)
 	}()
-	
+
 	select {
 	case <-done:
 		// goroutine 已退出
@@ -226,7 +294,7 @@ func (c *Client) Disconnect() error {
 			c.logger.Printf("等待 goroutine 退出超时（3秒），继续断开连接\n")
 		}
 	}
-	
+
 	return nil
 }
 
@@ -285,7 +353,7 @@ func (c *Client) SendMessage(message interface{}) error {
 // readMessages reads messages from the WebSocket connection
 func (c *Client) readMessages() {
 	defer c.wg.Done()
-	
+
 	// 使用 recover 捕获可能的 panic（例如 "repeated read on failed websocket connection"）
 	defer func() {
 		if r := recover(); r != nil {
@@ -320,32 +388,67 @@ func (c *Client) readMessages() {
 				// 超时，继续循环检查 context
 				continue
 			}
-			
+
 			// 检查 context 是否已取消
 			select {
 			case <-c.ctx.Done():
 				return
 			default:
 			}
-			
+
 			// 连接已失败，立即标记为未连接，避免再次读取
 			c.setConnected(false)
-			
+
 			// 记录错误（但不记录正常的关闭错误）
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				if c.logger != nil {
 					c.logger.Printf("WebSocket read error: %v\n", err)
 				}
 			}
-			
+
 			// 处理断开连接（但不尝试再次读取）
 			c.handleDisconnect()
 			return
 		}
 
+		c.statsMutex.Lock()
+		c.lastMessageAt = time.Now()
+		c.statsMutex.Unlock()
+
+		// RTDS 文档宣称 payload 是 JSON，但在真实链路（尤其是代理/网关）里可能出现：
+		// - 空消息/纯空白（会导致 json.Unmarshal 报 EOF / unexpected end）
+		// - 文本心跳 PING/PONG
+		trimmed := strings.TrimSpace(string(data))
+		if trimmed == "" {
+			// 空消息：直接忽略（避免刷屏）
+			continue
+		}
+		if trimmed == "PING" {
+			// 文档建议发送 PING；这里兼容服务器文本心跳
+			_ = c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
+			_ = c.conn.WriteMessage(websocket.TextMessage, []byte("PONG"))
+			continue
+		}
+		if trimmed == "PONG" {
+			continue
+		}
+
 		var msg Message
-		if err := json.Unmarshal(data, &msg); err != nil {
-			c.logger.Printf("Failed to parse message: %v\n", err)
+		if err := json.Unmarshal([]byte(trimmed), &msg); err != nil {
+			// 只记录高信号错误；EOF/意外截断多为代理/心跳噪音
+			if c.logger != nil {
+				c.statsMutex.Lock()
+				c.parseErrorCount++
+				shouldLog := c.lastParseErrorAt.IsZero() || time.Since(c.lastParseErrorAt) > 5*time.Second
+				if shouldLog {
+					c.lastParseErrorAt = time.Now()
+				}
+				c.statsMutex.Unlock()
+
+				if shouldLog {
+					c.logger.Printf("Failed to parse message: %v (len=%d preview=%q)\n", err, len(trimmed), truncateForLog(trimmed, 240))
+				}
+			}
 			continue
 		}
 
@@ -377,7 +480,7 @@ func (c *Client) readMessages() {
 // sendPings sends periodic PING messages to keep the connection alive
 func (c *Client) sendPings() {
 	defer c.wg.Done()
-	
+
 	// 使用 recover 捕获可能的 panic
 	defer func() {
 		if r := recover(); r != nil {
@@ -422,8 +525,27 @@ func (c *Client) handleMessage(msg *Message) {
 	// Log received message for debugging
 	c.logger.Printf("Received RTDS message: topic=%s, type=%s\n", msg.Topic, msg.Type)
 
+	// 订阅确认/管理消息：通常不需要业务 handler
+	if msg.Type == "subscribe" || msg.Type == "unsubscribe" {
+		preview := ""
+		if len(msg.Payload) > 0 {
+			preview = truncateForLog(strings.TrimSpace(string(msg.Payload)), 240)
+		}
+		c.statsMutex.Lock()
+		if msg.Type == "subscribe" {
+			c.lastSubscribeAckAt = time.Now()
+		} else {
+			c.lastUnsubscribeAckAt = time.Now()
+		}
+		c.statsMutex.Unlock()
+
+		c.logger.Printf("RTDS subscription ack: topic=%s, type=%s payload_preview=%q\n", msg.Topic, msg.Type, preview)
+		return
+	}
+
 	c.handlersMutex.RLock()
 	handler, exists := c.messageHandlers[msg.Topic]
+	wildcardHandler, wildcardExists := c.messageHandlers["*"]
 	c.handlersMutex.RUnlock()
 
 	if exists && handler != nil {
@@ -431,22 +553,21 @@ func (c *Client) handleMessage(msg *Message) {
 			c.logger.Printf("Error handling message for topic %s: %v\n", msg.Topic, err)
 		}
 	} else {
-		// Log registered topics for debugging
-		c.handlersMutex.RLock()
-		topics := make([]string, 0, len(c.messageHandlers))
-		for topic := range c.messageHandlers {
-			topics = append(topics, topic)
+		// 如果有 wildcard handler，不把“无 handler”当问题（避免无意义刷屏）
+		if !wildcardExists || wildcardHandler == nil {
+			// Log registered topics for debugging
+			c.handlersMutex.RLock()
+			topics := make([]string, 0, len(c.messageHandlers))
+			for topic := range c.messageHandlers {
+				topics = append(topics, topic)
+			}
+			c.handlersMutex.RUnlock()
+			c.logger.Printf("No handler registered for topic %s (registered: %v)\n", msg.Topic, topics)
 		}
-		c.handlersMutex.RUnlock()
-		c.logger.Printf("No handler registered for topic %s (registered: %v)\n", msg.Topic, topics)
 	}
 
 	// Also check for wildcard handler
-	c.handlersMutex.RLock()
-	wildcardHandler, exists := c.messageHandlers["*"]
-	c.handlersMutex.RUnlock()
-
-	if exists && wildcardHandler != nil {
+	if wildcardExists && wildcardHandler != nil {
 		if err := wildcardHandler(msg); err != nil {
 			c.logger.Printf("Error handling message with wildcard handler: %v\n", err)
 		}
@@ -457,7 +578,7 @@ func (c *Client) handleMessage(msg *Message) {
 func (c *Client) handleDisconnect() {
 	// 确保连接状态被标记为未连接
 	c.setConnected(false)
-	
+
 	// 清理连接对象（但不关闭，因为可能已经关闭了）
 	// 注意：这里不设置 c.conn = nil，因为重连时需要创建新连接
 

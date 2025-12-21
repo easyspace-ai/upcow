@@ -42,6 +42,7 @@ func main() {
 
 	// 创建价格处理器
 	priceHandler := polymarketrtds.CreateCryptoPriceHandler(func(price *polymarketrtds.CryptoPrice) error {
+		v := price.Value.Float64()
 		// 检查每个告警
 		for i := range alerts {
 			alert := &alerts[i]
@@ -50,9 +51,9 @@ func main() {
 			}
 
 			shouldAlert := false
-			if alert.Direction == "above" && price.Value >= alert.Threshold {
+			if alert.Direction == "above" && v >= alert.Threshold {
 				shouldAlert = true
-			} else if alert.Direction == "below" && price.Value <= alert.Threshold {
+			} else if alert.Direction == "below" && v <= alert.Threshold {
 				shouldAlert = true
 			}
 
@@ -60,7 +61,7 @@ func main() {
 				alert.Triggered = true
 				fmt.Printf("\n🚨 价格告警触发！\n")
 				fmt.Printf("   币种: %s\n", price.Symbol)
-				fmt.Printf("   当前价格: $%.2f\n", price.Value)
+				fmt.Printf("   当前价格: $%.2f\n", v)
 				fmt.Printf("   阈值: $%.2f (%s)\n", alert.Threshold, alert.Direction)
 				fmt.Printf("   时间: %s\n\n", time.Now().Format(time.RFC3339))
 			}
@@ -71,7 +72,7 @@ func main() {
 			fmt.Printf("[%s] %s: $%.2f\n",
 				time.Now().Format("15:04:05"),
 				price.Symbol,
-				price.Value)
+				v)
 		}
 
 		return nil

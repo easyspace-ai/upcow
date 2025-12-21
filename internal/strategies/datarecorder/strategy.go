@@ -178,25 +178,35 @@ func (s *DataRecorderStrategy) Initialize() error {
 	// 订阅 Chainlink BTC 价格（使用 Chainlink 作为实时价格数据源）
 	// BTC 价格更新时，只更新内存中的价格，不记录数据
 	// 数据记录以 UP/DOWN 价格变化为准
+	var chainlinkFirstMsgOnce sync.Once
+	var btcFirstMatchOnce sync.Once
 	btcHandler := rtds.CreateCryptoPriceHandler(func(price *rtds.CryptoPrice) error {
-		logger.Debugf("数据记录策略: 收到 Chainlink 价格消息 - Symbol=%s, Value=%.2f", price.Symbol, price.Value)
-		if price.Symbol == "btc/usd" {
+		val := price.Value.Float64()
+		sym := strings.ToLower(strings.TrimSpace(price.Symbol))
+		chainlinkFirstMsgOnce.Do(func() {
+			logger.Infof("数据记录策略: ✅ RTDS 已收到 crypto_prices_chainlink 首条消息 - symbol=%s ts=%d value=%.6f", sym, price.Timestamp, val)
+		})
+		logger.Debugf("数据记录策略: 收到 Chainlink 价格消息 - Symbol=%s, Value=%.2f", sym, val)
+		if sym == "btc/usd" || sym == "btcusdt" || sym == "btc/usdt" {
+			btcFirstMatchOnce.Do(func() {
+				logger.Infof("数据记录策略: ✅ RTDS 已收到 BTC 实时报价首条有效消息 - symbol=%s ts=%d value=%.6f", sym, price.Timestamp, val)
+			})
 			// 格式化时间戳（毫秒转秒）
 			timestamp := time.Unix(price.Timestamp/1000, (price.Timestamp%1000)*1000000)
 
 			// 在终端显示 Chainlink BTC 实时报价（醒目的格式，与价格更新日志格式一致）
 			logger.Infof("💰 BTC 实时报价 (Chainlink): $%.2f (时间: %s)",
-				price.Value, timestamp.Format("15:04:05"))
+				val, timestamp.Format("15:04:05"))
 
 			s.mu.Lock()
 			oldPrice := s.btcRealtimePrice
 			// 只更新 BTC 实时价格，不记录数据
-			s.btcRealtimePrice = price.Value
+			s.btcRealtimePrice = val
 			s.mu.Unlock()
 
 			// 如果有价格变化，显示变化趋势
 			if oldPrice > 0 {
-				change := price.Value - oldPrice
+				change := val - oldPrice
 				changePercent := (change / oldPrice) * 100
 				if change > 0 {
 					logger.Infof("📈 BTC 价格变化: +$%.2f (+%.2f%%)", change, changePercent)
@@ -217,7 +227,24 @@ func (s *DataRecorderStrategy) Initialize() error {
 	if err := rtdsClient.SubscribeToCryptoPrices("chainlink", "btc/usd"); err != nil {
 		return fmt.Errorf("订阅 Chainlink BTC 价格失败: %w", err)
 	}
-	logger.Infof("数据记录策略: Chainlink BTC 价格订阅成功")
+	logger.Infof("数据记录策略: Chainlink BTC 价格订阅成功 (等待首条报价...)")
+	logger.Infof("数据记录策略: RTDS 状态快照(订阅后): %s", rtdsClient.DebugSnapshot())
+
+	// 自检：订阅成功后若长期未收到 BTC 报价，输出快照便于定位（订阅未生效/topic 不一致/解析失败）
+	go func() {
+		select {
+		case <-time.After(15 * time.Second):
+			s.mu.RLock()
+			btcRealtime := s.btcRealtimePrice
+			s.mu.RUnlock()
+			if btcRealtime <= 0 {
+				logger.Warnf("数据记录策略: ⚠️ RTDS 订阅后 15s 仍未收到 BTC 实时报价（btcRealtime=%.2f）。可能原因：订阅未真正生效、topic/filters 不匹配、或上游返回非 JSON/空帧导致解析失败。RTDS 快照=%s",
+					btcRealtime, rtdsClient.DebugSnapshot())
+			}
+		case <-s.ctx.Done():
+			return
+		}
+	}()
 
 	logger.Infof("数据记录策略已初始化: 输出目录=%s, RTDS备选=%v, 实时价格源=Chainlink",
 		s.OutputDir, useFallback)
@@ -248,7 +275,7 @@ func (s *DataRecorderStrategy) OnPriceChanged(ctx context.Context, event *events
 
 func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event *events.PriceChangedEvent) error {
 
-	fmt.Println("=========", event.NewPrice.ToDecimal())
+	// NOTE: 不要在高频回调里 fmt.Println，会污染日志且影响性能
 	// 只处理 btc-updown-15m-* 市场
 	if !s.isBTC15mMarket(event.Market) {
 		logger.Debugf("数据记录策略: 跳过非 BTC 15分钟市场 - %s", getSlugOrEmpty(event.Market))
@@ -266,6 +293,19 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 			s.currentMarket.Slug, event.Market.Slug, event.TokenType, event.NewPrice.ToDecimal())
 		s.mu.Unlock()
 		return nil // 直接返回，不处理旧周期的事件
+	}
+
+	// 二次防护：即使 slug 相同，也要求事件时间不早于周期开始时间（避免对象复用/乱序导致的“旧事件混入”）
+	// - event.Timestamp 来自 MarketStream 侧的 time.Now()，可作为“接收时间”近似
+	// - Market.Timestamp 来自 slug 解析，代表周期开始时间
+	if s.currentMarket != nil && s.currentMarket.Timestamp > 0 && !event.Timestamp.IsZero() {
+		evtTs := event.Timestamp.Unix()
+		if evtTs < s.currentMarket.Timestamp-1 {
+			logger.Warnf("数据记录策略: ⚠️ 忽略疑似旧周期/乱序的价格事件 - 当前周期=%s(start=%d), eventTs=%d, Token=%s, 价格=%.4f",
+				s.currentMarket.Slug, s.currentMarket.Timestamp, evtTs, event.TokenType, event.NewPrice.ToDecimal())
+			s.mu.Unlock()
+			return nil
+		}
 	}
 
 	// 检查是否切换到新周期（基于 Market.Slug 变化）
@@ -313,8 +353,8 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 		// 重置所有价格状态（新周期需要重新获取）
 		s.btcTargetPrice = 0
 		s.btcTargetPriceSet = false
-		s.upPrice = 0        // 清理旧周期的 UP 价格
-		s.downPrice = 0     // 清理旧周期的 DOWN 价格
+		s.upPrice = 0   // 清理旧周期的 UP 价格
+		s.downPrice = 0 // 清理旧周期的 DOWN 价格
 		logger.Debugf("数据记录策略: 周期切换时已清理所有价格状态")
 
 		// 开始新周期（按 slug 打开对应 CSV 文件，后续实时追加）
@@ -391,15 +431,21 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 		logger.Debugf("数据记录策略: RTDS 价格未更新，使用目标价作为实时价格 (目标价=%.2f)", btcTarget)
 		btcRealtime = btcTarget
 	}
-	
-	// 验证价格合理性（防止旧周期的异常价格被记录）
-	// 0.99 或更高的价格通常表示接近结算，可能是旧周期的价格
-	if upPrice >= 0.99 || downPrice >= 0.99 {
-		logger.Warnf("数据记录策略: ⚠️ 检测到异常价格（可能来自旧周期），跳过记录 - UP=%.4f, DOWN=%.4f, 当前周期=%s",
-			upPrice, downPrice, getSlugOrEmpty(s.currentMarket))
-		return nil
+
+	// 价格合理性保护（更严格/可控）：
+	// - 0.99+ 在真实市场也可能出现（并不一定是旧周期）
+	// - 真正“像旧周期残留”的情况通常发生在【刚切换到新周期的很短窗口】内收到接近 1 的价格
+	// 因此仅在“周期开始后短窗口”触发该保护，避免误杀正常数据。
+	if s.currentMarket != nil && s.currentMarket.Timestamp > 0 && (upPrice >= 0.99 || downPrice >= 0.99) {
+		now := time.Now().Unix()
+		// 默认窗口：新周期开始 45 秒内
+		if now-s.currentMarket.Timestamp <= 45 {
+			logger.Warnf("数据记录策略: ⚠️ 新周期早期检测到异常高价（更可能是旧订阅残留），跳过记录 - UP=%.4f, DOWN=%.4f, 当前周期=%s(start=%d, now=%d)",
+				upPrice, downPrice, getSlugOrEmpty(s.currentMarket), s.currentMarket.Timestamp, now)
+			return nil
+		}
 	}
-	
+
 	// 只有在目标价已设置时才记录数据，避免记录0值
 	if btcRealtime > 0 && upPrice > 0 && downPrice > 0 {
 		if !btcTargetSet || btcTarget <= 0 {
@@ -553,8 +599,8 @@ func (s *DataRecorderStrategy) checkAndSwitchCycleByTime(ctx context.Context) {
 			// 重置所有价格状态（新周期需要重新获取）
 			s.btcTargetPrice = 0
 			s.btcTargetPriceSet = false
-			s.upPrice = 0        // 清理旧周期的 UP 价格
-			s.downPrice = 0     // 清理旧周期的 DOWN 价格
+			s.upPrice = 0   // 清理旧周期的 UP 价格
+			s.downPrice = 0 // 清理旧周期的 DOWN 价格
 			logger.Debugf("数据记录策略: 定时检查周期切换时已清理所有价格状态")
 
 			// 开始新周期

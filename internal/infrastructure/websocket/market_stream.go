@@ -689,6 +689,7 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 
 // Close 关闭连接
 func (m *MarketStream) Close() error {
+	start := time.Now()
 	// 发送关闭信号（避免重复关闭）
 	select {
 	case <-m.closeC:
@@ -744,6 +745,9 @@ func (m *MarketStream) Close() error {
 		marketLog.Warnf("等待长期运行 goroutine 完成超时（5秒），继续关闭")
 	}
 
+	// 明确标记：旧订阅已通过“关闭 WS + 清空 handlers”完成
+	marketLog.Infof("✅ [unsubscribe] MarketStream 已关闭并完成退订：market=%s, elapsed=%s",
+		marketSlug, time.Since(start))
 	return nil
 }
 
