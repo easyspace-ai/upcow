@@ -251,6 +251,27 @@ func (h *sessionPriceHandler) OnPriceChanged(ctx context.Context, event *events.
 			event.TokenType, event.NewPrice.Cents, h.session.Name)
 	})
 
+	// 架构层防护：Session 只分发属于“当前 market”的事件，避免周期切换时旧数据进入策略层。
+	// - 周期切换时 MarketScheduler 会创建新 Session 并关闭旧 Session/旧 WS，但仍可能存在乱序/延迟消息
+	// - 在这里做最终 gate，可以让策略完全不需要关心“是否旧周期”
+	if event != nil {
+		current := h.session.Market()
+		if current != nil && event.Market != nil {
+			// 优先用 timestamp 判定（单调递增且更稳定），其次用 slug 兜底
+			if current.Timestamp > 0 && event.Market.Timestamp > 0 {
+				if event.Market.Timestamp != current.Timestamp {
+					sessionLog.Debugf("⚠️ [sessionPriceHandler] 丢弃非当前周期价格事件: current=%s[%d] event=%s[%d] token=%s price=%dc session=%s",
+						current.Slug, current.Timestamp, event.Market.Slug, event.Market.Timestamp, event.TokenType, event.NewPrice.Cents, h.session.Name)
+					return nil
+				}
+			} else if current.Slug != "" && event.Market.Slug != "" && event.Market.Slug != current.Slug {
+				sessionLog.Debugf("⚠️ [sessionPriceHandler] 丢弃非当前 market 价格事件: current=%s event=%s token=%s price=%dc session=%s",
+					current.Slug, event.Market.Slug, event.TokenType, event.NewPrice.Cents, h.session.Name)
+				return nil
+			}
+		}
+	}
+
 	sessionLog.Debugf("📥 [sessionPriceHandler] 收到价格变化事件，转发到 Session: %s @ %dc (Session=%s)",
 		event.TokenType, event.NewPrice.Cents, h.session.Name)
 	h.session.EmitPriceChanged(ctx, event)
