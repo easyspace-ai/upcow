@@ -32,10 +32,23 @@ type Config struct {
 	BaseTarget     float64 `json:"baseTarget" yaml:"baseTarget"`         // 每边目标 shares
 	BuildLotSize   float64 `json:"buildLotSize" yaml:"buildLotSize"`     // 单次建仓 shares
 	BuildThreshold float64 `json:"buildThreshold" yaml:"buildThreshold"` // 价格上限（decimal，例如 0.60）
+	MinRatio       float64 `json:"minRatio" yaml:"minRatio"`             // 默认 0.40
+	MaxRatio       float64 `json:"maxRatio" yaml:"maxRatio"`             // 默认 0.60
 
 	// Lock/Amplify：目标是提高“最差情形收益”（min(P_up_win, P_down_win)）
 	TargetProfitBase float64 `json:"targetProfitBase" yaml:"targetProfitBase"` // USDC
 	AmplifyTarget    float64 `json:"amplifyTarget" yaml:"amplifyTarget"`       // USDC
+
+	// Lock 阶段（风险敞口驱动）
+	LockThreshold float64 `json:"lockThreshold" yaml:"lockThreshold"` // USDC：某方向亏损超过该值时优先修复
+	LockPriceMax  float64 `json:"lockPriceMax" yaml:"lockPriceMax"`   // decimal：锁定阶段最高买入价格（默认 0.70）
+	ExtremeHigh   float64 `json:"extremeHigh" yaml:"extremeHigh"`     // decimal：极端价格阈值（默认 0.80）
+	InsuranceSize float64 `json:"insuranceSize" yaml:"insuranceSize"` // shares：极端价格时买入反向保险（默认 1.5）
+
+	// Amplify 阶段（方向性放大 + 反向保险）
+	AmplifyPriceMax    float64 `json:"amplifyPriceMax" yaml:"amplifyPriceMax"`       // decimal：放大阶段最高买入价格（默认 0.85）
+	InsurancePriceMax  float64 `json:"insurancePriceMax" yaml:"insurancePriceMax"`   // decimal：反向保险最高价格（默认 0.20）
+	DirectionThreshold float64 `json:"directionThreshold" yaml:"directionThreshold"` // decimal：主方向判定阈值（默认 0.70）
 
 	// ----- pairlock 风控（保守实现） -----
 	EnableParallel           bool    `json:"enableParallel" yaml:"enableParallel"`
@@ -97,14 +110,70 @@ func (c *Config) Validate() error {
 	if c.EarlyAmplifyPrice < 0 {
 		return fmt.Errorf("earlyAmplifyPrice 不能为负数")
 	}
+	if c.CycleDurationSeconds > 0 {
+		if c.EarlyLockPrice == 0 {
+			c.EarlyLockPrice = 0.85
+		}
+		if c.EarlyAmplifyPrice == 0 {
+			c.EarlyAmplifyPrice = 0.90
+		}
+	}
 	if c.BuildThreshold < 0 {
 		return fmt.Errorf("buildThreshold 不能为负数")
 	}
 	if c.BaseTarget < 0 || c.BuildLotSize < 0 {
 		return fmt.Errorf("baseTarget/buildLotSize 不能为负数")
 	}
+	if c.MinRatio < 0 || c.MaxRatio < 0 {
+		return fmt.Errorf("minRatio/maxRatio 不能为负数")
+	}
+	if c.MinRatio == 0 {
+		c.MinRatio = 0.40
+	}
+	if c.MaxRatio == 0 {
+		c.MaxRatio = 0.60
+	}
+	if c.MinRatio > c.MaxRatio {
+		return fmt.Errorf("minRatio 不能大于 maxRatio")
+	}
+	if c.MinRatio > 1.0 || c.MaxRatio > 1.0 {
+		return fmt.Errorf("minRatio/maxRatio 不能大于 1.0")
+	}
 	if c.TargetProfitBase < 0 || c.AmplifyTarget < 0 {
 		return fmt.Errorf("targetProfitBase/amplifyTarget 不能为负数")
+	}
+	if c.LockThreshold < 0 {
+		return fmt.Errorf("lockThreshold 不能为负数")
+	}
+	if c.LockThreshold == 0 {
+		c.LockThreshold = 5.0
+	}
+	if c.LockPriceMax < 0 || c.ExtremeHigh < 0 || c.AmplifyPriceMax < 0 || c.InsurancePriceMax < 0 || c.DirectionThreshold < 0 {
+		return fmt.Errorf("价格阈值不能为负数")
+	}
+	if c.LockPriceMax == 0 {
+		c.LockPriceMax = 0.70
+	}
+	if c.ExtremeHigh == 0 {
+		c.ExtremeHigh = 0.80
+	}
+	if c.InsuranceSize < 0 {
+		return fmt.Errorf("insuranceSize 不能为负数")
+	}
+	if c.InsuranceSize == 0 {
+		c.InsuranceSize = 1.5
+	}
+	if c.AmplifyPriceMax == 0 {
+		c.AmplifyPriceMax = 0.85
+	}
+	if c.InsurancePriceMax == 0 {
+		c.InsurancePriceMax = 0.20
+	}
+	if c.DirectionThreshold == 0 {
+		c.DirectionThreshold = 0.70
+	}
+	if c.LockPriceMax > 1.0 || c.ExtremeHigh > 1.0 || c.AmplifyPriceMax > 1.0 || c.InsurancePriceMax > 1.0 || c.DirectionThreshold > 1.0 {
+		return fmt.Errorf("价格阈值不能大于 1.0")
 	}
 
 	// 并行/失败动作

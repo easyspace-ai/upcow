@@ -37,10 +37,8 @@ type plan struct {
 	market    string
 	createdAt time.Time
 
-	yesOrderID string
-	noOrderID  string
-	yesDone    bool
-	noDone     bool
+	orderIDs []string
+	done     map[string]bool // orderID -> done
 }
 
 // Strategy：统一套利策略（融合 arbitrage / pairedtrading / pairlock 的“锁定型套利”共性）
@@ -243,28 +241,16 @@ func (s *Strategy) step(loopCtx context.Context) {
 	ph := s.detectPhase(nowUnix(now), m)
 	locked, minProfit := s.isLocked()
 
-	// 9) Phase 行为（保守版：不做方向性加仓，只做“锁定型放大利润”）
+	// 9) Phase 行为（按 pairedtrading README：Build -> Lock -> Amplify）
 	switch ph {
 	case phaseBuild:
-		// Build 仅在低价区尝试建立基础仓位（可选）
 		s.maybeBuild(loopCtx, m, now)
 	case phaseAmplify:
-		// Amplify：若已锁定但最差利润 < amplifyTarget，则继续做 complete-set
-		if locked && s.AmplifyTarget > 0 && minProfit < s.AmplifyTarget {
-			s.maybeCompleteSet(loopCtx, m, now, "amplify")
-		} else {
-			// 即使未锁定/未达放大条件，也允许继续锁定型套利（更稳）
-			s.maybeCompleteSet(loopCtx, m, now, "amplify_lock")
-		}
+		// Amplify：方向性放大（前提：尽量保持锁定），否则回退到 Lock 修复风险
+		s.maybeAmplify(loopCtx, m, now, locked, minProfit)
 	default:
-		// Lock：以 complete-set 为主
-		_ = locked // kept for future extension
-		if s.TargetProfitBase > 0 && minProfit >= s.TargetProfitBase {
-			// 已达到基础目标，仍可继续套利（由 ProfitTargetCents 控制门槛）
-			s.maybeCompleteSet(loopCtx, m, now, "lock_target_met")
-		} else {
-			s.maybeCompleteSet(loopCtx, m, now, "lock")
-		}
+		// Lock：风险敞口驱动（优先修复负利润，其次拉升 min(P_up, P_down) 到目标）
+		s.maybeLock(loopCtx, m, now, locked, minProfit)
 	}
 }
 
@@ -349,11 +335,11 @@ func (s *Strategy) onOrder(o *domain.Order) {
 		if p == nil {
 			continue
 		}
-		if o.OrderID == p.yesOrderID && isTerminal(o.Status) {
-			p.yesDone = true
+		if p.done == nil {
+			p.done = make(map[string]bool)
 		}
-		if o.OrderID == p.noOrderID && isTerminal(o.Status) {
-			p.noDone = true
+		if isTerminal(o.Status) {
+			p.done[o.OrderID] = true
 		}
 	}
 	s.plansMu.Unlock()
@@ -376,7 +362,7 @@ func (s *Strategy) canStartNewPlan() bool {
 		if p == nil {
 			continue
 		}
-		if !(p.yesDone && p.noDone) {
+		if !planDone(p) {
 			active++
 		}
 	}
@@ -391,7 +377,7 @@ func (s *Strategy) checkPlanTimeouts(ctx context.Context, now time.Time, m *doma
 			delete(s.plans, id)
 			continue
 		}
-		if p.yesDone && p.noDone {
+		if planDone(p) {
 			delete(s.plans, id)
 			continue
 		}
@@ -404,6 +390,27 @@ func (s *Strategy) checkPlanTimeouts(ctx context.Context, now time.Time, m *doma
 		s.failAction(ctx, now, m)
 		delete(s.plans, id)
 	}
+}
+
+func planDone(p *plan) bool {
+	if p == nil {
+		return true
+	}
+	if len(p.orderIDs) == 0 {
+		return true
+	}
+	if p.done == nil {
+		return false
+	}
+	for _, id := range p.orderIDs {
+		if id == "" {
+			continue
+		}
+		if !p.done[id] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Strategy) failAction(ctx context.Context, now time.Time, m *domain.Market) {
@@ -569,38 +576,279 @@ func (s *Strategy) maybeBuild(ctx context.Context, m *domain.Market, now time.Ti
 	if s.BaseTarget <= 0 || s.BuildLotSize <= 0 || s.BuildThreshold <= 0 {
 		return
 	}
-	// 若已接近基础目标，则不再建仓
-	s.stateMu.Lock()
-	st := s.state
-	s.stateMu.Unlock()
-	if st == nil {
-		return
-	}
-	if st.QUp >= s.BaseTarget && st.QDown >= s.BaseTarget {
+	qUp, qDown, _, _, _, _ := s.stateSnapshot()
+	if qUp >= s.BaseTarget && qDown >= s.BaseTarget {
 		return
 	}
 
-	// 低价区才建仓
 	orderCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	maxCents := int(s.BuildThreshold*100 + 0.5)
-	if maxCents <= 0 {
+
+	_, upAskDec, err1 := s.TradingService.GetBestPrice(orderCtx, m.YesAssetID)
+	_, downAskDec, err2 := s.TradingService.GetBestPrice(orderCtx, m.NoAssetID)
+	if err1 != nil || err2 != nil || upAskDec <= 0 || downAskDec <= 0 {
 		return
 	}
-	upAsk, err1 := orderutil.QuoteBuyPrice(orderCtx, s.TradingService, m.YesAssetID, maxCents)
-	downAsk, err2 := orderutil.QuoteBuyPrice(orderCtx, s.TradingService, m.NoAssetID, maxCents)
-	if err1 != nil || err2 != nil {
+	if upAskDec > s.BuildThreshold && downAskDec > s.BuildThreshold {
 		return
 	}
-	// build：以小额 complete-set 为主（保持尽量中性）
-	req := s.buildCompleteSetReq(m, upAsk, downAsk, s.BuildLotSize, "build")
+
+	total := qUp + qDown
+	ratioUp := 0.5
+	if total > 0 {
+		ratioUp = qUp / total
+	}
+
+	// 维持双边比例，避免单边过重（pairedtrading README：40%-60%）
+	target := domain.TokenTypeUp
+	if ratioUp < s.MinRatio {
+		target = domain.TokenTypeUp
+	} else if ratioUp > s.MaxRatio {
+		target = domain.TokenTypeDown
+	} else {
+		// 在比例允许区间内：优先补齐低于 baseTarget 的方向；若两边都低，则买更便宜的一边
+		upNeed := qUp < s.BaseTarget && upAskDec <= s.BuildThreshold
+		downNeed := qDown < s.BaseTarget && downAskDec <= s.BuildThreshold
+		if upNeed && downNeed {
+			if upAskDec <= downAskDec {
+				target = domain.TokenTypeUp
+			} else {
+				target = domain.TokenTypeDown
+			}
+		} else if upNeed {
+			target = domain.TokenTypeUp
+		} else if downNeed {
+			target = domain.TokenTypeDown
+		} else {
+			return
+		}
+	}
+
+	if target == domain.TokenTypeUp && upAskDec > s.BuildThreshold {
+		return
+	}
+	if target == domain.TokenTypeDown && downAskDec > s.BuildThreshold {
+		return
+	}
+
+	req := s.buildSingleBuyReq(m, target, s.BuildLotSize, "build", map[domain.TokenType]domain.Price{
+		domain.TokenTypeUp:   domain.PriceFromDecimal(upAskDec),
+		domain.TokenTypeDown: domain.PriceFromDecimal(downAskDec),
+	})
 	if req == nil {
 		return
 	}
-	s.submitPlan(orderCtx, now, req)
+	_ = s.submitPlan(orderCtx, now, req)
 }
 
-func (s *Strategy) maybeCompleteSet(ctx context.Context, m *domain.Market, now time.Time, reason string) {
+func (s *Strategy) maybeLock(ctx context.Context, m *domain.Market, now time.Time, locked bool, minProfit float64) {
+	// 1) 优先吃掉“无方向的确定性套利”（complete-set）
+	if s.maybeCompleteSet(ctx, m, now, "lock_complete_set") {
+		return
+	}
+
+	orderCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	_, upAskDec, err1 := s.TradingService.GetBestPrice(orderCtx, m.YesAssetID)
+	_, downAskDec, err2 := s.TradingService.GetBestPrice(orderCtx, m.NoAssetID)
+	if err1 != nil || err2 != nil || upAskDec <= 0 || downAskDec <= 0 {
+		return
+	}
+	upAsk := domain.PriceFromDecimal(upAskDec)
+	downAsk := domain.PriceFromDecimal(downAskDec)
+
+	// 2) 极端价格：买入反向保险（pairedtrading README）
+	if s.ExtremeHigh > 0 {
+		if upAskDec >= s.ExtremeHigh && downAskDec <= s.LockPriceMax && s.InsuranceSize > 0 {
+			req := s.buildSingleBuyReq(m, domain.TokenTypeDown, s.InsuranceSize, "lock_extreme_insurance", map[domain.TokenType]domain.Price{
+				domain.TokenTypeDown: downAsk,
+			})
+			if req != nil {
+				_ = s.submitPlan(orderCtx, now, req)
+			}
+			return
+		}
+		if downAskDec >= s.ExtremeHigh && upAskDec <= s.LockPriceMax && s.InsuranceSize > 0 {
+			req := s.buildSingleBuyReq(m, domain.TokenTypeUp, s.InsuranceSize, "lock_extreme_insurance", map[domain.TokenType]domain.Price{
+				domain.TokenTypeUp: upAsk,
+			})
+			if req != nil {
+				_ = s.submitPlan(orderCtx, now, req)
+			}
+			return
+		}
+	}
+
+	_, _, _, _, pu, pd := s.stateSnapshot()
+
+	// 3) 风险优先：先修复明显负利润（达到 lockThreshold 才触发，避免噪声频繁交易）
+	if s.LockThreshold > 0 {
+		if pu < 0 && -pu >= s.LockThreshold && upAskDec <= s.LockPriceMax {
+			req := s.buildSingleBuyReq(m, domain.TokenTypeUp, s.OrderSize, "lock_fix_negative", map[domain.TokenType]domain.Price{
+				domain.TokenTypeUp: upAsk,
+			})
+			if req != nil {
+				_ = s.submitPlan(orderCtx, now, req)
+			}
+			return
+		}
+		if pd < 0 && -pd >= s.LockThreshold && downAskDec <= s.LockPriceMax {
+			req := s.buildSingleBuyReq(m, domain.TokenTypeDown, s.OrderSize, "lock_fix_negative", map[domain.TokenType]domain.Price{
+				domain.TokenTypeDown: downAsk,
+			})
+			if req != nil {
+				_ = s.submitPlan(orderCtx, now, req)
+			}
+			return
+		}
+	}
+
+	// 4) 均衡与冲目标：选择能提升 min(P_up, P_down) 的买入
+	targetMin := 0.0
+	if s.TargetProfitBase > 0 {
+		targetMin = s.TargetProfitBase
+	}
+	if (!locked) || (targetMin > 0 && minProfit < targetMin) {
+		bestTok := domain.TokenType("")
+		bestMin := minProfit
+
+		lot := s.OrderSize
+		if s.BuildLotSize > 0 {
+			lot = math.Min(lot, s.BuildLotSize)
+		}
+		if lot <= 0 {
+			lot = s.OrderSize
+		}
+
+		if upAskDec > 0 && upAskDec <= s.LockPriceMax {
+			pu2, pd2 := simulateBuy(pu, pd, lot, upAskDec, domain.TokenTypeUp)
+			min2 := math.Min(pu2, pd2)
+			if min2 > bestMin {
+				bestMin = min2
+				bestTok = domain.TokenTypeUp
+			}
+		}
+		if downAskDec > 0 && downAskDec <= s.LockPriceMax {
+			pu2, pd2 := simulateBuy(pu, pd, lot, downAskDec, domain.TokenTypeDown)
+			min2 := math.Min(pu2, pd2)
+			if min2 > bestMin {
+				bestMin = min2
+				bestTok = domain.TokenTypeDown
+			}
+		}
+		if bestTok != "" {
+			req := s.buildSingleBuyReq(m, bestTok, lot, "lock_balance", map[domain.TokenType]domain.Price{
+				domain.TokenTypeUp:   upAsk,
+				domain.TokenTypeDown: downAsk,
+			})
+			if req != nil {
+				_ = s.submitPlan(orderCtx, now, req)
+			}
+		}
+	}
+}
+
+func (s *Strategy) maybeAmplify(ctx context.Context, m *domain.Market, now time.Time, locked bool, minProfit float64) {
+	// 未锁定时，先回到 lock 修复风险敞口
+	if !locked {
+		s.maybeLock(ctx, m, now, locked, minProfit)
+		return
+	}
+
+	// 仍优先吃“确定性套利”
+	if s.maybeCompleteSet(ctx, m, now, "amplify_complete_set") {
+		return
+	}
+
+	if s.AmplifyTarget > 0 && minProfit >= s.AmplifyTarget {
+		return
+	}
+
+	orderCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	_, upAskDec, err1 := s.TradingService.GetBestPrice(orderCtx, m.YesAssetID)
+	_, downAskDec, err2 := s.TradingService.GetBestPrice(orderCtx, m.NoAssetID)
+	if err1 != nil || err2 != nil || upAskDec <= 0 || downAskDec <= 0 {
+		return
+	}
+
+	main := domain.TokenType("")
+	if upAskDec >= s.DirectionThreshold && upAskDec >= downAskDec {
+		main = domain.TokenTypeUp
+	} else if downAskDec >= s.DirectionThreshold && downAskDec >= upAskDec {
+		main = domain.TokenTypeDown
+	} else {
+		// 没有明确主方向：回退到 lock（用 minProfit 均衡方式小步推进）
+		s.maybeLock(ctx, m, now, locked, minProfit)
+		return
+	}
+
+	mainAskDec := upAskDec
+	oppAskDec := downAskDec
+	mainAsset := m.YesAssetID
+	oppAsset := m.NoAssetID
+	if main == domain.TokenTypeDown {
+		mainAskDec = downAskDec
+		oppAskDec = upAskDec
+		mainAsset = m.NoAssetID
+		oppAsset = m.YesAssetID
+	}
+	if s.AmplifyPriceMax > 0 && mainAskDec > s.AmplifyPriceMax {
+		return
+	}
+
+	// 反向保险：只在“极低价”时买一点
+	insTok := opposite(main)
+	insSize := 0.0
+	if s.InsuranceSize > 0 && s.InsurancePriceMax > 0 && oppAskDec > 0 && oppAskDec <= s.InsurancePriceMax {
+		insSize = s.InsuranceSize
+	}
+
+	_, _, _, _, pu, pd := s.stateSnapshot()
+	// 预检：放大后仍需保持锁定（两边利润 > 0）
+	mainSize := s.OrderSize
+	if mainSize <= 0 {
+		return
+	}
+	pu2, pd2 := simulateAmplify(pu, pd, main, mainSize, mainAskDec, insTok, insSize, oppAskDec)
+	if pu2 <= 0 || pd2 <= 0 {
+		return
+	}
+
+	mainPrice := domain.PriceFromDecimal(mainAskDec)
+	oppPrice := domain.PriceFromDecimal(oppAskDec)
+	legs := []execution.LegIntent{
+		{
+			Name:      "buy_main",
+			AssetID:   mainAsset,
+			TokenType: main,
+			Side:      types.SideBuy,
+			Price:     mainPrice,
+			Size:      ensureMinOrderSize(mainSize, mainAskDec, s.MinOrderSize),
+			OrderType: types.OrderTypeFAK,
+		},
+	}
+	if insSize > 0 {
+		legs = append(legs, execution.LegIntent{
+			Name:      "buy_insurance",
+			AssetID:   oppAsset,
+			TokenType: insTok,
+			Side:      types.SideBuy,
+			Price:     oppPrice,
+			Size:      ensureMinOrderSize(insSize, oppAskDec, s.MinOrderSize),
+			OrderType: types.OrderTypeFAK,
+		})
+	}
+	req := &execution.MultiLegRequest{
+		Name:       "unifiedarb_amplify",
+		MarketSlug: m.Slug,
+		Legs:       legs,
+		Hedge:      s.hedgeConfig(),
+	}
+	_ = s.submitPlan(orderCtx, now, req)
+}
+
+func (s *Strategy) maybeCompleteSet(ctx context.Context, m *domain.Market, now time.Time, reason string) bool {
 	orderCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 
@@ -609,24 +857,58 @@ func (s *Strategy) maybeCompleteSet(ctx context.Context, m *domain.Market, now t
 	// 因此先不做相对滑点校验，只使用 bestAsk 作为下单价。
 	yesAsk, err := orderutil.QuoteBuyPrice(orderCtx, s.TradingService, m.YesAssetID, 0)
 	if err != nil {
-		return
+		return false
 	}
 	noAsk, err := orderutil.QuoteBuyPrice(orderCtx, s.TradingService, m.NoAssetID, 0)
 	if err != nil {
-		return
+		return false
 	}
 
 	total := yesAsk.Cents + noAsk.Cents
 	maxTotal := 100 - s.ProfitTargetCents
 	if total > maxTotal {
-		return
+		return false
 	}
 
 	req := s.buildCompleteSetReq(m, yesAsk, noAsk, s.OrderSize, reason)
 	if req == nil {
-		return
+		return false
 	}
-	s.submitPlan(orderCtx, now, req)
+	return s.submitPlan(orderCtx, now, req)
+}
+
+func (s *Strategy) buildSingleBuyReq(m *domain.Market, tok domain.TokenType, desiredSize float64, reason string, price map[domain.TokenType]domain.Price) *execution.MultiLegRequest {
+	if m == nil || desiredSize <= 0 {
+		return nil
+	}
+	p, ok := price[tok]
+	if !ok {
+		return nil
+	}
+	if p.Cents <= 0 || p.ToDecimal() <= 0 {
+		return nil
+	}
+	size := ensureMinOrderSize(desiredSize, p.ToDecimal(), s.MinOrderSize)
+	assetID := m.NoAssetID
+	if tok == domain.TokenTypeUp {
+		assetID = m.YesAssetID
+	}
+	return &execution.MultiLegRequest{
+		Name:       fmt.Sprintf("unifiedarb_%s_%s", reason, tok),
+		MarketSlug: m.Slug,
+		Legs: []execution.LegIntent{
+			{
+				Name:      "buy_one",
+				AssetID:   assetID,
+				TokenType: tok,
+				Side:      types.SideBuy,
+				Price:     p,
+				Size:      size,
+				OrderType: types.OrderTypeFAK,
+			},
+		},
+		Hedge: execution.AutoHedgeConfig{Enabled: false},
+	}
 }
 
 func (s *Strategy) buildCompleteSetReq(m *domain.Market, yesAsk, noAsk domain.Price, desiredSize float64, reason string) *execution.MultiLegRequest {
@@ -667,13 +949,13 @@ func (s *Strategy) buildCompleteSetReq(m *domain.Market, yesAsk, noAsk domain.Pr
 	return req
 }
 
-func (s *Strategy) submitPlan(ctx context.Context, now time.Time, req *execution.MultiLegRequest) {
+func (s *Strategy) submitPlan(ctx context.Context, now time.Time, req *execution.MultiLegRequest) bool {
 	if req == nil {
-		return
+		return false
 	}
 	created, err := s.TradingService.ExecuteMultiLeg(ctx, *req)
 	if err != nil {
-		return
+		return false
 	}
 
 	// 记录 plan
@@ -682,14 +964,16 @@ func (s *Strategy) submitPlan(ctx context.Context, now time.Time, req *execution
 		market:    req.MarketSlug,
 		createdAt: now,
 	}
-	if len(created) >= 2 {
-		if created[0] != nil {
-			p.yesOrderID = created[0].OrderID
+	for _, o := range created {
+		if o == nil || o.OrderID == "" {
+			continue
 		}
-		if created[1] != nil {
-			p.noOrderID = created[1].OrderID
-		}
+		p.orderIDs = append(p.orderIDs, o.OrderID)
 	}
+	if len(p.orderIDs) == 0 {
+		return false
+	}
+	p.done = make(map[string]bool, len(p.orderIDs))
 	s.plansMu.Lock()
 	s.plans[p.id] = p
 	s.plansMu.Unlock()
@@ -703,6 +987,77 @@ func (s *Strategy) submitPlan(ctx context.Context, now time.Time, req *execution
 	if st != nil {
 		log.Infof("🎯 [%s] submit: rounds=%d/%d market=%s QUp=%.2f QDown=%.2f P_up=%.2f P_down=%.2f",
 			ID, s.rounds, s.MaxRoundsPerPeriod, req.MarketSlug, st.QUp, st.QDown, st.ProfitIfUpWin(), st.ProfitIfDownWin())
+	}
+	return true
+}
+
+func (s *Strategy) stateSnapshot() (qUp, qDown, cUp, cDown, pUp, pDown float64) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.state == nil {
+		return 0, 0, 0, 0, 0, 0
+	}
+	qUp = s.state.QUp
+	qDown = s.state.QDown
+	cUp = s.state.CUp
+	cDown = s.state.CDown
+	pUp = s.state.ProfitIfUpWin()
+	pDown = s.state.ProfitIfDownWin()
+	return
+}
+
+func simulateBuy(pu, pd float64, size float64, ask float64, tok domain.TokenType) (pu2, pd2 float64) {
+	if size <= 0 || ask <= 0 || ask >= 1.0 {
+		return pu, pd
+	}
+	switch tok {
+	case domain.TokenTypeUp:
+		pu2 = pu + size*(1.0-ask)
+		pd2 = pd - size*ask
+	case domain.TokenTypeDown:
+		pd2 = pd + size*(1.0-ask)
+		pu2 = pu - size*ask
+	default:
+		return pu, pd
+	}
+	return pu2, pd2
+}
+
+func simulateAmplify(pu, pd float64, main domain.TokenType, mainSize float64, mainAsk float64, ins domain.TokenType, insSize float64, insAsk float64) (pu2, pd2 float64) {
+	pu2, pd2 = simulateBuy(pu, pd, mainSize, mainAsk, main)
+	if insSize > 0 && insAsk > 0 {
+		pu2, pd2 = simulateBuy(pu2, pd2, insSize, insAsk, ins)
+	}
+	return pu2, pd2
+}
+
+func opposite(t domain.TokenType) domain.TokenType {
+	if t == domain.TokenTypeUp {
+		return domain.TokenTypeDown
+	}
+	return domain.TokenTypeUp
+}
+
+func ensureMinOrderSize(desiredShares float64, ask float64, minUSDC float64) float64 {
+	if desiredShares <= 0 || ask <= 0 {
+		return desiredShares
+	}
+	minShares := minUSDC / ask
+	if minShares > desiredShares {
+		return minShares
+	}
+	return desiredShares
+}
+
+func (s *Strategy) hedgeConfig() execution.AutoHedgeConfig {
+	if !s.HedgeEnabled {
+		return execution.AutoHedgeConfig{Enabled: false}
+	}
+	return execution.AutoHedgeConfig{
+		Enabled:              true,
+		Delay:                time.Duration(s.HedgeDelaySeconds) * time.Second,
+		SellPriceOffsetCents: s.HedgeSellPriceOffsetCents,
+		MinExposureToHedge:   s.MinExposureToHedge,
 	}
 }
 
