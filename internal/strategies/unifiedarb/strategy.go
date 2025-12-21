@@ -59,6 +59,10 @@ type Strategy struct {
 	latest  map[domain.TokenType]*events.PriceChangedEvent
 	orderC  chan *domain.Order
 
+	// last seen reference price (from PriceChangedEvent.NewPrice)
+	lastPxMu sync.Mutex
+	lastPx   map[domain.TokenType]domain.Price
+
 	loopOnce   sync.Once
 	loopCancel context.CancelFunc
 
@@ -74,6 +78,11 @@ type Strategy struct {
 	// plan tracking (pairlock-like)
 	plansMu sync.Mutex
 	plans   map[string]*plan
+
+	// observability
+	lastPhaseMu sync.Mutex
+	lastPhase   phase
+	lastLogAt   time.Time
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -89,6 +98,9 @@ func (s *Strategy) Initialize() error {
 	}
 	if s.latest == nil {
 		s.latest = make(map[domain.TokenType]*events.PriceChangedEvent)
+	}
+	if s.lastPx == nil {
+		s.lastPx = make(map[domain.TokenType]domain.Price)
 	}
 	if s.orderC == nil {
 		s.orderC = make(chan *domain.Order, 2048)
@@ -141,6 +153,9 @@ func (s *Strategy) OnPriceChanged(_ context.Context, e *events.PriceChangedEvent
 	if e == nil || e.Market == nil {
 		return nil
 	}
+	s.lastPxMu.Lock()
+	s.lastPx[e.TokenType] = e.NewPrice
+	s.lastPxMu.Unlock()
 	s.priceMu.Lock()
 	s.latest[e.TokenType] = e
 	s.priceMu.Unlock()
@@ -241,6 +256,8 @@ func (s *Strategy) step(loopCtx context.Context) {
 	ph := s.detectPhase(nowUnix(now), m)
 	locked, minProfit := s.isLocked()
 
+	s.maybeLogState(now, m, ph, locked, minProfit)
+
 	// 9) Phase 行为（按 pairedtrading README：Build -> Lock -> Amplify）
 	switch ph {
 	case phaseBuild:
@@ -252,6 +269,38 @@ func (s *Strategy) step(loopCtx context.Context) {
 		// Lock：风险敞口驱动（优先修复负利润，其次拉升 min(P_up, P_down) 到目标）
 		s.maybeLock(loopCtx, m, now, locked, minProfit)
 	}
+}
+
+func (s *Strategy) maybeLogState(now time.Time, m *domain.Market, ph phase, locked bool, minProfit float64) {
+	// 只在阶段变化或每 5 秒输出一次，避免刷屏
+	s.lastPhaseMu.Lock()
+	defer s.lastPhaseMu.Unlock()
+
+	shouldLog := false
+	if s.lastPhase != ph {
+		shouldLog = true
+		s.lastPhase = ph
+	}
+	if s.lastLogAt.IsZero() || now.Sub(s.lastLogAt) >= 5*time.Second {
+		shouldLog = true
+	}
+	if !shouldLog {
+		return
+	}
+	s.lastLogAt = now
+
+	qUp, qDown, cUp, cDown, pUp, pDown := s.stateSnapshot()
+	upPx, downPx := s.lastSeenPrice()
+	log.Infof("📈 [%s] state: market=%s phase=%s locked=%t minP=%.2f upPx=%dc downPx=%dc QUp=%.2f QDown=%.2f CUp=%.2f CDown=%.2f P_up=%.2f P_down=%.2f",
+		ID, m.Slug, ph, locked, minProfit, upPx.Cents, downPx.Cents, qUp, qDown, cUp, cDown, pUp, pDown)
+}
+
+func (s *Strategy) lastSeenPrice() (up domain.Price, down domain.Price) {
+	s.lastPxMu.Lock()
+	defer s.lastPxMu.Unlock()
+	up = s.lastPx[domain.TokenTypeUp]
+	down = s.lastPx[domain.TokenTypeDown]
+	return up, down
 }
 
 func (s *Strategy) resetCycle(now time.Time, m *domain.Market) {
@@ -522,15 +571,22 @@ func (s *Strategy) detectPhase(nowUnix int64, m *domain.Market) phase {
 		ph = phaseAmplify
 	}
 
-	// early switch：基于价格快速切换（保守实现：只用“任意腿 ask”）
-	askUp, askDown := s.latestAskSnapshot()
-	maxAsk := math.Max(askUp, askDown)
-	if s.EarlyLockPrice > 0 && maxAsk >= s.EarlyLockPrice {
+	// early switch：优先使用 PriceChangedEvent.NewPrice 作为 reference（无需每步查 bestbook）
+	upPx, downPx := s.lastSeenPrice()
+	upDec := upPx.ToDecimal()
+	downDec := downPx.ToDecimal()
+	maxPx := math.Max(upDec, downDec)
+	if maxPx <= 0 {
+		// fallback：用 bestAsk
+		askUp, askDown := s.latestAskSnapshot()
+		maxPx = math.Max(askUp, askDown)
+	}
+	if s.EarlyLockPrice > 0 && maxPx >= s.EarlyLockPrice {
 		if ph == phaseBuild {
 			ph = phaseLock
 		}
 	}
-	if s.EarlyAmplifyPrice > 0 && maxAsk >= s.EarlyAmplifyPrice {
+	if s.EarlyAmplifyPrice > 0 && maxPx >= s.EarlyAmplifyPrice {
 		locked, _ := s.isLocked()
 		if locked {
 			ph = phaseAmplify
@@ -649,13 +705,15 @@ func (s *Strategy) maybeLock(ctx context.Context, m *domain.Market, now time.Tim
 
 	orderCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	_, upAskDec, err1 := s.TradingService.GetBestPrice(orderCtx, m.YesAssetID)
-	_, downAskDec, err2 := s.TradingService.GetBestPrice(orderCtx, m.NoAssetID)
-	if err1 != nil || err2 != nil || upAskDec <= 0 || downAskDec <= 0 {
+	yesAsk, err1 := s.quoteBuy(orderCtx, m, domain.TokenTypeUp, s.LockPriceMax, "lock")
+	noAsk, err2 := s.quoteBuy(orderCtx, m, domain.TokenTypeDown, s.LockPriceMax, "lock")
+	if err1 != nil || err2 != nil {
 		return
 	}
-	upAsk := domain.PriceFromDecimal(upAskDec)
-	downAsk := domain.PriceFromDecimal(downAskDec)
+	upAskDec := yesAsk.ToDecimal()
+	downAskDec := noAsk.ToDecimal()
+	upAsk := yesAsk
+	downAsk := noAsk
 
 	// 2) 极端价格：买入反向保险（pairedtrading README）
 	if s.ExtremeHigh > 0 {
@@ -766,11 +824,13 @@ func (s *Strategy) maybeAmplify(ctx context.Context, m *domain.Market, now time.
 
 	orderCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	_, upAskDec, err1 := s.TradingService.GetBestPrice(orderCtx, m.YesAssetID)
-	_, downAskDec, err2 := s.TradingService.GetBestPrice(orderCtx, m.NoAssetID)
-	if err1 != nil || err2 != nil || upAskDec <= 0 || downAskDec <= 0 {
+	upAsk, err1 := s.quoteBuy(orderCtx, m, domain.TokenTypeUp, s.AmplifyPriceMax, "amplify")
+	downAsk, err2 := s.quoteBuy(orderCtx, m, domain.TokenTypeDown, s.AmplifyPriceMax, "amplify")
+	if err1 != nil || err2 != nil {
 		return
 	}
+	upAskDec := upAsk.ToDecimal()
+	downAskDec := downAsk.ToDecimal()
 
 	main := domain.TokenType("")
 	if upAskDec >= s.DirectionThreshold && upAskDec >= downAskDec {
@@ -852,14 +912,11 @@ func (s *Strategy) maybeCompleteSet(ctx context.Context, m *domain.Market, now t
 	orderCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 
-	// 说明：EntryMaxBuySlippageCents 在旧 pairlock 设计里是“相对滑点保护”；
-	// 这里缺少可靠的 reference price（且 bestBook 已在 TradingService 内部做了缓存），
-	// 因此先不做相对滑点校验，只使用 bestAsk 作为下单价。
-	yesAsk, err := orderutil.QuoteBuyPrice(orderCtx, s.TradingService, m.YesAssetID, 0)
+	yesAsk, err := s.quoteBuy(orderCtx, m, domain.TokenTypeUp, 1.0, "complete_set")
 	if err != nil {
 		return false
 	}
-	noAsk, err := orderutil.QuoteBuyPrice(orderCtx, s.TradingService, m.NoAssetID, 0)
+	noAsk, err := s.quoteBuy(orderCtx, m, domain.TokenTypeDown, 1.0, "complete_set")
 	if err != nil {
 		return false
 	}
@@ -875,6 +932,47 @@ func (s *Strategy) maybeCompleteSet(ctx context.Context, m *domain.Market, now t
 		return false
 	}
 	return s.submitPlan(orderCtx, now, req)
+}
+
+// quoteBuy 统一买入报价入口：
+// - priceMaxDecimal：用于阶段价格上限（如 lockPriceMax/amplifyPriceMax），<=0 表示不限制
+// - entryMaxBuySlippageCents：相对滑点保护（基于 PriceChangedEvent.NewPrice 作为 reference）
+func (s *Strategy) quoteBuy(ctx context.Context, m *domain.Market, tok domain.TokenType, priceMaxDecimal float64, reason string) (domain.Price, error) {
+	if m == nil {
+		return domain.Price{}, fmt.Errorf("market nil")
+	}
+	assetID := m.NoAssetID
+	if tok == domain.TokenTypeUp {
+		assetID = m.YesAssetID
+	}
+	// 阶段上限
+	maxCents := 0
+	if priceMaxDecimal > 0 {
+		maxCents = int(priceMaxDecimal*100 + 0.5)
+	}
+	// 相对滑点：reference 来自最新 price event
+	if s.EntryMaxBuySlippageCents > 0 {
+		refUp, refDown := s.lastSeenPrice()
+		ref := refDown
+		if tok == domain.TokenTypeUp {
+			ref = refUp
+		}
+		if ref.Cents > 0 {
+			refMax := ref.Cents + s.EntryMaxBuySlippageCents
+			if maxCents == 0 || refMax < maxCents {
+				maxCents = refMax
+			}
+		}
+	}
+	p, err := orderutil.QuoteBuyPrice(ctx, s.TradingService, assetID, maxCents)
+	if err != nil {
+		return domain.Price{}, err
+	}
+	// 额外防护：用于调试时快速定位是哪个阶段触发的保护
+	if maxCents > 0 && p.Cents > maxCents {
+		return domain.Price{}, fmt.Errorf("buy blocked(%s): tok=%s bestAsk=%dc max=%dc", reason, tok, p.Cents, maxCents)
+	}
+	return p, nil
 }
 
 func (s *Strategy) buildSingleBuyReq(m *domain.Market, tok domain.TokenType, desiredSize float64, reason string, price map[domain.TokenType]domain.Price) *execution.MultiLegRequest {
