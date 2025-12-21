@@ -28,6 +28,9 @@ const (
 	pingInterval            = 10 * time.Second
 	readTimeout             = 30 * time.Second
 	writeTimeout            = 10 * time.Second
+	// marketDataMaxSpreadCents: 盘口质量 gate（ask-bid 超过该值则认为“不适合做决策/触发策略”）
+	// 目的：避免初始快照/断档盘口把 best_ask=0.99 这种极端值当作“市场价格”
+	marketDataMaxSpreadCents = 10
 )
 
 // MarketStream 市场数据流实现（BBGO 风格）
@@ -580,105 +583,6 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 	}
 
 	// 更新 AtomicBestBook（bid/ask + size），供执行/策略无锁读取
-	if m.bestBook != nil {
-		var tokenType domain.TokenType
-		if bm.AssetID == m.market.YesAssetID {
-			tokenType = domain.TokenTypeUp
-		} else if bm.AssetID == m.market.NoAssetID {
-			tokenType = domain.TokenTypeDown
-		}
-
-		var bidCents, askCents uint16
-		var bidSizeScaled, askSizeScaled uint32
-
-		// 优先使用 best_bid/best_ask；若缺失则回退 bids[0]/asks[0]
-		if bm.BestBid != "" {
-			if p, err := parsePriceString(bm.BestBid); err == nil && p.Cents >= 0 {
-				if p.Cents > 65535 {
-					p.Cents = 65535
-				}
-				bidCents = uint16(p.Cents)
-			}
-		} else if len(bm.Bids) > 0 && bm.Bids[0].Price != "" {
-			if p, err := parsePriceString(bm.Bids[0].Price); err == nil && p.Cents >= 0 {
-				if p.Cents > 65535 {
-					p.Cents = 65535
-				}
-				bidCents = uint16(p.Cents)
-			}
-		}
-
-		if bm.BestAsk != "" {
-			if p, err := parsePriceString(bm.BestAsk); err == nil && p.Cents >= 0 {
-				if p.Cents > 65535 {
-					p.Cents = 65535
-				}
-				askCents = uint16(p.Cents)
-			}
-		} else if len(bm.Asks) > 0 && bm.Asks[0].Price != "" {
-			if p, err := parsePriceString(bm.Asks[0].Price); err == nil && p.Cents >= 0 {
-				if p.Cents > 65535 {
-					p.Cents = 65535
-				}
-				askCents = uint16(p.Cents)
-			}
-		}
-
-		// size：优先用 bids[0]/asks[0] 的 size（WS book 里一定有 depth）
-		if len(bm.Bids) > 0 && bm.Bids[0].Size != "" {
-			if v, err := strconv.ParseFloat(bm.Bids[0].Size, 64); err == nil && v > 0 {
-				if v > 429496.0 {
-					v = 429496.0
-				}
-				bidSizeScaled = uint32(v * 10000.0)
-			}
-		}
-		if len(bm.Asks) > 0 && bm.Asks[0].Size != "" {
-			if v, err := strconv.ParseFloat(bm.Asks[0].Size, 64); err == nil && v > 0 {
-				if v > 429496.0 {
-					v = 429496.0
-				}
-				askSizeScaled = uint32(v * 10000.0)
-			}
-		}
-
-		if tokenType != "" {
-			m.bestBook.UpdateToken(tokenType, bidCents, askCents, bidSizeScaled, askSizeScaled)
-		}
-	}
-
-	// 选择价格来源：best_ask > best_bid > price > asks[0] > bids[0]
-	priceStr := ""
-	source := ""
-	if bm.BestAsk != "" {
-		priceStr = bm.BestAsk
-		source = "book.best_ask"
-	} else if bm.BestBid != "" {
-		priceStr = bm.BestBid
-		source = "book.best_bid"
-	} else if bm.Price != "" {
-		priceStr = bm.Price
-		source = "book.price"
-	} else if len(bm.Asks) > 0 && bm.Asks[0].Price != "" {
-		priceStr = bm.Asks[0].Price
-		source = "book.asks[0]"
-	} else if len(bm.Bids) > 0 && bm.Bids[0].Price != "" {
-		priceStr = bm.Bids[0].Price
-		source = "book.bids[0]"
-	} else {
-		return
-	}
-
-	newPrice, err := parsePriceString(priceStr)
-	if err != nil {
-		marketLog.Debugf("解析 book 价格失败: source=%s value=%s err=%v", source, priceStr, err)
-		return
-	}
-
-	// 调试日志：记录原始价格字符串和解析结果
-	marketLog.Debugf("💰 [book价格解析] source=%s, priceStr=%s → %dc (decimal=%.4f)",
-		source, priceStr, newPrice.Cents, newPrice.ToDecimal())
-
 	var tokenType domain.TokenType
 	if bm.AssetID == m.market.YesAssetID {
 		tokenType = domain.TokenTypeUp
@@ -687,6 +591,65 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 	} else {
 		return
 	}
+
+	// 解析 bid/ask（优先 best_*，再回退 level[0]）
+	var bidCents, askCents uint16
+	var bidSizeScaled, askSizeScaled uint32
+	if bm.BestBid != "" {
+		if p, err := parsePriceString(bm.BestBid); err == nil && p.Cents > 0 {
+			bidCents = uint16(p.Cents)
+		}
+	} else if len(bm.Bids) > 0 && bm.Bids[0].Price != "" {
+		if p, err := parsePriceString(bm.Bids[0].Price); err == nil && p.Cents > 0 {
+			bidCents = uint16(p.Cents)
+		}
+	}
+	if bm.BestAsk != "" {
+		if p, err := parsePriceString(bm.BestAsk); err == nil && p.Cents > 0 {
+			askCents = uint16(p.Cents)
+		}
+	} else if len(bm.Asks) > 0 && bm.Asks[0].Price != "" {
+		if p, err := parsePriceString(bm.Asks[0].Price); err == nil && p.Cents > 0 {
+			askCents = uint16(p.Cents)
+		}
+	}
+
+	// size：优先用 bids[0]/asks[0]
+	if len(bm.Bids) > 0 && bm.Bids[0].Size != "" {
+		if v, err := strconv.ParseFloat(bm.Bids[0].Size, 64); err == nil && v > 0 {
+			bidSizeScaled = uint32(v * 10000.0)
+		}
+	}
+	if len(bm.Asks) > 0 && bm.Asks[0].Size != "" {
+		if v, err := strconv.ParseFloat(bm.Asks[0].Size, 64); err == nil && v > 0 {
+			askSizeScaled = uint32(v * 10000.0)
+		}
+	}
+
+	// 原子快照始终更新（供执行层读取），但事件触发要走质量 gate
+	if m.bestBook != nil {
+		m.bestBook.UpdateToken(tokenType, bidCents, askCents, bidSizeScaled, askSizeScaled)
+	}
+
+	// 架构层数据质量 gate：必须是双边盘口且价差合理，才发 PriceChangedEvent
+	if bidCents == 0 || askCents == 0 {
+		marketLog.Debugf("⚠️ [book->price] 单边盘口，忽略价格事件: token=%s bid=%dc ask=%dc market=%s",
+			tokenType, bidCents, askCents, m.market.Slug)
+		return
+	}
+	spread := int(askCents) - int(bidCents)
+	if spread < 0 {
+		spread = -spread
+	}
+	if spread > marketDataMaxSpreadCents {
+		marketLog.Warnf("⚠️ [book->price] 盘口价差过大，忽略价格事件: token=%s bid=%dc ask=%dc spread=%dc market=%s",
+			tokenType, bidCents, askCents, spread, m.market.Slug)
+		return
+	}
+	mid := int(bidCents)+int(askCents)
+	mid = (mid + 1) / 2
+	newPrice := domain.Price{Cents: mid}
+	source := "book.mid"
 
 	// 检查是否已关闭（避免处理关闭后的延迟消息）
 	select {
@@ -785,7 +748,20 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 			continue
 		}
 
-		// 同步 AtomicBestBook：从 best_bid / best_ask 提取 top-of-book（price_change 不保证 size，因此 size 不更新）
+		// 解析 best bid/ask（price_change 可能包含 best_*）
+		var bidCents, askCents uint16
+		if bestBidStr, ok := change["best_bid"].(string); ok && bestBidStr != "" {
+			if p, err := parsePriceString(bestBidStr); err == nil && p.Cents > 0 {
+				bidCents = uint16(p.Cents)
+			}
+		}
+		if bestAskStr, ok := change["best_ask"].(string); ok && bestAskStr != "" {
+			if p, err := parsePriceString(bestAskStr); err == nil && p.Cents > 0 {
+				askCents = uint16(p.Cents)
+			}
+		}
+
+		// 更新 AtomicBestBook（允许单边更新）
 		if m.bestBook != nil && m.market != nil {
 			var tokenType domain.TokenType
 			if assetID == m.market.YesAssetID {
@@ -793,65 +769,32 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 			} else if assetID == m.market.NoAssetID {
 				tokenType = domain.TokenTypeDown
 			}
-			if tokenType != "" {
-				var bidCents, askCents uint16
-				if bestBidStr, ok := change["best_bid"].(string); ok && bestBidStr != "" {
-					if p, err := parsePriceString(bestBidStr); err == nil && p.Cents >= 0 {
-						if p.Cents > 65535 {
-							p.Cents = 65535
-						}
-						bidCents = uint16(p.Cents)
-					}
-				}
-				if bestAskStr, ok := change["best_ask"].(string); ok && bestAskStr != "" {
-					if p, err := parsePriceString(bestAskStr); err == nil && p.Cents >= 0 {
-						if p.Cents > 65535 {
-							p.Cents = 65535
-						}
-						askCents = uint16(p.Cents)
-					}
-				}
-				if bidCents != 0 || askCents != 0 {
-					m.bestBook.UpdateToken(tokenType, bidCents, askCents, 0, 0)
-				}
+			if tokenType != "" && (bidCents != 0 || askCents != 0) {
+				m.bestBook.UpdateToken(tokenType, bidCents, askCents, 0, 0)
 			}
 		}
 
-		// 获取价格
-		var priceStr string
-		var priceSource string
-		if bestAskStr, ok := change["best_ask"].(string); ok && bestAskStr != "" {
-			priceStr = bestAskStr
-			priceSource = "best_ask"
-		} else if bestBidStr, ok := change["best_bid"].(string); ok && bestBidStr != "" {
-			priceStr = bestBidStr
-			priceSource = "best_bid"
-		} else if priceVal, ok := change["price"].(string); ok && priceVal != "" {
-			priceStr = priceVal
-			priceSource = "price"
-		} else {
+		// 事件触发使用 mid（双边 + 价差 gate）
+		if bidCents == 0 || askCents == 0 {
 			continue
 		}
-
-		// 解析价格
-		newPrice, err := parsePriceString(priceStr)
-		if err != nil {
-			marketLog.Debugf("⚠️ [价格解析] 解析失败: source=%s, priceStr=%s, err=%v", priceSource, priceStr, err)
+		spread := int(askCents) - int(bidCents)
+		if spread < 0 {
+			spread = -spread
+		}
+		if spread > marketDataMaxSpreadCents {
+			marketLog.Warnf("⚠️ [price_change->price] 盘口价差过大，忽略价格事件: assetID=%s bid=%dc ask=%dc spread=%dc market=%s",
+				assetID[:12]+"...", bidCents, askCents, spread, currentMarketSlug)
 			continue
 		}
-
-		// 调试日志：记录原始价格字符串和解析结果（INFO 级别，方便排查）
-		marketSlug := ""
-		if m.market != nil {
-			marketSlug = m.market.Slug
-		}
-		marketLog.Infof("💰 [价格解析] 市场=%s, assetID=%s, source=%s, 原始字符串=%s → 解析结果=%dc (小数=%.4f)",
-			marketSlug, assetID[:12]+"...", priceSource, priceStr, newPrice.Cents, newPrice.ToDecimal())
+		mid := int(bidCents)+int(askCents)
+		mid = (mid + 1) / 2
+		newPrice := domain.Price{Cents: mid}
 
 		latestPrices[assetID] = struct {
 			price  domain.Price
 			source string
-		}{price: newPrice, source: priceSource}
+		}{price: newPrice, source: "mid"}
 	}
 
 	// 触发回调

@@ -234,9 +234,16 @@ func (o *OrdersService) GetBestPrice(ctx context.Context, assetID string) (bestB
 				if snap.YesAskCents > 0 {
 					bestAsk = float64(snap.YesAskCents) / 100.0
 				}
-				// 如果能提供任何一个价格，就认为快路径成功
-				if bestBid > 0 || bestAsk > 0 {
-					return bestBid, bestAsk, nil
+				// 架构层数据质量 gate：必须双边价格都存在，避免 ask-only=0.99 误触发策略
+				if bestBid > 0 && bestAsk > 0 {
+					spreadCents := int(snap.YesAskCents) - int(snap.YesBidCents)
+					if spreadCents < 0 {
+						spreadCents = -spreadCents
+					}
+					if spreadCents <= 10 {
+						return bestBid, bestAsk, nil
+					}
+					// spread 过大：回退 REST 再确认（避免 WS 脏快照）
 				}
 			} else if assetID == market.NoAssetID {
 				if snap.NoBidCents > 0 {
@@ -245,14 +252,20 @@ func (o *OrdersService) GetBestPrice(ctx context.Context, assetID string) (bestB
 				if snap.NoAskCents > 0 {
 					bestAsk = float64(snap.NoAskCents) / 100.0
 				}
-				if bestBid > 0 || bestAsk > 0 {
-					return bestBid, bestAsk, nil
+				if bestBid > 0 && bestAsk > 0 {
+					spreadCents := int(snap.NoAskCents) - int(snap.NoBidCents)
+					if spreadCents < 0 {
+						spreadCents = -spreadCents
+					}
+					if spreadCents <= 10 {
+						return bestBid, bestAsk, nil
+					}
 				}
 			}
 		}
 	}
 
-	// 获取订单簿
+	// 获取订单簿（REST）
 	book, err := s.clobClient.GetOrderBook(ctx, assetID, nil)
 	if err != nil {
 		return 0, 0, fmt.Errorf("获取订单簿失败: %w", err)
@@ -272,6 +285,18 @@ func (o *OrdersService) GetBestPrice(ctx context.Context, assetID string) (bestB
 		if err != nil {
 			return 0, 0, fmt.Errorf("解析卖一价失败: %w", err)
 		}
+	}
+
+	// REST 也做同样的双边 gate（避免 ask-only/断档）
+	if bestBid <= 0 || bestAsk <= 0 {
+		return 0, 0, fmt.Errorf("订单簿盘口不完整: bestBid=%.6f bestAsk=%.6f", bestBid, bestAsk)
+	}
+	spreadCents := int(bestAsk*100+0.5) - int(bestBid*100+0.5)
+	if spreadCents < 0 {
+		spreadCents = -spreadCents
+	}
+	if spreadCents > 10 {
+		return 0, 0, fmt.Errorf("订单簿价差过大: bestBid=%.6f bestAsk=%.6f spread=%dc", bestBid, bestAsk, spreadCents)
 	}
 
 	return bestBid, bestAsk, nil
