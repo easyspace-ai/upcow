@@ -13,10 +13,18 @@ type Config struct {
 	// OrderSize: shares
 	OrderSize float64 `yaml:"orderSize" json:"orderSize"`
 	// OncePerCycle: 默认 true（每个 market 周期只下 1 次单，避免信号风暴）
-	OncePerCycle bool `yaml:"oncePerCycle" json:"oncePerCycle"`
+	// 用指针是为了支持“默认 true”同时允许用户显式关闭
+	OncePerCycle *bool `yaml:"oncePerCycle" json:"oncePerCycle"`
 
 	MinOrderSize        float64 `yaml:"minOrderSize" json:"minOrderSize"`
 	MaxBuySlippageCents int     `yaml:"maxBuySlippageCents" json:"maxBuySlippageCents"`
+
+	// MaxBuyPriceCents: 买入价硬上限（分）。默认 80（禁止一启动就 99c 追买）。
+	MaxBuyPriceCents int `yaml:"maxBuyPriceCents" json:"maxBuyPriceCents"`
+	// MaxSpreadCents: 盘口价差上限（ask-bid，分）。默认 5（过滤“bid=0 ask=99”这类假盘口）。
+	MaxSpreadCents int `yaml:"maxSpreadCents" json:"maxSpreadCents"`
+	// WarmupMs: 启动/周期切换后的预热期（毫秒），预热期内不下单，避免刚连上 WS 时的脏快照误触发。
+	WarmupMs int `yaml:"warmupMs" json:"warmupMs"`
 }
 
 func (c *Config) Validate() error {
@@ -32,9 +40,21 @@ func (c *Config) Validate() error {
 	if c.MaxBuySlippageCents < 0 {
 		return fmt.Errorf("maxBuySlippageCents 不能为负数")
 	}
-	// default
-	if !c.OncePerCycle {
-		// allow explicitly false
+	if c.OncePerCycle == nil {
+		def := true
+		c.OncePerCycle = &def
+	}
+	if c.MaxBuyPriceCents <= 0 {
+		c.MaxBuyPriceCents = 80
+	}
+	if c.MaxBuyPriceCents > 99 {
+		c.MaxBuyPriceCents = 99
+	}
+	if c.MaxSpreadCents <= 0 {
+		c.MaxSpreadCents = 5
+	}
+	if c.WarmupMs <= 0 {
+		c.WarmupMs = 1200
 	}
 	return nil
 }

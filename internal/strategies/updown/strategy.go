@@ -8,7 +8,6 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/execution"
-	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
@@ -31,6 +30,7 @@ type Strategy struct {
 	lastMarketSlug  string
 	tradedThisCycle bool
 	lastTradeAt     time.Time
+	firstSeenAt     time.Time
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -61,9 +61,18 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if e.Market.Slug != "" && e.Market.Slug != s.lastMarketSlug {
 		s.lastMarketSlug = e.Market.Slug
 		s.tradedThisCycle = false
+		s.firstSeenAt = time.Now()
+	}
+	if s.firstSeenAt.IsZero() {
+		s.firstSeenAt = time.Now()
 	}
 
-	if s.Config.OncePerCycle && s.tradedThisCycle {
+	// 预热：避免刚连上 WS 的脏快照/假盘口
+	if s.Config.WarmupMs > 0 && time.Since(s.firstSeenAt) < time.Duration(s.Config.WarmupMs)*time.Millisecond {
+		return nil
+	}
+
+	if s.Config.OncePerCycle != nil && *s.Config.OncePerCycle && s.tradedThisCycle {
 		return nil
 	}
 	if !s.lastTradeAt.IsZero() && time.Since(s.lastTradeAt) < 500*time.Millisecond {
@@ -80,10 +89,29 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	orderCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 
-	price, err := orderutil.QuoteBuyPrice(orderCtx, s.TradingService, assetID, 0)
-	if err != nil {
+	// 关键防线：用 bestBid/bestAsk 做盘口健康检查 + 价格上限
+	bestBid, bestAsk, err := s.TradingService.GetBestPrice(orderCtx, assetID)
+	if err != nil || bestAsk <= 0 || bestBid <= 0 {
 		return nil
 	}
+	askCents := int(bestAsk*100 + 0.5)
+	bidCents := int(bestBid*100 + 0.5)
+	if askCents <= 0 || bidCents <= 0 {
+		return nil
+	}
+	// 过滤极端 ask（例如 99c/100c 的假盘口或极差盘口）
+	if s.Config.MaxBuyPriceCents > 0 && askCents > s.Config.MaxBuyPriceCents {
+		return nil
+	}
+	spread := askCents - bidCents
+	if spread < 0 {
+		spread = -spread
+	}
+	if s.Config.MaxSpreadCents > 0 && spread > s.Config.MaxSpreadCents {
+		return nil
+	}
+
+	price := domain.Price{Cents: askCents}
 
 	req := execution.MultiLegRequest{
 		Name:      "updown_once",
