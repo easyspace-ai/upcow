@@ -424,6 +424,25 @@ func (os *OrderSyncService) syncOrderStatusImpl(ctx context.Context, orderID str
 	sizeMatched, _ := strconv.ParseFloat(order.SizeMatched, 64)
 
 	if originalSize > 0 && sizeMatched > 0 && sizeMatched < originalSize {
+		// 关键：可能因为 WS 丢弃导致 trade 未进入 OrderEngine，这里用 delta-trade 补偿仓位/成交量
+		delta := sizeMatched - localOrder.FilledSize
+		if delta > 0 {
+			trade := &domain.Trade{
+				ID:      fmt.Sprintf("reconcile:%s:%.4f", orderID, sizeMatched),
+				OrderID: orderID,
+				AssetID: localOrder.AssetID,
+				Side:    localOrder.Side,
+				Price:   localOrder.Price,
+				Size:    delta,
+				TokenType: localOrder.TokenType,
+				Time:    time.Now(),
+			}
+			s.orderEngine.SubmitCommand(&ProcessTradeCommand{
+				id:    fmt.Sprintf("reconcile_trade_%d", time.Now().UnixNano()),
+				Gen:   s.currentEngineGeneration(),
+				Trade: trade,
+			})
+		}
 		if localOrder.Status != domain.OrderStatusFilled {
 			localOrder.Status = domain.OrderStatusPartial
 		}
@@ -441,6 +460,26 @@ func (os *OrderSyncService) syncOrderStatusImpl(ctx context.Context, orderID str
 	if originalSize > 0 && sizeMatched >= originalSize && localOrder.Status != domain.OrderStatusFilled {
 		log.Infof("🔄 [订单状态同步] 订单已完全成交: orderID=%s, sizeMatched=%.2f, originalSize=%.2f",
 			orderID, sizeMatched, originalSize)
+
+		// delta-trade 补偿：只补齐未进入 OrderEngine 的成交部分
+		delta := originalSize - localOrder.FilledSize
+		if delta > 0 {
+			trade := &domain.Trade{
+				ID:      fmt.Sprintf("reconcile:%s:%.4f", orderID, originalSize),
+				OrderID: orderID,
+				AssetID: localOrder.AssetID,
+				Side:    localOrder.Side,
+				Price:   localOrder.Price,
+				Size:    delta,
+				TokenType: localOrder.TokenType,
+				Time:    time.Now(),
+			}
+			s.orderEngine.SubmitCommand(&ProcessTradeCommand{
+				id:    fmt.Sprintf("reconcile_trade_%d", time.Now().UnixNano()),
+				Gen:   s.currentEngineGeneration(),
+				Trade: trade,
+			})
+		}
 
 		localOrder.Status = domain.OrderStatusFilled
 		now := time.Now()
