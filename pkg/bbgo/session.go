@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
@@ -258,6 +259,7 @@ func (h *sessionPriceHandler) OnPriceChanged(ctx context.Context, event *events.
 
 // Close 关闭会话
 func (s *ExchangeSession) Close() error {
+	start := time.Now()
 	// 清空所有上层 handlers：避免 Close 期间仍有“延迟信号”触发旧周期策略
 	// （例如 select 可能在 ctx.Done 已就绪时仍选中 priceSignalC 分支）
 	if s.priceChangeHandlers != nil {
@@ -282,6 +284,12 @@ func (s *ExchangeSession) Close() error {
 		// UserDataStream 的关闭逻辑在外部管理
 	}
 
+	marketSlug := ""
+	if m := s.Market(); m != nil {
+		marketSlug = m.Slug
+	}
+	sessionLog.Infof("✅ [unsubscribe] Session 已关闭并完成退订：session=%s, market=%s, elapsed=%s",
+		s.Name, marketSlug, time.Since(start))
 	return nil
 }
 
