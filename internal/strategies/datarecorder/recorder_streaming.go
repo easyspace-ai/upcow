@@ -15,6 +15,7 @@ type DataPoint struct {
 	BTCRealtimePrice float64 // BTC 实时价
 	UpPrice          float64 // UP 价格
 	DownPrice        float64 // DOWN 价格
+	CycleSlug        string  // 周期名称（slug）
 }
 
 // DataRecorder 数据记录器（流式写入，每条记录实时追加到 CSV）
@@ -115,6 +116,7 @@ func (dr *DataRecorder) StartCycle(cycleSlug string) error {
 			"btc_realtime_price",
 			"up_price",
 			"down_price",
+			"cycle_slug",
 		}
 		if err := writer.Write(header); err != nil {
 			file.Close()
@@ -142,12 +144,19 @@ func (dr *DataRecorder) Record(point DataPoint) error {
 		return fmt.Errorf("当前周期未初始化，无法记录数据")
 	}
 
+	// 如果 DataPoint 中没有周期名称，使用当前周期作为后备
+	cycleSlug := point.CycleSlug
+	if cycleSlug == "" {
+		cycleSlug = dr.currentCycle
+	}
+
 	record := []string{
 		fmt.Sprintf("%d", point.Timestamp),
 		fmt.Sprintf("%.2f", point.BTCTargetPrice),
 		fmt.Sprintf("%.2f", point.BTCRealtimePrice),
 		fmt.Sprintf("%.4f", point.UpPrice),
 		fmt.Sprintf("%.4f", point.DownPrice),
+		cycleSlug,
 	}
 
 	if err := dr.writer.Write(record); err != nil {

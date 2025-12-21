@@ -131,6 +131,13 @@ func (m *MarketStream) Connect(ctx context.Context, market *domain.Market) error
 
 // DialAndConnect 拨号并连接
 func (m *MarketStream) DialAndConnect(ctx context.Context) error {
+	// 检查是否已关闭（防止周期切换后仍然重连）
+	select {
+	case <-m.closeC:
+		return fmt.Errorf("MarketStream 已关闭，取消重连")
+	default:
+	}
+	
 	conn, err := m.Dial(ctx)
 	if err != nil {
 		return err
@@ -256,8 +263,29 @@ func (m *MarketStream) reconnector(ctx context.Context) {
 			return
 		case <-m.reconnectC:
 			marketLog.Warnf("收到重连信号，冷却 %s...", reconnectCoolDownPeriod)
-			time.Sleep(reconnectCoolDownPeriod)
-
+			
+			// 冷却期间检查关闭状态（使用 select 非阻塞检查）
+			select {
+			case <-m.closeC:
+				marketLog.Debugf("重连冷却期间收到关闭信号，取消重连")
+				return
+			case <-ctx.Done():
+				return
+			case <-time.After(reconnectCoolDownPeriod):
+				// 冷却完成，继续重连
+			}
+			
+			// 重连前再次检查关闭状态
+			select {
+			case <-m.closeC:
+				marketLog.Debugf("重连前收到关闭信号，取消重连")
+				return
+			case <-ctx.Done():
+				return
+			default:
+				// 继续重连
+			}
+			
 			marketLog.Warnf("重新连接...")
 			if err := m.DialAndConnect(ctx); err != nil {
 				marketLog.Warnf("重连失败: %v，将再次尝试...", err)
@@ -543,6 +571,12 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 	default:
 	}
 
+	// 【关键修复】在发送事件前，检查 handlers 是否为空（防止在关闭过程中 handlers 被清空后仍然发送事件）
+	if m.handlers.Count() == 0 {
+		marketLog.Debugf("⚠️ [book->price] handlers 已清空，忽略价格事件: Token=%s, 价格=%dc", tokenType, newPrice.Cents)
+		return
+	}
+
 	event := &events.PriceChangedEvent{
 		Market:    m.market,
 		TokenType: tokenType,
@@ -671,6 +705,13 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 		default:
 		}
 
+		// 【关键修复】在发送事件前，检查 handlers 是否为空（防止在关闭过程中 handlers 被清空后仍然发送事件）
+		if m.handlers.Count() == 0 {
+			marketLog.Debugf("⚠️ [价格事件] handlers 已清空，忽略价格事件: 市场=%s, Token=%s, 价格=%dc",
+				currentMarketSlug, tokenType, latest.price.Cents)
+			continue
+		}
+
 		event := &events.PriceChangedEvent{
 			Market:    m.market,
 			TokenType: tokenType,
@@ -690,22 +731,25 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 // Close 关闭连接
 func (m *MarketStream) Close() error {
 	start := time.Now()
-	// 发送关闭信号（避免重复关闭）
+	// 检查是否已关闭（避免重复关闭）
 	select {
 	case <-m.closeC:
 		// 已经关闭，直接返回
 		return nil
 	default:
-		close(m.closeC)
 	}
 
-	// 清空所有 handlers（取消上一周期的订阅）
+	// 【关键修复】先清空所有 handlers（阻止新事件被发送），再关闭 closeC
+	// 这样可以确保在关闭过程中，即使有消息在处理，也不会发送事件到已清空的 handlers
 	m.handlers.Clear()
 	marketSlug := ""
 	if m.market != nil {
 		marketSlug = m.market.Slug
 	}
 	marketLog.Infof("🔄 [关闭] MarketStream 已清空所有 handlers，市场=%s", marketSlug)
+
+	// 发送关闭信号（在清空 handlers 之后）
+	close(m.closeC)
 
 	m.connMu.Lock()
 	if m.connCancel != nil {

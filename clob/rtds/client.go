@@ -40,6 +40,7 @@ type Client struct {
 	maxReconnect         int
 	reconnectCount       int
 	reconnectMutex       sync.Mutex
+	isReconnecting       bool // 防止并发重连
 	activeSubscriptions  []Subscription
 	subscriptionsMutex   sync.RWMutex
 	logger               Logger
@@ -362,6 +363,8 @@ func (c *Client) readMessages() {
 			}
 			// 确保连接状态被正确清理
 			c.setConnected(false)
+			// 异步触发重连逻辑，避免在 defer 中阻塞
+			go c.handleDisconnect()
 		}
 	}()
 
@@ -378,14 +381,28 @@ func (c *Client) readMessages() {
 			return
 		}
 
-		// 设置较短的读取超时，以便能够及时响应 context 取消
-		// 使用较小的超时值（1秒），这样即使 ReadMessage 阻塞，也能快速检查 context
-		c.conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		// 设置读取超时，使用较长的超时时间（30秒）以减少频繁的超时检查
+		// 这样可以提高连接稳定性，避免频繁的超时导致连接状态检查问题
+		// 超时主要用于定期检查 context，而不是真正的读取超时
+		readTimeout := 30 * time.Second
+		if c.readTimeout > 0 && c.readTimeout < readTimeout {
+			readTimeout = c.readTimeout
+		}
+		c.conn.SetReadDeadline(time.Now().Add(readTimeout))
 		_, data, err := c.conn.ReadMessage()
 		if err != nil {
-			// 检查是否是超时错误（这是正常的，用于检查 context）
+			// 检查是否是超时错误（这是正常的，用于定期检查 context）
 			if netErr, ok := err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
-				// 超时，继续循环检查 context
+				// 超时，检查 context 和连接状态，然后继续循环
+				select {
+				case <-c.ctx.Done():
+					return
+				default:
+				}
+				if !c.IsConnected() || c.conn == nil {
+					return
+				}
+				// 超时是正常的，继续等待消息（不记录日志，避免刷屏）
 				continue
 			}
 
@@ -549,8 +566,18 @@ func (c *Client) handleMessage(msg *Message) {
 	c.handlersMutex.RUnlock()
 
 	if exists && handler != nil {
+		// 对于 crypto_prices_chainlink，记录 payload 预览以便调试
+		if msg.Topic == "crypto_prices_chainlink" {
+			preview := ""
+			if len(msg.Payload) > 0 {
+				preview = truncateForLog(strings.TrimSpace(string(msg.Payload)), 200)
+			}
+			c.logger.Printf("Calling handler for crypto_prices_chainlink, payload_preview=%q\n", preview)
+		}
 		if err := handler(msg); err != nil {
 			c.logger.Printf("Error handling message for topic %s: %v\n", msg.Topic, err)
+		} else if msg.Topic == "crypto_prices_chainlink" {
+			c.logger.Printf("Successfully handled crypto_prices_chainlink message\n")
 		}
 	} else {
 		// 如果有 wildcard handler，不把“无 handler”当问题（避免无意义刷屏）
@@ -584,6 +611,14 @@ func (c *Client) handleDisconnect() {
 
 	c.reconnectMutex.Lock()
 	shouldReconnect := c.reconnect
+	// 检查是否已经在重连中，避免并发重连
+	if c.isReconnecting {
+		c.reconnectMutex.Unlock()
+		if c.logger != nil {
+			c.logger.Printf("Reconnection already in progress, skipping\n")
+		}
+		return
+	}
 	c.reconnectMutex.Unlock()
 
 	if !shouldReconnect {
@@ -591,14 +626,21 @@ func (c *Client) handleDisconnect() {
 	}
 
 	c.reconnectMutex.Lock()
-	defer c.reconnectMutex.Unlock()
 
 	// Double-check reconnect flag after acquiring lock
 	if !c.reconnect {
+		c.reconnectMutex.Unlock()
+		return
+	}
+
+	// 再次检查是否已经在重连中
+	if c.isReconnecting {
+		c.reconnectMutex.Unlock()
 		return
 	}
 
 	if c.reconnectCount >= c.maxReconnect {
+		c.reconnectMutex.Unlock()
 		if c.logger != nil {
 			c.logger.Printf("Max reconnection attempts reached\n")
 		}
@@ -606,8 +648,12 @@ func (c *Client) handleDisconnect() {
 	}
 
 	c.reconnectCount++
+	c.isReconnecting = true // 标记正在重连
+	attemptNum := c.reconnectCount
+	c.reconnectMutex.Unlock()
+
 	if c.logger != nil {
-		c.logger.Printf("Attempting to reconnect (%d/%d)...\n", c.reconnectCount, c.maxReconnect)
+		c.logger.Printf("Attempting to reconnect (%d/%d)...\n", attemptNum, c.maxReconnect)
 	}
 
 	// Use a ticker to check reconnect flag periodically during sleep
@@ -624,7 +670,9 @@ func (c *Client) handleDisconnect() {
 			shouldReconnect := c.reconnect
 			c.reconnectMutex.Unlock()
 			if !shouldReconnect {
-				c.logger.Printf("Reconnection cancelled\n")
+				if c.logger != nil {
+					c.logger.Printf("Reconnection cancelled\n")
+				}
 				return
 			}
 		}
@@ -648,15 +696,38 @@ func (c *Client) handleDisconnect() {
 	// Create new context for reconnection
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 
+	// 注意：锁已经在上面释放了，这里不需要再次释放
+	// 直接尝试连接（Connect 内部可能会需要锁）
+
 	if err := c.Connect(); err != nil {
+		c.reconnectMutex.Lock()
 		if c.logger != nil {
-			c.logger.Printf("Reconnection failed: %v\n", err)
+			c.logger.Printf("Reconnection failed: %v (attempt %d/%d)\n", err, c.reconnectCount, c.maxReconnect)
+		}
+		// 如果重连失败且未达到最大次数，继续尝试重连
+		if c.reconnectCount < c.maxReconnect {
+			c.isReconnecting = false // 重置标志，允许下次重连
+			c.reconnectMutex.Unlock()
+			// 延迟后继续重连，避免立即重试导致资源浪费
+			go func() {
+				time.Sleep(c.reconnectDelay)
+				c.handleDisconnect()
+			}()
+		} else {
+			c.isReconnecting = false // 重置标志
+			c.reconnectMutex.Unlock()
+			if c.logger != nil {
+				c.logger.Printf("Max reconnection attempts reached, giving up\n")
+			}
 		}
 	} else {
+		c.reconnectMutex.Lock()
 		if c.logger != nil {
-			c.logger.Printf("Reconnected successfully\n")
+			c.logger.Printf("Reconnected successfully, resubscribing to %d subscription(s)...\n", len(c.activeSubscriptions))
 		}
 		c.reconnectCount = 0
+		c.isReconnecting = false // 重置标志
+		c.reconnectMutex.Unlock()
 		// Note: resubscribe is called automatically in Connect()
 	}
 }
@@ -683,6 +754,6 @@ func (c *Client) resubscribe() {
 	if err := c.SendMessage(req); err != nil {
 		c.logger.Printf("Failed to resubscribe after reconnection: %v\n", err)
 	} else {
-		c.logger.Printf("Resubscribed to %d subscription(s)\n", len(subscriptions))
+		c.logger.Printf("Successfully resubscribed to %d subscription(s): %v\n", len(subscriptions), subscriptions)
 	}
 }

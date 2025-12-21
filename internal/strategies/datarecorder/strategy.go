@@ -31,7 +31,9 @@ func init() {
 type rtdsLoggerAdapter struct{}
 
 func (l *rtdsLoggerAdapter) Printf(format string, v ...interface{}) {
-	logger.Infof("[RTDS] "+format, v...)
+	// 使用 Debugf 而不是 Infof，避免 RTDS 内部日志过多
+	// 重要的连接状态和错误会在策略层面记录
+	logger.Debugf("[RTDS] "+format, v...)
 }
 
 // DataRecorderStrategy 数据记录策略
@@ -43,11 +45,12 @@ type DataRecorderStrategy struct {
 	targetPriceFetcher         *TargetPriceFetcher
 	rtdsClient                 *rtds.Client
 	currentMarket              *domain.Market
-	btcTargetPrice             float64 // BTC 目标价（上一个周期收盘价）
-	btcTargetPriceSet          bool    // 目标价是否已设置（防止周期内重复设置）
-	btcRealtimePrice           float64 // BTC 实时价
-	upPrice                    float64 // UP 价格
-	downPrice                  float64 // DOWN 价格
+	btcTargetPrice             float64   // BTC 目标价（上一个周期收盘价）
+	btcTargetPriceSet          bool      // 目标价是否已设置（防止周期内重复设置）
+	btcRealtimePrice           float64   // BTC 实时价
+	btcRealtimePriceUpdatedAt  time.Time // BTC 实时价最后更新时间
+	upPrice                    float64   // UP 价格
+	downPrice                  float64   // DOWN 价格
 
 	// 统一：单线程 loop（价格合并 + tick 周期检测）
 	loopOnce     sync.Once
@@ -105,6 +108,13 @@ func (s *DataRecorderStrategy) Validate() error {
 
 // Initialize 初始化策略（BBGO风格）
 func (s *DataRecorderStrategy) Initialize() error {
+	// 确保 ctx 和 cancel 已初始化（通过 YAML/JSON 反序列化创建时可能为 nil）
+	if s.ctx == nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		s.ctx = ctx
+		s.cancel = cancel
+	}
+
 	s.config = &s.DataRecorderStrategyConfig
 	if err := s.DataRecorderStrategyConfig.Validate(); err != nil {
 		return fmt.Errorf("配置验证失败: %w", err)
@@ -186,7 +196,8 @@ func (s *DataRecorderStrategy) Initialize() error {
 		chainlinkFirstMsgOnce.Do(func() {
 			logger.Infof("数据记录策略: ✅ RTDS 已收到 crypto_prices_chainlink 首条消息 - symbol=%s ts=%d value=%.6f", sym, price.Timestamp, val)
 		})
-		logger.Debugf("数据记录策略: 收到 Chainlink 价格消息 - Symbol=%s, Value=%.2f", sym, val)
+		// 提升日志级别，确保能看到所有 Chainlink 价格消息
+		logger.Infof("数据记录策略: 📡 收到 Chainlink 价格消息 - Symbol=%s, Value=%.2f, Timestamp=%d", sym, val, price.Timestamp)
 		if sym == "btc/usd" || sym == "btcusdt" || sym == "btc/usdt" {
 			btcFirstMatchOnce.Do(func() {
 				logger.Infof("数据记录策略: ✅ RTDS 已收到 BTC 实时报价首条有效消息 - symbol=%s ts=%d value=%.6f", sym, price.Timestamp, val)
@@ -194,27 +205,31 @@ func (s *DataRecorderStrategy) Initialize() error {
 			// 格式化时间戳（毫秒转秒）
 			timestamp := time.Unix(price.Timestamp/1000, (price.Timestamp%1000)*1000000)
 
-			// 在终端显示 Chainlink BTC 实时报价（醒目的格式，与价格更新日志格式一致）
-			logger.Infof("💰 BTC 实时报价 (Chainlink): $%.2f (时间: %s)",
-				val, timestamp.Format("15:04:05"))
-
 			s.mu.Lock()
 			oldPrice := s.btcRealtimePrice
 			// 只更新 BTC 实时价格，不记录数据
 			s.btcRealtimePrice = val
+			s.btcRealtimePriceUpdatedAt = time.Now() // 记录更新时间
 			s.mu.Unlock()
 
-			// 如果有价格变化，显示变化趋势
+			// 在终端显示 Chainlink BTC 实时报价（醒目的格式，与价格更新日志格式一致）
 			if oldPrice > 0 {
 				change := val - oldPrice
 				changePercent := (change / oldPrice) * 100
-				if change > 0 {
-					logger.Infof("📈 BTC 价格变化: +$%.2f (+%.2f%%)", change, changePercent)
-				} else if change < 0 {
-					logger.Infof("📉 BTC 价格变化: $%.2f (%.2f%%)", change, changePercent)
+				if change != 0 {
+					logger.Infof("💰 BTC 实时报价 (Chainlink): $%.2f (时间: %s) - 变化: $%.2f (%.2f%%)",
+						val, timestamp.Format("15:04:05"), change, changePercent)
+				} else {
+					logger.Infof("💰 BTC 实时报价 (Chainlink): $%.2f (时间: %s) - 无变化",
+						val, timestamp.Format("15:04:05"))
 				}
+			} else {
+				logger.Infof("💰 BTC 实时报价 (Chainlink): $%.2f (时间: %s)",
+					val, timestamp.Format("15:04:05"))
 			}
 			// 注意：不在 BTC 价格更新时记录数据，数据记录以 UP/DOWN 价格变化为准
+		} else {
+			logger.Debugf("数据记录策略: 收到非 BTC 的 Chainlink 价格消息 - Symbol=%s, Value=%.2f", sym, val)
 		}
 		return nil
 	})
@@ -421,6 +436,10 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 	btcRealtime := s.btcRealtimePrice
 	upPrice := s.upPrice
 	downPrice := s.downPrice
+	currentCycleSlug := ""
+	if s.currentMarket != nil {
+		currentCycleSlug = s.currentMarket.Slug
+	}
 	s.mu.Unlock()
 
 	// 以 UP/DOWN 价格变化为准，记录数据点
@@ -432,17 +451,59 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 		btcRealtime = btcTarget
 	}
 
-	// 价格合理性保护（更严格/可控）：
-	// - 0.99+ 在真实市场也可能出现（并不一定是旧周期）
-	// - 真正“像旧周期残留”的情况通常发生在【刚切换到新周期的很短窗口】内收到接近 1 的价格
-	// 因此仅在“周期开始后短窗口”触发该保护，避免误杀正常数据。
-	if s.currentMarket != nil && s.currentMarket.Timestamp > 0 && (upPrice >= 0.99 || downPrice >= 0.99) {
+	// 记录 BTC 实时价格的时间戳，用于追踪价格更新情况
+	// 注意：BTC 价格更新频率可能低于 UP/DOWN 价格变化频率，这是正常的
+
+	// 价格合理性保护：
+	// 1. 检查价格总和是否合理：正常情况下 upPrice + downPrice 应该稍微 > 1（通常 1.01-1.05）
+	//    如果价格总和 > 1.5，说明价格异常（可能是旧周期残留或数据错误）
+	priceSum := upPrice + downPrice
+	if priceSum > 1.5 {
+		logger.Warnf("数据记录策略: ⚠️ 检测到异常价格总和（可能是旧周期残留），跳过记录 - UP=%.4f, DOWN=%.4f, 总和=%.4f, 当前周期=%s",
+			upPrice, downPrice, priceSum, getSlugOrEmpty(s.currentMarket))
+		return nil
+	}
+	
+	// 2. 检查价格总和是否过小：正常情况下应该 > 1.0
+	if priceSum <= 1.0 {
+		logger.Warnf("数据记录策略: ⚠️ 检测到价格总和异常（<=1.0），跳过记录 - UP=%.4f, DOWN=%.4f, 总和=%.4f, 当前周期=%s",
+			upPrice, downPrice, priceSum, getSlugOrEmpty(s.currentMarket))
+		return nil
+	}
+
+	// 3. 检查价格差异是否合理：正常情况下 UP 和 DOWN 的价格应该比较接近
+	//    如果价格差异过大（如 UP=0.01, DOWN=1.00），说明数据异常
+	priceDiff := upPrice - downPrice
+	if priceDiff < 0 {
+		priceDiff = -priceDiff // 取绝对值
+	}
+	// 正常情况下，两个价格的差异不应该超过 0.5（50美分）
+	// 如果差异过大，可能是数据错误或旧周期残留
+	if priceDiff > 0.5 {
+		logger.Warnf("数据记录策略: ⚠️ 检测到价格差异过大（可能是数据错误），跳过记录 - UP=%.4f, DOWN=%.4f, 差异=%.4f, 总和=%.4f, 当前周期=%s",
+			upPrice, downPrice, priceDiff, priceSum, getSlugOrEmpty(s.currentMarket))
+		return nil
+	}
+
+	// 4. 新周期早期保护：在周期开始后短窗口内，过滤异常数据
+	//    新周期开始时，市场可能处于异常状态（如结算、初始化），价格可能极端
+	if s.currentMarket != nil && s.currentMarket.Timestamp > 0 {
 		now := time.Now().Unix()
-		// 默认窗口：新周期开始 45 秒内
-		if now-s.currentMarket.Timestamp <= 45 {
-			logger.Warnf("数据记录策略: ⚠️ 新周期早期检测到异常高价（更可能是旧订阅残留），跳过记录 - UP=%.4f, DOWN=%.4f, 当前周期=%s(start=%d, now=%d)",
-				upPrice, downPrice, getSlugOrEmpty(s.currentMarket), s.currentMarket.Timestamp, now)
-			return nil
+		cycleAge := now - s.currentMarket.Timestamp
+		// 默认窗口：新周期开始 60 秒内
+		if cycleAge <= 60 {
+			// 4.1: 单个价格 >= 0.99（可能是旧周期残留或市场异常）
+			if upPrice >= 0.99 || downPrice >= 0.99 {
+				logger.Warnf("数据记录策略: ⚠️ 新周期早期检测到异常高价（可能是市场异常状态），跳过记录 - UP=%.4f, DOWN=%.4f, 总和=%.4f, 周期年龄=%d秒, 当前周期=%s",
+					upPrice, downPrice, priceSum, cycleAge, getSlugOrEmpty(s.currentMarket))
+				return nil
+			}
+			// 4.2: 单个价格 <= 0.05（可能是市场异常状态）
+			if upPrice <= 0.05 || downPrice <= 0.05 {
+				logger.Warnf("数据记录策略: ⚠️ 新周期早期检测到异常低价（可能是市场异常状态），跳过记录 - UP=%.4f, DOWN=%.4f, 总和=%.4f, 周期年龄=%d秒, 当前周期=%s",
+					upPrice, downPrice, priceSum, cycleAge, getSlugOrEmpty(s.currentMarket))
+				return nil
+			}
 		}
 	}
 
@@ -454,18 +515,29 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 			return nil
 		}
 		// 记录数据点
+		// 检查 BTC 实时价格是否是最新的（在最近 5 秒内更新过）
+		s.mu.RLock()
+		priceAge := time.Since(s.btcRealtimePriceUpdatedAt)
+		s.mu.RUnlock()
+
+		priceStatus := "最新"
+		if priceAge > 5*time.Second {
+			priceStatus = fmt.Sprintf("已过期(%.0f秒前)", priceAge.Seconds())
+		}
+
 		if err := s.recorder.Record(DataPoint{
 			Timestamp:        time.Now().Unix(),
 			BTCTargetPrice:   btcTarget,
 			BTCRealtimePrice: btcRealtime,
 			UpPrice:          upPrice,
 			DownPrice:        downPrice,
+			CycleSlug:        currentCycleSlug,
 		}); err != nil {
 			logger.Errorf("数据记录策略: 记录数据点失败: %v", err)
 			return err
 		}
-		logger.Infof("数据记录策略: ✅ 已记录数据点 (BTC目标=%.2f, BTC实时=%.2f, UP=%.4f, DOWN=%.4f)",
-			btcTarget, btcRealtime, upPrice, downPrice)
+		logger.Infof("数据记录策略: ✅ 已记录数据点 (BTC目标=%.2f, BTC实时=%.2f[%s], UP=%.4f, DOWN=%.4f)",
+			btcTarget, btcRealtime, priceStatus, upPrice, downPrice)
 	} else {
 		logger.Warnf("数据记录策略: 价格未就绪，跳过记录 (BTC实时=%.2f, UP=%.4f, DOWN=%.4f, 目标价已设置=%v)",
 			btcRealtime, upPrice, downPrice, btcTargetSet)
@@ -483,6 +555,7 @@ func (s *DataRecorderStrategy) recordDataPoint(btcTarget, btcRealtime, upPrice, 
 		BTCRealtimePrice: btcRealtime,
 		UpPrice:          upPrice,
 		DownPrice:        downPrice,
+		CycleSlug:        "", // 已废弃方法，周期名称由 Record 方法自动从 currentCycle 获取
 	}
 
 	if err := s.recorder.Record(point); err != nil {
