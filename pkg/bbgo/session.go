@@ -8,6 +8,7 @@ import (
 
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
+	"github.com/betbot/gobet/internal/marketstate"
 	"github.com/betbot/gobet/internal/ports"
 	"github.com/sirupsen/logrus"
 
@@ -27,6 +28,9 @@ type ExchangeSession struct {
 
 	// 市场信息
 	market *domain.Market
+
+	// 原子快照：top-of-book（从 MarketStream 获取并透传给策略/执行）
+	bestBook *marketstate.AtomicBestBook
 
 	// 价格事件合并与串行分发（避免行情线程被策略阻塞，且保证确定性）
 	priceSignalC chan struct{}
@@ -98,6 +102,23 @@ func (s *ExchangeSession) Market() *domain.Market {
 // SetMarketDataStream 设置市场数据流
 func (s *ExchangeSession) SetMarketDataStream(stream stream.MarketDataStream) {
 	s.MarketDataStream = stream
+	// BestBook 是可选能力：仅当底层 stream 实现了 BestBook() 才提供
+	type bestBookProvider interface {
+		BestBook() *marketstate.AtomicBestBook
+	}
+	if p, ok := stream.(bestBookProvider); ok {
+		s.bestBook = p.BestBook()
+	}
+}
+
+// BestBook 返回当前会话的 top-of-book 原子快照（可能为 nil）。
+func (s *ExchangeSession) BestBook() *marketstate.AtomicBestBook {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.bestBook
 }
 
 // SetUserDataStream 设置用户数据流

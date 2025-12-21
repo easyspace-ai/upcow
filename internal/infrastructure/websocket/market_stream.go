@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
+	"github.com/betbot/gobet/internal/marketstate"
 	"github.com/betbot/gobet/internal/stream"
 	"github.com/betbot/gobet/pkg/syncgroup"
 )
@@ -58,6 +60,9 @@ type MarketStream struct {
 	// 诊断：最近一次收到消息的时间（用于判断“订阅成功但没数据”）
 	lastMessageAt time.Time
 	lastMsgMu     sync.RWMutex
+
+	// 原子快照：top-of-book（供策略/执行快速读取）
+	bestBook *marketstate.AtomicBestBook
 }
 
 // NewMarketStream 创建新的市场数据流
@@ -70,7 +75,16 @@ func NewMarketStream() *MarketStream {
 		connSg:        syncgroup.NewSyncGroup(), // 连接相关的 goroutine
 		lastPong:      time.Now(),
 		lastMessageAt: time.Now(),
+		bestBook:      marketstate.NewAtomicBestBook(),
 	}
+}
+
+// BestBook 返回当前 MarketStream 的原子 top-of-book 快照（可能为 nil）。
+func (m *MarketStream) BestBook() *marketstate.AtomicBestBook {
+	if m == nil {
+		return nil
+	}
+	return m.bestBook
 }
 
 // markMessageReceived 记录最近收到消息的时间（用于诊断）
@@ -565,6 +579,74 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 		return
 	}
 
+	// 更新 AtomicBestBook（bid/ask + size），供执行/策略无锁读取
+	if m.bestBook != nil {
+		var tokenType domain.TokenType
+		if bm.AssetID == m.market.YesAssetID {
+			tokenType = domain.TokenTypeUp
+		} else if bm.AssetID == m.market.NoAssetID {
+			tokenType = domain.TokenTypeDown
+		}
+
+		var bidCents, askCents uint16
+		var bidSizeScaled, askSizeScaled uint32
+
+		// 优先使用 best_bid/best_ask；若缺失则回退 bids[0]/asks[0]
+		if bm.BestBid != "" {
+			if p, err := parsePriceString(bm.BestBid); err == nil && p.Cents >= 0 {
+				if p.Cents > 65535 {
+					p.Cents = 65535
+				}
+				bidCents = uint16(p.Cents)
+			}
+		} else if len(bm.Bids) > 0 && bm.Bids[0].Price != "" {
+			if p, err := parsePriceString(bm.Bids[0].Price); err == nil && p.Cents >= 0 {
+				if p.Cents > 65535 {
+					p.Cents = 65535
+				}
+				bidCents = uint16(p.Cents)
+			}
+		}
+
+		if bm.BestAsk != "" {
+			if p, err := parsePriceString(bm.BestAsk); err == nil && p.Cents >= 0 {
+				if p.Cents > 65535 {
+					p.Cents = 65535
+				}
+				askCents = uint16(p.Cents)
+			}
+		} else if len(bm.Asks) > 0 && bm.Asks[0].Price != "" {
+			if p, err := parsePriceString(bm.Asks[0].Price); err == nil && p.Cents >= 0 {
+				if p.Cents > 65535 {
+					p.Cents = 65535
+				}
+				askCents = uint16(p.Cents)
+			}
+		}
+
+		// size：优先用 bids[0]/asks[0] 的 size（WS book 里一定有 depth）
+		if len(bm.Bids) > 0 && bm.Bids[0].Size != "" {
+			if v, err := strconv.ParseFloat(bm.Bids[0].Size, 64); err == nil && v > 0 {
+				if v > 429496.0 {
+					v = 429496.0
+				}
+				bidSizeScaled = uint32(v * 10000.0)
+			}
+		}
+		if len(bm.Asks) > 0 && bm.Asks[0].Size != "" {
+			if v, err := strconv.ParseFloat(bm.Asks[0].Size, 64); err == nil && v > 0 {
+				if v > 429496.0 {
+					v = 429496.0
+				}
+				askSizeScaled = uint32(v * 10000.0)
+			}
+		}
+
+		if tokenType != "" {
+			m.bestBook.UpdateToken(tokenType, bidCents, askCents, bidSizeScaled, askSizeScaled)
+		}
+	}
+
 	// 选择价格来源：best_ask > best_bid > price > asks[0] > bids[0]
 	priceStr := ""
 	source := ""
@@ -701,6 +783,38 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 		assetID, _ := change["asset_id"].(string)
 		if assetID == "" {
 			continue
+		}
+
+		// 同步 AtomicBestBook：从 best_bid / best_ask 提取 top-of-book（price_change 不保证 size，因此 size 不更新）
+		if m.bestBook != nil && m.market != nil {
+			var tokenType domain.TokenType
+			if assetID == m.market.YesAssetID {
+				tokenType = domain.TokenTypeUp
+			} else if assetID == m.market.NoAssetID {
+				tokenType = domain.TokenTypeDown
+			}
+			if tokenType != "" {
+				var bidCents, askCents uint16
+				if bestBidStr, ok := change["best_bid"].(string); ok && bestBidStr != "" {
+					if p, err := parsePriceString(bestBidStr); err == nil && p.Cents >= 0 {
+						if p.Cents > 65535 {
+							p.Cents = 65535
+						}
+						bidCents = uint16(p.Cents)
+					}
+				}
+				if bestAskStr, ok := change["best_ask"].(string); ok && bestAskStr != "" {
+					if p, err := parsePriceString(bestAskStr); err == nil && p.Cents >= 0 {
+						if p.Cents > 65535 {
+							p.Cents = 65535
+						}
+						askCents = uint16(p.Cents)
+					}
+				}
+				if bidCents != 0 || askCents != 0 {
+					m.bestBook.UpdateToken(tokenType, bidCents, askCents, 0, 0)
+				}
+			}
 		}
 
 		// 获取价格

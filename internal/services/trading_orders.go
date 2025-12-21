@@ -219,6 +219,39 @@ func (o *OrdersService) CancelOrder(ctx context.Context, orderID string) error {
 // GetBestPrice 获取订单簿的最佳买卖价格（买一价和卖一价）
 func (o *OrdersService) GetBestPrice(ctx context.Context, assetID string) (bestBid float64, bestAsk float64, err error) {
 	s := o.s
+
+	// 快路径：优先读取 WS 推送的 AtomicBestBook（避免每次都打 REST orderbook）
+	// - 仅当 bestBook 注入且新鲜（<=3s）且能映射到 YES/NO assetId 时使用
+	if s != nil {
+		book := s.getBestBook()
+		market := s.getCurrentMarketInfo()
+		if book != nil && market != nil && book.IsFresh(3*time.Second) {
+			snap := book.Load()
+			if assetID == market.YesAssetID {
+				if snap.YesBidCents > 0 {
+					bestBid = float64(snap.YesBidCents) / 100.0
+				}
+				if snap.YesAskCents > 0 {
+					bestAsk = float64(snap.YesAskCents) / 100.0
+				}
+				// 如果能提供任何一个价格，就认为快路径成功
+				if bestBid > 0 || bestAsk > 0 {
+					return bestBid, bestAsk, nil
+				}
+			} else if assetID == market.NoAssetID {
+				if snap.NoBidCents > 0 {
+					bestBid = float64(snap.NoBidCents) / 100.0
+				}
+				if snap.NoAskCents > 0 {
+					bestAsk = float64(snap.NoAskCents) / 100.0
+				}
+				if bestBid > 0 || bestAsk > 0 {
+					return bestBid, bestAsk, nil
+				}
+			}
+		}
+	}
+
 	// 获取订单簿
 	book, err := s.clobClient.GetOrderBook(ctx, assetID, nil)
 	if err != nil {

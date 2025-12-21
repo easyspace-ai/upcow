@@ -15,6 +15,7 @@ import (
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/execution"
+	"github.com/betbot/gobet/internal/marketstate"
 	"github.com/betbot/gobet/internal/ports"
 	"github.com/betbot/gobet/internal/risk"
 	"github.com/betbot/gobet/pkg/cache"
@@ -77,6 +78,13 @@ type TradingService struct {
 	// 当前市场（用于过滤订单状态同步）
 	currentMarketSlug string
 	currentMarketMu   sync.RWMutex
+
+	// 当前市场完整信息（YES/NO assetID 等，供 BestBook 映射与执行层使用）
+	currentMarket *domain.Market
+
+	// 原子行情快照（来自 WS MarketStream）
+	bestBook   *marketstate.AtomicBestBook
+	bestBookMu sync.RWMutex
 }
 
 // NewTradingService 创建新的交易服务（使用 OrderEngine）
@@ -195,6 +203,56 @@ func (s *TradingService) SetCurrentMarket(marketSlug string) {
 		}
 		log.Warnf("🔄 [周期切换] 已重置本地状态：orders/positions/cache/inflight（prev=%s -> new=%s gen=%d）", prev, marketSlug, newGen)
 	}
+}
+
+// SetCurrentMarketInfo 设置当前市场完整信息（推荐：替代只传 slug 的 SetCurrentMarket）。
+// - 会同步调用 SetCurrentMarket(market.Slug) 做周期隔离
+// - 并存储 YES/NO assetId 等信息，供 BestBook/执行层使用
+func (s *TradingService) SetCurrentMarketInfo(market *domain.Market) {
+	if s == nil {
+		return
+	}
+	if market == nil {
+		return
+	}
+	s.SetCurrentMarket(market.Slug)
+	s.currentMarketMu.Lock()
+	// 复制一份，避免外部复用指针导致竞态
+	cp := *market
+	s.currentMarket = &cp
+	s.currentMarketMu.Unlock()
+}
+
+// SetBestBook 注入 MarketStream 的 AtomicBestBook（可在周期切换时更新指向）。
+func (s *TradingService) SetBestBook(book *marketstate.AtomicBestBook) {
+	if s == nil {
+		return
+	}
+	s.bestBookMu.Lock()
+	s.bestBook = book
+	s.bestBookMu.Unlock()
+}
+
+func (s *TradingService) getBestBook() *marketstate.AtomicBestBook {
+	if s == nil {
+		return nil
+	}
+	s.bestBookMu.RLock()
+	defer s.bestBookMu.RUnlock()
+	return s.bestBook
+}
+
+func (s *TradingService) getCurrentMarketInfo() *domain.Market {
+	if s == nil {
+		return nil
+	}
+	s.currentMarketMu.RLock()
+	defer s.currentMarketMu.RUnlock()
+	if s.currentMarket == nil {
+		return nil
+	}
+	cp := *s.currentMarket
+	return &cp
 }
 
 // GetCurrentMarket 获取当前市场

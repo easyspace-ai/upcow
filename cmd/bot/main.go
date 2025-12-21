@@ -305,7 +305,9 @@ func main() {
 	logrus.Infof("当前市场: %s", market.Slug)
 
 	// 设置交易服务的当前市场（用于过滤订单状态同步）
-	tradingService.SetCurrentMarket(market.Slug)
+	tradingService.SetCurrentMarketInfo(market)
+	// 注入 WS top-of-book 原子快照（供 GetBestPrice/执行层使用）
+	tradingService.SetBestBook(session.BestBook())
 
 	// 架构层路由器：只注册一次；周期切换只更新指向（策略侧无需关心跨周期）
 	eventRouter := bbgo.NewSessionEventRouter()
@@ -327,7 +329,13 @@ func main() {
 		logrus.Infof("🔄 [周期切换] 检测到会话切换，重新注册策略到新会话: %s", newMarket.Slug)
 
 		// 更新交易服务的当前市场（用于过滤订单状态同步）
-		tradingService.SetCurrentMarket(newMarket.Slug)
+		tradingService.SetCurrentMarketInfo(newMarket)
+		// 更新 WS bestBook 指向（新周期新 WS 连接）
+		if newSession != nil {
+			tradingService.SetBestBook(newSession.BestBook())
+		} else {
+			tradingService.SetBestBook(nil)
+		}
 
 		// 只管理本周期：先取消上一周期残留的 open orders，避免跨周期串单
 		cancelCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
