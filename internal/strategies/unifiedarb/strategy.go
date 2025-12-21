@@ -78,6 +78,7 @@ type Strategy struct {
 	rounds     int
 	lastSubmit time.Time
 	paused     bool
+	closeout   bool
 
 	// plan tracking (pairlock-like)
 	plansMu sync.Mutex
@@ -230,6 +231,11 @@ func (s *Strategy) step(loopCtx context.Context) {
 	// 4) 先处理订单更新（更新仓位/成本/plan 状态）
 	s.drainOrderUpdates()
 
+	// 4.5) closeout：结算前强制收敛（停止新增交易，必要时撤单/回平）
+	if s.maybeCloseout(loopCtx, now, m) {
+		return
+	}
+
 	// 5) paused 则只继续处理 plan 超时（并不下新单）
 	s.checkPlanTimeouts(loopCtx, now, m)
 	s.stateMu.Lock()
@@ -307,11 +313,73 @@ func (s *Strategy) lastSeenPrice() (up domain.Price, down domain.Price) {
 	return up, down
 }
 
+// maybeCloseout 在临近结算时触发“强制收敛”：
+// - 目的：避免尾段流动性变差导致的追单/腿不匹配风险
+// - 行为：按 CloseoutAction 执行 pause/cancel_pause/flatten_pause
+// 返回 true 表示已进入 closeout 并中止本轮 step。
+func (s *Strategy) maybeCloseout(ctx context.Context, now time.Time, m *domain.Market) bool {
+	if s.CycleDurationSeconds <= 0 || s.CloseoutStartSeconds <= 0 || m == nil || m.Timestamp <= 0 {
+		return false
+	}
+	elapsed := nowUnix(now) - m.Timestamp
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	remaining := int64(s.CycleDurationSeconds) - elapsed
+	if remaining > int64(s.CloseoutStartSeconds) {
+		return false
+	}
+
+	s.stateMu.Lock()
+	already := s.closeout
+	if !already {
+		s.closeout = true
+	}
+	s.stateMu.Unlock()
+	if already {
+		return true
+	}
+
+	log.Warnf("⏳ [%s] closeout window entered: market=%s remaining=%ds action=%s",
+		ID, m.Slug, remaining, s.CloseoutAction)
+
+	switch s.CloseoutAction {
+	case "pause":
+		s.stateMu.Lock()
+		s.paused = true
+		s.stateMu.Unlock()
+		return true
+	case "cancel_pause":
+		orderCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		s.TradingService.CancelOrdersForMarket(orderCtx, m.Slug)
+		cancel()
+		s.stateMu.Lock()
+		s.paused = true
+		s.stateMu.Unlock()
+		return true
+	case "flatten_pause":
+		orderCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		// 先撤单避免打架
+		s.TradingService.CancelOrdersForMarket(orderCtx, m.Slug)
+		// 再把净敞口回平（QUp≈QDown）
+		s.tryFlatten(orderCtx, m)
+		cancel()
+		s.stateMu.Lock()
+		s.paused = true
+		s.stateMu.Unlock()
+		return true
+	default:
+		// 未配置 closeout 时不做任何事
+		return false
+	}
+}
+
 func (s *Strategy) resetCycle(now time.Time, m *domain.Market) {
 	s.stateMu.Lock()
 	s.rounds = 0
 	s.lastSubmit = time.Time{}
 	s.paused = false
+	s.closeout = false
 	s.state = domain.NewArbitragePositionState(m)
 	s.lastFilled = make(map[string]float64)
 	s.lastStatus = make(map[string]domain.OrderStatus)

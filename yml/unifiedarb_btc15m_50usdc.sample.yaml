@@ -48,6 +48,11 @@ exchangeStrategies:
       insurancePriceMax: 0.20
       directionThreshold: 0.75
 
+      # ========== Closeout：结算前强制收敛 ==========
+      # 剩余 <= N 秒时触发（撤单并停止新增交易，避免尾段追单/腿不匹配风险）
+      closeoutStartSeconds: 45
+      closeoutAction: "cancel_pause"  # pause/cancel_pause/flatten_pause
+
       # ========== 并行与风险预算 ==========
       # 测试期建议先关并行；如果要开并行，务必同时设置 maxTotalUnhedgedShares
       enableParallel: false

@@ -50,6 +50,12 @@ type Config struct {
 	InsurancePriceMax  float64 `json:"insurancePriceMax" yaml:"insurancePriceMax"`   // decimal：反向保险最高价格（默认 0.20）
 	DirectionThreshold float64 `json:"directionThreshold" yaml:"directionThreshold"` // decimal：主方向判定阈值（默认 0.70）
 
+	// Closeout：结算前强制收敛（降低尾部风险）
+	// - 当剩余时间 <= CloseoutStartSeconds 时触发（需要 cycleDurationSeconds > 0）
+	// - 常用配置：cancel_pause（撤掉在途单并停止新增交易）
+	CloseoutStartSeconds int    `json:"closeoutStartSeconds" yaml:"closeoutStartSeconds"`
+	CloseoutAction       string `json:"closeoutAction" yaml:"closeoutAction"` // pause/cancel_pause/flatten_pause
+
 	// ----- pairlock 风控（保守实现） -----
 	EnableParallel     bool `json:"enableParallel" yaml:"enableParallel"`
 	MaxConcurrentPlans int  `json:"maxConcurrentPlans" yaml:"maxConcurrentPlans"`
@@ -178,6 +184,24 @@ func (c *Config) Validate() error {
 	}
 	if c.LockPriceMax > 1.0 || c.ExtremeHigh > 1.0 || c.AmplifyPriceMax > 1.0 || c.InsurancePriceMax > 1.0 || c.DirectionThreshold > 1.0 {
 		return fmt.Errorf("价格阈值不能大于 1.0")
+	}
+
+	// closeout 默认值：仅在启用分阶段（有周期）时生效
+	if c.CloseoutStartSeconds < 0 {
+		return fmt.Errorf("closeoutStartSeconds 不能为负数")
+	}
+	if c.CycleDurationSeconds > 0 {
+		if c.CloseoutStartSeconds == 0 {
+			c.CloseoutStartSeconds = 45
+		}
+		if c.CloseoutAction == "" {
+			c.CloseoutAction = "cancel_pause"
+		}
+	}
+	switch c.CloseoutAction {
+	case "", "pause", "cancel_pause", "flatten_pause":
+	default:
+		return fmt.Errorf("closeoutAction 无效: %s (允许: pause/cancel_pause/flatten_pause)", c.CloseoutAction)
 	}
 
 	// 并行/失败动作
