@@ -42,7 +42,7 @@ type ExchangeSession struct {
 	// 回调处理器列表
 	priceChangeHandlers *stream.HandlerList
 	orderHandlers       []OrderHandler
-	tradeHandlers       []TradeHandler
+	tradeHandlers       []ports.TradeUpdateHandler
 
 	mu sync.RWMutex
 }
@@ -66,9 +66,7 @@ type Subscription struct {
 type OrderHandler = ports.OrderUpdateHandler
 
 // TradeHandler 交易处理器接口（暂时使用 Order，因为当前项目没有独立的 Trade 类型）
-type TradeHandler interface {
-	OnTradeUpdate(ctx context.Context, order *domain.Order) error
-}
+// NOTE: 使用 ports.TradeUpdateHandler 作为统一 trade 回调类型（避免重复定义/类型不兼容）
 
 // NewExchangeSession 创建新的交易所会话
 func NewExchangeSession(name string) *ExchangeSession {
@@ -77,7 +75,7 @@ func NewExchangeSession(name string) *ExchangeSession {
 		subscriptions:       make([]Subscription, 0),
 		priceChangeHandlers: stream.NewHandlerList(),
 		orderHandlers:       make([]OrderHandler, 0),
-		tradeHandlers:       make([]TradeHandler, 0),
+		tradeHandlers:       make([]ports.TradeUpdateHandler, 0),
 		priceSignalC:        make(chan struct{}, 1),
 		latestPrices:        make(map[domain.TokenType]priceEvent),
 	}
@@ -348,6 +346,36 @@ func (s *ExchangeSession) OnOrderUpdate(handler OrderHandler) {
 
 // EmitOrderUpdate 触发订单更新事件（BBGO风格：直接回调）
 func (s *ExchangeSession) EmitOrderUpdate(ctx context.Context, order *domain.Order) {
+	// 架构层隔离：只处理属于当前 market 的订单事件
+	market := s.Market()
+	if order != nil && market != nil {
+		// 1) 有 MarketSlug：严格匹配
+		if order.MarketSlug != "" && market.Slug != "" && order.MarketSlug != market.Slug {
+			sessionLog.Debugf("⚠️ [Session %s] 丢弃跨周期订单事件: orderID=%s orderMarket=%s currentMarket=%s",
+				s.Name, order.OrderID, order.MarketSlug, market.Slug)
+			return
+		}
+		// 2) 用 AssetID 匹配（更可靠）
+		if order.AssetID != "" && market.YesAssetID != "" && market.NoAssetID != "" {
+			if order.AssetID != market.YesAssetID && order.AssetID != market.NoAssetID {
+				sessionLog.Debugf("⚠️ [Session %s] 丢弃非当前 market 的订单事件: orderID=%s assetID=%s currentYES=%s currentNO=%s",
+					s.Name, order.OrderID, order.AssetID, market.YesAssetID, market.NoAssetID)
+				return
+			}
+			// 补齐 MarketSlug/TokenType（让下游永远有一致的周期归属信息）
+			if order.MarketSlug == "" && market.Slug != "" {
+				order.MarketSlug = market.Slug
+			}
+			if order.TokenType == "" {
+				if order.AssetID == market.YesAssetID {
+					order.TokenType = domain.TokenTypeUp
+				} else if order.AssetID == market.NoAssetID {
+					order.TokenType = domain.TokenTypeDown
+				}
+			}
+		}
+	}
+
 	s.mu.RLock()
 	handlers := s.orderHandlers
 	s.mu.RUnlock()
@@ -372,11 +400,60 @@ func (s *ExchangeSession) EmitOrderUpdate(ctx context.Context, order *domain.Ord
 	}
 }
 
-// OnTradeUpdate 注册交易更新处理器
-func (s *ExchangeSession) OnTradeUpdate(handler TradeHandler) {
+// OnTradeUpdate 注册交易更新处理器（统一使用 ports.TradeUpdateHandler）
+func (s *ExchangeSession) OnTradeUpdate(handler ports.TradeUpdateHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tradeHandlers = append(s.tradeHandlers, handler)
+}
+
+// EmitTradeUpdate 触发交易事件（BBGO风格：直接回调）
+func (s *ExchangeSession) EmitTradeUpdate(ctx context.Context, trade *domain.Trade) {
+	if trade == nil {
+		return
+	}
+
+	// 架构层隔离：只处理属于当前 market 的成交事件
+	market := s.Market()
+	if market != nil {
+		// AssetID 是最可靠的隔离键
+		if trade.AssetID != "" && market.YesAssetID != "" && market.NoAssetID != "" {
+			if trade.AssetID != market.YesAssetID && trade.AssetID != market.NoAssetID {
+				sessionLog.Debugf("⚠️ [Session %s] 丢弃非当前 market 的成交事件: tradeID=%s assetID=%s currentYES=%s currentNO=%s",
+					s.Name, trade.ID, trade.AssetID, market.YesAssetID, market.NoAssetID)
+				return
+			}
+		}
+		// 补齐 trade.Market/TokenType，保证下游一致性
+		if trade.Market == nil {
+			trade.Market = market
+		}
+		if trade.TokenType == "" && trade.AssetID != "" {
+			if trade.AssetID == market.YesAssetID {
+				trade.TokenType = domain.TokenTypeUp
+			} else if trade.AssetID == market.NoAssetID {
+				trade.TokenType = domain.TokenTypeDown
+			}
+		}
+	}
+
+	s.mu.RLock()
+	handlers := s.tradeHandlers
+	s.mu.RUnlock()
+
+	for _, h := range handlers {
+		if h == nil {
+			continue
+		}
+		func(handler ports.TradeUpdateHandler) {
+			defer func() {
+				if r := recover(); r != nil {
+					sessionLog.Errorf("交易处理器 panic: %v", r)
+				}
+			}()
+			handler.HandleTrade(ctx, trade)
+		}(h)
+	}
 }
 
 // PriceChangeHandlerCount 返回价格变化处理器数量（用于调试）
