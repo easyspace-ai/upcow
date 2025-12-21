@@ -12,6 +12,7 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/strategies/common"
+	strategyports "github.com/betbot/gobet/internal/strategies/ports"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/config"
 	"github.com/betbot/gobet/pkg/logger"
@@ -41,6 +42,7 @@ type DataRecorderStrategy struct {
 	Executor                   bbgo.CommandExecutor
 	DataRecorderStrategyConfig `yaml:",inline" json:",inline"`
 	config                     *DataRecorderStrategyConfig `json:"-" yaml:"-"`
+	tradingService             strategyports.BasicTradingService // 交易服务（虽然不交易，但为了兼容性保留）
 	recorder                   *DataRecorder
 	targetPriceFetcher         *TargetPriceFetcher
 	rtdsClient                 *rtds.Client
@@ -73,6 +75,17 @@ func NewDataRecorderStrategy() *DataRecorderStrategy {
 	return &DataRecorderStrategy{
 		ctx:    ctx,
 		cancel: cancel,
+	}
+}
+
+// SetTradingService 设置交易服务（在初始化后调用）
+// 注意：数据记录策略不进行交易，此方法仅为兼容性保留
+func (s *DataRecorderStrategy) SetTradingService(ts interface{}) {
+	if basicTS, ok := ts.(strategyports.BasicTradingService); ok {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.tradingService = basicTS
+		logger.Debugf("数据记录策略: 交易服务已设置（策略不进行交易，仅用于兼容性）")
 	}
 }
 
@@ -455,26 +468,26 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 
 	// 价格合理性保护（降低误报，主要防止“旧周期残留/极端值”）：
 	priceSum := upPrice + downPrice
-	if priceSum > 1.5 {
+	if priceSum > 1.1 {
 		logger.Warnf("数据记录策略: ⚠️ 检测到异常价格总和（可能是旧周期残留），跳过记录 - UP=%.4f, DOWN=%.4f, 总和=%.4f, 当前周期=%s",
 			upPrice, downPrice, priceSum, getSlugOrEmpty(s.currentMarket))
 		return nil
 	}
 	// 注意：priceSum 可能 < 1（例如使用 best_bid 或市场处于稀疏/价差较大阶段），不应仅凭 <=1.0 直接判异常。
 
-	// 3. 检查价格差异是否合理：正常情况下 UP 和 DOWN 的价格应该比较接近
-	//    如果价格差异过大（如 UP=0.01, DOWN=1.00），说明数据异常
-	priceDiff := upPrice - downPrice
-	if priceDiff < 0 {
-		priceDiff = -priceDiff // 取绝对值
-	}
-	// 正常情况下，两个价格的差异不应该超过 0.5（50美分）
-	// 如果差异过大，可能是数据错误或旧周期残留
-	if priceDiff > 0.5 {
-		logger.Warnf("数据记录策略: ⚠️ 检测到价格差异过大（可能是数据错误），跳过记录 - UP=%.4f, DOWN=%.4f, 差异=%.4f, 总和=%.4f, 当前周期=%s",
-			upPrice, downPrice, priceDiff, priceSum, getSlugOrEmpty(s.currentMarket))
-		return nil
-	}
+	//// 3. 检查价格差异是否合理：正常情况下 UP 和 DOWN 的价格应该比较接近
+	////    如果价格差异过大（如 UP=0.01, DOWN=1.00），说明数据异常
+	//priceDiff := upPrice - downPrice
+	//if priceDiff < 0 {
+	//	priceDiff = -priceDiff // 取绝对值
+	//}
+	//// 正常情况下，两个价格的差异不应该超过 0.5（50美分）
+	//// 如果差异过大，可能是数据错误或旧周期残留
+	//if priceDiff > 0.5 {
+	//	logger.Warnf("数据记录策略: ⚠️ 检测到价格差异过大（可能是数据错误），跳过记录 - UP=%.4f, DOWN=%.4f, 差异=%.4f, 总和=%.4f, 当前周期=%s",
+	//		upPrice, downPrice, priceDiff, priceSum, getSlugOrEmpty(s.currentMarket))
+	//	return nil
+	//}
 
 	// 4. 新周期早期保护：在周期开始后短窗口内，过滤异常数据
 	//    新周期开始时，市场可能处于异常状态（如结算、初始化），价格可能极端

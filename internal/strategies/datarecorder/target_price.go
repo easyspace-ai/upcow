@@ -30,7 +30,12 @@ func NewTargetPriceFetcher(useRTDSFallback bool, rtdsClient *rtds.Client) *Targe
 
 // CryptoPriceAPIResponse API 响应结构
 type CryptoPriceAPIResponse struct {
-	Price float64 `json:"price"`
+	OpenPrice  *float64 `json:"openPrice"`  // 开盘价（本周期目标价）
+	ClosePrice *float64 `json:"closePrice"` // 收盘价（可能为 null）
+	Timestamp  int64    `json:"timestamp"`
+	Completed  bool     `json:"completed"`
+	Incomplete bool     `json:"incomplete"`
+	Cached     bool     `json:"cached"`
 }
 
 // FetchTargetPrice 获取目标价（上一个周期的收盘价）
@@ -47,24 +52,24 @@ func (tpf *TargetPriceFetcher) FetchTargetPrice(ctx context.Context, currentCycl
 	}
 
 	logger.Warnf("从 API 获取目标价失败: %v", err)
-
-	// 方法 B：尝试从 Binance API 获取（备选方案）
-	price, err = tpf.fetchFromBinance(ctx, prevCycleEnd)
-	if err == nil {
-		logger.Infof("从 Binance API 获取目标价成功: %.2f (时间: %d)", price, prevCycleEnd)
-		return price, nil
-	}
-	logger.Warnf("从 Binance API 获取目标价失败: %v", err)
-
-	// 方法 C：如果启用 RTDS 备选方案，尝试从 RTDS 获取
-	if tpf.useRTDSFallback {
-		price, err = tpf.fetchFromRTDS(ctx, prevCycleStart, prevCycleEnd)
-		if err == nil {
-			logger.Infof("从 RTDS 获取目标价成功: %.2f (周期: %d-%d)", price, prevCycleStart, prevCycleEnd)
-			return price, nil
-		}
-		logger.Warnf("从 RTDS 获取目标价失败: %v", err)
-	}
+	//
+	//// 方法 B：尝试从 Binance API 获取（备选方案）
+	//price, err = tpf.fetchFromBinance(ctx, prevCycleEnd)
+	//if err == nil {
+	//	logger.Infof("从 Binance API 获取目标价成功: %.2f (时间: %d)", price, prevCycleEnd)
+	//	return price, nil
+	//}
+	//logger.Warnf("从 Binance API 获取目标价失败: %v", err)
+	//
+	//// 方法 C：如果启用 RTDS 备选方案，尝试从 RTDS 获取
+	//if tpf.useRTDSFallback {
+	//	price, err = tpf.fetchFromRTDS(ctx, prevCycleStart, prevCycleEnd)
+	//	if err == nil {
+	//		logger.Infof("从 RTDS 获取目标价成功: %.2f (周期: %d-%d)", price, prevCycleStart, prevCycleEnd)
+	//		return price, nil
+	//	}
+	//	logger.Warnf("从 RTDS 获取目标价失败: %v", err)
+	//}
 
 	return 0, fmt.Errorf("无法获取目标价：API 失败，Binance 失败，RTDS 也失败或未启用")
 }
@@ -80,6 +85,8 @@ func (tpf *TargetPriceFetcher) fetchFromAPI(ctx context.Context, startTime, endT
 		url.QueryEscape(startTimeStr),
 		url.QueryEscape(endTimeStr),
 	)
+
+	//fmt.Println("====api url", apiURL)
 
 	// 创建 HTTP 请求
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
@@ -139,13 +146,14 @@ func (tpf *TargetPriceFetcher) fetchFromAPI(ctx context.Context, startTime, endT
 		return 0, fmt.Errorf("解析响应失败: %w", err)
 	}
 
-	if apiResp.Price <= 0 {
+	// 使用 openPrice 作为本周期目标价
+	if apiResp.OpenPrice == nil || *apiResp.OpenPrice <= 0 {
 		// 记录原始响应用于调试
-		logger.Warnf("API 返回的价格无效 (%.2f)，原始响应: %s", apiResp.Price, string(bodyBytes))
-		return 0, fmt.Errorf("API 返回的价格无效: %.2f", apiResp.Price)
+		logger.Warnf("API 返回的 openPrice 无效，原始响应: %s", string(bodyBytes))
+		return 0, fmt.Errorf("API 返回的 openPrice 无效或为空")
 	}
 
-	return apiResp.Price, nil
+	return *apiResp.OpenPrice, nil
 }
 
 // fetchFromBinance 从 Binance API 获取 BTC 价格（备选方案）
@@ -234,7 +242,7 @@ func (tpf *TargetPriceFetcher) fetchFromRTDS(ctx context.Context, startTime, end
 	// RTDS 主要提供实时数据流，历史数据支持有限
 	// 这里可以尝试从 RTDS 的历史数据中获取，但需要检查 RTDS 是否支持
 	// 目前 RTDS 客户端主要支持实时订阅，历史数据可能需要通过其他方式获取
-	
+
 	// 如果 RTDS 客户端未连接或未提供历史数据支持，返回错误
 	if tpf.rtdsClient == nil || !tpf.rtdsClient.IsConnected() {
 		return 0, fmt.Errorf("RTDS 客户端未连接")
@@ -245,4 +253,3 @@ func (tpf *TargetPriceFetcher) fetchFromRTDS(ctx context.Context, startTime, end
 	// 这里暂时返回错误，表示 RTDS 不支持历史数据获取
 	return 0, fmt.Errorf("RTDS 不支持历史数据获取，请使用 API 方法")
 }
-
