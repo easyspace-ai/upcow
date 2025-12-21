@@ -3,6 +3,7 @@ package rtds
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -39,6 +40,53 @@ func (rn RTDSNumber) MarshalJSON() ([]byte, error) {
 func (rn RTDSNumber) String() string {
 	return string(rn)
 }
+
+// Float64 parses the value as float64.
+func (rn RTDSNumber) Float64() (float64, error) {
+	s := strings.TrimSpace(string(rn))
+	if s == "" {
+		return 0, fmt.Errorf("empty number")
+	}
+	return strconv.ParseFloat(s, 64)
+}
+
+// RTDSFloat64 parses JSON numbers or numeric strings into float64.
+type RTDSFloat64 float64
+
+func (rf *RTDSFloat64) UnmarshalJSON(b []byte) error {
+	// number
+	var num json.Number
+	if err := json.Unmarshal(b, &num); err == nil {
+		f, err := num.Float64()
+		if err != nil {
+			return err
+		}
+		*rf = RTDSFloat64(f)
+		return nil
+	}
+	// string
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			*rf = 0
+			return nil
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return err
+		}
+		*rf = RTDSFloat64(f)
+		return nil
+	}
+	return fmt.Errorf("cannot unmarshal %s into RTDSFloat64", string(b))
+}
+
+func (rf RTDSFloat64) MarshalJSON() ([]byte, error) {
+	return json.Marshal(float64(rf))
+}
+
+func (rf RTDSFloat64) Float64() float64 { return float64(rf) }
 
 // RTDSTime is a custom time type that can parse multiple time formats from RTDS
 type RTDSTime time.Time
@@ -154,10 +202,10 @@ type SubscriptionRequest struct {
 
 // CryptoPrice represents a cryptocurrency price update
 type CryptoPrice struct {
-	Symbol            string  `json:"symbol"`
-	Timestamp         int64   `json:"timestamp"`
-	Value             float64 `json:"value"`
-	FullAccuracyValue string  `json:"full_accuracy_value,omitempty"` // Optional field for high-precision value
+	Symbol            string      `json:"symbol"`
+	Timestamp         int64       `json:"timestamp"`
+	Value             RTDSFloat64 `json:"value"`
+	FullAccuracyValue string      `json:"full_accuracy_value,omitempty"` // Optional field for high-precision value
 }
 
 // CryptoPriceHistorical represents historical price data sent on initial connection

@@ -49,7 +49,7 @@ func main() {
 		fmt.Printf("[%s] %s: $%.2f\n",
 			time.Now().Format("15:04:05"),
 			price.Symbol,
-			price.Value)
+			price.Value.Float64())
 		return nil
 	})
 

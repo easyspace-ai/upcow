@@ -179,24 +179,26 @@ func (s *DataRecorderStrategy) Initialize() error {
 	// BTC 价格更新时，只更新内存中的价格，不记录数据
 	// 数据记录以 UP/DOWN 价格变化为准
 	btcHandler := rtds.CreateCryptoPriceHandler(func(price *rtds.CryptoPrice) error {
-		logger.Debugf("数据记录策略: 收到 Chainlink 价格消息 - Symbol=%s, Value=%.2f", price.Symbol, price.Value)
-		if price.Symbol == "btc/usd" {
+		val := price.Value.Float64()
+		sym := strings.ToLower(strings.TrimSpace(price.Symbol))
+		logger.Debugf("数据记录策略: 收到 Chainlink 价格消息 - Symbol=%s, Value=%.2f", sym, val)
+		if sym == "btc/usd" || sym == "btcusdt" || sym == "btc/usdt" {
 			// 格式化时间戳（毫秒转秒）
 			timestamp := time.Unix(price.Timestamp/1000, (price.Timestamp%1000)*1000000)
 
 			// 在终端显示 Chainlink BTC 实时报价（醒目的格式，与价格更新日志格式一致）
 			logger.Infof("💰 BTC 实时报价 (Chainlink): $%.2f (时间: %s)",
-				price.Value, timestamp.Format("15:04:05"))
+				val, timestamp.Format("15:04:05"))
 
 			s.mu.Lock()
 			oldPrice := s.btcRealtimePrice
 			// 只更新 BTC 实时价格，不记录数据
-			s.btcRealtimePrice = price.Value
+			s.btcRealtimePrice = val
 			s.mu.Unlock()
 
 			// 如果有价格变化，显示变化趋势
 			if oldPrice > 0 {
-				change := price.Value - oldPrice
+				change := val - oldPrice
 				changePercent := (change / oldPrice) * 100
 				if change > 0 {
 					logger.Infof("📈 BTC 价格变化: +$%.2f (+%.2f%%)", change, changePercent)
