@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -460,6 +461,17 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 			marketLog.Warnf("解析价格变化消息失败: %v", err)
 			return
 		}
+		// 关键过滤：只处理“当前周期 market conditionId”的消息，避免其它 market 误入策略
+		if msgMarket, _ := msg["market"].(string); !m.shouldProcessMarketMessage(msgMarket) {
+			expected := ""
+			slug := ""
+			if m.market != nil {
+				expected = m.market.ConditionID
+				slug = m.market.Slug
+			}
+			marketLog.Debugf("🚫 [market过滤] 丢弃 price_change: msg.market=%s expected=%s slug=%s", msgMarket, expected, slug)
+			return
+		}
 		m.handlePriceChange(ctx, msg)
 	case "subscribed":
 		marketLog.Infof("✅ MarketStream 收到订阅成功消息")
@@ -497,6 +509,25 @@ type orderLevel struct {
 	Size  string `json:"size"`
 }
 
+// shouldProcessMarketMessage 决定是否处理某条 market-channel 消息。
+// 仅当消息携带 market 字段且与当前 MarketStream 的 ConditionID 不匹配时丢弃。
+func (m *MarketStream) shouldProcessMarketMessage(msgMarket string) bool {
+	msgMarket = strings.TrimSpace(msgMarket)
+	// 部分消息可能不携带 market 字段；此时无法校验，默认放行
+	if msgMarket == "" {
+		return true
+	}
+	expected := ""
+	if m.market != nil {
+		expected = strings.TrimSpace(m.market.ConditionID)
+	}
+	// 如果当前周期 market id 未就绪，避免把所有消息黑洞掉
+	if expected == "" {
+		return true
+	}
+	return strings.EqualFold(expected, msgMarket)
+}
+
 // handleBookAsPrice 从 book 消息提取价格并触发 PriceChangedEvent（用于兼容“没有 price_change 但有 book”的情况）
 func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 	if m.market == nil {
@@ -506,6 +537,7 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 	type bookMessage struct {
 		EventType string       `json:"event_type"`
 		AssetID   string       `json:"asset_id"`
+		Market    string       `json:"market"`
 		BestBid   string       `json:"best_bid"`
 		BestAsk   string       `json:"best_ask"`
 		Price     string       `json:"price"`
@@ -516,6 +548,17 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 	var bm bookMessage
 	if err := json.Unmarshal(message, &bm); err != nil {
 		marketLog.Debugf("解析 book 消息失败: %v", err)
+		return
+	}
+	// 关键过滤：非当前周期 market 的消息直接丢弃（避免通过 book->price 误入策略）
+	if !m.shouldProcessMarketMessage(bm.Market) {
+		expected := ""
+		slug := ""
+		if m.market != nil {
+			expected = m.market.ConditionID
+			slug = m.market.Slug
+		}
+		marketLog.Debugf("🚫 [market过滤] 丢弃 book: msg.market=%s expected=%s slug=%s", bm.Market, expected, slug)
 		return
 	}
 	if bm.AssetID == "" {
@@ -604,6 +647,18 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 		marketLog.Debugf("⚠️ [价格处理] Context 已取消，忽略价格变化消息")
 		return
 	default:
+	}
+
+	// 关键过滤：只允许当前周期 market conditionId 的消息进入策略
+	if msgMarket, _ := msg["market"].(string); !m.shouldProcessMarketMessage(msgMarket) {
+		expected := ""
+		slug := ""
+		if m.market != nil {
+			expected = m.market.ConditionID
+			slug = m.market.Slug
+		}
+		marketLog.Debugf("🚫 [market过滤] 忽略 price_change: msg.market=%s expected=%s slug=%s", msgMarket, expected, slug)
+		return
 	}
 
 	priceChanges, ok := msg["price_changes"].([]interface{})
