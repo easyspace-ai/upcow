@@ -132,8 +132,8 @@ func (e *ExecutionEngine) Submit(ctx context.Context, req MultiLegRequest) (*Mul
 	if req.MarketSlug == "" {
 		return nil, fmt.Errorf("MarketSlug 不能为空")
 	}
-	if len(req.Legs) < 2 {
-		return nil, fmt.Errorf("需要至少 2 条腿")
+	if len(req.Legs) < 1 {
+		return nil, fmt.Errorf("需要至少 1 条腿")
 	}
 
 	id := fmt.Sprintf("exec_%d", time.Now().UnixNano())

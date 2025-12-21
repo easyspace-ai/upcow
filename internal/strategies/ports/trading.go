@@ -64,15 +64,3 @@ type PairLockTradingService interface {
 	ActiveOrdersGetter
 	BestPriceGetter
 }
-
-type GridTradingService interface {
-	OrderPlacer
-	OrderCanceler
-	PositionCreator
-	PositionUpdater
-	PositionCloser
-	OpenPositionsGetter
-	ActiveOrdersGetter
-	BestPriceGetter
-	OrderStatusSyncer
-}

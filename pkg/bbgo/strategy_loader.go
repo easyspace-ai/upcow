@@ -103,6 +103,19 @@ func (l *StrategyLoader) setTradingService(strategy interface{}) error {
 	if strategyValue.Kind() == reflect.Ptr {
 		strategyValue = strategyValue.Elem()
 	}
+	// 新架构：优先注入导出的 TradingService 字段（由 Trader.InjectServices 也会兜底注入）
+	tradingServiceExported := strategyValue.FieldByName("TradingService")
+	if tradingServiceExported.IsValid() && tradingServiceExported.CanSet() {
+		serviceValue := reflect.ValueOf(l.tradingService)
+		if serviceValue.Type().AssignableTo(tradingServiceExported.Type()) {
+			tradingServiceExported.Set(serviceValue)
+			return nil
+		}
+		if tradingServiceExported.Kind() == reflect.Interface && serviceValue.Type().Implements(tradingServiceExported.Type()) {
+			tradingServiceExported.Set(serviceValue)
+			return nil
+		}
+	}
 	tradingServiceField := strategyValue.FieldByName("tradingService")
 	if tradingServiceField.IsValid() && tradingServiceField.CanSet() {
 		serviceValue := reflect.ValueOf(l.tradingService)

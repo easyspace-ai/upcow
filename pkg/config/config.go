@@ -37,7 +37,7 @@ type ProxyConfig struct {
 //
 // exchangeStrategies:
 //   - on: polymarket
-//     grid:
+//     (grid strategy removed)
 //     gridLevels: [62, 65]
 //     orderSize: 3
 //

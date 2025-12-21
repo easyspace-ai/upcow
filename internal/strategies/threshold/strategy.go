@@ -2,18 +2,15 @@ package threshold
 
 import (
 	"context"
-	"fmt"
-	"sync"
 	"time"
 
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
-	"github.com/betbot/gobet/internal/strategies/common"
+	"github.com/betbot/gobet/internal/execution"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
-	strategyports "github.com/betbot/gobet/internal/strategies/ports"
+	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/bbgo"
-	"github.com/betbot/gobet/pkg/logger"
 	"github.com/sirupsen/logrus"
 )
 
@@ -21,422 +18,110 @@ const ID = "threshold"
 
 var log = logrus.WithField("strategy", ID)
 
-func init() {
-	// bbgo main 风格：注册策略 struct，用于直接从 YAML/JSON 反序列化配置
-	bbgo.RegisterStrategy(ID, &ThresholdStrategy{})
-}
+func init() { bbgo.RegisterStrategy(ID, &Strategy{}) }
 
-// ThresholdStrategy 价格阈值策略实现
-// 当价格超过阈值时买入，当价格低于阈值时卖出（如果配置了卖出阈值）
-// 支持止盈止损：止盈 +N cents，止损 -N cents
-type ThresholdStrategy struct {
-	Executor       bbgo.CommandExecutor
+// Strategy（新架构版）：
+// - 单腿策略也走 ExecuteMultiLeg（统一队列/in-flight）
+// - 使用 TradingService.GetBestPrice（已优先 WS bestbook）
+type Strategy struct {
+	TradingService *services.TradingService
 	ThresholdStrategyConfig `yaml:",inline" json:",inline"`
-	config                *ThresholdStrategyConfig `json:"-" yaml:"-"`
-	tradingService strategyports.BasicTradingService
-	hasPosition    bool             // 是否已有仓位
-	entryPrice     *domain.Price    // 买入价格（用于计算止盈止损）
-	entryTokenType domain.TokenType // 买入的 Token 类型
 
-	// 价格历史跟踪（用于判断突破买入）
-	priceHistoryMu sync.RWMutex
-	lastPrice       map[domain.TokenType]*domain.Price // 记录每个 Token 的上一次价格
-
-	// 统一：单线程 loop（价格合并 + 订单更新 + 命令结果）
-	loopOnce     sync.Once
-	loopCancel   context.CancelFunc
-	priceSignalC chan struct{}
-	priceMu      sync.Mutex
-	latestPrice  *events.PriceChangedEvent
-	orderC       chan *domain.Order
-	cmdResultC   chan thresholdCmdResult
-
-	currentMarket *domain.Market
-	pendingEntry  bool
-	pendingExit   bool
-	hasTradedInCycle bool // 标记这个周期是否已经交易过（一个周期只交易一次）
-
-	mu             sync.RWMutex
-	isPlacingOrder bool
-	placeOrderMu   sync.Mutex
+	lastActionAt time.Time
+	lastMarket   string
 }
 
-// NewThresholdStrategy 创建新的价格阈值策略
-func NewThresholdStrategy() *ThresholdStrategy {
-	return &ThresholdStrategy{}
+func (s *Strategy) ID() string   { return ID }
+func (s *Strategy) Name() string { return ID }
+func (s *Strategy) Defaults() error { return nil }
+func (s *Strategy) Validate() error { return s.ThresholdStrategyConfig.Validate() }
+func (s *Strategy) Initialize() error { return nil }
+
+func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
+	session.OnPriceChanged(s)
 }
 
-// SetTradingService 设置交易服务（在初始化后调用）
-func (s *ThresholdStrategy) SetTradingService(ts strategyports.BasicTradingService) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.tradingService = ts
+func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.ExchangeSession) error {
+	<-ctx.Done()
+	return ctx.Err()
 }
 
-// ID 返回策略ID（BBGO风格）
-func (s *ThresholdStrategy) ID() string {
-	return ID
-}
-
-// Name 返回策略名称（兼容旧接口）
-func (s *ThresholdStrategy) Name() string {
-	return ID
-}
-
-// Defaults 设置默认值（BBGO风格）
-func (s *ThresholdStrategy) Defaults() error {
-	return nil
-}
-
-// Validate 验证配置（BBGO风格）
-func (s *ThresholdStrategy) Validate() error {
-	s.config = &s.ThresholdStrategyConfig
-	return s.ThresholdStrategyConfig.Validate()
-}
-
-// Initialize 初始化策略（BBGO风格）
-func (s *ThresholdStrategy) Initialize() error {
-	s.config = &s.ThresholdStrategyConfig
-	if err := s.ThresholdStrategyConfig.Validate(); err != nil {
-		return fmt.Errorf("配置验证失败: %w", err)
-	}
-	log.Infof("价格阈值策略已初始化: 买入阈值=%dc, 卖出阈值=%dc, 订单大小=%.2f, Token类型=%s, 止盈=%dc, 止损=%dc",
-		s.BuyThreshold,
-		s.SellThreshold,
-		s.OrderSize,
-		s.TokenType,
-		s.ProfitTargetCents,
-		s.StopLossCents)
-	return nil
-}
-
-// OnPriceChanged 处理价格变化事件（快路径：只合并信号，实际逻辑在 loop 内串行执行）
-func (s *ThresholdStrategy) OnPriceChanged(ctx context.Context, event *events.PriceChangedEvent) error {
-	if event == nil || event.Market == nil {
-		return nil
-	}
-	
-	// 严格过滤：只处理当前周期的价格事件
-	s.mu.RLock()
-	currentMarketSlug := ""
-	if s.currentMarket != nil {
-		currentMarketSlug = s.currentMarket.Slug
-	}
-	s.mu.RUnlock()
-	
-	// 如果当前市场已设置，且价格事件来自不同市场，直接忽略（可能是上一周期的延迟消息）
-	if currentMarketSlug != "" && currentMarketSlug != event.Market.Slug {
-		logger.Debugf("价格阈值策略: [过滤] 忽略非当前周期的价格事件: 当前周期=%s, 事件周期=%s, Token=%s, 价格=%dc",
-			currentMarketSlug, event.Market.Slug, event.TokenType, event.NewPrice.Cents)
-		return nil // 直接返回，不进入处理流程
-	}
-	
-	// 记录接收到的价格事件（用于调试）
-	logger.Infof("价格阈值策略: 收到价格事件: 市场=%s, Token=%s, 价格=%dc",
-		event.Market.Slug, event.TokenType, event.NewPrice.Cents)
-	s.startLoop(ctx)
-	s.priceMu.Lock()
-	s.latestPrice = event
-	s.priceMu.Unlock()
-	common.TrySignal(s.priceSignalC)
-	return nil
-}
-
-func (s *ThresholdStrategy) onPriceChangedInternal(ctx context.Context, event *events.PriceChangedEvent) error {
-	s.mu.RLock()
-	tradingService := s.tradingService
-	config := s.config
-	currentMarketSlug := ""
-	if s.currentMarket != nil {
-		currentMarketSlug = s.currentMarket.Slug
-	}
-	s.mu.RUnlock()
-
-	if tradingService == nil {
-		return fmt.Errorf("交易服务未设置")
-	}
-	if event == nil || event.Market == nil || config == nil {
+func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
+	if e == nil || e.Market == nil || s.TradingService == nil {
 		return nil
 	}
 
-	// 再次检查：只处理当前周期的价格事件（双重保险）
-	// 如果 market slug 不同，直接忽略（可能是上一周期的延迟消息或并发问题）
-	if currentMarketSlug != "" && currentMarketSlug != event.Market.Slug {
-		logger.Infof("价格阈值策略: [过滤] 忽略非当前周期的价格事件: 当前周期=%s, 事件周期=%s, Token=%s, 价格=%dc",
-			currentMarketSlug, event.Market.Slug, event.TokenType, event.NewPrice.Cents)
-		return nil // 直接返回，不处理
+	// 周期切换：重置节流
+	if e.Market.Slug != "" && e.Market.Slug != s.lastMarket {
+		s.lastMarket = e.Market.Slug
+		s.lastActionAt = time.Time{}
+	}
+	if !s.lastActionAt.IsZero() && time.Since(s.lastActionAt) < 500*time.Millisecond {
+		return nil
 	}
 
-	// 只管理本周期：market slug 变化即清理本地状态
-	if s.currentMarket != nil && s.currentMarket.Slug != "" && s.currentMarket.Slug != event.Market.Slug {
-		logger.Infof("价格阈值策略: 检测到周期切换，清理状态: %s -> %s",
-			s.currentMarket.Slug, event.Market.Slug)
-		_ = s.Cleanup(ctx)
+	// 选择交易 token
+	token := domain.TokenTypeUp
+	assetID := e.Market.YesAssetID
+	if s.TokenType == "NO" {
+		token = domain.TokenTypeDown
+		assetID = e.Market.NoAssetID
 	}
-	s.currentMarket = event.Market
 
-	// 检查这个周期是否已经交易过（一个周期只交易一次）
-	s.mu.RLock()
-	hasTradedInCycle := s.hasTradedInCycle
-	s.mu.RUnlock()
-	
-	// 如果已经交易过，且没有仓位，则不再开新单
-	if hasTradedInCycle {
-		s.mu.RLock()
-		hasPosition := s.hasPosition
-		s.mu.RUnlock()
-		if !hasPosition {
-			// 已经交易过且没有仓位，这个周期不再开新单
+	orderCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+
+	// BUY 条件
+	ask, askErr := orderutil.QuoteBuyPrice(orderCtx, s.TradingService, assetID, s.MaxBuyPrice)
+	if askErr == nil {
+		okPrice := ask.Cents <= s.BuyThreshold
+		if s.MaxBuyPrice > 0 && ask.Cents > s.MaxBuyPrice {
+			okPrice = false
+		}
+		if okPrice {
+			req := execution.MultiLegRequest{
+				Name:      "threshold_buy",
+				MarketSlug: e.Market.Slug,
+				Legs: []execution.LegIntent{{
+					Name:      "buy",
+					AssetID:   assetID,
+					TokenType: token,
+					Side:      types.SideBuy,
+					Price:     ask,
+					Size:      s.OrderSize,
+					OrderType: types.OrderTypeFAK,
+				}},
+				Hedge: execution.AutoHedgeConfig{Enabled: false},
+			}
+			_, err := s.TradingService.ExecuteMultiLeg(orderCtx, req)
+			if err == nil {
+				s.lastActionAt = time.Now()
+			}
 			return nil
 		}
 	}
 
-	// 检查 Token 类型过滤
-	if config.TokenType != "" {
-		// 将 event.TokenType (up/down) 转换为 YES/NO 进行比较
-		var eventTokenTypeStr string
-		if event.TokenType == domain.TokenTypeUp {
-			eventTokenTypeStr = "YES"
-		} else if event.TokenType == domain.TokenTypeDown {
-			eventTokenTypeStr = "NO"
-		}
-		if eventTokenTypeStr != config.TokenType {
-			return nil // 不是我们要监控的 Token 类型
-		}
-	}
-
-	// 统一：通过 pending 标记避免重复投递命令
-	if s.pendingEntry || s.pendingExit {
-		return nil
-	}
-
-	// 检查价格是否达到买入阈值（BuyThreshold 现在是美分）
-	buyThresholdPrice := domain.Price{Cents: config.BuyThreshold}
-	
-	// 1. 检查价格上限：如果配置了 MaxBuyPrice，价格超过上限则不买入
-	if config.MaxBuyPrice > 0 && event.NewPrice.Cents > config.MaxBuyPrice {
-		logger.Infof("价格阈值策略: 价格 %dc (Token=%s, 市场=%s) 超过最大买入价格 %dc，跳过买入（等待价格回落）",
-			event.NewPrice.Cents, event.TokenType, event.Market.Slug, config.MaxBuyPrice)
-		// 更新价格历史
-		s.priceHistoryMu.Lock()
-		if s.lastPrice == nil {
-			s.lastPrice = make(map[domain.TokenType]*domain.Price)
-		}
-		lastPrice := event.NewPrice
-		s.lastPrice[event.TokenType] = &lastPrice
-		s.priceHistoryMu.Unlock()
-		return nil
-	}
-	
-	// 2. 检查是否从低到高突破阈值（突破买入）
-	shouldBuy := false
-	s.priceHistoryMu.RLock()
-	var lastPrice *domain.Price
-	if s.lastPrice != nil {
-		lastPrice = s.lastPrice[event.TokenType]
-	}
-	s.priceHistoryMu.RUnlock()
-	
-	if lastPrice == nil {
-		// 首次收到价格，记录价格历史
-		s.priceHistoryMu.Lock()
-		if s.lastPrice == nil {
-			s.lastPrice = make(map[domain.TokenType]*domain.Price)
-		}
-		lastPriceVal := event.NewPrice
-		s.lastPrice[event.TokenType] = &lastPriceVal
-		s.priceHistoryMu.Unlock()
-		
-		// 首次收到价格，如果价格 >= 阈值，不买入（需要从低到高突破）
-		if event.NewPrice.Cents >= buyThresholdPrice.Cents {
-			logger.Infof("价格阈值策略: 首次收到价格 %dc（Token=%s, 市场=%s），已在买入阈值 %dc 之上，等待价格回落后再突破买入",
-				event.NewPrice.Cents, event.TokenType, event.Market.Slug, config.BuyThreshold)
-		} else {
-			logger.Infof("价格阈值策略: 首次收到价格 %dc（Token=%s, 市场=%s），低于买入阈值 %dc，等待突破",
-				event.NewPrice.Cents, event.TokenType, event.Market.Slug, config.BuyThreshold)
-		}
-		// 首次收到价格，无论价格如何都不买入（需要看到价格变化才能判断突破）
-		return nil
-	} else {
-		// 有历史价格，检查是否从低到高突破阈值
-		if lastPrice.Cents < buyThresholdPrice.Cents && 
-		   (event.NewPrice.Cents >= buyThresholdPrice.Cents) {
-			// 价格从低于阈值涨到 >= 阈值，触发突破买入
-			shouldBuy = true
-			logger.Infof("价格阈值策略: 价格从 %dc 突破买入阈值 %dc → %dc，触发买入",
-				lastPrice.Cents, config.BuyThreshold, event.NewPrice.Cents)
-		}
-		// 无论是否买入，都更新价格历史（用于下次判断）
-		s.priceHistoryMu.Lock()
-		if s.lastPrice == nil {
-			s.lastPrice = make(map[domain.TokenType]*domain.Price)
-		}
-		lastPriceVal := event.NewPrice
-		s.lastPrice[event.TokenType] = &lastPriceVal
-		s.priceHistoryMu.Unlock()
-	}
-	
-	if shouldBuy {
-		// 检查是否已有仓位
-		s.mu.RLock()
-		hasPosition := s.hasPosition
-		hasTradedInCycle := s.hasTradedInCycle
-		s.mu.RUnlock()
-
-		if !hasPosition && !hasTradedInCycle {
-			// 检查是否有开放仓位
-			positions := tradingService.GetOpenPositions()
-			if len(positions) == 0 {
-				logger.Infof("价格阈值策略: 价格 %dc 从低到高突破买入阈值 %dc，准备买入",
-					event.NewPrice.Cents, config.BuyThreshold)
-
-				// 确定买入的 Token 类型
-				tokenType := event.TokenType
-				if config.TokenType != "" {
-					// 将 YES/NO 转换为 up/down
-					if config.TokenType == "YES" {
-						tokenType = domain.TokenTypeUp
-					} else if config.TokenType == "NO" {
-						tokenType = domain.TokenTypeDown
-					}
-				}
-
-				assetID := event.Market.GetAssetID(tokenType)
-
-				// 统一下单模板：买入默认取 bestAsk（可选滑点保护，threshold 这里默认不设上限）
-				maxBuy := 0
-				if config.MaxBuySlippageCents > 0 {
-					maxBuy = buyThresholdPrice.Cents + config.MaxBuySlippageCents
-				}
-				askPrice, err := orderutil.QuoteBuyPrice(ctx, tradingService, assetID, maxBuy)
-				if err != nil {
-					logger.Errorf("价格阈值策略: 获取订单簿失败: %v", err)
-					return err
-				}
-
-				order := orderutil.NewOrder(event.Market.Slug, assetID, types.SideBuy, askPrice, config.OrderSize, tokenType, true, types.OrderTypeFAK)
-
-				// 下单
-				if err := s.placeOrder(ctx, tradingService, order); err != nil {
-					logger.Errorf("价格阈值策略: 买入订单失败: %v", err)
-					return err
-				}
-				// 命令已投递：等待订单更新/成交事件来确认仓位
-				s.pendingEntry = true
-				// 标记这个周期已经交易过
-				s.mu.Lock()
-				s.hasTradedInCycle = true
-				s.mu.Unlock()
-
-				logger.Infof("价格阈值策略: 买入订单已提交: Token=%s, Price=%.4f, Size=%.2f",
-					tokenType, event.NewPrice.ToDecimal(), config.OrderSize)
+	// SELL 条件（可选）
+	if s.SellThreshold > 0 {
+		bid, bidErr := orderutil.QuoteSellPrice(orderCtx, s.TradingService, assetID, 0)
+		if bidErr == nil && bid.Cents >= s.SellThreshold {
+			req := execution.MultiLegRequest{
+				Name:      "threshold_sell",
+				MarketSlug: e.Market.Slug,
+				Legs: []execution.LegIntent{{
+					Name:      "sell",
+					AssetID:   assetID,
+					TokenType: token,
+					Side:      types.SideSell,
+					Price:     bid,
+					Size:      s.OrderSize,
+					OrderType: types.OrderTypeFAK,
+				}},
+				Hedge: execution.AutoHedgeConfig{Enabled: false},
 			}
-		}
-		// 买入后更新价格历史（已在 shouldBuy 判断后统一更新，这里不需要重复）
-	}
-
-	// 如果有仓位，检查止盈止损
-	s.mu.RLock()
-	hasPosition := s.hasPosition
-	entryPrice := s.entryPrice
-	entryTokenType := s.entryTokenType
-	s.mu.RUnlock()
-
-	if hasPosition && entryPrice != nil {
-		// 只检查相同 Token 类型的价格
-		if event.TokenType == entryTokenType {
-			// 计算价格差（分）
-			priceDiff := event.NewPrice.Cents - entryPrice.Cents
-
-			// 止盈逻辑：已在买入成功后立即挂限价止盈单，这里不再需要价格触发
-			// 限价止盈单会在价格达到目标价时自动成交
-
-			// 检查止损（-N cents）：达到止损时，买入反向代币
-			if config.StopLossCents > 0 && priceDiff <= -config.StopLossCents {
-				logger.Infof("价格阈值策略: 触发止损！当前价格=%.4f, 买入价格=%.4f, 亏损=%dc (止损=%dc)，准备买入反向代币",
-					event.NewPrice.ToDecimal(), entryPrice.ToDecimal(), priceDiff, config.StopLossCents)
-
-				// 获取反向代币类型
-				var oppositeTokenType domain.TokenType
-				if entryTokenType == domain.TokenTypeUp {
-					oppositeTokenType = domain.TokenTypeDown
-				} else {
-					oppositeTokenType = domain.TokenTypeUp
-				}
-
-				assetID := event.Market.GetAssetID(oppositeTokenType)
-
-				// 买入反向代币：bestAsk（成交优先），可选滑点保护
-				maxBuy := 0
-				if config.MaxBuySlippageCents > 0 {
-					maxBuy = event.NewPrice.Cents + config.MaxBuySlippageCents
-				}
-				askPrice, err := orderutil.QuoteBuyPrice(ctx, tradingService, assetID, maxBuy)
-				if err != nil {
-					logger.Errorf("价格阈值策略: 获取订单簿失败: %v", err)
-					return err
-				}
-
-				// 创建买入反向代币订单（市价单）
-				oppositeOrder := orderutil.NewOrder(
-					event.Market.Slug,
-					assetID,
-					types.SideBuy,
-					askPrice,
-					config.OrderSize,
-					oppositeTokenType,
-					false, // 不是入场订单
-					types.OrderTypeFAK,
-				)
-
-				if err := s.placeOrder(ctx, tradingService, oppositeOrder); err != nil {
-					logger.Errorf("价格阈值策略: 止损买入反向代币订单失败: %v", err)
-					return err
-				}
-				// 命令已投递：等待订单成交/取消更新
-				s.pendingExit = true
-
-				logger.Infof("价格阈值策略: 止损买入反向代币订单已提交: Token=%s, Price=%.4f, Size=%.2f",
-					oppositeTokenType, askPrice.ToDecimal(), config.OrderSize)
-				return nil
-			}
-		}
-	}
-
-	// 检查价格是否达到卖出阈值（如果配置了，SellThreshold 现在是美分）
-	if config.SellThreshold > 0 {
-		sellThresholdPrice := domain.Price{Cents: config.SellThreshold}
-		if event.NewPrice.LessThan(sellThresholdPrice) {
-			s.mu.RLock()
-			hasPosition := s.hasPosition
-			entryTokenType := s.entryTokenType
-			s.mu.RUnlock()
-
-			if hasPosition {
-				logger.Infof("价格阈值策略: 价格 %dc 达到卖出阈值 %dc，准备卖出",
-					event.NewPrice.Cents, config.SellThreshold)
-
-				assetID := event.Market.GetAssetID(entryTokenType)
-				// 卖出使用买一价（更容易成交）
-				minSell := 0
-				if config.MaxSellSlippageCents > 0 {
-					minSell = sellThresholdPrice.Cents - config.MaxSellSlippageCents
-					if minSell < 0 {
-						minSell = 0
-					}
-				}
-				bidPrice, err := orderutil.QuoteSellPrice(ctx, tradingService, assetID, minSell)
-				if err != nil {
-					logger.Errorf("价格阈值策略: 获取订单簿失败: %v", err)
-					return err
-				}
-				if err := s.createSellOrder(ctx, tradingService, event.Market, entryTokenType, bidPrice, config.OrderSize); err != nil {
-					logger.Errorf("价格阈值策略: 阈值卖出订单失败: %v", err)
-					return err
-				}
-				s.pendingExit = true
-
-				logger.Infof("价格阈值策略: 卖出信号已触发")
+			_, err := s.TradingService.ExecuteMultiLeg(orderCtx, req)
+			if err == nil {
+				s.lastActionAt = time.Now()
 			}
 		}
 	}
@@ -444,221 +129,3 @@ func (s *ThresholdStrategy) onPriceChangedInternal(ctx context.Context, event *e
 	return nil
 }
 
-// placeOrder 下单（带锁保护，避免并发下单）
-func (s *ThresholdStrategy) placeOrder(ctx context.Context, tradingService strategyports.BasicTradingService, order *domain.Order) error {
-	// 统一工程化：策略 loop 不直接做网络 IO；优先把下单投递到全局 Executor。
-	if s.Executor == nil {
-		_, err := tradingService.PlaceOrder(ctx, order)
-		return err
-	}
-
-	s.initLoopIfNeeded()
-	ok := s.Executor.Submit(bbgo.Command{
-		Name:    fmt.Sprintf("threshold_place_%s_%s", order.Side, order.TokenType),
-		Timeout: 25 * time.Second,
-		Do: func(runCtx context.Context) {
-			created, err := tradingService.PlaceOrder(runCtx, order)
-			select {
-			case s.cmdResultC <- thresholdCmdResult{order: order, created: created, err: err}:
-			default:
-			}
-		},
-	})
-	if !ok {
-		return fmt.Errorf("执行器队列已满，无法提交订单")
-	}
-	return nil
-}
-
-// createSellOrder 创建卖出订单
-func (s *ThresholdStrategy) createSellOrder(ctx context.Context, tradingService strategyports.BasicTradingService, market *domain.Market, tokenType domain.TokenType, price domain.Price, size float64) error {
-	order := orderutil.NewOrder(market.Slug, market.GetAssetID(tokenType), types.SideSell, price, size, tokenType, false, types.OrderTypeFAK)
-
-	return s.placeOrder(ctx, tradingService, order)
-}
-
-// OnOrderFilled 处理订单成交事件
-func (s *ThresholdStrategy) OnOrderFilled(ctx context.Context, event *events.OrderFilledEvent) error {
-	logger.Infof("价格阈值策略: 订单已成交: OrderID=%s, Side=%s, Price=%.4f",
-		event.Order.OrderID, event.Order.Side, event.Order.Price.ToDecimal())
-
-	if event.Order.Side == types.SideBuy && event.Order.IsEntryOrder {
-		// 买入订单成交，记录买入价格，并立即挂上限价止盈单
-		entryPrice := event.Order.Price
-		s.mu.Lock()
-		s.hasPosition = true
-		s.entryPrice = &entryPrice
-		s.entryTokenType = event.Order.TokenType
-		s.mu.Unlock()
-
-		logger.Infof("价格阈值策略: 买入订单已成交，记录买入价格=%.4f", entryPrice.ToDecimal())
-
-		// 立即挂上限价止盈单（GTC）
-		if s.config.ProfitTargetCents > 0 && event.Market != nil {
-			profitTargetPrice := domain.Price{Cents: entryPrice.Cents + s.config.ProfitTargetCents}
-			if profitTargetPrice.Cents <= 100 {
-				assetID := event.Market.GetAssetID(event.Order.TokenType)
-				// 使用实际成交数量（优先使用 FilledSize，如果没有则使用 Size）
-				actualSize := event.Order.FilledSize
-				if actualSize <= 0 {
-					actualSize = event.Order.Size
-				}
-				
-				profitOrder := orderutil.NewOrder(
-					event.Market.Slug,
-					assetID,
-					types.SideSell,
-					profitTargetPrice,
-					actualSize,
-					event.Order.TokenType,
-					false,
-					types.OrderTypeGTC, // 限价单
-				)
-				
-				if err := s.placeOrder(ctx, s.tradingService, profitOrder); err != nil {
-					logger.Errorf("价格阈值策略: 挂限价止盈单失败: %v", err)
-				} else {
-					logger.Infof("价格阈值策略: 已挂限价止盈单: Price=%.4f (目标盈利=%dc), Size=%.2f",
-						profitTargetPrice.ToDecimal(), s.config.ProfitTargetCents, actualSize)
-				}
-			} else {
-				logger.Warnf("价格阈值策略: 止盈目标价格 %dc 超过 100c，无法挂限价单", profitTargetPrice.Cents)
-			}
-		}
-	} else if event.Order.Side == types.SideSell {
-		// 卖出订单成交，清除仓位信息
-		s.mu.Lock()
-		s.hasPosition = false
-		s.entryPrice = nil
-		s.mu.Unlock()
-
-		logger.Infof("价格阈值策略: 卖出订单已成交，仓位已清除")
-	}
-
-	return nil
-}
-
-// CanOpenPosition 检查是否可以开仓
-func (s *ThresholdStrategy) CanOpenPosition(ctx context.Context, market *domain.Market) (bool, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return !s.hasPosition, nil
-}
-
-// CalculateEntry 计算入场价格和数量
-func (s *ThresholdStrategy) CalculateEntry(ctx context.Context, market *domain.Market, price domain.Price) (*domain.Order, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.hasPosition {
-		return nil, fmt.Errorf("已有仓位，无法再次入场")
-	}
-
-	// 确定 Token 类型
-	var tokenType domain.TokenType
-	if s.config.TokenType != "" {
-		// 将 YES/NO 转换为 up/down
-		if s.config.TokenType == "YES" {
-			tokenType = domain.TokenTypeUp
-		} else if s.config.TokenType == "NO" {
-			tokenType = domain.TokenTypeDown
-		} else {
-			tokenType = domain.TokenTypeUp // 默认
-		}
-	} else {
-		// 默认使用 YES token (up)
-		tokenType = domain.TokenTypeUp
-	}
-
-	return &domain.Order{
-		AssetID:      market.GetAssetID(tokenType),
-		Side:         types.SideBuy,
-		Price:        price,
-		Size:         s.config.OrderSize,
-		TokenType:    tokenType,
-		IsEntryOrder: true,
-		Status:       domain.OrderStatusPending,
-	}, nil
-}
-
-// CalculateHedge 计算对冲订单（此策略不需要对冲）
-func (s *ThresholdStrategy) CalculateHedge(ctx context.Context, entryOrder *domain.Order) (*domain.Order, error) {
-	return nil, nil
-}
-
-// CheckTakeProfitStopLoss 检查止盈止损（此策略使用阈值，不需要额外的止盈止损）
-func (s *ThresholdStrategy) CheckTakeProfitStopLoss(ctx context.Context, position *domain.Position, currentPrice domain.Price) (*domain.Order, error) {
-	return nil, nil
-}
-
-// Cleanup 清理资源
-func (s *ThresholdStrategy) Cleanup(ctx context.Context) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.hasPosition = false
-	s.entryPrice = nil
-	s.isPlacingOrder = false
-	s.pendingEntry = false
-	s.pendingExit = false
-	s.hasTradedInCycle = false // 清理周期交易标记
-	s.currentMarket = nil
-	
-	// 清理价格历史（周期切换时重置）
-	s.priceHistoryMu.Lock()
-	s.lastPrice = nil
-	s.priceHistoryMu.Unlock()
-	
-	return nil
-}
-
-// Subscribe 订阅会话事件（BBGO 风格）
-func (s *ThresholdStrategy) Subscribe(session *bbgo.ExchangeSession) {
-	log.Infof("价格阈值策略: 开始 Subscribe，session=%s", session.Name)
-	
-	// 获取当前市场信息
-	market := session.Market()
-	if market != nil {
-		// 更新当前市场，清理上一周期的状态
-		s.mu.Lock()
-		if s.currentMarket != nil && s.currentMarket.Slug != market.Slug {
-			log.Infof("价格阈值策略: 周期切换，清理上一周期状态: %s -> %s",
-				s.currentMarket.Slug, market.Slug)
-			_ = s.Cleanup(context.Background())
-		}
-		s.currentMarket = market
-		s.hasTradedInCycle = false // 重置周期交易标记
-		s.mu.Unlock()
-		log.Infof("价格阈值策略已订阅价格变化事件，当前周期=%s", market.Slug)
-	} else {
-		log.Warnf("价格阈值策略: 会话市场信息为空，无法设置当前周期")
-	}
-	
-	// 注册价格变化回调
-	log.Infof("价格阈值策略: 正在注册价格变化处理器到 Session，session=%s", session.Name)
-	session.OnPriceChanged(s)
-	handlerCount := session.PriceChangeHandlerCount()
-	log.Infof("价格阈值策略: 价格变化处理器已注册，当前 handlers 数量=%d", handlerCount)
-	
-	// 注册订单更新回调（用于确认成交/取消，从而驱动状态机）
-	session.OnOrderUpdate(s)
-	log.Infof("价格阈值策略: Subscribe 完成，session=%s", session.Name)
-}
-
-// Run 运行策略（BBGO 风格）
-func (s *ThresholdStrategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, session *bbgo.ExchangeSession) error {
-	log.Infof("价格阈值策略已启动")
-	s.startLoop(ctx)
-	return nil
-}
-
-// Shutdown 优雅关闭（BBGO 风格）
-// Shutdown 优雅关闭（BBGO 风格）
-// 注意：wg 参数由 shutdown.Manager 统一管理，策略的 Shutdown 方法不应该调用 wg.Done()
-func (s *ThresholdStrategy) Shutdown(ctx context.Context, wg *sync.WaitGroup) {
-	log.Infof("价格阈值策略: 开始优雅关闭...")
-	s.stopLoop()
-	if err := s.Cleanup(ctx); err != nil {
-		log.Errorf("价格阈值策略清理失败: %v", err)
-	}
-	log.Infof("价格阈值策略: 资源清理完成")
-}
