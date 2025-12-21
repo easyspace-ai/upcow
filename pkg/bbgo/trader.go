@@ -73,15 +73,20 @@ type Trader struct {
 	runMu           sync.Mutex
 	strategyCancels map[string]context.CancelFunc // strategyID -> cancel
 	activeSession   *ExchangeSession
+
+	// 避免周期切换时重复注册 shutdown hook
+	shutdownOnceMu        sync.Mutex
+	shutdownRegisteredIDs map[string]bool
 }
 
 // NewTrader 创建新的策略管理器
 func NewTrader(environ *Environment) *Trader {
 	return &Trader{
-		environment:     environ,
-		strategies:      make([]interface{}, 0),
-		shutdownManager: environ.ShutdownManager(),
-		strategyCancels: make(map[string]context.CancelFunc),
+		environment:           environ,
+		strategies:            make([]interface{}, 0),
+		shutdownManager:       environ.ShutdownManager(),
+		strategyCancels:       make(map[string]context.CancelFunc),
+		shutdownRegisteredIDs: make(map[string]bool),
 	}
 }
 
@@ -349,9 +354,22 @@ func (t *Trader) StartWithSession(ctx context.Context, session *ExchangeSession)
 	for _, s := range strategies {
 		// 注册关闭回调（保持原有语义）
 		if shutdown, ok := s.(StrategyShutdown); ok && t.shutdownManager != nil {
-			t.shutdownManager.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
-				shutdown.Shutdown(ctx, wg)
-			})
+			strategyID := "unknown"
+			if sid, ok := s.(StrategyID); ok {
+				strategyID = sid.ID()
+			} else if nameStrategy, ok := s.(interface{ Name() string }); ok {
+				strategyID = nameStrategy.Name()
+			}
+
+			t.shutdownOnceMu.Lock()
+			already := t.shutdownRegisteredIDs[strategyID]
+			if !already {
+				t.shutdownRegisteredIDs[strategyID] = true
+				t.shutdownManager.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
+					shutdown.Shutdown(ctx, wg)
+				})
+			}
+			t.shutdownOnceMu.Unlock()
 		}
 
 		single, ok := s.(SingleExchangeStrategy)
@@ -399,9 +417,22 @@ func (t *Trader) SwitchSession(ctx context.Context, session *ExchangeSession) er
 
 	for _, s := range strategies {
 		if shutdown, ok := s.(StrategyShutdown); ok && t.shutdownManager != nil {
-			t.shutdownManager.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
-				shutdown.Shutdown(ctx, wg)
-			})
+			strategyID := "unknown"
+			if sid, ok := s.(StrategyID); ok {
+				strategyID = sid.ID()
+			} else if nameStrategy, ok := s.(interface{ Name() string }); ok {
+				strategyID = nameStrategy.Name()
+			}
+
+			t.shutdownOnceMu.Lock()
+			already := t.shutdownRegisteredIDs[strategyID]
+			if !already {
+				t.shutdownRegisteredIDs[strategyID] = true
+				t.shutdownManager.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
+					shutdown.Shutdown(ctx, wg)
+				})
+			}
+			t.shutdownOnceMu.Unlock()
 		}
 
 		single, ok := s.(SingleExchangeStrategy)
