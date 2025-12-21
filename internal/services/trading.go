@@ -124,9 +124,27 @@ func NewTradingService(clobClient *client.Client, dryRun bool) *TradingService {
 // SetCurrentMarket 设置当前市场（用于过滤订单状态同步）
 func (s *TradingService) SetCurrentMarket(marketSlug string) {
 	s.currentMarketMu.Lock()
-	defer s.currentMarketMu.Unlock()
+	prev := s.currentMarketSlug
 	s.currentMarketSlug = marketSlug
+	s.currentMarketMu.Unlock()
+
 	log.Infof("✅ [周期切换] 已设置当前市场: %s", marketSlug)
+
+	// 架构层约束：新周期必须是“全新世界”
+	// - 清空 OrderEngine 的周期相关状态（openOrders/orderStore/positions/pendingTrades）
+	// - 清空订单状态缓存/去重器，避免跨周期串单或误去重
+	if prev != marketSlug && marketSlug != "" {
+		if s.orderEngine != nil {
+			s.orderEngine.ResetForNewCycle(marketSlug, "TradingService.SetCurrentMarket")
+		}
+		if s.orderStatusCache != nil {
+			s.orderStatusCache.Clear()
+		}
+		if s.inFlightDeduper != nil {
+			s.inFlightDeduper.Clear()
+		}
+		log.Warnf("🔄 [周期切换] 已重置本地状态：orders/positions/cache/inflight（prev=%s -> new=%s）", prev, marketSlug)
+	}
 }
 
 // GetCurrentMarket 获取当前市场

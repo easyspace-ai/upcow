@@ -85,6 +85,19 @@ func (d *InFlightDeduper) Release(key string) {
 	sh.mu.Unlock()
 }
 
+// Clear 清空所有 shard 的 in-flight 状态（用于周期切换等场景）。
+func (d *InFlightDeduper) Clear() {
+	if d == nil {
+		return
+	}
+	for i := range d.shards {
+		sh := &d.shards[i]
+		sh.mu.Lock()
+		sh.m = make(map[string]time.Time)
+		sh.mu.Unlock()
+	}
+}
+
 func (d *InFlightDeduper) shard(key string) *inFlightShard {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(key))

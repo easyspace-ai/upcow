@@ -300,9 +300,11 @@ func main() {
 	tradingService.OnOrderUpdate(eventRouter)
 	if session != nil && session.UserDataStream != nil {
 		session.UserDataStream.OnOrderUpdate(eventRouter)
-		// 成交事件也注册：用于 OrderEngine 状态推进（并由 session 统一做跨周期隔离/补齐 Market）
-		session.UserDataStream.OnTradeUpdate(tradingService)
 		session.UserDataStream.OnTradeUpdate(eventRouter)
+	}
+	// 成交事件：必须经由 Session gate（防止跨周期 trade 直接进入 OrderEngine）
+	if session != nil {
+		session.OnTradeUpdate(tradingService)
 	}
 
 	// 设置会话切换回调，当周期切换时重新注册策略
@@ -325,8 +327,11 @@ func main() {
 		eventRouter.SetSession(newSession)
 		if newSession != nil && newSession.UserDataStream != nil {
 			newSession.UserDataStream.OnOrderUpdate(eventRouter)
-			newSession.UserDataStream.OnTradeUpdate(tradingService)
 			newSession.UserDataStream.OnTradeUpdate(eventRouter)
+		}
+		// 成交事件：必须经由 Session gate
+		if newSession != nil {
+			newSession.OnTradeUpdate(tradingService)
 		}
 
 		// 核心：周期切换时取消旧 Run，并用新 session 重新 Run（框架层解决“新周期仍用旧 market 状态”的问题）

@@ -33,6 +33,7 @@ const (
 	CmdUpdatePosition OrderCommandType = "update_position"
 	CmdClosePosition  OrderCommandType = "close_position"
 	CmdQueryState     OrderCommandType = "query_state" // 查询状态（只读）
+	CmdResetCycle     OrderCommandType = "reset_cycle" // 周期切换：清空订单/仓位等运行时状态
 )
 
 // PlaceOrderCommand 下单命令
@@ -148,6 +149,19 @@ const (
 	QueryPosition      QueryType = "position"
 )
 
+// ResetCycleCommand 周期切换重置命令：
+// - 清空订单/仓位/待处理交易等所有“与周期相关”的内存状态
+// - 保留余额（余额属于账户，不属于周期）
+type ResetCycleCommand struct {
+	id            string
+	NewMarketSlug string
+	Reason        string
+	Reply         chan error
+}
+
+func (c *ResetCycleCommand) CommandType() OrderCommandType { return CmdResetCycle }
+func (c *ResetCycleCommand) ID() string                    { return c.id }
+
 // StateSnapshot 状态快照
 type StateSnapshot struct {
 	Balance    float64
@@ -224,6 +238,20 @@ func (e *OrderEngine) SubmitCommand(cmd OrderCommand) {
 	}
 }
 
+// ResetForNewCycle 在周期切换时清空引擎内的“周期状态”。
+// 注意：这是非阻塞触发（通过命令进入 engine goroutine），避免外部加锁/竞态。
+func (e *OrderEngine) ResetForNewCycle(newMarketSlug, reason string) {
+	if e == nil {
+		return
+	}
+	e.SubmitCommand(&ResetCycleCommand{
+		id:            fmt.Sprintf("reset_cycle_%d", time.Now().UnixNano()),
+		NewMarketSlug: newMarketSlug,
+		Reason:        reason,
+		Reply:         nil,
+	})
+}
+
 // OnOrderUpdate 注册订单更新回调
 func (e *OrderEngine) OnOrderUpdate(handler ports.OrderUpdateHandler) {
 	// 通过命令注册回调（确保线程安全）
@@ -283,6 +311,8 @@ func (e *OrderEngine) handleCommand(cmd OrderCommand) {
 		e.handleClosePosition(cmd.(*ClosePositionCommand))
 	case CmdQueryState:
 		e.handleQueryState(cmd.(*QueryStateCommand))
+	case CmdResetCycle:
+		e.handleResetCycle(cmd.(*ResetCycleCommand))
 	case CmdRegisterHandler:
 		e.handleRegisterHandler(cmd.(*RegisterHandlerCommand))
 	case CmdQueryStats:
@@ -836,6 +866,25 @@ func (e *OrderEngine) handleQueryStats(cmd *QueryStatsCommand) {
 	select {
 	case cmd.Reply <- stats:
 	default:
+	}
+}
+
+// handleResetCycle 清空与周期相关的运行时状态（在 engine goroutine 内执行，无锁）
+func (e *OrderEngine) handleResetCycle(cmd *ResetCycleCommand) {
+	// 清空“周期相关”的状态（避免旧周期影响新周期）
+	e.positions = make(map[string]*domain.Position)
+	e.openOrders = make(map[string]*domain.Order)
+	e.orderStore = make(map[string]*domain.Order)
+	e.pendingTrades = make(map[string]*domain.Trade)
+
+	orderEngineLog.Warnf("🔄 [周期切换] OrderEngine 已重置运行时状态: newMarket=%s reason=%s",
+		cmd.NewMarketSlug, cmd.Reason)
+
+	if cmd.Reply != nil {
+		select {
+		case cmd.Reply <- nil:
+		default:
+		}
 	}
 }
 

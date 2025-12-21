@@ -170,3 +170,11 @@ func (osc *OrderStatusCache) Delete(orderID string) {
 	osc.cache.Delete(orderID)
 }
 
+// Clear 清空订单状态缓存（用于周期切换等场景）
+func (osc *OrderStatusCache) Clear() {
+	if osc == nil || osc.cache == nil {
+		return
+	}
+	osc.cache.Clear()
+}
+
