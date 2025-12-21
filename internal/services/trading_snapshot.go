@@ -19,6 +19,20 @@ type tradingSnapshot struct {
 	Positions  []*domain.Position `json:"positions"`
 }
 
+type snapshotMeta struct {
+	UpdatedAt  time.Time `json:"updated_at"`
+	MarketSlug string    `json:"market_slug"`
+	Gen        int64     `json:"gen"`
+	Tag        string    `json:"tag"`
+}
+
+func snapshotTag(marketSlug string, gen int64) string {
+	if marketSlug == "" || gen <= 0 {
+		return "snapshot"
+	}
+	return fmt.Sprintf("snapshot:%s:g%d", marketSlug, gen)
+}
+
 func (s *TradingService) SetPersistence(ps persistence.Service, id string) {
 	s.persistence = ps
 	s.persistenceID = id
@@ -32,15 +46,41 @@ func (ss *SnapshotService) loadSnapshot() {
 	if s.persistence == nil {
 		return
 	}
-	store := s.persistence.NewStore("trading", s.persistenceID, "snapshot")
+
+	currentMarketSlug := s.GetCurrentMarket()
+	currentGen := s.currentEngineGeneration()
+	tag := snapshotTag(currentMarketSlug, currentGen)
+
+	// 1) 优先：按 marketSlug+gen 分桶读取（严格 + 可审计）
+	store := s.persistence.NewStore("trading", s.persistenceID, tag)
 	var snap tradingSnapshot
 	if err := store.Load(&snap); err != nil {
-		return
-	}
-	metrics.SnapshotLoads.Add(1)
+		// 2) 兼容：尝试读取 latest 指针，再按指针 tag 加载（允许跨版本迁移）
+		if err == persistence.ErrNotExists {
+			var meta snapshotMeta
+			metaStore := s.persistence.NewStore("trading", s.persistenceID, "snapshot_latest")
+			if err2 := metaStore.Load(&meta); err2 == nil && meta.Tag != "" {
+				// 仍然强校验当前周期：marketSlug + gen 必须匹配
+				if meta.MarketSlug == currentMarketSlug && meta.Gen == currentGen {
+					store2 := s.persistence.NewStore("trading", s.persistenceID, meta.Tag)
+					if err3 := store2.Load(&snap); err3 == nil {
+						goto LOADED
+					}
+				}
+			}
 
-	// 获取当前市场（只恢复当前周期的订单）
-	currentMarketSlug := s.GetCurrentMarket()
+			// 3) 最后兜底：老版本单桶 snapshot（仅用于升级期）
+			oldStore := s.persistence.NewStore("trading", s.persistenceID, "snapshot")
+			if err4 := oldStore.Load(&snap); err4 != nil {
+				return
+			}
+		} else {
+			return
+		}
+	}
+
+LOADED:
+	metrics.SnapshotLoads.Add(1)
 
 	// 恢复余额/订单/仓位（快速热启动），后续会由对账循环纠偏
 	if snap.Balance > 0 {
@@ -136,12 +176,22 @@ func (ss *SnapshotService) saveSnapshot() {
 	case <-time.After(3 * time.Second):
 	}
 
-	store := s.persistence.NewStore("trading", s.persistenceID, "snapshot")
+	currentMarketSlug := s.GetCurrentMarket()
+	currentGen := s.currentEngineGeneration()
+	tag := snapshotTag(currentMarketSlug, currentGen)
+	store := s.persistence.NewStore("trading", s.persistenceID, tag)
 	_ = store.Save(&tradingSnapshot{
 		UpdatedAt:  time.Now(),
 		Balance:    balance,
 		OpenOrders: openOrders,
 		Positions:  positions,
+	})
+	// 写入 latest 指针（用于审计/定位、以及跨版本兼容加载）
+	_ = s.persistence.NewStore("trading", s.persistenceID, "snapshot_latest").Save(&snapshotMeta{
+		UpdatedAt:  time.Now(),
+		MarketSlug: currentMarketSlug,
+		Gen:        currentGen,
+		Tag:        tag,
 	})
 	metrics.SnapshotSaves.Add(1)
 }

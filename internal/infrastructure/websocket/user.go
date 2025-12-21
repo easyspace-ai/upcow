@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -46,6 +47,41 @@ type UserWebSocket struct {
 	dispatchCancel context.CancelFunc
 	orderUpdateC   chan orderUpdateJob
 	tradeUpdateC   chan tradeUpdateJob
+
+	// 丢弃补偿：当分发队列满导致事件丢弃时，触发上层对账（节流）
+	dropHandler  DropHandler
+	lastDropAtNs atomic.Int64
+}
+
+// DropHandler 用于在 WS 分发队列发生丢弃时触发补偿对账（例如：拉取订单状态/仓位纠偏）。
+// 注意：该回调必须“快速返回”，不可阻塞 WS 线程；实现应自行做节流/异步。
+type DropHandler interface {
+	OnDrop(kind string, meta map[string]string)
+}
+
+func (u *UserWebSocket) SetDropHandler(h DropHandler) {
+	u.mu.Lock()
+	u.dropHandler = h
+	u.mu.Unlock()
+}
+
+func (u *UserWebSocket) notifyDrop(kind string, meta map[string]string) {
+	u.mu.RLock()
+	h := u.dropHandler
+	u.mu.RUnlock()
+	if h == nil {
+		return
+	}
+	// 节流：500ms 内最多触发一次（避免持续满队列导致疯狂对账）
+	now := time.Now().UnixNano()
+	last := u.lastDropAtNs.Load()
+	if last > 0 && now-last < int64(500*time.Millisecond) {
+		return
+	}
+	if !u.lastDropAtNs.CompareAndSwap(last, now) {
+		return
+	}
+	go h.OnDrop(kind, meta)
 }
 
 type orderUpdateJob struct {
@@ -707,6 +743,11 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 	case u.orderUpdateC <- orderUpdateJob{ctx: ctx, order: order}:
 	default:
 		userLog.Warnf("⚠️ orderUpdate 队列已满，丢弃订单更新: orderID=%s", orderID)
+		u.notifyDrop("order", map[string]string{
+			"orderID": orderID,
+			"assetID": assetID,
+			"type":    orderTypeStr,
+		})
 	}
 
 	userLog.Debugf("处理订单消息: orderID=%s, type=%s, status=%s", orderID, orderTypeStr, status)
@@ -795,6 +836,11 @@ func (u *UserWebSocket) handleTradeMessage(ctx context.Context, msg map[string]i
 	case u.tradeUpdateC <- tradeUpdateJob{ctx: ctx, trade: trade}:
 	default:
 		userLog.Warnf("⚠️ tradeUpdate 队列已满，丢弃交易事件: tradeID=%s", tradeID)
+		u.notifyDrop("trade", map[string]string{
+			"tradeID": tradeID,
+			"orderID": orderID,
+			"assetID": assetID,
+		})
 	}
 }
 

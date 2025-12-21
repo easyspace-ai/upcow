@@ -27,6 +27,19 @@ import (
 	_ "github.com/betbot/gobet/internal/strategies/all"
 )
 
+// dropCompensator 实现 websocket.DropHandler：当 user WS 分发队列发生丢弃时触发一次严格对账（节流在 services 层处理）。
+type dropCompensator struct {
+	ts *services.TradingService
+}
+
+func (d dropCompensator) OnDrop(kind string, meta map[string]string) {
+	_ = meta
+	if d.ts == nil {
+		return
+	}
+	d.ts.CompensateAfterUserWSDrop("user_ws_drop:" + kind)
+}
+
 func main() {
 	// 解析命令行参数
 	configPath := flag.String("config", "", "配置文件路径（支持 .yaml, .yml, .json）")
@@ -301,6 +314,8 @@ func main() {
 	if session != nil && session.UserDataStream != nil {
 		session.UserDataStream.OnOrderUpdate(eventRouter)
 		session.UserDataStream.OnTradeUpdate(eventRouter)
+		// WS 分发队列丢弃补偿：一旦丢弃 trade/order，触发一次严格对账（节流）
+		session.UserDataStream.SetDropHandler(dropCompensator{ts: tradingService})
 	}
 	// 成交事件：必须经由 Session gate（防止跨周期 trade 直接进入 OrderEngine）
 	if session != nil {
@@ -328,6 +343,7 @@ func main() {
 		if newSession != nil && newSession.UserDataStream != nil {
 			newSession.UserDataStream.OnOrderUpdate(eventRouter)
 			newSession.UserDataStream.OnTradeUpdate(eventRouter)
+			newSession.UserDataStream.SetDropHandler(dropCompensator{ts: tradingService})
 		}
 		// 成交事件：必须经由 Session gate
 		if newSession != nil {

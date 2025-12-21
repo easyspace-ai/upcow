@@ -200,6 +200,7 @@ type OrderEngine struct {
 	openOrders    map[string]*domain.Order    // 未完成订单
 	orderStore    map[string]*domain.Order    // 所有订单（包括已成交的）
 	pendingTrades map[string]*domain.Trade    // 待处理的交易（订单还未创建时）
+	seenTrades    map[string]struct{}        // 已处理/已接收 tradeID 去重（周期内有效，reset 时清空）
 
 	// 配置
 	MinOrderSize float64 // 导出以便 TradingService 访问
@@ -231,6 +232,7 @@ func NewOrderEngine(ioExecutor *IOExecutor, minOrderSize float64, dryRun bool) *
 		openOrders:    make(map[string]*domain.Order),
 		orderStore:    make(map[string]*domain.Order),
 		pendingTrades: make(map[string]*domain.Trade),
+		seenTrades:    make(map[string]struct{}),
 		MinOrderSize:  minOrderSize,
 		dryRun:        dryRun,
 		ioExecutor:    ioExecutor,
@@ -640,6 +642,16 @@ func (e *OrderEngine) handleProcessTrade(cmd *ProcessTradeCommand) {
 		return
 	}
 	trade := cmd.Trade
+	if trade == nil {
+		return
+	}
+	// 去重：同一 tradeID 不允许重复影响状态（包含 WS 重放/补偿对账合成 trade）
+	if trade.ID != "" {
+		if _, ok := e.seenTrades[trade.ID]; ok {
+			return
+		}
+		e.seenTrades[trade.ID] = struct{}{}
+	}
 
 	// 1. 检查订单是否存在
 	order, exists := e.orderStore[trade.OrderID]
@@ -956,6 +968,7 @@ func (e *OrderEngine) handleResetCycle(cmd *ResetCycleCommand) {
 	e.openOrders = make(map[string]*domain.Order)
 	e.orderStore = make(map[string]*domain.Order)
 	e.pendingTrades = make(map[string]*domain.Trade)
+	e.seenTrades = make(map[string]struct{})
 
 	// 更新周期代号（必须单调递增）
 	if cmd.NewGeneration > 0 {

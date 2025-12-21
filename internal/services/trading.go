@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"strconv"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 
@@ -135,6 +137,37 @@ func (s *TradingService) currentEngineGeneration() int64 {
 	return s.engineGeneration.Load()
 }
 
+// deriveCycleTokenFromMarketSlug 尝试从 marketSlug 提取周期 token（通常为末尾时间戳）。
+// 例如：btc-updown-15m-1766322000 -> 1766322000
+func deriveCycleTokenFromMarketSlug(marketSlug string) (int64, bool) {
+	if marketSlug == "" {
+		return 0, false
+	}
+	i := strings.LastIndex(marketSlug, "-")
+	if i < 0 || i+1 >= len(marketSlug) {
+		return 0, false
+	}
+	ts, err := strconv.ParseInt(marketSlug[i+1:], 10, 64)
+	if err != nil || ts <= 0 {
+		return 0, false
+	}
+	return ts, true
+}
+
+func (s *TradingService) computeNextGeneration(prevGen int64, marketSlug string) int64 {
+	// 默认：单调递增（进程内 token）
+	desired := prevGen + 1
+	// 若能从 slug 提取周期时间戳，则用它做“跨重启稳定 token”（更适合审计与严格隔离）
+	if ts, ok := deriveCycleTokenFromMarketSlug(marketSlug); ok {
+		desired = ts
+	}
+	// 永不回退：即使传入了旧的 slug，也强制单调递增
+	if desired <= prevGen {
+		desired = prevGen + 1
+	}
+	return desired
+}
+
 // SetCurrentMarket 设置当前市场（用于过滤订单状态同步）
 func (s *TradingService) SetCurrentMarket(marketSlug string) {
 	s.currentMarketMu.Lock()
@@ -148,7 +181,9 @@ func (s *TradingService) SetCurrentMarket(marketSlug string) {
 	// - 清空 OrderEngine 的周期相关状态（openOrders/orderStore/positions/pendingTrades）
 	// - 清空订单状态缓存/去重器，避免跨周期串单或误去重
 	if prev != marketSlug && marketSlug != "" {
-		newGen := s.engineGeneration.Add(1)
+		prevGen := s.engineGeneration.Load()
+		newGen := s.computeNextGeneration(prevGen, marketSlug)
+		s.engineGeneration.Store(newGen)
 		if s.orderEngine != nil {
 			s.orderEngine.ResetForNewCycle(marketSlug, "TradingService.SetCurrentMarket", newGen)
 		}
