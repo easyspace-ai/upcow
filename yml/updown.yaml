@@ -56,16 +56,26 @@ exchangeStrategies:
   # 网格策略配置（已注释，如需启用请取消注释）
   # - on: polymarket
   #   grid:
-  #     grid_levels: [62, 65, 71, 77]  # 网格层级列表（分）
-  #     order_size: 3                  # 订单大小（share数量）
-  #     min_order_size: 1.1            # 最小下单金额（USDC）
-  #     enable_rebuy: true             # 允许重新买入
-  #     enable_double_side: true       # 双向交易
-  #     profit_target: 3               # 止盈目标（分）
-  #     max_unhedged_loss: 10          # 最大未对冲损失（分）
-  #     hard_stop_price: 50            # 硬止损价格（分）
-  #     elastic_stop_price: 40         # 弹性止损价格（分）
-  #     max_rounds_per_period: 1       # 每个周期最大轮数
+  #     # 推荐：camelCase（新架构）。同时兼容旧字段 grid_levels。
+  #     gridLevels: [45, 50, 55, 60, 65]      # 网格层级（cents，1-99）
+  #     enableDoubleSide: true                # 双向网格（YES+NO）
+  #     tokenType: "up"                       # enableDoubleSide=false 时生效：up/down/yes/no
+  #
+  #     orderSize: 3.0                        # 每次入场 shares
+  #     minOrderSize: 1.1                     # 最小下单金额（USDC）
+  #     autoAdjustSize: true                  # 自动放大 size 满足最小金额
+  #     maxSizeAdjustRatio: 5.0               # 最大放大倍数
+  #
+  #     profitTargetCents: 2                  # 止盈（cents）：entry + 2c 挂卖单
+  #     freezeHighCents: 95                   # 极端共识冻结阈值（>=95c 不再新增）
+  #     freezeLowCents: 0                     # 可选（<=0c 通常不触发）
+  #     cancelEntryOrdersOnFreeze: true       # 冻结时撤掉未成交入场单
+  #
+  #     warmupMs: 800                         # 预热（ms）
+  #     cooldownMs: 250                       # 冷却（ms）
+  #     stopNewEntriesSeconds: 120            # 周期末最后 N 秒不再开新仓
+  #     maxEntriesPerPeriod: 6                # 每周期最多入场次数
+  #     maxOpenEntryOrders: 4                 # 同时最多挂 N 笔入场单
   
   # 价格阈值策略配置（已注释，如需启用请取消注释）
   # - on: polymarket
