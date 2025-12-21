@@ -184,6 +184,8 @@ func (s *Strategy) step(loopCtx context.Context) {
 
 	// 3) 处理订单更新（更新成交/清理 open 订单引用）
 	s.drainOrderUpdates()
+	// 3.1) 仓位对账：以 OrderEngine 的 positions 为准，避免“本地以为有仓但实际无仓”导致裸卖单
+	s.reconcileHoldingsFromPositions(m.Slug)
 
 	// 4) 冷却（避免高频抖动撤单重挂）
 	if !s.lastActionAt.IsZero() && now.Sub(s.lastActionAt) < time.Duration(s.CooldownMs)*time.Millisecond {
@@ -287,6 +289,43 @@ func (s *Strategy) onOrderUpdateInternal(o *domain.Order) {
 	}
 }
 
+// reconcileHoldingsFromPositions 以 OrderEngine 的 positions 快照为准同步持仓数量。
+//
+// 目的：
+// - 避免 WS/orderUpdate 丢包/延迟时，本地 qYes/qNo 漂移
+// - 更重要：避免回平时根据“幻觉持仓”去下 SELL（交易所会拒绝无仓卖单）
+func (s *Strategy) reconcileHoldingsFromPositions(marketSlug string) {
+	if s.TradingService == nil || marketSlug == "" {
+		return
+	}
+	positions := s.TradingService.GetOpenPositionsForMarket(marketSlug)
+	var yesHeld, noHeld float64
+	for _, p := range positions {
+		if p == nil {
+			continue
+		}
+		switch p.TokenType {
+		case domain.TokenTypeUp:
+			if p.Size > 0 {
+				yesHeld += p.Size
+			}
+		case domain.TokenTypeDown:
+			if p.Size > 0 {
+				noHeld += p.Size
+			}
+		}
+	}
+	// 允许轻微误差（浮点/分批成交）
+	const eps = 0.0001
+	if math.Abs(s.qYes-yesHeld) > eps || math.Abs(s.qNo-noHeld) > eps {
+		log.Warnf("🧾 [mintpress] 仓位对账修正: qYes %.4f→%.4f qNo %.4f→%.4f (market=%s)",
+			s.qYes, yesHeld, s.qNo, noHeld, marketSlug)
+		s.qYes, s.qNo = yesHeld, noHeld
+		// lockedSets 也随之修正
+		s.lockedSets = math.Min(s.qYes, s.qNo)
+	}
+}
+
 func (s *Strategy) cancelBoth(ctx context.Context) {
 	if s.openYes != nil && s.openYes.OrderID != "" {
 		_ = s.TradingService.CancelOrder(ctx, s.openYes.OrderID)
@@ -299,6 +338,9 @@ func (s *Strategy) cancelBoth(ctx context.Context) {
 }
 
 func (s *Strategy) tryFlatten(ctx context.Context, m *domain.Market) {
+	// 再次基于真实仓位对账，确保不会裸卖
+	s.reconcileHoldingsFromPositions(m.Slug)
+
 	excess := s.qYes - s.qNo
 	var assetID string
 	var tokenType domain.TokenType
@@ -311,6 +353,22 @@ func (s *Strategy) tryFlatten(ctx context.Context, m *domain.Market) {
 		tokenType = domain.TokenTypeDown
 	} else {
 		return
+	}
+
+	// 交易所不允许无仓卖：回平卖出数量必须 <= 实际持仓
+	var held float64
+	if tokenType == domain.TokenTypeUp {
+		held = s.qYes
+	} else {
+		held = s.qNo
+	}
+	if held <= 0 {
+		log.Warnf("🚫 [mintpress] 回平被跳过：检测到无可卖持仓 token=%s excess=%.4f market=%s",
+			tokenType, excess, m.Slug)
+		return
+	}
+	if excess > held {
+		excess = held
 	}
 
 	// 取 bestBid（允许大价差）并减去 offset，快速回平
