@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -343,9 +344,30 @@ func (c *Client) readMessages() {
 			return
 		}
 
+		// RTDS 文档宣称 payload 是 JSON，但在真实链路（尤其是代理/网关）里可能出现：
+		// - 空消息/纯空白（会导致 json.Unmarshal 报 EOF / unexpected end）
+		// - 文本心跳 PING/PONG
+		trimmed := strings.TrimSpace(string(data))
+		if trimmed == "" {
+			// 空消息：直接忽略（避免刷屏）
+			continue
+		}
+		if trimmed == "PING" {
+			// 文档建议发送 PING；这里兼容服务器文本心跳
+			_ = c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
+			_ = c.conn.WriteMessage(websocket.TextMessage, []byte("PONG"))
+			continue
+		}
+		if trimmed == "PONG" {
+			continue
+		}
+
 		var msg Message
-		if err := json.Unmarshal(data, &msg); err != nil {
-			c.logger.Printf("Failed to parse message: %v\n", err)
+		if err := json.Unmarshal([]byte(trimmed), &msg); err != nil {
+			// 只记录高信号错误；EOF/意外截断多为代理/心跳噪音
+			if c.logger != nil {
+				c.logger.Printf("Failed to parse message: %v\n", err)
+			}
 			continue
 		}
 
@@ -422,8 +444,14 @@ func (c *Client) handleMessage(msg *Message) {
 	// Log received message for debugging
 	c.logger.Printf("Received RTDS message: topic=%s, type=%s\n", msg.Topic, msg.Type)
 
+	// 订阅确认/管理消息：通常不需要业务 handler
+	if msg.Type == "subscribe" || msg.Type == "unsubscribe" {
+		return
+	}
+
 	c.handlersMutex.RLock()
 	handler, exists := c.messageHandlers[msg.Topic]
+	wildcardHandler, wildcardExists := c.messageHandlers["*"]
 	c.handlersMutex.RUnlock()
 
 	if exists && handler != nil {
@@ -431,22 +459,21 @@ func (c *Client) handleMessage(msg *Message) {
 			c.logger.Printf("Error handling message for topic %s: %v\n", msg.Topic, err)
 		}
 	} else {
-		// Log registered topics for debugging
-		c.handlersMutex.RLock()
-		topics := make([]string, 0, len(c.messageHandlers))
-		for topic := range c.messageHandlers {
-			topics = append(topics, topic)
+		// 如果有 wildcard handler，不把“无 handler”当问题（避免无意义刷屏）
+		if !wildcardExists || wildcardHandler == nil {
+			// Log registered topics for debugging
+			c.handlersMutex.RLock()
+			topics := make([]string, 0, len(c.messageHandlers))
+			for topic := range c.messageHandlers {
+				topics = append(topics, topic)
+			}
+			c.handlersMutex.RUnlock()
+			c.logger.Printf("No handler registered for topic %s (registered: %v)\n", msg.Topic, topics)
 		}
-		c.handlersMutex.RUnlock()
-		c.logger.Printf("No handler registered for topic %s (registered: %v)\n", msg.Topic, topics)
 	}
 
 	// Also check for wildcard handler
-	c.handlersMutex.RLock()
-	wildcardHandler, exists := c.messageHandlers["*"]
-	c.handlersMutex.RUnlock()
-
-	if exists && wildcardHandler != nil {
+	if wildcardExists && wildcardHandler != nil {
 		if err := wildcardHandler(msg); err != nil {
 			c.logger.Printf("Error handling message with wildcard handler: %v\n", err)
 		}
