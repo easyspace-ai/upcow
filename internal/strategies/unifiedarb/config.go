@@ -51,8 +51,12 @@ type Config struct {
 	DirectionThreshold float64 `json:"directionThreshold" yaml:"directionThreshold"` // decimal：主方向判定阈值（默认 0.70）
 
 	// ----- pairlock 风控（保守实现） -----
-	EnableParallel           bool    `json:"enableParallel" yaml:"enableParallel"`
-	MaxConcurrentPlans       int     `json:"maxConcurrentPlans" yaml:"maxConcurrentPlans"`
+	EnableParallel     bool `json:"enableParallel" yaml:"enableParallel"`
+	MaxConcurrentPlans int  `json:"maxConcurrentPlans" yaml:"maxConcurrentPlans"`
+	// MaxTotalUnhedgedShares 全局在途“最坏未对冲规模”预算（shares）。
+	// 用于并行模式：避免同时启动过多计划导致最坏情况下（单腿成交）裸露累积过大。
+	// 默认（EnableParallel=true 且未显式配置时）：等于 OrderSize。
+	MaxTotalUnhedgedShares   float64 `json:"maxTotalUnhedgedShares" yaml:"maxTotalUnhedgedShares"`
 	MaxPlanAgeSeconds        int     `json:"maxPlanAgeSeconds" yaml:"maxPlanAgeSeconds"`
 	OnFailAction             string  `json:"onFailAction" yaml:"onFailAction"` // pause/cancel_pause/flatten_pause
 	FailMaxSellSlippageCents int     `json:"failMaxSellSlippageCents" yaml:"failMaxSellSlippageCents"`
@@ -179,9 +183,22 @@ func (c *Config) Validate() error {
 	// 并行/失败动作
 	if !c.EnableParallel {
 		c.MaxConcurrentPlans = 1
+		// 串行模式下风险预算不生效，保持为 0 以表达“无需预算”
+		if c.MaxTotalUnhedgedShares < 0 {
+			return fmt.Errorf("maxTotalUnhedgedShares 不能为负数")
+		}
+		c.MaxTotalUnhedgedShares = 0
 	}
 	if c.EnableParallel && c.MaxConcurrentPlans <= 0 {
 		c.MaxConcurrentPlans = 2
+	}
+	if c.EnableParallel {
+		if c.MaxTotalUnhedgedShares <= 0 {
+			c.MaxTotalUnhedgedShares = c.OrderSize
+		}
+		if c.MaxTotalUnhedgedShares < 0 {
+			return fmt.Errorf("maxTotalUnhedgedShares 不能为负数")
+		}
 	}
 	if c.MaxPlanAgeSeconds <= 0 {
 		c.MaxPlanAgeSeconds = 60

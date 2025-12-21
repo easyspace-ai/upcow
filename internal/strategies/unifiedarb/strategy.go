@@ -39,6 +39,10 @@ type plan struct {
 
 	orderIDs []string
 	done     map[string]bool // orderID -> done
+
+	// riskShares: 该计划的“最坏执行未对冲规模”估计（用于并行风险预算）
+	riskShares float64
+	decision   string
 }
 
 // Strategy：统一套利策略（融合 arbitrage / pairedtrading / pairlock 的“锁定型套利”共性）
@@ -434,8 +438,8 @@ func (s *Strategy) checkPlanTimeouts(ctx context.Context, now time.Time, m *doma
 			continue
 		}
 		// 超时：按配置执行失败动作，并暂停本周期
-		log.Warnf("⚠️ [%s] plan 超时触发失败动作: plan=%s market=%s age=%s action=%s",
-			ID, p.id, m.Slug, now.Sub(p.createdAt).Truncate(time.Millisecond), s.OnFailAction)
+		log.Warnf("⚠️ [%s] plan 超时触发失败动作: plan=%s market=%s age=%s action=%s risk=%.4f decision=%s",
+			ID, p.id, m.Slug, now.Sub(p.createdAt).Truncate(time.Millisecond), s.OnFailAction, p.riskShares, p.decision)
 		s.failAction(ctx, now, m)
 		delete(s.plans, id)
 	}
@@ -694,7 +698,7 @@ func (s *Strategy) maybeBuild(ctx context.Context, m *domain.Market, now time.Ti
 	if req == nil {
 		return
 	}
-	_ = s.submitPlan(orderCtx, now, req)
+	_ = s.submitPlan(orderCtx, now, req, fmt.Sprintf("build target=%s ratioUp=%.2f", target, ratioUp))
 }
 
 func (s *Strategy) maybeLock(ctx context.Context, m *domain.Market, now time.Time, locked bool, minProfit float64) {
@@ -722,7 +726,7 @@ func (s *Strategy) maybeLock(ctx context.Context, m *domain.Market, now time.Tim
 				domain.TokenTypeDown: downAsk,
 			})
 			if req != nil {
-				_ = s.submitPlan(orderCtx, now, req)
+				_ = s.submitPlan(orderCtx, now, req, "extreme_high_buy_insurance_down")
 			}
 			return
 		}
@@ -731,7 +735,7 @@ func (s *Strategy) maybeLock(ctx context.Context, m *domain.Market, now time.Tim
 				domain.TokenTypeUp: upAsk,
 			})
 			if req != nil {
-				_ = s.submitPlan(orderCtx, now, req)
+				_ = s.submitPlan(orderCtx, now, req, "extreme_high_buy_insurance_up")
 			}
 			return
 		}
@@ -746,7 +750,7 @@ func (s *Strategy) maybeLock(ctx context.Context, m *domain.Market, now time.Tim
 				domain.TokenTypeUp: upAsk,
 			})
 			if req != nil {
-				_ = s.submitPlan(orderCtx, now, req)
+				_ = s.submitPlan(orderCtx, now, req, "fix_negative_profit_up")
 			}
 			return
 		}
@@ -755,7 +759,7 @@ func (s *Strategy) maybeLock(ctx context.Context, m *domain.Market, now time.Tim
 				domain.TokenTypeDown: downAsk,
 			})
 			if req != nil {
-				_ = s.submitPlan(orderCtx, now, req)
+				_ = s.submitPlan(orderCtx, now, req, "fix_negative_profit_down")
 			}
 			return
 		}
@@ -800,7 +804,7 @@ func (s *Strategy) maybeLock(ctx context.Context, m *domain.Market, now time.Tim
 				domain.TokenTypeDown: downAsk,
 			})
 			if req != nil {
-				_ = s.submitPlan(orderCtx, now, req)
+				_ = s.submitPlan(orderCtx, now, req, fmt.Sprintf("balance_min_profit tok=%s minP=%.2f->%.2f", bestTok, minProfit, bestMin))
 			}
 		}
 	}
@@ -905,7 +909,7 @@ func (s *Strategy) maybeAmplify(ctx context.Context, m *domain.Market, now time.
 		Legs:       legs,
 		Hedge:      s.hedgeConfig(),
 	}
-	_ = s.submitPlan(orderCtx, now, req)
+	_ = s.submitPlan(orderCtx, now, req, fmt.Sprintf("amplify main=%s mainAsk=%.4f insurance=%t", main, mainAskDec, insSize > 0))
 }
 
 func (s *Strategy) maybeCompleteSet(ctx context.Context, m *domain.Market, now time.Time, reason string) bool {
@@ -931,7 +935,7 @@ func (s *Strategy) maybeCompleteSet(ctx context.Context, m *domain.Market, now t
 	if req == nil {
 		return false
 	}
-	return s.submitPlan(orderCtx, now, req)
+	return s.submitPlan(orderCtx, now, req, fmt.Sprintf("complete_set profitTargetCents=%d", s.ProfitTargetCents))
 }
 
 // quoteBuy 统一买入报价入口：
@@ -1047,10 +1051,23 @@ func (s *Strategy) buildCompleteSetReq(m *domain.Market, yesAsk, noAsk domain.Pr
 	return req
 }
 
-func (s *Strategy) submitPlan(ctx context.Context, now time.Time, req *execution.MultiLegRequest) bool {
+func (s *Strategy) submitPlan(ctx context.Context, now time.Time, req *execution.MultiLegRequest, decision string) bool {
 	if req == nil {
 		return false
 	}
+
+	// 并行风险预算：限制“最坏执行未对冲规模”
+	// 说明：该预算主要针对“多腿并发执行时的成交不匹配风险”，而非策略的方向性风险。
+	if s.MaxTotalUnhedgedShares > 0 {
+		newRisk := estimatePlanRiskShares(req)
+		curRisk := s.currentActiveRiskShares()
+		if curRisk+newRisk > s.MaxTotalUnhedgedShares {
+			log.Warnf("⛔ [%s] risk budget exceeded: market=%s cur=%.4f new=%.4f budget=%.4f decision=%s",
+				ID, req.MarketSlug, curRisk, newRisk, s.MaxTotalUnhedgedShares, decision)
+			return false
+		}
+	}
+
 	created, err := s.TradingService.ExecuteMultiLeg(ctx, *req)
 	if err != nil {
 		return false
@@ -1058,9 +1075,11 @@ func (s *Strategy) submitPlan(ctx context.Context, now time.Time, req *execution
 
 	// 记录 plan
 	p := &plan{
-		id:        fmt.Sprintf("plan_%d", time.Now().UnixNano()),
-		market:    req.MarketSlug,
-		createdAt: now,
+		id:         fmt.Sprintf("plan_%d", time.Now().UnixNano()),
+		market:     req.MarketSlug,
+		createdAt:  now,
+		decision:   decision,
+		riskShares: estimatePlanRiskShares(req),
 	}
 	for _, o := range created {
 		if o == nil || o.OrderID == "" {
@@ -1083,10 +1102,49 @@ func (s *Strategy) submitPlan(ctx context.Context, now time.Time, req *execution
 	s.stateMu.Unlock()
 
 	if st != nil {
-		log.Infof("🎯 [%s] submit: rounds=%d/%d market=%s QUp=%.2f QDown=%.2f P_up=%.2f P_down=%.2f",
-			ID, s.rounds, s.MaxRoundsPerPeriod, req.MarketSlug, st.QUp, st.QDown, st.ProfitIfUpWin(), st.ProfitIfDownWin())
+		log.Infof("🎯 [%s] submit: rounds=%d/%d market=%s action=%s risk=%.4f decision=%s QUp=%.2f QDown=%.2f P_up=%.2f P_down=%.2f",
+			ID, s.rounds, s.MaxRoundsPerPeriod, req.MarketSlug, req.Name, p.riskShares, decision, st.QUp, st.QDown, st.ProfitIfUpWin(), st.ProfitIfDownWin())
 	}
 	return true
+}
+
+func (s *Strategy) currentActiveRiskShares() float64 {
+	s.plansMu.Lock()
+	defer s.plansMu.Unlock()
+	total := 0.0
+	for _, p := range s.plans {
+		if p == nil {
+			continue
+		}
+		if planDone(p) {
+			continue
+		}
+		total += p.riskShares
+	}
+	return total
+}
+
+func estimatePlanRiskShares(req *execution.MultiLegRequest) float64 {
+	if req == nil || len(req.Legs) == 0 {
+		return 0
+	}
+
+	// complete-set 场景：Up+Down 双腿同时买入，执行不匹配的最坏风险近似为 max(size)。
+	if len(req.Legs) == 2 &&
+		req.Legs[0].Side == types.SideBuy && req.Legs[1].Side == types.SideBuy &&
+		((req.Legs[0].TokenType == domain.TokenTypeUp && req.Legs[1].TokenType == domain.TokenTypeDown) ||
+			(req.Legs[0].TokenType == domain.TokenTypeDown && req.Legs[1].TokenType == domain.TokenTypeUp)) {
+		return math.Max(req.Legs[0].Size, req.Legs[1].Size)
+	}
+
+	// 其他多腿（如 amplify 主方向 + 保险）：保守取 sum(size)
+	sum := 0.0
+	for _, l := range req.Legs {
+		if l.Size > 0 {
+			sum += l.Size
+		}
+	}
+	return sum
 }
 
 func (s *Strategy) stateSnapshot() (qUp, qDown, cUp, cDown, pUp, pDown float64) {
