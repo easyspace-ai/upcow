@@ -21,8 +21,15 @@ func (s *DataRecorderStrategy) initLoopIfNeeded() {
 
 func (s *DataRecorderStrategy) startLoop(ctx context.Context) {
 	s.initLoopIfNeeded()
+	// 关键：loop 的生命周期不应绑定到 “单次 session/单次 Run 的 ctx”。
+	// 周期切换时，Trader 会 cancel 旧 runCtx；如果 loop 绑定 runCtx，会导致 loop 退出且 loopOnce 阻止重启。
+	// 因此优先使用策略自身的长期 ctx（仅在 Shutdown/Cleanup 时取消）。
+	baseCtx := s.ctx
+	if baseCtx == nil {
+		baseCtx = ctx
+	}
 	common.StartLoopOnce(
-		ctx,
+		baseCtx,
 		&s.loopOnce,
 		func(cancel context.CancelFunc) { s.loopCancel = cancel },
 		1*time.Second,

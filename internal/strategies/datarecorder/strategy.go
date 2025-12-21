@@ -277,7 +277,8 @@ func (s *DataRecorderStrategy) OnPriceChanged(ctx context.Context, event *events
 		logger.Debugf("数据记录策略: 收到价格变化事件 - 市场=%s, Token=%s, 价格=%.4f",
 			event.Market.Slug, event.TokenType, event.NewPrice.ToDecimal())
 	}
-	s.startLoop(ctx)
+	// loop 使用策略自身长期 ctx，避免周期切换 cancel 导致 loop 停摆
+	s.startLoop(s.ctx)
 	s.priceMu.Lock()
 	if s.latestPrices == nil {
 		s.latestPrices = make(map[domain.TokenType]*events.PriceChangedEvent)
@@ -302,12 +303,15 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 
 	s.mu.Lock()
 
-	// 首先验证事件是否属于当前周期（防止旧周期的延迟事件污染数据）
-	if s.currentMarket != nil && s.currentMarket.Slug != "" && s.currentMarket.Slug != event.Market.Slug {
-		logger.Warnf("数据记录策略: ⚠️ 忽略非当前周期的价格事件 - 当前周期=%s, 事件周期=%s, Token=%s, 价格=%.4f",
-			s.currentMarket.Slug, event.Market.Slug, event.TokenType, event.NewPrice.ToDecimal())
-		s.mu.Unlock()
-		return nil // 直接返回，不处理旧周期的事件
+	// 只忽略“更旧周期”的延迟事件；新周期的第一条事件必须允许触发切换。
+	// 这里以 Market.Timestamp 作为周期单调递增的判定依据（比 slug 字符串更稳）。
+	if s.currentMarket != nil && event.Market != nil {
+		if s.currentMarket.Timestamp > 0 && event.Market.Timestamp > 0 && event.Market.Timestamp < s.currentMarket.Timestamp {
+			logger.Warnf("数据记录策略: ⚠️ 忽略更旧周期的延迟价格事件 - 当前周期=%s(ts=%d), 事件周期=%s(ts=%d), Token=%s, 价格=%.4f",
+				s.currentMarket.Slug, s.currentMarket.Timestamp, event.Market.Slug, event.Market.Timestamp, event.TokenType, event.NewPrice.ToDecimal())
+			s.mu.Unlock()
+			return nil
+		}
 	}
 
 	// 二次防护：即使 slug 相同，也要求事件时间不早于周期开始时间（避免对象复用/乱序导致的“旧事件混入”）
@@ -323,21 +327,22 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 		}
 	}
 
-	// 检查是否切换到新周期（基于 Market.Slug 变化）
-	// 同时检查时间戳，确保即使 Market.Slug 相同但时间已过周期结束时间，也要切换
+	// 检查是否切换到新周期：只在“市场对象确实变更（timestamp/slug 单调前进）”时切换。
+	// 注意：不要在这里仅凭 now>=cycleEndTs 去“猜下一个 market”，因为 asset_id 会变化且我们没有完整 market 信息。
 	shouldSwitchCycle := false
-	if s.currentMarket == nil || s.currentMarket.Slug != event.Market.Slug {
+	if s.currentMarket == nil {
 		shouldSwitchCycle = true
-		logger.Infof("数据记录策略: 检测到周期切换 (Slug变化: %s -> %s)",
-			getSlugOrEmpty(s.currentMarket), event.Market.Slug)
-	} else if s.currentMarket != nil {
-		// 基于时间戳的周期检测：如果当前时间超过周期结束时间（周期开始时间 + 15分钟），也要切换
-		now := time.Now().Unix()
-		cycleEndTs := s.currentMarket.Timestamp + 900 // 15 分钟 = 900 秒
-		if now >= cycleEndTs {
+		logger.Infof("数据记录策略: 初始化当前周期: %s(ts=%d)", event.Market.Slug, event.Market.Timestamp)
+	} else if event.Market != nil {
+		if event.Market.Timestamp > 0 && s.currentMarket.Timestamp > 0 && event.Market.Timestamp > s.currentMarket.Timestamp {
 			shouldSwitchCycle = true
-			logger.Infof("数据记录策略: 检测到周期切换 (时间戳检测: 当前=%d, 周期结束=%d)",
-				now, cycleEndTs)
+			logger.Infof("数据记录策略: 检测到周期切换 (timestamp 前进: %s[%d] -> %s[%d])",
+				s.currentMarket.Slug, s.currentMarket.Timestamp, event.Market.Slug, event.Market.Timestamp)
+		} else if event.Market.Slug != "" && s.currentMarket.Slug != "" && event.Market.Slug != s.currentMarket.Slug {
+			// 兜底：timestamp 缺失/为 0 时，用 slug 变化触发
+			shouldSwitchCycle = true
+			logger.Infof("数据记录策略: 检测到周期切换 (slug 变化: %s -> %s)",
+				s.currentMarket.Slug, event.Market.Slug)
 		}
 	}
 
@@ -350,7 +355,7 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 		}
 		s.switchingCycle = true
 
-		// 周期切换：先刷新并关闭上一个周期文件
+		// 周期切换：先刷新并关闭上一个周期文件（只做一次）
 		if s.currentMarket != nil {
 			oldSlug := s.currentMarket.Slug
 			logger.Infof("数据记录策略: 保存旧周期数据: %s", oldSlug)
@@ -361,8 +366,7 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 			}
 		}
 
-		// 更新市场信息
-		oldMarket := s.currentMarket
+		// 更新市场信息（切换到新周期）
 		s.currentMarket = event.Market
 
 		// 重置所有价格状态（新周期需要重新获取）
@@ -384,32 +388,27 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 
 		// 获取新周期的目标价（上一个周期收盘价）
 		currentCycleStart := event.Market.Timestamp
-		s.mu.Unlock()
+		s.mu.Unlock() // IO/HTTP 放锁外
 
-		// 同步获取目标价，确保在记录数据前目标价已设置
-		// 使用带超时的 context 避免无限期等待
-		targetCtx, targetCancel := context.WithTimeout(ctx, 10*time.Second)
+		// 同步获取目标价，确保在记录数据前目标价已设置。
+		// 关键：不要使用 price event 的 ctx（它可能随着 WS/连接关闭而 cancel，导致 context canceled）。
+		targetCtx, targetCancel := context.WithTimeout(s.ctx, 10*time.Second)
 		defer targetCancel()
 
 		targetPrice, err := s.targetPriceFetcher.FetchTargetPrice(targetCtx, currentCycleStart)
 		if err != nil {
-			logger.Warnf("获取目标价失败: %v，尝试使用上一个周期的目标价", err)
-			// 如果获取失败，尝试使用上一个周期的目标价（如果有）
-			if oldMarket != nil {
-				// 尝试使用上一个周期的目标价（如果之前有设置）
-				s.mu.Lock()
-				oldTargetPrice := s.btcTargetPrice
-				s.mu.Unlock()
-				if oldTargetPrice > 0 {
-					targetPrice = oldTargetPrice
-					logger.Infof("数据记录策略: 使用上一个周期的目标价: %.2f", targetPrice)
-				} else {
-					targetPrice = 0
-					logger.Warnf("数据记录策略: 上一个周期的目标价也为0，将使用0（数据可能无法记录）")
-				}
+			// 退化策略（避免一直为 0 导致无法记录）：
+			// - 优先用当前已知的 Chainlink 实时报价作为近似目标价（误差可接受时，至少保证数据可写入）
+			s.mu.RLock()
+			rt := s.btcRealtimePrice
+			rtAge := time.Since(s.btcRealtimePriceUpdatedAt)
+			s.mu.RUnlock()
+			if rt > 0 && rtAge < 30*time.Second {
+				targetPrice = rt
+				logger.Warnf("获取目标价失败: %v，使用近期 Chainlink 实时报价作为目标价近似: %.2f (age=%s)", err, targetPrice, rtAge)
 			} else {
+				logger.Warnf("获取目标价失败: %v，且无可用的近期 Chainlink 报价作为退化方案（rt=%.2f age=%s），目标价保持 0", err, rt, rtAge)
 				targetPrice = 0
-				logger.Warnf("数据记录策略: 没有上一个周期，将使用0（数据可能无法记录）")
 			}
 		}
 
@@ -454,22 +453,14 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 	// 记录 BTC 实时价格的时间戳，用于追踪价格更新情况
 	// 注意：BTC 价格更新频率可能低于 UP/DOWN 价格变化频率，这是正常的
 
-	// 价格合理性保护：
-	// 1. 检查价格总和是否合理：正常情况下 upPrice + downPrice 应该稍微 > 1（通常 1.01-1.05）
-	//    如果价格总和 > 1.5，说明价格异常（可能是旧周期残留或数据错误）
+	// 价格合理性保护（降低误报，主要防止“旧周期残留/极端值”）：
 	priceSum := upPrice + downPrice
 	if priceSum > 1.5 {
 		logger.Warnf("数据记录策略: ⚠️ 检测到异常价格总和（可能是旧周期残留），跳过记录 - UP=%.4f, DOWN=%.4f, 总和=%.4f, 当前周期=%s",
 			upPrice, downPrice, priceSum, getSlugOrEmpty(s.currentMarket))
 		return nil
 	}
-	
-	// 2. 检查价格总和是否过小：正常情况下应该 > 1.0
-	if priceSum <= 1.0 {
-		logger.Warnf("数据记录策略: ⚠️ 检测到价格总和异常（<=1.0），跳过记录 - UP=%.4f, DOWN=%.4f, 总和=%.4f, 当前周期=%s",
-			upPrice, downPrice, priceSum, getSlugOrEmpty(s.currentMarket))
-		return nil
-	}
+	// 注意：priceSum 可能 < 1（例如使用 best_bid 或市场处于稀疏/价差较大阶段），不应仅凭 <=1.0 直接判异常。
 
 	// 3. 检查价格差异是否合理：正常情况下 UP 和 DOWN 的价格应该比较接近
 	//    如果价格差异过大（如 UP=0.01, DOWN=1.00），说明数据异常
@@ -623,100 +614,30 @@ func (s *DataRecorderStrategy) checkAndSwitchCycleByTime(ctx context.Context) {
 	now := time.Now().Unix()
 	cycleEndTs := currentMarket.Timestamp + 900 // 15 分钟 = 900 秒
 
-	// 如果当前时间超过周期结束时间，需要切换到下一个周期
+	// 如果当前时间超过周期结束时间：只做“落盘/封存”。
+	// 不要在这里“猜下一个 market 并 StartCycle”，因为：
+	// - 15m 市场的 asset_id/condition_id 会变化，策略不掌握完整 market 信息
+	// - MarketScheduler 会负责真正的市场切换与重新订阅，价格事件会携带正确的新 market
 	if now >= cycleEndTs {
-		nextTs := cycleEndTs
-		nextSlug := fmt.Sprintf("btc-updown-15m-%d", nextTs)
-
-		logger.Infof("数据记录策略: 定时检查检测到周期切换 (当前时间=%d, 周期结束=%d, 下一个周期=%s)",
-			now, cycleEndTs, nextSlug)
-
-		// 如果下一个周期的 slug 与当前不同，触发周期切换
-		if currentMarket.Slug != nextSlug {
-			// 防止重复切换周期
-			s.mu.Lock()
-			if s.switchingCycle {
-				logger.Debugf("数据记录策略: 定时检查时周期切换正在进行中，跳过重复切换")
-				s.mu.Unlock()
-				return
-			}
-			s.switchingCycle = true
-
-			// 保存当前市场的字段（用于创建新市场对象）
-			yesAssetID := currentMarket.YesAssetID
-			noAssetID := currentMarket.NoAssetID
-			conditionID := currentMarket.ConditionID
-			question := currentMarket.Question
-
-			// 创建临时 Market 对象用于周期切换
-			nextMarket := &domain.Market{
-				Slug:        nextSlug,
-				Timestamp:   nextTs,
-				YesAssetID:  yesAssetID,
-				NoAssetID:   noAssetID,
-				ConditionID: conditionID,
-				Question:    question,
-			}
-
-			// 保存旧周期数据（currentMarket 已经在上方检查过不为 nil）
-			logger.Infof("数据记录策略: 定时检查保存旧周期数据: %s", currentMarket.Slug)
-			if err := s.recorder.SaveCurrentCycle(); err != nil {
-				logger.Errorf("定时检查保存周期数据失败: %v", err)
-			} else {
-				logger.Infof("数据记录策略: 定时检查旧周期数据已保存: %s", currentMarket.Slug)
-			}
-
-			// 更新市场信息
-			s.currentMarket = nextMarket
-
-			// 重置所有价格状态（新周期需要重新获取）
-			s.btcTargetPrice = 0
-			s.btcTargetPriceSet = false
-			s.upPrice = 0   // 清理旧周期的 UP 价格
-			s.downPrice = 0 // 清理旧周期的 DOWN 价格
-			logger.Debugf("数据记录策略: 定时检查周期切换时已清理所有价格状态")
-
-			// 开始新周期
-			logger.Infof("数据记录策略: 定时检查开始新周期: %s (时间戳=%d)", nextMarket.Slug, nextMarket.Timestamp)
-			if err := s.recorder.StartCycle(nextMarket.Slug); err != nil {
-				logger.Errorf("定时检查开始新周期失败: %v", err)
-				s.switchingCycle = false
-				s.mu.Unlock()
-				return
-			}
-			logger.Infof("数据记录策略: 定时检查新周期已启动: %s", nextMarket.Slug)
-
-			// 获取新周期的目标价
-			currentCycleStart := nextMarket.Timestamp
-			// 在解锁前保存旧目标价
-			oldTargetPrice := s.btcTargetPrice
+		// 防止重复落盘刷屏：使用 switchingCycle 作为“正在 finalize”的简易互斥
+		s.mu.Lock()
+		if s.switchingCycle {
 			s.mu.Unlock()
-
-			// 同步获取目标价，确保在记录数据前目标价已设置
-			targetCtx, targetCancel := context.WithTimeout(ctx, 10*time.Second)
-			targetPrice, err := s.targetPriceFetcher.FetchTargetPrice(targetCtx, currentCycleStart)
-			targetCancel()
-
-			if err != nil {
-				logger.Warnf("定时检查获取目标价失败: %v，尝试使用上一个周期的目标价", err)
-				// 尝试使用上一个周期的目标价
-				if oldTargetPrice > 0 {
-					targetPrice = oldTargetPrice
-					logger.Infof("数据记录策略: 定时检查使用上一个周期的目标价: %.2f", targetPrice)
-				} else {
-					targetPrice = 0
-					logger.Warnf("数据记录策略: 定时检查上一个周期的目标价也为0，将使用0（数据可能无法记录）")
-				}
-			}
-
-			s.mu.Lock()
-			s.btcTargetPrice = targetPrice
-			s.btcTargetPriceSet = true
-			s.switchingCycle = false
-			s.mu.Unlock()
-
-			logger.Infof("数据记录策略: 定时检查新周期 %s，目标价=%.2f (已设置)", nextMarket.Slug, targetPrice)
+			return
 		}
+		s.switchingCycle = true
+		s.mu.Unlock()
+
+		logger.Infof("数据记录策略: 周期已结束，执行落盘封存: %s (now=%d end=%d)", currentMarket.Slug, now, cycleEndTs)
+		if err := s.recorder.SaveCurrentCycle(); err != nil {
+			logger.Errorf("数据记录策略: 周期落盘失败: %v", err)
+		} else {
+			logger.Infof("数据记录策略: 周期已落盘封存: %s", currentMarket.Slug)
+		}
+
+		s.mu.Lock()
+		s.switchingCycle = false
+		s.mu.Unlock()
 	}
 }
 
@@ -810,7 +731,8 @@ func (s *DataRecorderStrategy) Subscribe(session *bbgo.ExchangeSession) {
 // Run 运行策略（BBGO 风格）
 func (s *DataRecorderStrategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, session *bbgo.ExchangeSession) error {
 	log.Infof("数据记录策略已启动")
-	s.startLoop(ctx)
+	// loop 使用策略自身长期 ctx，避免周期切换 cancel 导致 loop 停摆
+	s.startLoop(s.ctx)
 	return nil
 }
 

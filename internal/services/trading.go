@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -63,6 +64,10 @@ type TradingService struct {
 	inFlightDeduper *execution.InFlightDeduper
 	circuitBreaker  *risk.CircuitBreaker
 
+	// 周期代号（generation）：每次 SetCurrentMarket（market 变化）递增；
+	// 所有写入 OrderEngine 的命令必须携带当前 generation，旧 generation 一律丢弃。
+	engineGeneration atomic.Int64
+
 	// 重启恢复/快照
 	persistence   persistence.Service
 	persistenceID string
@@ -105,6 +110,8 @@ func NewTradingService(clobClient *client.Client, dryRun bool) *TradingService {
 			DailyLossLimitCents:  0,
 		}),
 	}
+	// generation 从 1 开始，避免默认 0 被误用
+	service.engineGeneration.Store(1)
 
 	// 初始化组件（按职责拆分，但保持 TradingService 对外方法不变）
 	service.orders = &OrdersService{s: service}
@@ -121,12 +128,38 @@ func NewTradingService(clobClient *client.Client, dryRun bool) *TradingService {
 	return service
 }
 
+func (s *TradingService) currentEngineGeneration() int64 {
+	if s == nil {
+		return 0
+	}
+	return s.engineGeneration.Load()
+}
+
 // SetCurrentMarket 设置当前市场（用于过滤订单状态同步）
 func (s *TradingService) SetCurrentMarket(marketSlug string) {
 	s.currentMarketMu.Lock()
-	defer s.currentMarketMu.Unlock()
+	prev := s.currentMarketSlug
 	s.currentMarketSlug = marketSlug
+	s.currentMarketMu.Unlock()
+
 	log.Infof("✅ [周期切换] 已设置当前市场: %s", marketSlug)
+
+	// 架构层约束：新周期必须是“全新世界”
+	// - 清空 OrderEngine 的周期相关状态（openOrders/orderStore/positions/pendingTrades）
+	// - 清空订单状态缓存/去重器，避免跨周期串单或误去重
+	if prev != marketSlug && marketSlug != "" {
+		newGen := s.engineGeneration.Add(1)
+		if s.orderEngine != nil {
+			s.orderEngine.ResetForNewCycle(marketSlug, "TradingService.SetCurrentMarket", newGen)
+		}
+		if s.orderStatusCache != nil {
+			s.orderStatusCache.Clear()
+		}
+		if s.inFlightDeduper != nil {
+			s.inFlightDeduper.Clear()
+		}
+		log.Warnf("🔄 [周期切换] 已重置本地状态：orders/positions/cache/inflight（prev=%s -> new=%s gen=%d）", prev, marketSlug, newGen)
+	}
 }
 
 // GetCurrentMarket 获取当前市场

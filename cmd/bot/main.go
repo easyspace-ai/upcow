@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
@@ -16,7 +15,6 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/infrastructure/websocket"
 	"github.com/betbot/gobet/internal/metrics"
-	"github.com/betbot/gobet/internal/ports"
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
@@ -28,52 +26,6 @@ import (
 	// 导入策略集合以触发 init() 注册（bbgo 风格）
 	_ "github.com/betbot/gobet/internal/strategies/all"
 )
-
-// sessionOrderRouter 只注册一次的订单更新路由器：
-// - 周期切换时只更新“当前 session+market”
-// - 避免 TradingService/OrderEngine 的 handler 无限累积
-type sessionOrderRouter struct {
-	mu      sync.RWMutex
-	session *bbgo.ExchangeSession
-	market  *domain.Market
-}
-
-var _ ports.OrderUpdateHandler = (*sessionOrderRouter)(nil)
-
-func (r *sessionOrderRouter) Set(session *bbgo.ExchangeSession, market *domain.Market) {
-	r.mu.Lock()
-	r.session = session
-	r.market = market
-	r.mu.Unlock()
-}
-
-func (r *sessionOrderRouter) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
-	r.mu.RLock()
-	session := r.session
-	market := r.market
-	r.mu.RUnlock()
-
-	if session == nil {
-		return nil
-	}
-
-	// 只把“当前周期”的订单更新转发给 Session/策略，避免跨周期串单
-	if order != nil && market != nil {
-		// 1) 有 MarketSlug：严格匹配
-		if order.MarketSlug != "" && order.MarketSlug != market.Slug {
-			return nil
-		}
-		// 2) 没有 MarketSlug：用 assetID 兜底匹配
-		if order.MarketSlug == "" && order.AssetID != "" {
-			if order.AssetID != market.YesAssetID && order.AssetID != market.NoAssetID {
-				return nil
-			}
-		}
-	}
-
-	session.EmitOrderUpdate(ctx, order)
-	return nil
-}
 
 func main() {
 	// 解析命令行参数
@@ -342,12 +294,17 @@ func main() {
 	// 设置交易服务的当前市场（用于过滤订单状态同步）
 	tradingService.SetCurrentMarket(market.Slug)
 
-	// 订单路由器：TradingService 只注册一次；周期切换只更新指向
-	orderRouter := &sessionOrderRouter{}
-	orderRouter.Set(session, market)
-	tradingService.OnOrderUpdate(orderRouter)
+	// 架构层路由器：只注册一次；周期切换只更新指向（策略侧无需关心跨周期）
+	eventRouter := bbgo.NewSessionEventRouter()
+	eventRouter.SetSession(session)
+	tradingService.OnOrderUpdate(eventRouter)
 	if session != nil && session.UserDataStream != nil {
-		session.UserDataStream.OnOrderUpdate(orderRouter)
+		session.UserDataStream.OnOrderUpdate(eventRouter)
+		session.UserDataStream.OnTradeUpdate(eventRouter)
+	}
+	// 成交事件：必须经由 Session gate（防止跨周期 trade 直接进入 OrderEngine）
+	if session != nil {
+		session.OnTradeUpdate(tradingService)
 	}
 
 	// 设置会话切换回调，当周期切换时重新注册策略
@@ -366,10 +323,15 @@ func main() {
 		}
 		cancel()
 
-		// 更新订单路由器（TradingService handler 不新增，保持可控）
-		orderRouter.Set(newSession, newMarket)
+		// 更新架构层路由器指向（TradingService handler 不新增，保持可控）
+		eventRouter.SetSession(newSession)
 		if newSession != nil && newSession.UserDataStream != nil {
-			newSession.UserDataStream.OnOrderUpdate(orderRouter)
+			newSession.UserDataStream.OnOrderUpdate(eventRouter)
+			newSession.UserDataStream.OnTradeUpdate(eventRouter)
+		}
+		// 成交事件：必须经由 Session gate
+		if newSession != nil {
+			newSession.OnTradeUpdate(tradingService)
 		}
 
 		// 核心：周期切换时取消旧 Run，并用新 session 重新 Run（框架层解决“新周期仍用旧 market 状态”的问题）

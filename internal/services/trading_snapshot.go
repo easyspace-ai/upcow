@@ -69,6 +69,7 @@ func (ss *SnapshotService) loadSnapshot() {
 		}
 		s.orderEngine.SubmitCommand(&UpdateOrderCommand{
 			id:    fmt.Sprintf("restore_order_%s", o.OrderID),
+			Gen:   s.currentEngineGeneration(),
 			Order: o,
 		})
 		restoredCount++
@@ -87,6 +88,12 @@ func (ss *SnapshotService) loadSnapshot() {
 				p.MarketSlug = p.Market.Slug
 			} else if p.EntryOrder != nil && p.EntryOrder.MarketSlug != "" {
 				p.MarketSlug = p.EntryOrder.MarketSlug
+			}
+		}
+		// 只恢复当前周期的仓位（同订单逻辑：严格隔离跨周期状态）
+		if currentMarketSlug != "" {
+			if p.MarketSlug == "" || p.MarketSlug != currentMarketSlug {
+				continue
 			}
 		}
 		_ = s.CreatePosition(context.Background(), p)
@@ -177,6 +184,7 @@ func (ss *SnapshotService) bootstrapOpenOrdersFromExchange(ctx context.Context) 
 		}
 		s.orderEngine.SubmitCommand(&UpdateOrderCommand{
 			id:    fmt.Sprintf("bootstrap_open_%s", o.OrderID),
+			Gen:   s.currentEngineGeneration(),
 			Order: o,
 		})
 		restoredCount++

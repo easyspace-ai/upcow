@@ -15,13 +15,23 @@ var tradeCollectorLog = logrus.WithField("component", "trade_collector")
 // 所有交易处理逻辑已移至 OrderEngine.handleProcessTrade
 type TradeCollector struct {
 	orderEngine *OrderEngine // OrderEngine 引用，用于发送命令
+	genProvider func() int64 // 周期代号提供者（可选；不提供则默认 1）
 }
 
 // NewTradeCollector 创建交易收集器（重构后：只需要 OrderEngine）
 func NewTradeCollector(orderEngine *OrderEngine) *TradeCollector {
 	return &TradeCollector{
 		orderEngine: orderEngine,
+		genProvider: func() int64 { return 1 },
 	}
+}
+
+// SetGenerationProvider 设置周期代号提供者（建议由 TradingService 注入）。
+func (c *TradeCollector) SetGenerationProvider(p func() int64) {
+	if c == nil || p == nil {
+		return
+	}
+	c.genProvider = p
 }
 
 // ProcessTrade 处理交易（发送命令到 OrderEngine）
@@ -35,6 +45,7 @@ func (c *TradeCollector) ProcessTrade(trade *domain.Trade) bool {
 	// 发送 ProcessTradeCommand 到 OrderEngine
 	cmd := &ProcessTradeCommand{
 		id:    fmt.Sprintf("process_trade_%d", time.Now().UnixNano()),
+		Gen:   c.genProvider(),
 		Trade: trade,
 	}
 	c.orderEngine.SubmitCommand(cmd)
