@@ -193,7 +193,7 @@ func main() {
 
 	// 设置最小订单金额（全局配置，不再从某个策略"偷读"）
 	tradingService.SetMinOrderSize(cfg.MinOrderSize)
-	
+
 	// 设置限价单最小 share 数量（仅限价单 GTC 时应用）
 	tradingService.SetMinShareSize(cfg.MinShareSize)
 
@@ -309,60 +309,31 @@ func main() {
 	}
 
 	logrus.Infof("当前市场: %s", market.Slug)
-	
+
 	// 设置交易服务的当前市场（用于过滤订单状态同步）
 	tradingService.SetCurrentMarket(market.Slug)
 
 	// 注册策略到会话的辅助函数
-	registerStrategiesToSession := func(session *bbgo.ExchangeSession, market *domain.Market) {
-		// 检查连接状态和 handlers（用于调试）
-		if session.MarketDataStream != nil {
-			if ms, ok := session.MarketDataStream.(*websocket.MarketStream); ok {
-				handlerCount := ms.HandlerCount()
-				logrus.Debugf("🔄 [周期切换] 策略注册前 MarketStream handlers 数量=%d", handlerCount)
-			}
-		}
-		handlerCountBefore := session.PriceChangeHandlerCount()
-		logrus.Debugf("🔄 [周期切换] 策略注册前 Session priceChangeHandlers 数量=%d", handlerCountBefore)
-
+	attachSessionToOrderStreams := func(session *bbgo.ExchangeSession, market *domain.Market) {
 		// 将 Session 注册为 UserWebSocket 的订单更新处理器（BBGO风格）
-		if session.UserDataStream != nil {
+		if session != nil && session.UserDataStream != nil {
 			session.UserDataStream.OnOrderUpdate(&sessionOrderHandler{session: session, market: market})
 		}
-
 		// 将 Session 注册为 TradingService 的订单更新处理器（BBGO风格）
+		// NOTE: 当前实现会累积 handler；但 sessionOrderHandler 内置 market 过滤，避免跨周期串单。
 		tradingService.OnOrderUpdate(&sessionOrderHandler{session: session, market: market})
-
-		// 订阅策略（BBGO风格：策略在 Subscribe 方法中自己注册回调到Session）
-		logrus.Debugf("🔄 [周期切换] 准备调用 trader.Subscribe，session=%s, market=%s", session.Name, market.Slug)
-		if err := trader.Subscribe(initCtx, session); err != nil {
-			logrus.Errorf("订阅策略失败: %v", err)
-			return
-		}
-
-		// 检查注册后的 handlers 数量（用于调试）
-		handlerCountAfter := session.PriceChangeHandlerCount()
-		logrus.Infof("🔄 [周期切换] 策略注册后 Session priceChangeHandlers 数量=%d (之前=%d)",
-			handlerCountAfter, handlerCountBefore)
-		if handlerCountAfter == 0 {
-			logrus.Errorf("❌ [周期切换] 错误：策略注册后 Session priceChangeHandlers 仍为空！市场=%s", market.Slug)
-		} else {
-			logrus.Infof("✅ [周期切换] 策略注册成功，Session priceChangeHandlers 数量=%d", handlerCountAfter)
-		}
-
-		logrus.Infof("✅ 策略已重新注册到新会话: %s", market.Slug)
 	}
 
-	// 初始注册策略到会话
-	registerStrategiesToSession(session, market)
+	// 先把订单更新流绑定到当前 session（避免策略启动后收不到订单事件）
+	attachSessionToOrderStreams(session, market)
 
 	// 设置会话切换回调，当周期切换时重新注册策略
 	marketScheduler.OnSessionSwitch(func(oldSession *bbgo.ExchangeSession, newSession *bbgo.ExchangeSession, newMarket *domain.Market) {
 		logrus.Infof("🔄 [周期切换] 检测到会话切换，重新注册策略到新会话: %s", newMarket.Slug)
-		
+
 		// 更新交易服务的当前市场（用于过滤订单状态同步）
 		tradingService.SetCurrentMarket(newMarket.Slug)
-		
+
 		// 只管理本周期：先取消上一周期残留的 open orders，避免跨周期串单
 		cancelCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		tradingService.CancelOrdersNotInMarket(cancelCtx, newMarket.Slug)
@@ -371,7 +342,14 @@ func main() {
 			tradingService.CancelOrdersForMarket(cancelCtx, newMarket.Slug)
 		}
 		cancel()
-		registerStrategiesToSession(newSession, newMarket)
+		attachSessionToOrderStreams(newSession, newMarket)
+
+		// 核心：周期切换时取消旧 Run，并用新 session 重新 Run（框架层解决“新周期仍用旧 market 状态”的问题）
+		if err := trader.SwitchSession(initCtx, newSession); err != nil {
+			logrus.Errorf("❌ [周期切换] 切换策略运行 session 失败: %v", err)
+		} else {
+			logrus.Infof("✅ [周期切换] 策略已切换到新 session，market=%s", newMarket.Slug)
+		}
 	})
 
 	// 启动环境（这会自动启动交易服务，避免重复调用）
@@ -380,10 +358,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 运行策略
+	// 启动策略（每个策略独立 goroutine，不阻塞主线程）
 	logrus.Info("🚀 正在启动策略...")
-	if err := trader.Run(initCtx); err != nil {
-		logrus.Errorf("运行策略失败: %v", err)
+	if err := trader.StartWithSession(initCtx, session); err != nil {
+		logrus.Errorf("启动策略失败: %v", err)
 		os.Exit(1)
 	}
 
