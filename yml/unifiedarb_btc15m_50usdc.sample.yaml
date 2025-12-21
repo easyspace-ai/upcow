@@ -1,0 +1,68 @@
+# unifiedarb BTC 15m（50 USDC）配置样本
+#
+# 用法：
+# - 把本文件内容合并到根目录的 config.yaml（或直接替换 config.yaml 里的 exchangeStrategies）
+# - 建议先 dry_run=true 跑 1-2 个周期观察日志（minP、对冲频率、plan 超时）
+#
+# 说明：
+# - 本策略在 Lock 阶段优先吃 complete-set（YES ask + NO ask 足够低时双腿同时买入）
+# - 其余单腿买入属于“风险敞口修复/保险/放大”，务必用价格上限与风险预算控制
+
+exchangeStrategies:
+  - on: polymarket
+    unifiedarb:
+      # ========== 基础（50 USDC 建议）==========
+      orderSize: 1.5
+      minOrderSize: 1.1
+      profitTargetCents: 2
+      maxRoundsPerPeriod: 6
+      cooldownMs: 900
+
+      # ========== 15m 三阶段 ==========
+      cycleDurationSeconds: 900
+      buildDurationSeconds: 300
+      amplifyStartSeconds: 600
+      earlyLockPrice: 0.85
+      earlyAmplifyPrice: 0.90
+
+      # ========== Build：低价建仓 + 双边平衡 ==========
+      baseTarget: 10
+      buildLotSize: 1.2
+      buildThreshold: 0.60
+      minRatio: 0.40
+      maxRatio: 0.60
+
+      # ========== Lock：风险敞口驱动锁定 ==========
+      lockThreshold: 3.0
+      lockPriceMax: 0.70
+      extremeHigh: 0.80
+      insuranceSize: 0.8
+
+      # 相对滑点保护（基于 PriceChangedEvent.NewPrice 作为 reference，限制 bestAsk 不超过 ref+N 分）
+      entryMaxBuySlippageCents: 3
+
+      # ========== Amplify：已锁定前提下的方向性放大 ==========
+      targetProfitBase: 1.0
+      amplifyTarget: 3.0
+      amplifyPriceMax: 0.82
+      insurancePriceMax: 0.20
+      directionThreshold: 0.75
+
+      # ========== 并行与风险预算 ==========
+      # 测试期建议先关并行；如果要开并行，务必同时设置 maxTotalUnhedgedShares
+      enableParallel: false
+      maxConcurrentPlans: 1
+      maxTotalUnhedgedShares: 0
+
+      # ========== plan 失败处理（测试期建议 pause 最安全）==========
+      maxPlanAgeSeconds: 45
+      onFailAction: "pause"  # pause/cancel_pause/flatten_pause
+      failFlattenMinShares: 1.0
+      failMaxSellSlippageCents: 5
+
+      # ========== 执行引擎自动对冲 ==========
+      hedgeEnabled: true
+      hedgeDelaySeconds: 2
+      hedgeSellPriceOffsetCents: 2
+      minExposureToHedge: 1.0
+
