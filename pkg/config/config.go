@@ -36,8 +36,8 @@ type ProxyConfig struct {
 // ExchangeStrategyMount 按 bbgo main 的风格挂载策略：
 //
 // exchangeStrategies:
-// - on: polymarket
-//   grid:
+//   - on: polymarket
+//     grid:
 //     gridLevels: [62, 65]
 //     orderSize: 3
 //
@@ -130,18 +130,19 @@ type Config struct {
 	Wallet                               WalletConfig
 	Proxy                                *ProxyConfig
 	ExchangeStrategies                   []ExchangeStrategyMount // bbgo main 风格：动态策略挂载
-	LogLevel                             string         // 日志级别
-	LogFile                              string         // 日志文件路径（可选）
-	LogByCycle                           bool           // 是否按周期命名日志文件
-	DirectModeDebounce                   int            // 直接回调模式的防抖间隔（毫秒），默认100ms（BBGO风格：只支持直接模式）
-	MinOrderSize                         float64        // 全局最小下单金额（USDC），默认 1.1（交易所要求 >= 1）
-	MinShareSize                         float64        // 限价单最小 share 数量，默认 5.0（仅限价单 GTC 时应用）
-	OrderStatusCheckTimeout              int            // 订单状态检查超时时间（秒），如果WebSocket在此时长内没有更新，则启用API轮询，默认3秒
-	OrderStatusCheckInterval             int            // 订单状态API轮询间隔（秒），默认3秒
-	OrderStatusSyncIntervalWithOrders    int            // 有活跃订单时的订单状态同步间隔（秒），默认3秒（官方API限流：150请求/10秒，理论上可支持1秒，但建议3秒以上）
-	OrderStatusSyncIntervalWithoutOrders int            // 无活跃订单时的订单状态同步间隔（秒），默认30秒
-	CancelOpenOrdersOnCycleStart         bool           // 每个新周期开始时是否清空“本周期残留 open orders”（默认false）
-	DryRun                               bool           // 纸交易模式（dry run），如果为 true，不进行真实交易，只在日志中打印订单信息
+	LogLevel                             string                  // 日志级别
+	LogFile                              string                  // 日志文件路径（可选）
+	LogByCycle                           bool                    // 是否按周期命名日志文件
+	DirectModeDebounce                   int                     // 直接回调模式的防抖间隔（毫秒），默认100ms（BBGO风格：只支持直接模式）
+	MinOrderSize                         float64                 // 全局最小下单金额（USDC），默认 1.1（交易所要求 >= 1）
+	MinShareSize                         float64                 // 限价单最小 share 数量，默认 5.0（仅限价单 GTC 时应用）
+	OrderStatusCheckTimeout              int                     // 订单状态检查超时时间（秒），如果WebSocket在此时长内没有更新，则启用API轮询，默认3秒
+	OrderStatusCheckInterval             int                     // 订单状态API轮询间隔（秒），默认3秒
+	OrderStatusSyncIntervalWithOrders    int                     // 有活跃订单时的订单状态同步间隔（秒），默认3秒（官方API限流：150请求/10秒，理论上可支持1秒，但建议3秒以上）
+	OrderStatusSyncIntervalWithoutOrders int                     // 无活跃订单时的订单状态同步间隔（秒），默认30秒
+	CancelOpenOrdersOnCycleStart         bool                    // 每个新周期开始时是否清空“本周期残留 open orders”（默认false）
+	ConcurrentExecutorWorkers            int                     // 并发命令执行器 worker 数（套利等），默认 8
+	DryRun                               bool                    // 纸交易模式（dry run），如果为 true，不进行真实交易，只在日志中打印订单信息
 }
 
 var globalConfig *Config
@@ -168,18 +169,19 @@ type ConfigFile struct {
 		Port int    `yaml:"port" json:"port"`
 	} `yaml:"proxy" json:"proxy"`
 	ExchangeStrategies                   []ExchangeStrategyMount `yaml:"exchangeStrategies" json:"exchangeStrategies"`
-	LogLevel                             string `yaml:"log_level" json:"log_level"`
-	LogFile                              string `yaml:"log_file" json:"log_file"`
-	LogByCycle                           bool   `yaml:"log_by_cycle" json:"log_by_cycle"`
-	DirectModeDebounce                   int    `yaml:"direct_mode_debounce" json:"direct_mode_debounce"`                                           // 直接回调模式的防抖间隔（毫秒），默认100ms（BBGO风格：只支持直接模式）
-	MinOrderSize                         float64 `yaml:"minOrderSize" json:"minOrderSize"`
-	MinShareSize                         float64 `yaml:"minShareSize" json:"minShareSize"`                                                         // 限价单最小 share 数量（仅限价单 GTC 时应用）
-	OrderStatusCheckTimeout              int    `yaml:"order_status_check_timeout" json:"order_status_check_timeout"`                               // WebSocket超时时间（秒），默认3秒
-	OrderStatusCheckInterval             int    `yaml:"order_status_check_interval" json:"order_status_check_interval"`                             // API轮询间隔（秒），默认3秒
-	OrderStatusSyncIntervalWithOrders    int    `yaml:"order_status_sync_interval_with_orders" json:"order_status_sync_interval_with_orders"`       // 有活跃订单时的同步间隔（秒），默认3秒
-	OrderStatusSyncIntervalWithoutOrders int    `yaml:"order_status_sync_interval_without_orders" json:"order_status_sync_interval_without_orders"` // 无活跃订单时的同步间隔（秒），默认30秒
-	CancelOpenOrdersOnCycleStart         bool   `yaml:"cancel_open_orders_on_cycle_start" json:"cancel_open_orders_on_cycle_start"`                 // 新周期开始时清空本周期残留 open orders（默认false）
-	DryRun                               bool   `yaml:"dry_run" json:"dry_run"`                                                                     // 纸交易模式（dry run），如果为 true，不进行真实交易，只在日志中打印订单信息
+	LogLevel                             string                  `yaml:"log_level" json:"log_level"`
+	LogFile                              string                  `yaml:"log_file" json:"log_file"`
+	LogByCycle                           bool                    `yaml:"log_by_cycle" json:"log_by_cycle"`
+	DirectModeDebounce                   int                     `yaml:"direct_mode_debounce" json:"direct_mode_debounce"` // 直接回调模式的防抖间隔（毫秒），默认100ms（BBGO风格：只支持直接模式）
+	MinOrderSize                         float64                 `yaml:"minOrderSize" json:"minOrderSize"`
+	MinShareSize                         float64                 `yaml:"minShareSize" json:"minShareSize"`                                                           // 限价单最小 share 数量（仅限价单 GTC 时应用）
+	OrderStatusCheckTimeout              int                     `yaml:"order_status_check_timeout" json:"order_status_check_timeout"`                               // WebSocket超时时间（秒），默认3秒
+	OrderStatusCheckInterval             int                     `yaml:"order_status_check_interval" json:"order_status_check_interval"`                             // API轮询间隔（秒），默认3秒
+	OrderStatusSyncIntervalWithOrders    int                     `yaml:"order_status_sync_interval_with_orders" json:"order_status_sync_interval_with_orders"`       // 有活跃订单时的同步间隔（秒），默认3秒
+	OrderStatusSyncIntervalWithoutOrders int                     `yaml:"order_status_sync_interval_without_orders" json:"order_status_sync_interval_without_orders"` // 无活跃订单时的同步间隔（秒），默认30秒
+	CancelOpenOrdersOnCycleStart         bool                    `yaml:"cancel_open_orders_on_cycle_start" json:"cancel_open_orders_on_cycle_start"`                 // 新周期开始时清空本周期残留 open orders（默认false）
+	ConcurrentExecutorWorkers            int                     `yaml:"concurrent_executor_workers" json:"concurrent_executor_workers"`                             // 并发命令执行器 worker 数（套利等），默认8
+	DryRun                               bool                    `yaml:"dry_run" json:"dry_run"`                                                                     // 纸交易模式（dry run），如果为 true，不进行真实交易，只在日志中打印订单信息
 }
 
 // Load 加载配置
@@ -349,6 +351,17 @@ func LoadFromFile(filePath string) (*Config, error) {
 				return envVal == "true" || envVal == "1"
 			}
 			return false
+		}(),
+		ConcurrentExecutorWorkers: func() int {
+			if configFile != nil && configFile.ConcurrentExecutorWorkers > 0 {
+				return configFile.ConcurrentExecutorWorkers
+			}
+			if envVal := getEnv("CONCURRENT_EXECUTOR_WORKERS", ""); envVal != "" {
+				if val, err := strconv.Atoi(envVal); err == nil && val > 0 {
+					return val
+				}
+			}
+			return 8
 		}(),
 	}
 

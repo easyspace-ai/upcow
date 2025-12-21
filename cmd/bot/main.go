@@ -231,6 +231,8 @@ func main() {
 
 	// 创建并注入全局命令执行器（串行执行交易/网络 IO，策略 loop 不直接阻塞在网络调用上）
 	environ.SetExecutor(bbgo.NewSerialCommandExecutor(2048))
+	// 并发执行器：仅用于显式声明 concurrent 的策略（如 arbitrage）
+	environ.SetConcurrentExecutor(bbgo.NewWorkerPoolCommandExecutor(2048, cfg.ConcurrentExecutorWorkers))
 
 	// 设置系统级配置（直接回调模式防抖间隔，BBGO风格：只支持直接模式）
 	if cfg.DirectModeDebounce > 0 {

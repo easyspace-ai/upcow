@@ -211,9 +211,20 @@ func (t *Trader) injectServicesIntoStrategy(ctx context.Context, strategy interf
 	}
 
 	// 注入全局命令执行器（串行 IO）
-	if t.environment.Executor != nil {
-		if err := t.injectField(strategy, "Executor", t.environment.Executor); err != nil {
-			traderLog.Debugf("failed to inject Executor into %s: %v", strategyID, err)
+	if t.environment != nil {
+		exec := t.environment.Executor
+		// 允许策略声明并发模式：注入并发执行器（如果配置了）
+		if mp, ok := strategy.(ExecutionModeProvider); ok && mp.ExecutionMode() == ExecutionModeConcurrent {
+			if t.environment.ConcurrentExecutor != nil {
+				exec = t.environment.ConcurrentExecutor
+			} else {
+				traderLog.Warnf("⚠️ strategy %s 需要并发执行器，但 Environment.ConcurrentExecutor 未配置，回退到串行执行器", strategyID)
+			}
+		}
+		if exec != nil {
+			if err := t.injectField(strategy, "Executor", exec); err != nil {
+				traderLog.Debugf("failed to inject Executor into %s: %v", strategyID, err)
+			}
 		}
 	}
 

@@ -29,15 +29,15 @@ func init() {
 
 // ArbitrageStrategy 套利策略实现
 type ArbitrageStrategy struct {
-	Executor       bbgo.CommandExecutor
+	Executor                bbgo.CommandExecutor
 	ArbitrageStrategyConfig `yaml:",inline" json:",inline"`
-	config                 *ArbitrageStrategyConfig `json:"-" yaml:"-"`
-	tradingService strategyports.BasicTradingService
-	positionState  *domain.ArbitragePositionState
-	currentMarket  *domain.Market
-	marketGuard    common.MarketSlugGuard
-	priceUp        float64 // 当前UP价格
-	priceDown      float64 // 当前DOWN价格
+	config                  *ArbitrageStrategyConfig `json:"-" yaml:"-"`
+	tradingService          strategyports.BasicTradingService
+	positionState           *domain.ArbitragePositionState
+	currentMarket           *domain.Market
+	marketGuard             common.MarketSlugGuard
+	priceUp                 float64 // 当前UP价格
+	priceDown               float64 // 当前DOWN价格
 
 	// 统一：单线程 loop（价格合并 + 订单更新 + 命令结果）
 	loopOnce        sync.Once
@@ -70,6 +70,11 @@ func (s *ArbitrageStrategy) SetTradingService(ts strategyports.BasicTradingServi
 // ID 返回策略ID（BBGO风格）
 func (s *ArbitrageStrategy) ID() string {
 	return ID
+}
+
+// ExecutionMode 声明套利策略需要并发执行能力（用于快速拆单/并行下单）
+func (s *ArbitrageStrategy) ExecutionMode() bbgo.ExecutionMode {
+	return bbgo.ExecutionModeConcurrent
 }
 
 // Name 返回策略名称（兼容旧接口）
