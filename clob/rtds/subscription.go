@@ -77,8 +77,11 @@ func (c *Client) Unsubscribe(subscriptions []Subscription) error {
 // SubscribeToCryptoPrices subscribes to cryptocurrency price updates
 func (c *Client) SubscribeToCryptoPrices(source string, symbols ...string) error {
 	topic := "crypto_prices"
+	messageType := "update" // Binance uses "update"
+	
 	if source == "chainlink" {
 		topic = "crypto_prices_chainlink"
+		messageType = "*" // Chainlink uses "*" (all types) according to official docs
 	}
 
 	if len(symbols) == 0 {
@@ -95,7 +98,7 @@ func (c *Client) SubscribeToCryptoPrices(source string, symbols ...string) error
 
 		sub := Subscription{
 			Topic:   topic,
-			Type:    "update",
+			Type:    messageType,
 			Filters: filters,
 		}
 		subscriptions = append(subscriptions, sub)

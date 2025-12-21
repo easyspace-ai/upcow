@@ -3,6 +3,7 @@ package datarecorder
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/pkg/bbgo"
+	"github.com/betbot/gobet/pkg/config"
 	"github.com/betbot/gobet/pkg/logger"
 	"github.com/sirupsen/logrus"
 )
@@ -34,18 +36,18 @@ func (l *rtdsLoggerAdapter) Printf(format string, v ...interface{}) {
 
 // DataRecorderStrategy 数据记录策略
 type DataRecorderStrategy struct {
-	Executor           bbgo.CommandExecutor
+	Executor                   bbgo.CommandExecutor
 	DataRecorderStrategyConfig `yaml:",inline" json:",inline"`
-	config                   *DataRecorderStrategyConfig `json:"-" yaml:"-"`
-	recorder           *DataRecorder
-	targetPriceFetcher *TargetPriceFetcher
-	rtdsClient         *rtds.Client
-	currentMarket      *domain.Market
-	btcTargetPrice     float64 // BTC 目标价（上一个周期收盘价）
-	btcTargetPriceSet  bool    // 目标价是否已设置（防止周期内重复设置）
-	btcRealtimePrice   float64 // BTC 实时价
-	upPrice            float64 // UP 价格
-	downPrice          float64 // DOWN 价格
+	config                     *DataRecorderStrategyConfig `json:"-" yaml:"-"`
+	recorder                   *DataRecorder
+	targetPriceFetcher         *TargetPriceFetcher
+	rtdsClient                 *rtds.Client
+	currentMarket              *domain.Market
+	btcTargetPrice             float64 // BTC 目标价（上一个周期收盘价）
+	btcTargetPriceSet          bool    // 目标价是否已设置（防止周期内重复设置）
+	btcRealtimePrice           float64 // BTC 实时价
+	upPrice                    float64 // UP 价格
+	downPrice                  float64 // DOWN 价格
 
 	// 统一：单线程 loop（价格合并 + tick 周期检测）
 	loopOnce     sync.Once
@@ -118,9 +120,29 @@ func (s *DataRecorderStrategy) Initialize() error {
 	// 创建 RTDS 客户端
 	// 创建一个适配器，将 RTDS 日志输出到我们的 logger
 	rtdsLogger := &rtdsLoggerAdapter{}
+
+	// 获取代理 URL（优先级：策略配置 > 全局配置 > 环境变量）
+	proxyURL := s.ProxyURL
+	if proxyURL == "" {
+		// 尝试从全局配置获取
+		if globalConfig := config.Get(); globalConfig != nil && globalConfig.Proxy != nil {
+			proxyURL = fmt.Sprintf("http://%s:%d", globalConfig.Proxy.Host, globalConfig.Proxy.Port)
+			logger.Debugf("数据记录策略: 从全局配置获取代理 URL: %s", proxyURL)
+		} else {
+			// 尝试从环境变量获取
+			if envProxy := os.Getenv("HTTP_PROXY"); envProxy != "" {
+				proxyURL = envProxy
+				logger.Debugf("数据记录策略: 从环境变量获取代理 URL: %s", proxyURL)
+			} else if envProxy := os.Getenv("HTTPS_PROXY"); envProxy != "" {
+				proxyURL = envProxy
+				logger.Debugf("数据记录策略: 从环境变量获取代理 URL: %s", proxyURL)
+			}
+		}
+	}
+
 	rtdsConfig := &rtds.ClientConfig{
 		URL:            rtds.RTDSWebSocketURL,
-		ProxyURL:       s.ProxyURL, // 设置代理 URL
+		ProxyURL:       proxyURL, // 设置代理 URL
 		PingInterval:   5 * time.Second,
 		WriteTimeout:   10 * time.Second,
 		ReadTimeout:    60 * time.Second,
@@ -129,6 +151,13 @@ func (s *DataRecorderStrategy) Initialize() error {
 		MaxReconnect:   10,
 		Logger:         rtdsLogger, // 使用我们的 logger 适配器
 	}
+
+	if proxyURL != "" {
+		logger.Infof("数据记录策略: 使用代理连接 RTDS: %s", proxyURL)
+	} else {
+		logger.Warnf("数据记录策略: 未配置代理，将直接连接 RTDS（可能失败）")
+	}
+
 	rtdsClient := rtds.NewClientWithConfig(rtdsConfig)
 	s.rtdsClient = rtdsClient
 
@@ -201,6 +230,11 @@ func (s *DataRecorderStrategy) OnPriceChanged(ctx context.Context, event *events
 	if event == nil {
 		return nil
 	}
+	// 添加诊断日志（仅在 Debug 级别，避免日志过多）
+	if event.Market != nil && s.isBTC15mMarket(event.Market) {
+		logger.Debugf("数据记录策略: 收到价格变化事件 - 市场=%s, Token=%s, 价格=%.4f",
+			event.Market.Slug, event.TokenType, event.NewPrice.ToDecimal())
+	}
 	s.startLoop(ctx)
 	s.priceMu.Lock()
 	if s.latestPrices == nil {
@@ -213,12 +247,26 @@ func (s *DataRecorderStrategy) OnPriceChanged(ctx context.Context, event *events
 }
 
 func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event *events.PriceChangedEvent) error {
+
+	fmt.Println("=========", event.NewPrice.ToDecimal())
 	// 只处理 btc-updown-15m-* 市场
 	if !s.isBTC15mMarket(event.Market) {
+		logger.Debugf("数据记录策略: 跳过非 BTC 15分钟市场 - %s", getSlugOrEmpty(event.Market))
 		return nil
 	}
 
+	logger.Debugf("数据记录策略: 处理价格变化 - 市场=%s, Token=%s, 价格=%.4f",
+		event.Market.Slug, event.TokenType, event.NewPrice.ToDecimal())
+
 	s.mu.Lock()
+
+	// 首先验证事件是否属于当前周期（防止旧周期的延迟事件污染数据）
+	if s.currentMarket != nil && s.currentMarket.Slug != "" && s.currentMarket.Slug != event.Market.Slug {
+		logger.Warnf("数据记录策略: ⚠️ 忽略非当前周期的价格事件 - 当前周期=%s, 事件周期=%s, Token=%s, 价格=%.4f",
+			s.currentMarket.Slug, event.Market.Slug, event.TokenType, event.NewPrice.ToDecimal())
+		s.mu.Unlock()
+		return nil // 直接返回，不处理旧周期的事件
+	}
 
 	// 检查是否切换到新周期（基于 Market.Slug 变化）
 	// 同时检查时间戳，确保即使 Market.Slug 相同但时间已过周期结束时间，也要切换
@@ -262,9 +310,12 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 		oldMarket := s.currentMarket
 		s.currentMarket = event.Market
 
-		// 重置目标价状态（新周期需要重新获取目标价）
+		// 重置所有价格状态（新周期需要重新获取）
 		s.btcTargetPrice = 0
 		s.btcTargetPriceSet = false
+		s.upPrice = 0        // 清理旧周期的 UP 价格
+		s.downPrice = 0     // 清理旧周期的 DOWN 价格
+		logger.Debugf("数据记录策略: 周期切换时已清理所有价格状态")
 
 		// 开始新周期（按 slug 打开对应 CSV 文件，后续实时追加）
 		logger.Infof("数据记录策略: 开始新周期: %s (时间戳=%d)", event.Market.Slug, event.Market.Timestamp)
@@ -287,13 +338,23 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 
 		targetPrice, err := s.targetPriceFetcher.FetchTargetPrice(targetCtx, currentCycleStart)
 		if err != nil {
-			logger.Warnf("获取目标价失败: %v，将使用上一个周期的目标价或0", err)
+			logger.Warnf("获取目标价失败: %v，尝试使用上一个周期的目标价", err)
 			// 如果获取失败，尝试使用上一个周期的目标价（如果有）
 			if oldMarket != nil {
-				// 这里可以尝试从旧周期数据中获取，但为了简化，先使用0
-				targetPrice = 0
+				// 尝试使用上一个周期的目标价（如果之前有设置）
+				s.mu.Lock()
+				oldTargetPrice := s.btcTargetPrice
+				s.mu.Unlock()
+				if oldTargetPrice > 0 {
+					targetPrice = oldTargetPrice
+					logger.Infof("数据记录策略: 使用上一个周期的目标价: %.2f", targetPrice)
+				} else {
+					targetPrice = 0
+					logger.Warnf("数据记录策略: 上一个周期的目标价也为0，将使用0（数据可能无法记录）")
+				}
 			} else {
 				targetPrice = 0
+				logger.Warnf("数据记录策略: 没有上一个周期，将使用0（数据可能无法记录）")
 			}
 		}
 
@@ -324,22 +385,51 @@ func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event
 
 	// 以 UP/DOWN 价格变化为准，记录数据点
 	// 此时保存当前的 BTC 实时价格（由 RTDS 实时更新）
+	// 如果 RTDS 价格未更新，使用目标价作为实时价格的降级方案
+	if btcRealtime <= 0 && btcTarget > 0 {
+		// RTDS 价格未更新，使用目标价作为实时价格（降级方案）
+		logger.Debugf("数据记录策略: RTDS 价格未更新，使用目标价作为实时价格 (目标价=%.2f)", btcTarget)
+		btcRealtime = btcTarget
+	}
+	
+	// 验证价格合理性（防止旧周期的异常价格被记录）
+	// 0.99 或更高的价格通常表示接近结算，可能是旧周期的价格
+	if upPrice >= 0.99 || downPrice >= 0.99 {
+		logger.Warnf("数据记录策略: ⚠️ 检测到异常价格（可能来自旧周期），跳过记录 - UP=%.4f, DOWN=%.4f, 当前周期=%s",
+			upPrice, downPrice, getSlugOrEmpty(s.currentMarket))
+		return nil
+	}
+	
 	// 只有在目标价已设置时才记录数据，避免记录0值
 	if btcRealtime > 0 && upPrice > 0 && downPrice > 0 {
 		if !btcTargetSet || btcTarget <= 0 {
-			logger.Debugf("数据记录策略: 目标价未就绪，跳过记录 (BTC目标=%.2f, BTC实时=%.2f, UP=%.4f, DOWN=%.4f)",
+			logger.Warnf("数据记录策略: 目标价未就绪，跳过记录 (BTC目标=%.2f, BTC实时=%.2f, UP=%.4f, DOWN=%.4f)",
 				btcTarget, btcRealtime, upPrice, downPrice)
 			return nil
 		}
-		s.recordDataPoint(btcTarget, btcRealtime, upPrice, downPrice)
+		// 记录数据点
+		if err := s.recorder.Record(DataPoint{
+			Timestamp:        time.Now().Unix(),
+			BTCTargetPrice:   btcTarget,
+			BTCRealtimePrice: btcRealtime,
+			UpPrice:          upPrice,
+			DownPrice:        downPrice,
+		}); err != nil {
+			logger.Errorf("数据记录策略: 记录数据点失败: %v", err)
+			return err
+		}
+		logger.Infof("数据记录策略: ✅ 已记录数据点 (BTC目标=%.2f, BTC实时=%.2f, UP=%.4f, DOWN=%.4f)",
+			btcTarget, btcRealtime, upPrice, downPrice)
 	} else {
-		logger.Debugf("数据记录策略: 价格未就绪，跳过记录 (BTC实时=%.2f, UP=%.4f, DOWN=%.4f)", btcRealtime, upPrice, downPrice)
+		logger.Warnf("数据记录策略: 价格未就绪，跳过记录 (BTC实时=%.2f, UP=%.4f, DOWN=%.4f, 目标价已设置=%v)",
+			btcRealtime, upPrice, downPrice, btcTargetSet)
 	}
 
 	return nil
 }
 
-// recordDataPoint 记录数据点
+// recordDataPoint 记录数据点（已废弃，直接使用 recorder.Record）
+// 保留此方法以保持向后兼容
 func (s *DataRecorderStrategy) recordDataPoint(btcTarget, btcRealtime, upPrice, downPrice float64) {
 	point := DataPoint{
 		Timestamp:        time.Now().Unix(),
@@ -349,7 +439,9 @@ func (s *DataRecorderStrategy) recordDataPoint(btcTarget, btcRealtime, upPrice, 
 		DownPrice:        downPrice,
 	}
 
-	s.recorder.Record(point)
+	if err := s.recorder.Record(point); err != nil {
+		logger.Errorf("数据记录策略: 记录数据点失败: %v", err)
+	}
 }
 
 // OnOrderFilled 处理订单成交事件（空实现，不交易）
@@ -458,9 +550,12 @@ func (s *DataRecorderStrategy) checkAndSwitchCycleByTime(ctx context.Context) {
 			// 更新市场信息
 			s.currentMarket = nextMarket
 
-			// 重置目标价状态（新周期需要重新获取目标价）
+			// 重置所有价格状态（新周期需要重新获取）
 			s.btcTargetPrice = 0
 			s.btcTargetPriceSet = false
+			s.upPrice = 0        // 清理旧周期的 UP 价格
+			s.downPrice = 0     // 清理旧周期的 DOWN 价格
+			logger.Debugf("数据记录策略: 定时检查周期切换时已清理所有价格状态")
 
 			// 开始新周期
 			logger.Infof("数据记录策略: 定时检查开始新周期: %s (时间戳=%d)", nextMarket.Slug, nextMarket.Timestamp)
@@ -474,6 +569,8 @@ func (s *DataRecorderStrategy) checkAndSwitchCycleByTime(ctx context.Context) {
 
 			// 获取新周期的目标价
 			currentCycleStart := nextMarket.Timestamp
+			// 在解锁前保存旧目标价
+			oldTargetPrice := s.btcTargetPrice
 			s.mu.Unlock()
 
 			// 同步获取目标价，确保在记录数据前目标价已设置
@@ -482,8 +579,15 @@ func (s *DataRecorderStrategy) checkAndSwitchCycleByTime(ctx context.Context) {
 			targetCancel()
 
 			if err != nil {
-				logger.Warnf("定时检查获取目标价失败: %v，将使用0作为默认值", err)
-				targetPrice = 0
+				logger.Warnf("定时检查获取目标价失败: %v，尝试使用上一个周期的目标价", err)
+				// 尝试使用上一个周期的目标价
+				if oldTargetPrice > 0 {
+					targetPrice = oldTargetPrice
+					logger.Infof("数据记录策略: 定时检查使用上一个周期的目标价: %.2f", targetPrice)
+				} else {
+					targetPrice = 0
+					logger.Warnf("数据记录策略: 定时检查上一个周期的目标价也为0，将使用0（数据可能无法记录）")
+				}
 			}
 
 			s.mu.Lock()

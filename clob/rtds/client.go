@@ -122,7 +122,7 @@ func NewClientWithConfig(config *ClientConfig) *Client {
 // Connect establishes a WebSocket connection to the RTDS server
 func (c *Client) Connect() error {
 	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
+		HandshakeTimeout: 30 * time.Second, // 增加超时时间到 30 秒
 	}
 
 	// Configure proxy if proxyURL is set
@@ -132,10 +132,20 @@ func (c *Client) Connect() error {
 			return fmt.Errorf("invalid proxy URL: %w", err)
 		}
 		dialer.Proxy = http.ProxyURL(proxyURL)
+		if c.logger != nil {
+			c.logger.Printf("Connecting to RTDS via proxy: %s\n", c.proxyURL)
+		}
+	} else {
+		if c.logger != nil {
+			c.logger.Printf("Connecting to RTDS directly (no proxy)\n")
+		}
 	}
 
 	conn, _, err := dialer.Dial(c.url, nil)
 	if err != nil {
+		if c.proxyURL != "" {
+			return fmt.Errorf("failed to connect to RTDS via proxy %s: %w", c.proxyURL, err)
+		}
 		return fmt.Errorf("failed to connect to RTDS: %w", err)
 	}
 
@@ -253,18 +263,39 @@ func (c *Client) SendMessage(message interface{}) error {
 		return errors.New("client is not connected")
 	}
 
+	// 检查连接对象是否存在
+	if c.conn == nil {
+		return errors.New("connection is nil")
+	}
+
 	// Log the message being sent for debugging
-	if msgBytes, err := json.Marshal(message); err == nil {
+	if msgBytes, err := json.Marshal(message); err == nil && c.logger != nil {
 		c.logger.Printf("Sending RTDS message: %s\n", string(msgBytes))
 	}
 
 	c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
-	return c.conn.WriteJSON(message)
+	if err := c.conn.WriteJSON(message); err != nil {
+		// 如果写入失败，标记为未连接
+		c.setConnected(false)
+		return fmt.Errorf("failed to send message: %w", err)
+	}
+	return nil
 }
 
 // readMessages reads messages from the WebSocket connection
 func (c *Client) readMessages() {
 	defer c.wg.Done()
+	
+	// 使用 recover 捕获可能的 panic（例如 "repeated read on failed websocket connection"）
+	defer func() {
+		if r := recover(); r != nil {
+			if c.logger != nil {
+				c.logger.Printf("readMessages panic recovered: %v\n", r)
+			}
+			// 确保连接状态被正确清理
+			c.setConnected(false)
+		}
+	}()
 
 	for {
 		// 首先检查 context 是否已取消
@@ -274,7 +305,8 @@ func (c *Client) readMessages() {
 		default:
 		}
 
-		if c.conn == nil {
+		// 检查连接状态和连接对象
+		if !c.IsConnected() || c.conn == nil {
 			return
 		}
 
@@ -296,9 +328,17 @@ func (c *Client) readMessages() {
 			default:
 			}
 			
+			// 连接已失败，立即标记为未连接，避免再次读取
+			c.setConnected(false)
+			
+			// 记录错误（但不记录正常的关闭错误）
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				c.logger.Printf("WebSocket read error: %v\n", err)
+				if c.logger != nil {
+					c.logger.Printf("WebSocket read error: %v\n", err)
+				}
 			}
+			
+			// 处理断开连接（但不尝试再次读取）
 			c.handleDisconnect()
 			return
 		}
@@ -337,6 +377,17 @@ func (c *Client) readMessages() {
 // sendPings sends periodic PING messages to keep the connection alive
 func (c *Client) sendPings() {
 	defer c.wg.Done()
+	
+	// 使用 recover 捕获可能的 panic
+	defer func() {
+		if r := recover(); r != nil {
+			if c.logger != nil {
+				c.logger.Printf("sendPings panic recovered: %v\n", r)
+			}
+			// 确保连接状态被正确清理
+			c.setConnected(false)
+		}
+	}()
 
 	ticker := time.NewTicker(c.pingInterval)
 	defer ticker.Stop()
@@ -346,13 +397,19 @@ func (c *Client) sendPings() {
 		case <-c.ctx.Done():
 			return
 		case <-ticker.C:
+			// 检查连接状态和连接对象
 			if !c.IsConnected() || c.conn == nil {
 				return
 			}
 
+			// 尝试发送 ping，如果失败则处理断开连接
 			c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				c.logger.Printf("Failed to send ping: %v\n", err)
+				if c.logger != nil {
+					c.logger.Printf("Failed to send ping: %v\n", err)
+				}
+				// 连接已失败，立即标记为未连接
+				c.setConnected(false)
 				c.handleDisconnect()
 				return
 			}
@@ -398,7 +455,11 @@ func (c *Client) handleMessage(msg *Message) {
 
 // handleDisconnect handles disconnection and optionally reconnects
 func (c *Client) handleDisconnect() {
+	// 确保连接状态被标记为未连接
 	c.setConnected(false)
+	
+	// 清理连接对象（但不关闭，因为可能已经关闭了）
+	// 注意：这里不设置 c.conn = nil，因为重连时需要创建新连接
 
 	c.reconnectMutex.Lock()
 	shouldReconnect := c.reconnect
@@ -417,12 +478,16 @@ func (c *Client) handleDisconnect() {
 	}
 
 	if c.reconnectCount >= c.maxReconnect {
-		c.logger.Printf("Max reconnection attempts reached\n")
+		if c.logger != nil {
+			c.logger.Printf("Max reconnection attempts reached\n")
+		}
 		return
 	}
 
 	c.reconnectCount++
-	c.logger.Printf("Attempting to reconnect (%d/%d)...\n", c.reconnectCount, c.maxReconnect)
+	if c.logger != nil {
+		c.logger.Printf("Attempting to reconnect (%d/%d)...\n", c.reconnectCount, c.maxReconnect)
+	}
 
 	// Use a ticker to check reconnect flag periodically during sleep
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -452,13 +517,24 @@ func (c *Client) handleDisconnect() {
 		return
 	}
 
+	// 清理旧连接（如果存在）
+	if c.conn != nil {
+		// 不返回错误，因为连接可能已经关闭
+		_ = c.conn.Close()
+		c.conn = nil
+	}
+
 	// Create new context for reconnection
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 
 	if err := c.Connect(); err != nil {
-		c.logger.Printf("Reconnection failed: %v\n", err)
+		if c.logger != nil {
+			c.logger.Printf("Reconnection failed: %v\n", err)
+		}
 	} else {
-		c.logger.Printf("Reconnected successfully\n")
+		if c.logger != nil {
+			c.logger.Printf("Reconnected successfully\n")
+		}
 		c.reconnectCount = 0
 		// Note: resubscribe is called automatically in Connect()
 	}

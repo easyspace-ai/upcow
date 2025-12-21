@@ -16,30 +16,30 @@ proxy:
 # - value 是该策略的配置
 exchangeStrategies:
   # threshold 策略（价格阈值策略）
-  - on: polymarket
-    threshold:
-      # ========== 价格阈值（美分，1-100，表示价格）==========
-      buyThreshold: 62        # 买入阈值（美分）：当价格从低到高突破 62 cents（$0.62）时买入
-                              # 规则：必须价格从低于 62c 涨到 >= 62c 才买入（突破买入）
-                              # 示例：价格从 60c → 62c，触发买入；价格从 99c → 62c，不买入
-      maxBuyPrice: 80         # 最大买入价格（美分）：价格超过此值时不买入（0 表示不限制）
-                              # 规则：如果价格 > 80c，即使突破阈值也不买入
-                              # 示例：价格从 79c → 82c，不买入（超过 80c）
-      sellThreshold: 0        # 卖出阈值（美分）：当价格 <= 此值时卖出（0 表示不使用此功能）
-                              # 示例：如果设置为 30，当价格跌到 30c 时卖出
-      
-      # ========== 订单配置 ==========
-      orderSize: 3.0          # 订单大小：每次买入/卖出的 share 数量（Polymarket 要求最小 5 shares）
-                              # 注意：如果配置小于 5，系统会自动调整为 5
-      tokenType: ""           # Token 类型：""=监控所有, "YES"=只买UP, "NO"=只买DOWN
-      
-      # ========== 止盈止损（美分，表示价格差）==========
-      profitTargetCents: 5    # 止盈目标（美分）：买入后，价格比买入价高 N 美分时卖出
-                              # 示例：买入价 62c，如果设置为 5，则当价格 >= 67c 时卖出
-                              #       盈利 = 67c - 62c = 5 cents
-      stopLossCents: 10       # 止损目标（美分）：买入后，价格比买入价低 N 美分时卖出
-                              # 示例：买入价 62c，如果设置为 10，则当价格 <= 52c 时卖出
-                              #       亏损 = 62c - 52c = 10 cents
+#  - on: polymarket
+#    threshold:
+#      # ========== 价格阈值（美分，1-100，表示价格）==========
+#      buyThreshold: 62        # 买入阈值（美分）：当价格从低到高突破 62 cents（$0.62）时买入
+#                              # 规则：必须价格从低于 62c 涨到 >= 62c 才买入（突破买入）
+#                              # 示例：价格从 60c → 62c，触发买入；价格从 99c → 62c，不买入
+#      maxBuyPrice: 80         # 最大买入价格（美分）：价格超过此值时不买入（0 表示不限制）
+#                              # 规则：如果价格 > 80c，即使突破阈值也不买入
+#                              # 示例：价格从 79c → 82c，不买入（超过 80c）
+#      sellThreshold: 0        # 卖出阈值（美分）：当价格 <= 此值时卖出（0 表示不使用此功能）
+#                              # 示例：如果设置为 30，当价格跌到 30c 时卖出
+#
+#      # ========== 订单配置 ==========
+#      orderSize: 3.0          # 订单大小：每次买入/卖出的 share 数量（Polymarket 要求最小 5 shares）
+#                              # 注意：如果配置小于 5，系统会自动调整为 5
+#      tokenType: ""           # Token 类型：""=监控所有, "YES"=只买UP, "NO"=只买DOWN
+#
+#      # ========== 止盈止损（美分，表示价格差）==========
+#      profitTargetCents: 5    # 止盈目标（美分）：买入后，价格比买入价高 N 美分时卖出
+#                              # 示例：买入价 62c，如果设置为 5，则当价格 >= 67c 时卖出
+#                              #       盈利 = 67c - 62c = 5 cents
+#      stopLossCents: 10       # 止损目标（美分）：买入后，价格比买入价低 N 美分时卖出
+#                              # 示例：买入价 62c，如果设置为 10，则当价格 <= 52c 时卖出
+#                              #       亏损 = 62c - 52c = 10 cents
   
   # 网格策略配置（已注释，如需启用请取消注释）
   # - on: polymarket
@@ -81,10 +81,10 @@ exchangeStrategies:
   #     min_order_size: 1.1       # 最小下单金额（USDC，默认1.1，交易所要求不能小于1）
   
   # 数据记录策略配置（不交易，只记录数据，已注释，如需启用请取消注释）
-  # - on: polymarket
-  #   datarecorder:
-  #     output_dir: "data/recordings"  # CSV 文件保存目录
-  #     use_rtds_fallback: true        # 是否使用 RTDS 作为目标价备选方案
+  - on: polymarket
+    datarecorder:
+        output_dir: "data/recordings"  # CSV 文件保存目录
+        use_rtds_fallback: true        # 是否使用 RTDS 作为目标价备选方案
  
 # 系统级配置
 order_status_check_timeout: 3   # 订单状态检查超时时间（秒），如果WebSocket在此时长内没有更新，则启用API轮询，默认3秒
