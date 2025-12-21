@@ -178,11 +178,19 @@ func (s *DataRecorderStrategy) Initialize() error {
 	// 订阅 Chainlink BTC 价格（使用 Chainlink 作为实时价格数据源）
 	// BTC 价格更新时，只更新内存中的价格，不记录数据
 	// 数据记录以 UP/DOWN 价格变化为准
+	var chainlinkFirstMsgOnce sync.Once
+	var btcFirstMatchOnce sync.Once
 	btcHandler := rtds.CreateCryptoPriceHandler(func(price *rtds.CryptoPrice) error {
 		val := price.Value.Float64()
 		sym := strings.ToLower(strings.TrimSpace(price.Symbol))
+		chainlinkFirstMsgOnce.Do(func() {
+			logger.Infof("数据记录策略: ✅ RTDS 已收到 crypto_prices_chainlink 首条消息 - symbol=%s ts=%d value=%.6f", sym, price.Timestamp, val)
+		})
 		logger.Debugf("数据记录策略: 收到 Chainlink 价格消息 - Symbol=%s, Value=%.2f", sym, val)
 		if sym == "btc/usd" || sym == "btcusdt" || sym == "btc/usdt" {
+			btcFirstMatchOnce.Do(func() {
+				logger.Infof("数据记录策略: ✅ RTDS 已收到 BTC 实时报价首条有效消息 - symbol=%s ts=%d value=%.6f", sym, price.Timestamp, val)
+			})
 			// 格式化时间戳（毫秒转秒）
 			timestamp := time.Unix(price.Timestamp/1000, (price.Timestamp%1000)*1000000)
 
@@ -219,7 +227,24 @@ func (s *DataRecorderStrategy) Initialize() error {
 	if err := rtdsClient.SubscribeToCryptoPrices("chainlink", "btc/usd"); err != nil {
 		return fmt.Errorf("订阅 Chainlink BTC 价格失败: %w", err)
 	}
-	logger.Infof("数据记录策略: Chainlink BTC 价格订阅成功")
+	logger.Infof("数据记录策略: Chainlink BTC 价格订阅成功 (等待首条报价...)")
+	logger.Infof("数据记录策略: RTDS 状态快照(订阅后): %s", rtdsClient.DebugSnapshot())
+
+	// 自检：订阅成功后若长期未收到 BTC 报价，输出快照便于定位（订阅未生效/topic 不一致/解析失败）
+	go func() {
+		select {
+		case <-time.After(15 * time.Second):
+			s.mu.RLock()
+			btcRealtime := s.btcRealtimePrice
+			s.mu.RUnlock()
+			if btcRealtime <= 0 {
+				logger.Warnf("数据记录策略: ⚠️ RTDS 订阅后 15s 仍未收到 BTC 实时报价（btcRealtime=%.2f）。可能原因：订阅未真正生效、topic/filters 不匹配、或上游返回非 JSON/空帧导致解析失败。RTDS 快照=%s",
+					btcRealtime, rtdsClient.DebugSnapshot())
+			}
+		case <-s.ctx.Done():
+			return
+		}
+	}()
 
 	logger.Infof("数据记录策略已初始化: 输出目录=%s, RTDS备选=%v, 实时价格源=Chainlink",
 		s.OutputDir, useFallback)
