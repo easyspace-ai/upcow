@@ -13,20 +13,21 @@ import (
 // Environment 环境管理器，管理交易所会话和服务
 type Environment struct {
 	// 服务
-	TradingService    *services.TradingService
-	MarketDataService *services.MarketDataService
+	TradingService     *services.TradingService
+	MarketDataService  *services.MarketDataService
 	PersistenceService persistence.Service
-	Executor          CommandExecutor
+	Executor           CommandExecutor // 确定性：串行执行（网格等）
+	ConcurrentExecutor CommandExecutor // 并发：worker pool（套利等）
 
 	// 会话管理
-	sessions map[string]*ExchangeSession
+	sessions   map[string]*ExchangeSession
 	sessionsMu sync.RWMutex
 
 	// 关闭管理器
 	shutdownManager *shutdown.Manager
 
 	// 系统级配置
-	DirectModeDebounce int    // 直接回调模式的防抖间隔（毫秒），默认100ms（BBGO风格：只支持直接模式）
+	DirectModeDebounce int // 直接回调模式的防抖间隔（毫秒），默认100ms（BBGO风格：只支持直接模式）
 }
 
 // NewEnvironment 创建新的环境管理器
@@ -34,7 +35,7 @@ func NewEnvironment() *Environment {
 	return &Environment{
 		sessions:           make(map[string]*ExchangeSession),
 		shutdownManager:    shutdown.NewManager(),
-		DirectModeDebounce: 100,     // 默认100ms防抖（BBGO风格：只支持直接模式）
+		DirectModeDebounce: 100, // 默认100ms防抖（BBGO风格：只支持直接模式）
 	}
 }
 
@@ -65,6 +66,11 @@ func (e *Environment) SetExecutor(executor CommandExecutor) {
 	e.Executor = executor
 }
 
+// SetConcurrentExecutor 设置并发命令执行器（用于套利等允许并发的策略）
+func (e *Environment) SetConcurrentExecutor(executor CommandExecutor) {
+	e.ConcurrentExecutor = executor
+}
+
 // AddSession 添加交易所会话
 func (e *Environment) AddSession(name string, session *ExchangeSession) {
 	e.sessionsMu.Lock()
@@ -84,7 +90,7 @@ func (e *Environment) Session(name string) (*ExchangeSession, bool) {
 func (e *Environment) Sessions() map[string]*ExchangeSession {
 	e.sessionsMu.RLock()
 	defer e.sessionsMu.RUnlock()
-	
+
 	result := make(map[string]*ExchangeSession)
 	for k, v := range e.sessions {
 		result[k] = v
@@ -115,6 +121,9 @@ func (e *Environment) Start(ctx context.Context) error {
 	if e.Executor != nil {
 		e.Executor.Start(ctx)
 	}
+	if e.ConcurrentExecutor != nil {
+		e.ConcurrentExecutor.Start(ctx)
+	}
 
 	return nil
 }
@@ -144,6 +153,11 @@ func (e *Environment) Close() error {
 		_ = e.Executor.Stop(stopCtx)
 		cancel()
 	}
+	if e.ConcurrentExecutor != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = e.ConcurrentExecutor.Stop(stopCtx)
+		cancel()
+	}
 
 	for _, session := range e.sessions {
 		if err := session.Close(); err != nil {
@@ -153,4 +167,3 @@ func (e *Environment) Close() error {
 
 	return nil
 }
-

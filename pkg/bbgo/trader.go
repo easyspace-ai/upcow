@@ -8,6 +8,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/pkg/persistence"
 	"github.com/betbot/gobet/pkg/shutdown"
 )
@@ -62,19 +63,30 @@ type Trader struct {
 	environment *Environment
 
 	// 策略列表（使用 interface{} 避免循环依赖）
-	strategies []interface{}
+	strategies   []interface{}
 	strategiesMu sync.RWMutex
 
 	// 关闭管理器
 	shutdownManager *shutdown.Manager
+
+	// 运行期：用于周期切换时取消并重启策略 Run
+	runMu           sync.Mutex
+	strategyCancels map[string]context.CancelFunc // strategyID -> cancel
+	activeSession   *ExchangeSession
+
+	// 避免周期切换时重复注册 shutdown hook
+	shutdownOnceMu        sync.Mutex
+	shutdownRegisteredIDs map[string]bool
 }
 
 // NewTrader 创建新的策略管理器
 func NewTrader(environ *Environment) *Trader {
 	return &Trader{
-		environment:     environ,
-		strategies:      make([]interface{}, 0),
-		shutdownManager: environ.ShutdownManager(),
+		environment:           environ,
+		strategies:            make([]interface{}, 0),
+		shutdownManager:       environ.ShutdownManager(),
+		strategyCancels:       make(map[string]context.CancelFunc),
+		shutdownRegisteredIDs: make(map[string]bool),
 	}
 }
 
@@ -89,7 +101,7 @@ func (t *Trader) AddStrategy(strategy interface{}) {
 func (t *Trader) Strategies() []interface{} {
 	t.strategiesMu.RLock()
 	defer t.strategiesMu.RUnlock()
-	
+
 	result := make([]interface{}, len(t.strategies))
 	copy(result, t.strategies)
 	return result
@@ -179,29 +191,40 @@ func (t *Trader) injectServicesIntoStrategy(ctx context.Context, strategy interf
 		strategyID = nameStrategy.Name()
 	}
 
-		// 注入 TradingService
-		if t.environment.TradingService != nil {
-			if err := t.injectField(strategy, "TradingService", t.environment.TradingService); err != nil {
-				traderLog.Debugf("failed to inject TradingService into %s: %v", strategyID, err)
-			}
+	// 注入 TradingService
+	if t.environment.TradingService != nil {
+		if err := t.injectField(strategy, "TradingService", t.environment.TradingService); err != nil {
+			traderLog.Debugf("failed to inject TradingService into %s: %v", strategyID, err)
 		}
+	}
 
-		// 注入 MarketDataService
-		if t.environment.MarketDataService != nil {
-			if err := t.injectField(strategy, "MarketDataService", t.environment.MarketDataService); err != nil {
-				traderLog.Debugf("failed to inject MarketDataService into %s: %v", strategyID, err)
-			}
+	// 注入 MarketDataService
+	if t.environment.MarketDataService != nil {
+		if err := t.injectField(strategy, "MarketDataService", t.environment.MarketDataService); err != nil {
+			traderLog.Debugf("failed to inject MarketDataService into %s: %v", strategyID, err)
 		}
+	}
 
-		// 注入系统级配置（直接回调模式防抖间隔，BBGO风格：只支持直接模式）
-		if err := t.injectField(strategy, "directModeDebounce", t.environment.DirectModeDebounce); err != nil {
-			traderLog.Debugf("failed to inject directModeDebounce into %s: %v", strategyID, err)
-		}
+	// 注入系统级配置（直接回调模式防抖间隔，BBGO风格：只支持直接模式）
+	if err := t.injectField(strategy, "directModeDebounce", t.environment.DirectModeDebounce); err != nil {
+		traderLog.Debugf("failed to inject directModeDebounce into %s: %v", strategyID, err)
+	}
 
 	// 注入全局命令执行器（串行 IO）
-	if t.environment.Executor != nil {
-		if err := t.injectField(strategy, "Executor", t.environment.Executor); err != nil {
-			traderLog.Debugf("failed to inject Executor into %s: %v", strategyID, err)
+	if t.environment != nil {
+		exec := t.environment.Executor
+		// 允许策略声明并发模式：注入并发执行器（如果配置了）
+		if mp, ok := strategy.(ExecutionModeProvider); ok && mp.ExecutionMode() == ExecutionModeConcurrent {
+			if t.environment.ConcurrentExecutor != nil {
+				exec = t.environment.ConcurrentExecutor
+			} else {
+				traderLog.Warnf("⚠️ strategy %s 需要并发执行器，但 Environment.ConcurrentExecutor 未配置，回退到串行执行器", strategyID)
+			}
+		}
+		if exec != nil {
+			if err := t.injectField(strategy, "Executor", exec); err != nil {
+				traderLog.Debugf("failed to inject Executor into %s: %v", strategyID, err)
+			}
 		}
 	}
 
@@ -255,7 +278,7 @@ func (t *Trader) Subscribe(ctx context.Context, session *ExchangeSession) error 
 				strategyID = nameStrategy.Name()
 			}
 			traderLog.Infof("🔄 [周期切换] 准备调用策略 %s 的 Subscribe 方法", strategyID)
-			
+
 			// 使用 defer recover 确保即使 Subscribe 出错也能继续
 			var subscribeErr error
 			func() {
@@ -268,7 +291,7 @@ func (t *Trader) Subscribe(ctx context.Context, session *ExchangeSession) error 
 				subscriber.Subscribe(session)
 				traderLog.Infof("✅ [周期切换] 策略 %s 的 Subscribe 方法执行完成", strategyID)
 			}()
-			
+
 			if subscribeErr != nil {
 				traderLog.Errorf("❌ [周期切换] 策略 %s 订阅失败: %v", strategyID, subscribeErr)
 			} else {
@@ -279,6 +302,169 @@ func (t *Trader) Subscribe(ctx context.Context, session *ExchangeSession) error 
 		}
 	}
 
+	return nil
+}
+
+type noopOrderExecutor struct{}
+
+func (noopOrderExecutor) SubmitOrders(ctx context.Context, orders ...domain.Order) ([]*domain.Order, error) {
+	_ = ctx
+	_ = orders
+	return nil, fmt.Errorf("no trading service: SubmitOrders is unavailable")
+}
+
+func (noopOrderExecutor) CancelOrders(ctx context.Context, orders ...*domain.Order) error {
+	_ = ctx
+	_ = orders
+	return fmt.Errorf("no trading service: CancelOrders is unavailable")
+}
+
+func (t *Trader) makeOrderExecutor() OrderExecutor {
+	if t.environment != nil && t.environment.TradingService != nil {
+		return NewTradingServiceOrderExecutor(t.environment.TradingService)
+	}
+	traderLog.Warnf("⚠️ TradingService 不存在：策略将拿到 noop OrderExecutor（下单会报错）")
+	return noopOrderExecutor{}
+}
+
+func (t *Trader) cancelAllRunsLocked() {
+	for id, cancel := range t.strategyCancels {
+		if cancel != nil {
+			cancel()
+		}
+		delete(t.strategyCancels, id)
+	}
+	t.activeSession = nil
+}
+
+// StartWithSession 启动所有策略（每个策略单独 goroutine），并绑定到指定 session。
+// 该方法会返回，不会阻塞主 goroutine；用于支持周期切换时重启策略 Run。
+func (t *Trader) StartWithSession(ctx context.Context, session *ExchangeSession) error {
+	t.runMu.Lock()
+	defer t.runMu.Unlock()
+
+	if session == nil {
+		return fmt.Errorf("session is nil")
+	}
+
+	// 如果已经启动过，避免重复启动导致“同一策略多次 Run”
+	if t.activeSession != nil {
+		traderLog.Warnf("⚠️ Trader 已经启动过（session=%s），请使用 SwitchSession", t.activeSession.Name)
+		return nil
+	}
+
+	// 订阅回调（价格/订单等）
+	_ = t.Subscribe(ctx, session)
+
+	orderExecutor := t.makeOrderExecutor()
+
+	t.strategiesMu.RLock()
+	strategies := t.strategies
+	t.strategiesMu.RUnlock()
+
+	for _, s := range strategies {
+		// 注册关闭回调（保持原有语义）
+		if shutdown, ok := s.(StrategyShutdown); ok && t.shutdownManager != nil {
+			strategyID := "unknown"
+			if sid, ok := s.(StrategyID); ok {
+				strategyID = sid.ID()
+			} else if nameStrategy, ok := s.(interface{ Name() string }); ok {
+				strategyID = nameStrategy.Name()
+			}
+
+			t.shutdownOnceMu.Lock()
+			already := t.shutdownRegisteredIDs[strategyID]
+			if !already {
+				t.shutdownRegisteredIDs[strategyID] = true
+				t.shutdownManager.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
+					shutdown.Shutdown(ctx, wg)
+				})
+			}
+			t.shutdownOnceMu.Unlock()
+		}
+
+		single, ok := s.(SingleExchangeStrategy)
+		if !ok {
+			continue
+		}
+
+		strategyID := single.ID()
+		runCtx, cancel := context.WithCancel(ctx)
+		t.strategyCancels[strategyID] = cancel
+
+		go func(st SingleExchangeStrategy, id string, runCtx context.Context) {
+			if err := st.Run(runCtx, orderExecutor, session); err != nil && runCtx.Err() == nil {
+				traderLog.Errorf("策略 %s Run 退出: %v", id, err)
+			}
+		}(single, strategyID, runCtx)
+
+		traderLog.Infof("✅ 策略 %s 已启动（session=%s）", strategyID, session.Name)
+	}
+
+	t.activeSession = session
+	traderLog.Infof("所有策略已启动，共 %d 个策略（session=%s）", len(strategies), session.Name)
+	return nil
+}
+
+// SwitchSession 用于周期切换：取消上一周期所有策略 Run，并用新 session 重新 Subscribe+Run。
+func (t *Trader) SwitchSession(ctx context.Context, session *ExchangeSession) error {
+	t.runMu.Lock()
+	defer t.runMu.Unlock()
+
+	if session == nil {
+		return fmt.Errorf("session is nil")
+	}
+
+	// 1) 先取消上一轮 Run（防止旧 market 状态继续运行）
+	t.cancelAllRunsLocked()
+
+	// 2) 订阅新 session 并重新 Run
+	_ = t.Subscribe(ctx, session)
+	orderExecutor := t.makeOrderExecutor()
+
+	t.strategiesMu.RLock()
+	strategies := t.strategies
+	t.strategiesMu.RUnlock()
+
+	for _, s := range strategies {
+		if shutdown, ok := s.(StrategyShutdown); ok && t.shutdownManager != nil {
+			strategyID := "unknown"
+			if sid, ok := s.(StrategyID); ok {
+				strategyID = sid.ID()
+			} else if nameStrategy, ok := s.(interface{ Name() string }); ok {
+				strategyID = nameStrategy.Name()
+			}
+
+			t.shutdownOnceMu.Lock()
+			already := t.shutdownRegisteredIDs[strategyID]
+			if !already {
+				t.shutdownRegisteredIDs[strategyID] = true
+				t.shutdownManager.OnShutdown(func(ctx context.Context, wg *sync.WaitGroup) {
+					shutdown.Shutdown(ctx, wg)
+				})
+			}
+			t.shutdownOnceMu.Unlock()
+		}
+
+		single, ok := s.(SingleExchangeStrategy)
+		if !ok {
+			continue
+		}
+
+		strategyID := single.ID()
+		runCtx, cancel := context.WithCancel(ctx)
+		t.strategyCancels[strategyID] = cancel
+
+		go func(st SingleExchangeStrategy, id string, runCtx context.Context) {
+			if err := st.Run(runCtx, orderExecutor, session); err != nil && runCtx.Err() == nil {
+				traderLog.Errorf("策略 %s Run 退出: %v", id, err)
+			}
+		}(single, strategyID, runCtx)
+
+		traderLog.Infof("🔄 [周期切换] 策略 %s 已切换到新 session=%s", strategyID, session.Name)
+	}
+
+	t.activeSession = session
 	return nil
 }
 
@@ -396,4 +582,3 @@ func (t *Trader) Shutdown(ctx context.Context) {
 		t.shutdownManager.Shutdown(ctx)
 	}
 }
-

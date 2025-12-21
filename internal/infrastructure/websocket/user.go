@@ -36,26 +36,126 @@ type UserWebSocket struct {
 	lastPong       time.Time
 	healthCheckMu  sync.RWMutex
 	proxyURL       string
-	ctx            context.Context // 保存 context，用于取消所有 goroutine
+	ctx            context.Context    // 保存 context，用于取消所有 goroutine
 	cancel         context.CancelFunc // cancel 函数，用于取消 context
 	wg             sync.WaitGroup     // 用于等待所有 goroutine 退出
+
+	// 事件分发：有界队列 + 固定 worker，避免“每条消息起 N goroutine”导致不可控
+	dispatchOnce   sync.Once
+	dispatchCtx    context.Context
+	dispatchCancel context.CancelFunc
+	orderUpdateC   chan orderUpdateJob
+	tradeUpdateC   chan tradeUpdateJob
+}
+
+type orderUpdateJob struct {
+	ctx   context.Context
+	order *domain.Order
+}
+
+type tradeUpdateJob struct {
+	ctx   context.Context
+	trade *domain.Trade
 }
 
 // UserCredentials 用户凭证
 type UserCredentials struct {
-	APIKey    string
-	Secret    string
+	APIKey     string
+	Secret     string
 	Passphrase string
 }
 
 // NewUserWebSocket 创建新的用户订单 WebSocket 客户端（BBGO风格）
 func NewUserWebSocket() *UserWebSocket {
+	dispatchCtx, dispatchCancel := context.WithCancel(context.Background())
 	return &UserWebSocket{
 		orderHandlers:  make([]ports.OrderUpdateHandler, 0),
 		tradeHandlers:  make([]ports.TradeUpdateHandler, 0),
-		maxReconnects:  10,                    // 最多重连 10 次
-		reconnectDelay: 5 * time.Second,       // 初始重连延迟 5 秒
+		maxReconnects:  10,              // 最多重连 10 次
+		reconnectDelay: 5 * time.Second, // 初始重连延迟 5 秒
 		lastPong:       time.Now(),
+		dispatchCtx:    dispatchCtx,
+		dispatchCancel: dispatchCancel,
+		orderUpdateC:   make(chan orderUpdateJob, 2048),
+		tradeUpdateC:   make(chan tradeUpdateJob, 2048),
+	}
+}
+
+func (u *UserWebSocket) startDispatchLoops() {
+	u.dispatchOnce.Do(func() {
+		u.wg.Add(2)
+		go func() {
+			defer u.wg.Done()
+			u.orderDispatchLoop()
+		}()
+		go func() {
+			defer u.wg.Done()
+			u.tradeDispatchLoop()
+		}()
+	})
+}
+
+func (u *UserWebSocket) orderDispatchLoop() {
+	for {
+		select {
+		case <-u.dispatchCtx.Done():
+			return
+		case job := <-u.orderUpdateC:
+			if job.order == nil {
+				continue
+			}
+			u.mu.RLock()
+			handlers := make([]ports.OrderUpdateHandler, len(u.orderHandlers))
+			copy(handlers, u.orderHandlers)
+			u.mu.RUnlock()
+
+			for _, h := range handlers {
+				if h == nil {
+					continue
+				}
+				func(handler ports.OrderUpdateHandler) {
+					defer func() {
+						if r := recover(); r != nil {
+							userLog.Errorf("订单更新处理器 panic: %v", r)
+						}
+					}()
+					if err := handler.OnOrderUpdate(job.ctx, job.order); err != nil {
+						userLog.Errorf("订单更新处理器执行失败: %v", err)
+					}
+				}(h)
+			}
+		}
+	}
+}
+
+func (u *UserWebSocket) tradeDispatchLoop() {
+	for {
+		select {
+		case <-u.dispatchCtx.Done():
+			return
+		case job := <-u.tradeUpdateC:
+			if job.trade == nil {
+				continue
+			}
+			u.mu.RLock()
+			handlers := make([]ports.TradeUpdateHandler, len(u.tradeHandlers))
+			copy(handlers, u.tradeHandlers)
+			u.mu.RUnlock()
+
+			for _, h := range handlers {
+				if h == nil {
+					continue
+				}
+				func(handler ports.TradeUpdateHandler) {
+					defer func() {
+						if r := recover(); r != nil {
+							userLog.Errorf("交易处理器 panic: %v", r)
+						}
+					}()
+					handler.HandleTrade(job.ctx, job.trade)
+				}(h)
+			}
+		}
 	}
 }
 
@@ -75,6 +175,9 @@ func (u *UserWebSocket) OnTradeUpdate(handler ports.TradeUpdateHandler) {
 
 // Connect 连接到用户订单 WebSocket
 func (u *UserWebSocket) Connect(ctx context.Context, creds *UserCredentials, proxyURL string) error {
+	// 确保分发 worker 已启动（只启动一次）
+	u.startDispatchLoops()
+
 	u.mu.Lock()
 	// 如果已有连接且未关闭，先关闭旧连接（避免重复连接）
 	if u.conn != nil && !u.closed {
@@ -386,7 +489,7 @@ func (u *UserWebSocket) handleMessages(ctx context.Context) {
 		conn := u.conn
 		closed := u.closed
 		u.mu.RUnlock()
-		
+
 		if conn == nil || closed {
 			return
 		}
@@ -394,7 +497,7 @@ func (u *UserWebSocket) handleMessages(ctx context.Context) {
 		// 设置读取超时（30秒），既能及时响应 context 取消，又不会因为正常延迟而误判
 		// 使用较长的超时时间，避免正常的网络延迟被误判为连接失败
 		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
-		
+
 		// 使用 recover 捕获可能的 panic（连接失败后重复读取会导致 panic）
 		var message []byte
 		var err error
@@ -420,13 +523,13 @@ func (u *UserWebSocket) handleMessages(ctx context.Context) {
 			u.mu.RUnlock()
 			_, message, err = conn.ReadMessage()
 		}()
-		
+
 		if err != nil {
 			// 检查是否是 panic 错误（连接失败后重复读取）
 			errStr := err.Error()
-			isPanicError := strings.Contains(errStr, "panic:") || 
+			isPanicError := strings.Contains(errStr, "panic:") ||
 				strings.Contains(errStr, "repeated read on failed websocket connection")
-			
+
 			// 如果是 panic 错误，立即标记为关闭并退出
 			if isPanicError {
 				userLog.Warnf("用户订单 WebSocket 读取时发生 panic 错误: %v，标记为已关闭并退出", err)
@@ -435,7 +538,7 @@ func (u *UserWebSocket) handleMessages(ctx context.Context) {
 				u.mu.Unlock()
 				return
 			}
-			
+
 			// 检查是否是超时错误（这是正常的，用于检查 context）
 			if netErr, ok := err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
 				// 超时，继续循环检查 context
@@ -453,7 +556,7 @@ func (u *UserWebSocket) handleMessages(ctx context.Context) {
 			// 检查是否是正常关闭（连接已被主动关闭）
 			isNormalClose := strings.Contains(errStr, "use of closed network connection") ||
 				strings.Contains(errStr, "connection reset by peer")
-			
+
 			// 检查 context 是否已取消（正常关闭流程）
 			select {
 			case <-ctx.Done():
@@ -465,36 +568,36 @@ func (u *UserWebSocket) handleMessages(ctx context.Context) {
 				return
 			default:
 			}
-			
+
 			// 检查连接是否已经被标记为关闭（正常关闭流程）
 			u.mu.RLock()
 			alreadyClosed := u.closed
 			u.mu.RUnlock()
-			
+
 			if alreadyClosed || isNormalClose {
 				// 正常关闭，记录为调试信息
 				userLog.Debugf("用户订单 WebSocket 正常关闭: %v", err)
 				return
 			}
-			
+
 			// 异常关闭，记录为警告
 			userLog.Warnf("用户订单 WebSocket 读取错误: %v，标记为已关闭并退出", err)
-			
+
 			// 标记为已关闭，避免重复读取
 			u.mu.Lock()
 			u.closed = true
 			u.mu.Unlock()
-			
+
 			// 检查是否是连接关闭错误（用于决定是否重连）
 			isCloseError := websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) ||
 				websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure)
-			
+
 			if isCloseError {
 				// 连接关闭，触发重连
 				userLog.Infof("用户订单 WebSocket 连接已关闭，将触发重连")
 				go u.reconnect(ctx)
 			}
-			
+
 			return
 		}
 
@@ -587,10 +690,6 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 	}
 
 	// BBGO风格：直接触发回调，不使用事件总线
-	u.mu.RLock()
-	handlers := u.orderHandlers
-	u.mu.RUnlock()
-
 	// 根据订单状态更新订单对象
 	if orderTypeStr == "UPDATE" && sizeMatched >= originalSize {
 		// 订单已成交
@@ -603,13 +702,11 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 		order.Status = domain.OrderStatusOpen
 	}
 
-	// 触发所有注册的回调处理器
-	for _, handler := range handlers {
-		go func(h ports.OrderUpdateHandler) {
-			if err := h.OnOrderUpdate(ctx, order); err != nil {
-				userLog.Errorf("订单更新处理器执行失败: %v", err)
-			}
-		}(handler)
+	// 投递到有界队列，由固定 worker 串行执行 handlers，避免 goroutine 爆炸
+	select {
+	case u.orderUpdateC <- orderUpdateJob{ctx: ctx, order: order}:
+	default:
+		userLog.Warnf("⚠️ orderUpdate 队列已满，丢弃订单更新: orderID=%s", orderID)
 	}
 
 	userLog.Debugf("处理订单消息: orderID=%s, type=%s, status=%s", orderID, orderTypeStr, status)
@@ -626,26 +723,26 @@ func (u *UserWebSocket) handleTradeMessage(ctx context.Context, msg map[string]i
 	status, _ := msg["status"].(string) // MATCHED, MINED, CONFIRMED, RETRYING, FAILED
 	takerOrderID, _ := msg["taker_order_id"].(string)
 	makerOrders, _ := msg["maker_orders"].([]interface{})
-	
+
 	// 只处理 MATCHED 状态的交易（实际成交的交易）
 	if status != "MATCHED" {
 		userLog.Debugf("收到交易消息（非 MATCHED 状态，跳过）: tradeID=%s, status=%s", tradeID, status)
 		return
 	}
-	
+
 	// 解析价格和数量
 	price, err := parsePriceString(priceStr)
 	if err != nil {
 		userLog.Debugf("解析交易价格失败: %v", err)
 		return
 	}
-	
+
 	size, err := strconv.ParseFloat(sizeStr, 64)
 	if err != nil {
 		userLog.Debugf("解析交易数量失败: %v", err)
 		return
 	}
-	
+
 	// 确定交易方向
 	var side types.Side
 	if sideStr == "BUY" {
@@ -653,7 +750,7 @@ func (u *UserWebSocket) handleTradeMessage(ctx context.Context, msg map[string]i
 	} else {
 		side = types.SideSell
 	}
-	
+
 	// 确定订单 ID（优先使用 taker_order_id，如果没有则从 maker_orders 中获取）
 	orderID := takerOrderID
 	if orderID == "" && len(makerOrders) > 0 {
@@ -664,23 +761,23 @@ func (u *UserWebSocket) handleTradeMessage(ctx context.Context, msg map[string]i
 			}
 		}
 	}
-	
+
 	if orderID == "" {
 		userLog.Debugf("交易消息中未找到订单 ID，跳过: tradeID=%s", tradeID)
 		return
 	}
-	
+
 	// 构建交易领域对象
 	trade := &domain.Trade{
-		ID:        tradeID,
-		OrderID:   orderID,
-		AssetID:   assetID,
-		Side:      side,
-		Price:     price,
-		Size:      size,
-		Time:      time.Now(),
+		ID:      tradeID,
+		OrderID: orderID,
+		AssetID: assetID,
+		Side:    side,
+		Price:   price,
+		Size:    size,
+		Time:    time.Now(),
 	}
-	
+
 	// 确定 TokenType（从 outcome 字段，如果有）
 	if outcome, ok := msg["outcome"].(string); ok {
 		if outcome == "YES" {
@@ -689,33 +786,30 @@ func (u *UserWebSocket) handleTradeMessage(ctx context.Context, msg map[string]i
 			trade.TokenType = domain.TokenTypeDown
 		}
 	}
-	
+
 	userLog.Debugf("收到交易消息: tradeID=%s, orderID=%s, assetID=%s, side=%s, price=%.4f, size=%.2f",
 		tradeID, orderID, assetID, sideStr, price.ToDecimal(), size)
-	
-	// BBGO风格：直接调用交易处理器
-	u.mu.RLock()
-	handlers := u.tradeHandlers
-	u.mu.RUnlock()
-	
-	for _, handler := range handlers {
-		handler.HandleTrade(ctx, trade)
+
+	// 投递到有界队列，由固定 worker 执行 handlers（避免阻塞 ReadMessage 线程）
+	select {
+	case u.tradeUpdateC <- tradeUpdateJob{ctx: ctx, trade: trade}:
+	default:
+		userLog.Warnf("⚠️ tradeUpdate 队列已满，丢弃交易事件: tradeID=%s", tradeID)
 	}
 }
-
 
 // Close 关闭 WebSocket 连接
 func (u *UserWebSocket) Close() error {
 	u.mu.Lock()
 	// 先标记为已关闭，防止新的操作
 	u.closed = true
-	
+
 	// 取消 context，通知所有 goroutine 停止
 	if u.cancel != nil {
 		u.cancel()
 		u.cancel = nil
 	}
-	
+
 	// 关闭连接，这会中断 ReadMessage 的阻塞
 	var conn *websocket.Conn
 	if u.conn != nil {
@@ -723,6 +817,12 @@ func (u *UserWebSocket) Close() error {
 		u.conn = nil
 	}
 	u.mu.Unlock()
+
+	// 停止分发 worker（与连接生命周期解耦，但与 Close 生命周期绑定）
+	if u.dispatchCancel != nil {
+		u.dispatchCancel()
+		u.dispatchCancel = nil
+	}
 
 	// 关闭连接（这会触发 ReadMessage 返回错误，让 handleMessages 退出）
 	if conn != nil {

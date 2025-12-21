@@ -283,62 +283,42 @@ func (m *MarketStream) Read(ctx context.Context, conn *websocket.Conn, cancel co
 		default:
 		}
 
-		// 设置读取超时
+		// 设置读取超时：用 deadline 让 ReadMessage 至多阻塞 readTimeout，
+		// 这样无需每轮起 goroutine，避免长期运行下 goroutine churn。
 		if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
 			marketLog.Errorf("设置读取超时失败: %v", err)
 			return
 		}
 
-		// 使用 goroutine 来执行阻塞的 ReadMessage，并通过 channel 传递结果
-		type readResult struct {
-			message []byte
-			err     error
-		}
-		resultChan := make(chan readResult, 1)
-
-		go func() {
-			_, message, err := conn.ReadMessage()
-			resultChan <- readResult{message: message, err: err}
-		}()
-
-		// 等待读取结果或 context 取消
-		select {
-		case <-ctx.Done():
-			return
-		case <-m.closeC:
-			return
-		case result := <-resultChan:
-			if result.err != nil {
-				// 检查是否是关闭错误
-				if websocket.IsCloseError(result.err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-					marketLog.Debugf("WebSocket 正常关闭")
-					return
-				}
-
-				// 检查是否是超时错误（用于检查 context）
-				if netErr, ok := result.err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
-					// 超时，继续循环以检查 context
-					continue
-				}
-
-				// 检查是否是 "use of closed network connection" 错误（正常关闭）
-				errStr := result.err.Error()
-				if errStr == "use of closed network connection" {
-					marketLog.Debugf("WebSocket 连接已关闭")
-					return
-				}
-
-				// 网络错误，触发重连
-				marketLog.Warnf("WebSocket 读取错误: %v，触发重连", result.err)
-				conn.Close()
-				m.Reconnect()
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			// 检查是否是关闭错误
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				marketLog.Debugf("WebSocket 正常关闭")
 				return
 			}
 
-			// 处理消息
-			m.markMessageReceived()
-			m.handleMessage(ctx, result.message)
+			// 超时：用于周期性检查 ctx
+			if netErr, ok := err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
+				continue
+			}
+
+			// "use of closed network connection"：正常关闭
+			if err.Error() == "use of closed network connection" {
+				marketLog.Debugf("WebSocket 连接已关闭")
+				return
+			}
+
+			// 网络错误，触发重连
+			marketLog.Warnf("WebSocket 读取错误: %v，触发重连", err)
+			_ = conn.Close()
+			m.Reconnect()
+			return
 		}
+
+		// 处理消息
+		m.markMessageReceived()
+		m.handleMessage(ctx, message)
 	}
 }
 
@@ -541,9 +521,9 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 		marketLog.Debugf("解析 book 价格失败: source=%s value=%s err=%v", source, priceStr, err)
 		return
 	}
-	
+
 	// 调试日志：记录原始价格字符串和解析结果
-	marketLog.Debugf("💰 [book价格解析] source=%s, priceStr=%s → %dc (decimal=%.4f)", 
+	marketLog.Debugf("💰 [book价格解析] source=%s, priceStr=%s → %dc (decimal=%.4f)",
 		source, priceStr, newPrice.Cents, newPrice.ToDecimal())
 
 	var tokenType domain.TokenType
@@ -562,7 +542,7 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 		return
 	default:
 	}
-	
+
 	event := &events.PriceChangedEvent{
 		Market:    m.market,
 		TokenType: tokenType,
@@ -583,7 +563,7 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 		return
 	default:
 	}
-	
+
 	// 检查 context 是否已取消
 	select {
 	case <-ctx.Done():
@@ -591,7 +571,7 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 		return
 	default:
 	}
-	
+
 	priceChanges, ok := msg["price_changes"].([]interface{})
 	if !ok {
 		marketLog.Debugf("⚠️ [价格处理] 价格变化消息中没有 price_changes 字段")
@@ -604,7 +584,7 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 		marketLog.Debugf("⚠️ [价格处理] MarketStream.handlers 为空，价格更新将被丢弃！市场=%s", m.market.Slug)
 		return
 	}
-	
+
 	// 检查当前市场是否匹配（防止处理旧周期的消息）
 	currentMarketSlug := ""
 	if m.market != nil {
@@ -614,7 +594,7 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 		marketLog.Debugf("⚠️ [价格处理] MarketStream.market 为空，忽略价格变化消息")
 		return
 	}
-	
+
 	marketLog.Debugf("📊 [价格处理] 收到价格变化消息，handlers 数量=%d，市场=%s", handlerCount, currentMarketSlug)
 
 	latestPrices := make(map[string]struct {
@@ -656,13 +636,13 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 			marketLog.Debugf("⚠️ [价格解析] 解析失败: source=%s, priceStr=%s, err=%v", priceSource, priceStr, err)
 			continue
 		}
-		
+
 		// 调试日志：记录原始价格字符串和解析结果（INFO 级别，方便排查）
 		marketSlug := ""
 		if m.market != nil {
 			marketSlug = m.market.Slug
 		}
-		marketLog.Infof("💰 [价格解析] 市场=%s, assetID=%s, source=%s, 原始字符串=%s → 解析结果=%dc (小数=%.4f)", 
+		marketLog.Infof("💰 [价格解析] 市场=%s, assetID=%s, source=%s, 原始字符串=%s → 解析结果=%dc (小数=%.4f)",
 			marketSlug, assetID[:12]+"...", priceSource, priceStr, newPrice.Cents, newPrice.ToDecimal())
 
 		latestPrices[assetID] = struct {
@@ -690,7 +670,7 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 			continue
 		default:
 		}
-		
+
 		event := &events.PriceChangedEvent{
 			Market:    m.market,
 			TokenType: tokenType,
@@ -698,7 +678,7 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 			NewPrice:  latest.price,
 			Timestamp: time.Now(),
 		}
-		
+
 		// 直接触发回调（不使用事件总线）
 		// 注意：这里使用 handlerCount（在函数开头定义）
 		marketLog.Infof("📤 [价格事件] 触发价格变化回调: 市场=%s, Token=%s, 价格=%dc (handlers=%d)",

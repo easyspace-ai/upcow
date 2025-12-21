@@ -35,7 +35,7 @@ type ExchangeSession struct {
 	loopCancel   context.CancelFunc
 
 	// 订阅管理
-	subscriptions []Subscription
+	subscriptions   []Subscription
 	subscriptionsMu sync.RWMutex
 
 	// 回调处理器列表
@@ -258,6 +258,15 @@ func (h *sessionPriceHandler) OnPriceChanged(ctx context.Context, event *events.
 
 // Close 关闭会话
 func (s *ExchangeSession) Close() error {
+	// 清空所有上层 handlers：避免 Close 期间仍有“延迟信号”触发旧周期策略
+	// （例如 select 可能在 ctx.Done 已就绪时仍选中 priceSignalC 分支）
+	if s.priceChangeHandlers != nil {
+		s.priceChangeHandlers.Clear()
+	}
+	s.priceMu.Lock()
+	s.latestPrices = make(map[domain.TokenType]priceEvent)
+	s.priceMu.Unlock()
+
 	// 停止价格事件分发 loop（不关闭 channel，避免并发发送 panic）
 	if s.loopCancel != nil {
 		s.loopCancel()
@@ -345,4 +354,3 @@ func (s *ExchangeSession) OnTradeUpdate(handler TradeHandler) {
 func (s *ExchangeSession) PriceChangeHandlerCount() int {
 	return s.priceChangeHandlers.Count()
 }
-

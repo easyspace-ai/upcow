@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/infrastructure/websocket"
 	"github.com/betbot/gobet/internal/metrics"
+	"github.com/betbot/gobet/internal/ports"
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
@@ -27,27 +29,49 @@ import (
 	_ "github.com/betbot/gobet/internal/strategies/all"
 )
 
-// sessionOrderHandler 将订单更新转发到Session（BBGO风格）
-type sessionOrderHandler struct {
+// sessionOrderRouter 只注册一次的订单更新路由器：
+// - 周期切换时只更新“当前 session+market”
+// - 避免 TradingService/OrderEngine 的 handler 无限累积
+type sessionOrderRouter struct {
+	mu      sync.RWMutex
 	session *bbgo.ExchangeSession
 	market  *domain.Market
 }
 
-func (h *sessionOrderHandler) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
+var _ ports.OrderUpdateHandler = (*sessionOrderRouter)(nil)
+
+func (r *sessionOrderRouter) Set(session *bbgo.ExchangeSession, market *domain.Market) {
+	r.mu.Lock()
+	r.session = session
+	r.market = market
+	r.mu.Unlock()
+}
+
+func (r *sessionOrderRouter) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
+	r.mu.RLock()
+	session := r.session
+	market := r.market
+	r.mu.RUnlock()
+
+	if session == nil {
+		return nil
+	}
+
 	// 只把“当前周期”的订单更新转发给 Session/策略，避免跨周期串单
-	if order != nil && h.market != nil {
+	if order != nil && market != nil {
 		// 1) 有 MarketSlug：严格匹配
-		if order.MarketSlug != "" && order.MarketSlug != h.market.Slug {
+		if order.MarketSlug != "" && order.MarketSlug != market.Slug {
 			return nil
 		}
-		// 2) 没有 MarketSlug：用 assetID 兜底匹配（当前 market 的 yes/no assetID 必须命中其一）
+		// 2) 没有 MarketSlug：用 assetID 兜底匹配
 		if order.MarketSlug == "" && order.AssetID != "" {
-			if order.AssetID != h.market.YesAssetID && order.AssetID != h.market.NoAssetID {
+			if order.AssetID != market.YesAssetID && order.AssetID != market.NoAssetID {
 				return nil
 			}
 		}
 	}
-	h.session.EmitOrderUpdate(ctx, order)
+
+	session.EmitOrderUpdate(ctx, order)
 	return nil
 }
 
@@ -152,9 +176,12 @@ func main() {
 		nil,
 	)
 
+	// root context：保证“周期切换/关停”可控
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+
 	logrus.Info("推导 API 凭证...")
-	initCtx := context.Background()
-	creds, err := tempClient.CreateOrDeriveAPIKey(initCtx, nil)
+	creds, err := tempClient.CreateOrDeriveAPIKey(rootCtx, nil)
 	if err != nil {
 		logrus.Errorf("推导 API 凭证失败: %v", err)
 		os.Exit(1)
@@ -193,7 +220,7 @@ func main() {
 
 	// 设置最小订单金额（全局配置，不再从某个策略"偷读"）
 	tradingService.SetMinOrderSize(cfg.MinOrderSize)
-	
+
 	// 设置限价单最小 share 数量（仅限价单 GTC 时应用）
 	tradingService.SetMinShareSize(cfg.MinShareSize)
 
@@ -204,6 +231,8 @@ func main() {
 
 	// 创建并注入全局命令执行器（串行执行交易/网络 IO，策略 loop 不直接阻塞在网络调用上）
 	environ.SetExecutor(bbgo.NewSerialCommandExecutor(2048))
+	// 并发执行器：仅用于显式声明 concurrent 的策略（如 arbitrage）
+	environ.SetConcurrentExecutor(bbgo.NewWorkerPoolCommandExecutor(2048, cfg.ConcurrentExecutorWorkers))
 
 	// 设置系统级配置（直接回调模式防抖间隔，BBGO风格：只支持直接模式）
 	if cfg.DirectModeDebounce > 0 {
@@ -246,7 +275,7 @@ func main() {
 			continue
 		}
 
-		strategy, err := loader.LoadStrategy(initCtx, mount.StrategyID, mount.Config)
+		strategy, err := loader.LoadStrategy(rootCtx, mount.StrategyID, mount.Config)
 		if err != nil {
 			logrus.Errorf("加载策略 %s 失败: %v", mount.StrategyID, err)
 			continue
@@ -256,19 +285,19 @@ func main() {
 	}
 
 	// 注入服务
-	if err := trader.InjectServices(initCtx); err != nil {
+	if err := trader.InjectServices(rootCtx); err != nil {
 		logrus.Errorf("注入服务失败: %v", err)
 		os.Exit(1)
 	}
 
 	// 初始化策略
-	if err := trader.Initialize(initCtx); err != nil {
+	if err := trader.Initialize(rootCtx); err != nil {
 		logrus.Errorf("初始化策略失败: %v", err)
 		os.Exit(1)
 	}
 
 	// 加载状态
-	if err := trader.LoadState(initCtx); err != nil {
+	if err := trader.LoadState(rootCtx); err != nil {
 		logrus.Warnf("加载状态失败: %v", err)
 	}
 
@@ -295,7 +324,7 @@ func main() {
 	)
 
 	// 启动市场调度器（这会创建初始会话）
-	if err := marketScheduler.Start(initCtx); err != nil {
+	if err := marketScheduler.Start(rootCtx); err != nil {
 		logrus.Errorf("启动市场调度器失败: %v", err)
 		os.Exit(1)
 	}
@@ -309,60 +338,25 @@ func main() {
 	}
 
 	logrus.Infof("当前市场: %s", market.Slug)
-	
+
 	// 设置交易服务的当前市场（用于过滤订单状态同步）
 	tradingService.SetCurrentMarket(market.Slug)
 
-	// 注册策略到会话的辅助函数
-	registerStrategiesToSession := func(session *bbgo.ExchangeSession, market *domain.Market) {
-		// 检查连接状态和 handlers（用于调试）
-		if session.MarketDataStream != nil {
-			if ms, ok := session.MarketDataStream.(*websocket.MarketStream); ok {
-				handlerCount := ms.HandlerCount()
-				logrus.Debugf("🔄 [周期切换] 策略注册前 MarketStream handlers 数量=%d", handlerCount)
-			}
-		}
-		handlerCountBefore := session.PriceChangeHandlerCount()
-		logrus.Debugf("🔄 [周期切换] 策略注册前 Session priceChangeHandlers 数量=%d", handlerCountBefore)
-
-		// 将 Session 注册为 UserWebSocket 的订单更新处理器（BBGO风格）
-		if session.UserDataStream != nil {
-			session.UserDataStream.OnOrderUpdate(&sessionOrderHandler{session: session, market: market})
-		}
-
-		// 将 Session 注册为 TradingService 的订单更新处理器（BBGO风格）
-		tradingService.OnOrderUpdate(&sessionOrderHandler{session: session, market: market})
-
-		// 订阅策略（BBGO风格：策略在 Subscribe 方法中自己注册回调到Session）
-		logrus.Debugf("🔄 [周期切换] 准备调用 trader.Subscribe，session=%s, market=%s", session.Name, market.Slug)
-		if err := trader.Subscribe(initCtx, session); err != nil {
-			logrus.Errorf("订阅策略失败: %v", err)
-			return
-		}
-
-		// 检查注册后的 handlers 数量（用于调试）
-		handlerCountAfter := session.PriceChangeHandlerCount()
-		logrus.Infof("🔄 [周期切换] 策略注册后 Session priceChangeHandlers 数量=%d (之前=%d)",
-			handlerCountAfter, handlerCountBefore)
-		if handlerCountAfter == 0 {
-			logrus.Errorf("❌ [周期切换] 错误：策略注册后 Session priceChangeHandlers 仍为空！市场=%s", market.Slug)
-		} else {
-			logrus.Infof("✅ [周期切换] 策略注册成功，Session priceChangeHandlers 数量=%d", handlerCountAfter)
-		}
-
-		logrus.Infof("✅ 策略已重新注册到新会话: %s", market.Slug)
+	// 订单路由器：TradingService 只注册一次；周期切换只更新指向
+	orderRouter := &sessionOrderRouter{}
+	orderRouter.Set(session, market)
+	tradingService.OnOrderUpdate(orderRouter)
+	if session != nil && session.UserDataStream != nil {
+		session.UserDataStream.OnOrderUpdate(orderRouter)
 	}
-
-	// 初始注册策略到会话
-	registerStrategiesToSession(session, market)
 
 	// 设置会话切换回调，当周期切换时重新注册策略
 	marketScheduler.OnSessionSwitch(func(oldSession *bbgo.ExchangeSession, newSession *bbgo.ExchangeSession, newMarket *domain.Market) {
 		logrus.Infof("🔄 [周期切换] 检测到会话切换，重新注册策略到新会话: %s", newMarket.Slug)
-		
+
 		// 更新交易服务的当前市场（用于过滤订单状态同步）
 		tradingService.SetCurrentMarket(newMarket.Slug)
-		
+
 		// 只管理本周期：先取消上一周期残留的 open orders，避免跨周期串单
 		cancelCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		tradingService.CancelOrdersNotInMarket(cancelCtx, newMarket.Slug)
@@ -371,19 +365,31 @@ func main() {
 			tradingService.CancelOrdersForMarket(cancelCtx, newMarket.Slug)
 		}
 		cancel()
-		registerStrategiesToSession(newSession, newMarket)
+
+		// 更新订单路由器（TradingService handler 不新增，保持可控）
+		orderRouter.Set(newSession, newMarket)
+		if newSession != nil && newSession.UserDataStream != nil {
+			newSession.UserDataStream.OnOrderUpdate(orderRouter)
+		}
+
+		// 核心：周期切换时取消旧 Run，并用新 session 重新 Run（框架层解决“新周期仍用旧 market 状态”的问题）
+		if err := trader.SwitchSession(rootCtx, newSession); err != nil {
+			logrus.Errorf("❌ [周期切换] 切换策略运行 session 失败: %v", err)
+		} else {
+			logrus.Infof("✅ [周期切换] 策略已切换到新 session，market=%s", newMarket.Slug)
+		}
 	})
 
 	// 启动环境（这会自动启动交易服务，避免重复调用）
-	if err := environ.Start(initCtx); err != nil {
+	if err := environ.Start(rootCtx); err != nil {
 		logrus.Errorf("启动环境失败: %v", err)
 		os.Exit(1)
 	}
 
-	// 运行策略
+	// 启动策略（每个策略独立 goroutine，不阻塞主线程）
 	logrus.Info("🚀 正在启动策略...")
-	if err := trader.Run(initCtx); err != nil {
-		logrus.Errorf("运行策略失败: %v", err)
+	if err := trader.StartWithSession(rootCtx, session); err != nil {
+		logrus.Errorf("启动策略失败: %v", err)
 		os.Exit(1)
 	}
 
@@ -396,6 +402,8 @@ func main() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	<-sigChan
 	logrus.Info("收到停止信号，正在关闭...")
+	// 先 cancel root ctx，尽快让策略/IO 停止继续做事
+	rootCancel()
 
 	// 优雅关闭（按照 BBGO 的关闭顺序）
 	gracefulShutdownPeriod := 10 * time.Second // 缩短超时时间，避免长时间等待
