@@ -67,6 +67,9 @@ type TradingService struct {
 	inFlightDeduper *execution.InFlightDeduper
 	circuitBreaker  *risk.CircuitBreaker
 
+	// 多腿执行引擎（队列+并发+自动对冲）
+	execEngine *execution.ExecutionEngine
+
 	// 周期代号（generation）：每次 SetCurrentMarket（market 变化）递增；
 	// 所有写入 OrderEngine 的命令必须携带当前 generation，旧 generation 一律丢弃。
 	engineGeneration atomic.Int64
@@ -120,6 +123,8 @@ func NewTradingService(clobClient *client.Client, dryRun bool) *TradingService {
 			DailyLossLimitCents:  0,
 		}),
 	}
+	// 统一执行引擎（依赖 TradingService 自身的 PlaceOrder/GetBestPrice 等）
+	service.execEngine = execution.NewExecutionEngine(service)
 	// generation 从 1 开始，避免默认 0 被误用
 	service.engineGeneration.Store(1)
 
@@ -298,6 +303,12 @@ func (s *TradingService) Start(ctx context.Context) error {
 	// 启动 OrderEngine 主循环
 	go s.orderEngine.Run(s.ctx)
 
+	// 启动多腿执行引擎 + 注册订单更新回调（用于自动对冲）
+	if s.execEngine != nil {
+		s.execEngine.Start(s.ctx)
+		s.OnOrderUpdate(s.execEngine)
+	}
+
 	// 重启恢复：先加载快照（热启动），后续再用交易所 open orders 对账纠偏
 	// 注意：需要在设置当前市场之后才能恢复订单（否则会恢复所有旧周期的订单）
 	// 因此快照恢复会在周期切换回调中或启动后延迟执行
@@ -343,6 +354,14 @@ func (s *TradingService) Start(ctx context.Context) error {
 	go s.startOrderStatusSync(s.ctx)
 
 	return nil
+}
+
+// ExecutionEngine 暴露统一多腿执行引擎（可供策略直接使用）。
+func (s *TradingService) ExecutionEngine() *execution.ExecutionEngine {
+	if s == nil {
+		return nil
+	}
+	return s.execEngine
 }
 
 // Stop 停止交易服务

@@ -72,6 +72,7 @@ type UpdateOrderCommand struct {
 	Gen   int64 // 周期代号（必须与引擎当前一致，否则丢弃）
 	Order *domain.Order
 	Error error
+	OriginalOrderID string // 本地 orderID（用于 server orderID 回写时重键）
 }
 
 func (c *UpdateOrderCommand) CommandType() OrderCommandType { return CmdUpdateOrder }
@@ -440,21 +441,20 @@ func (e *OrderEngine) handlePlaceOrder(cmd *PlaceOrderCommand) {
 			Gen:   cmd.Gen,
 			Order: orderToUpdate,
 			Error: result.Error,
+			// 关键：携带本地 orderID，用于 server orderID 回写时迁移 map key
+			OriginalOrderID: cmd.Order.OrderID,
 		}
 		e.SubmitCommand(updateCmd)
 
 		// 回复原始命令
 		select {
 		case cmd.Reply <- result:
-		default:
+		case <-cmd.Context.Done():
 		}
 	})
 
-	// 5. 立即返回（不等待 IO）
-	select {
-	case cmd.Reply <- &PlaceOrderResult{Order: cmd.Order}:
-	default:
-	}
+	// 注意：不再立即返回本地 pending 订单。
+	// 统一等待 IO 返回真实 server orderID，避免上层拿到错误 orderID 导致无法关联后续更新。
 }
 
 // validatePlaceOrder 验证下单请求
@@ -599,6 +599,22 @@ func (e *OrderEngine) handleUpdateOrder(cmd *UpdateOrderCommand) {
 
 	// IO 操作成功，更新订单状态
 	order := cmd.Order
+	// 关键：server orderID 回写时，把 openOrders/orderStore 从“本地 ID”迁移到“server ID”
+	if order != nil && cmd.OriginalOrderID != "" && cmd.OriginalOrderID != order.OrderID {
+		if existingOrder, ok := e.openOrders[cmd.OriginalOrderID]; ok {
+			delete(e.openOrders, cmd.OriginalOrderID)
+			delete(e.orderStore, cmd.OriginalOrderID)
+			existingOrder.OrderID = order.OrderID
+			existingOrder.Status = order.Status
+			if order.FilledSize > 0 {
+				existingOrder.FilledSize = order.FilledSize
+			}
+			if order.FilledAt != nil {
+				existingOrder.FilledAt = order.FilledAt
+			}
+			order = existingOrder
+		}
+	}
 	if existingOrder, exists := e.openOrders[order.OrderID]; exists {
 		// 更新现有订单
 		existingOrder.Status = order.Status
