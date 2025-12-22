@@ -42,11 +42,11 @@ exchangeStrategies:
       gridLevelSlippageCents: 2     # 网格层级滑点容忍（分）：例如层级 59c，允许 bestAsk <= 61c 时触发入场
 
       # 轮次控制：网格策略可以多轮次运行，每轮次在所有层级完成一次买卖循环
-      maxRoundsPerPeriod: 2         # 每个周期最多交易几轮：0 = 不限制（但仍受 maxEntriesPerPeriod 限制），>0 = 限制轮次数
+      maxRoundsPerPeriod: 0         # 每个周期最多交易几轮：0 = 不限制（但仍受 maxEntriesPerPeriod 限制），>0 = 限制轮次数
       waitForRoundComplete: true  # 是否等待当前轮次完全止盈后才开始下一轮：true = 等待整轮完成，false = 层级止盈完成就可复用（高频周转）
 
       # 节奏与风险控制
-      cooldownMs: 1500             # 冷却时间（毫秒）：两次"提交下单请求"之间的最小间隔，避免下单过于频繁（1.5秒）
+      cooldownMs: 500             # 冷却时间（毫秒）：两次"提交下单请求"之间的最小间隔，避免下单过于频繁（1.5秒）
       maxEntriesPerPeriod: 60      # 本周期最多触发入场次数：用于 15 分钟周期控制交易节奏，防止过度交易
       maxOpenEntryOrders: 10       # 最多同时挂的入场单数量（不含止盈单）：限制并发入场单，避免资金过度分散
       stopNewEntriesSeconds: 180   # 周期后段停止新增入场（秒）：最后 3 分钟不再开新仓，只处理止盈/清仓

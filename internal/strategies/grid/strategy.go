@@ -15,9 +15,9 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/execution"
+	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
-	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/bbgo"
 )
 
@@ -48,23 +48,28 @@ type Strategy struct {
 	currentPrice map[domain.TokenType]*events.PriceChangedEvent
 
 	// 周期管理
-	guard        common.MarketSlugGuard
-	firstSeenAt  time.Time
-	lastSubmitAt time.Time
-	entriesThisCycle int
-	roundsCompleted  int
+	guard              common.MarketSlugGuard
+	firstSeenAt        time.Time
+	lastSubmitAt       time.Time
+	entriesThisCycle   int
+	roundsCompleted    int
 	flattenedThisCycle bool
 
 	// 轮次跟踪
-	currentRound      int                              // 当前轮次编号（从1开始）
-	roundsThisCycle   int                              // 本周期已完成的轮次数
-	roundEntryOrders  map[int]map[string]*trackedOrder // round -> orderID -> trackedOrder
-	roundStartTime    map[int]time.Time                // round -> 轮次开始时间
+	currentRound     int                              // 当前轮次编号（从1开始）
+	roundsThisCycle  int                              // 本周期已完成的轮次数
+	roundEntryOrders map[int]map[string]*trackedOrder // round -> orderID -> trackedOrder
+	roundStartTime   map[int]time.Time                // round -> 轮次开始时间
 
 	// 追踪我们自己提交的订单：orderID -> meta
 	tracked map[string]*trackedOrder
 	// 已经使用过的 gridLevel（防止重复"同一层级反复入场"）
 	usedLevel map[domain.TokenType]map[int]bool
+
+	// 基础条件验证（在第一次收到价格事件时验证）
+	validated  bool
+	yesAssetID string
+	noAssetID  string
 }
 
 type trackedOrderKind string
@@ -152,8 +157,35 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	currentMarket := e.Market
 	s.mu.Unlock()
 
-	log.Infof("📥 [grid] OnPriceChanged: token=%s price=%dc market=%s", 
+	log.Infof("📥 [grid] OnPriceChanged: token=%s price=%dc market=%s",
 		e.TokenType, e.NewPrice.Cents, currentMarket.Slug)
+
+	// 首次验证基础条件（targetTokens 和 assetID）
+	s.mu.Lock()
+	if !s.validated {
+		// 验证 targetTokens
+		tokenTargets := s.targetTokens()
+		if len(tokenTargets) == 0 {
+			log.Errorf("❌ [grid] 策略配置错误：targetTokens 返回空列表，策略无法运行")
+			s.mu.Unlock()
+			return fmt.Errorf("targetTokens 返回空列表")
+		}
+
+		// 验证 assetID
+		if currentMarket.YesAssetID == "" || currentMarket.NoAssetID == "" {
+			log.Warnf("⚠️ [grid] 市场数据不完整：YesAssetID=%s NoAssetID=%s，等待完整市场数据",
+				currentMarket.YesAssetID, currentMarket.NoAssetID)
+			s.mu.Unlock()
+			return nil // 等待完整市场数据
+		}
+
+		s.yesAssetID = currentMarket.YesAssetID
+		s.noAssetID = currentMarket.NoAssetID
+		s.validated = true
+		log.Infof("✅ [grid] 基础条件验证通过：targetTokens=%v YesAssetID=%s NoAssetID=%s",
+			tokenTargets, s.yesAssetID[:20]+"...", s.noAssetID[:20]+"...")
+	}
+	s.mu.Unlock()
 
 	// 直接处理价格事件
 	log.Debugf("🔍 [grid] OnPriceChanged: 准备调用 processPrice token=%s price=%dc", e.TokenType, e.NewPrice.Cents)
@@ -205,6 +237,12 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 		s.roundsThisCycle = 0
 		s.roundEntryOrders = make(map[int]map[string]*trackedOrder)
 		s.roundStartTime = make(map[int]time.Time)
+		// 更新 assetID（不同周期的市场可能有不同的 assetID）
+		if m.YesAssetID != "" && m.NoAssetID != "" {
+			s.yesAssetID = m.YesAssetID
+			s.noAssetID = m.NoAssetID
+			s.validated = true
+		}
 		log.Infof("🔄 [grid] 周期切换，重置状态: market=%s", m.Slug)
 	}
 	if s.firstSeenAt.IsZero() {
@@ -242,6 +280,7 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 	}
 	// 轮次上限：达到上限后不再新增入场（但仍会继续处理订单更新）
 	if s.MaxRoundsPerPeriod > 0 && s.roundsCompleted >= s.MaxRoundsPerPeriod {
+		log.Debugf("🔍 [grid] processPrice: 达到轮次上限，跳过 token=%s price=%dc roundsCompleted=%d maxRoundsPerPeriod=%d", e.TokenType, e.NewPrice.Cents, s.roundsCompleted, s.MaxRoundsPerPeriod)
 		return
 	}
 
@@ -250,6 +289,8 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 	if !s.canStartNewRoundWithWait(m.Slug, waitForComplete, now) {
 		if currentRound > 0 && waitForComplete && !s.isRoundComplete(currentRound, now) {
 			log.Debugf("🔍 [grid] processPrice: 等待当前轮次完成 (round=%d)", currentRound)
+		} else {
+			log.Debugf("🔍 [grid] processPrice: 无法开始新轮次，跳过 token=%s price=%dc currentRound=%d waitForComplete=%v", e.TokenType, e.NewPrice.Cents, currentRound, waitForComplete)
 		}
 		return
 	}
@@ -284,6 +325,7 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 
 		// 6.2 停止新增入场
 		if s.StopNewEntriesSeconds > 0 && remain <= int64(s.StopNewEntriesSeconds) {
+			log.Debugf("🔍 [grid] processPrice: 周期后段停止新增入场，跳过 token=%s price=%dc remain=%d", e.TokenType, e.NewPrice.Cents, remain)
 			return
 		}
 	}
@@ -298,7 +340,9 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 	}
 
 	// 限制并发入场单数量
-	if s.countOpenEntryOrders(m.Slug) >= s.MaxOpenEntryOrders {
+	openEntryOrders := s.countOpenEntryOrders(m.Slug)
+	if openEntryOrders >= s.MaxOpenEntryOrders {
+		log.Debugf("🔍 [grid] processPrice: 达到最大并发入场单数量，跳过 token=%s price=%dc openEntryOrders=%d maxOpenEntryOrders=%d", e.TokenType, e.NewPrice.Cents, openEntryOrders, s.MaxOpenEntryOrders)
 		return
 	}
 
@@ -309,15 +353,12 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 		return
 	}
 
-	// 选择要交易的 token
+	// 选择要交易的 token（基础条件已在 OnPriceChanged 中验证）
 	tokenTargets := s.targetTokens()
-	if len(tokenTargets) == 0 {
-		log.Infof("🔍 [grid] processPrice: 无目标 token")
-		return
-	}
-	// 10.1 库存中性 gating：净敞口过大时，只允许补“较少的一侧”
+	// 10.1 库存中性 gating：净敞口过大时，只允许补"较少的一侧"
 	tokenTargets = s.applyInventoryNeutrality(m.Slug, tokenTargets)
 	if len(tokenTargets) == 0 {
+		log.Debugf("🔍 [grid] processPrice: 库存中性检查后无目标 token，跳过 token=%s price=%dc", e.TokenType, e.NewPrice.Cents)
 		return
 	}
 
@@ -330,39 +371,44 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 		}
 	}
 	if !tokenInTarget {
+		log.Debugf("🔍 [grid] processPrice: token 不在目标列表中，跳过 token=%s price=%dc targets=%v", e.TokenType, e.NewPrice.Cents, tokenTargets)
 		return
 	}
 
-	// 获取资产 ID
+	// 获取资产 ID（基础条件已在 OnPriceChanged 中验证）
+	s.mu.RLock()
 	var assetID string
 	if e.TokenType == domain.TokenTypeUp {
-		assetID = m.YesAssetID
+		assetID = s.yesAssetID
 	} else {
-		assetID = m.NoAssetID
+		assetID = s.noAssetID
 	}
+	s.mu.RUnlock()
 	if assetID == "" {
+		// 这种情况不应该发生（已在 OnPriceChanged 中验证），但为了安全起见还是检查
+		log.Warnf("⚠️ [grid] processPrice: assetID 为空，跳过 token=%s price=%dc", e.TokenType, e.NewPrice.Cents)
 		return
 	}
 
 	priceCents := e.NewPrice.Cents
-		level := nearestLowerOrEqual(levels, priceCents)
-		if level == nil {
-			log.Infof("🔍 [grid] processPrice: token=%s price=%dc 无匹配层级 (levels=%v)", e.TokenType, priceCents, levels)
-			return
-		}
-		log.Infof("🔍 [grid] processPrice: token=%s price=%dc 匹配到层级=%dc", e.TokenType, priceCents, *level)
+	level := nearestLowerOrEqual(levels, priceCents)
+	if level == nil {
+		log.Infof("🔍 [grid] processPrice: token=%s price=%dc 无匹配层级 (levels=%v)", e.TokenType, priceCents, levels)
+		return
+	}
+	log.Infof("🔍 [grid] processPrice: token=%s price=%dc 匹配到层级=%dc", e.TokenType, priceCents, *level)
 
-		// 已在该层级入场过：跳过（本周期内不重复）
-		if s.isLevelUsed(e.TokenType, *level) {
-			log.Debugf("🔍 [grid] processPrice: 层级已使用，跳过 token=%s price=%dc level=%dc", e.TokenType, e.NewPrice.Cents, *level)
-			return
-		}
+	// 已在该层级入场过：跳过（本周期内不重复）
+	if s.isLevelUsed(e.TokenType, *level) {
+		log.Debugf("🔍 [grid] processPrice: 层级已使用，跳过 token=%s price=%dc level=%dc", e.TokenType, e.NewPrice.Cents, *level)
+		return
+	}
 
-		// 盘口 quote：要求 bestAsk <= level + slippage 才入场
-		maxCents := *level + s.GridLevelSlippageCents
-		if maxCents > 99 {
-			maxCents = 99
-		}
+	// 盘口 quote：要求 bestAsk <= level + slippage 才入场
+	maxCents := *level + s.GridLevelSlippageCents
+	if maxCents > 99 {
+		maxCents = 99
+	}
 	orderCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	bestAsk, size, skipped, _, _, _, _, err := common.QuoteAndAdjustBuy(
 		orderCtx,
@@ -398,7 +444,7 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 	}
 
 	req := execution.MultiLegRequest{
-		Name:      fmt.Sprintf("grid_entry_%s_%dc", strings.ToLower(string(e.TokenType)), *level),
+		Name:       fmt.Sprintf("grid_entry_%s_%dc", strings.ToLower(string(e.TokenType)), *level),
 		MarketSlug: m.Slug,
 		Legs: []execution.LegIntent{{
 			Name:      "buy",
@@ -416,7 +462,7 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 	created, err := s.TradingService.ExecuteMultiLeg(orderCtx2, req)
 	cancel2()
 	if err != nil {
-		log.Errorf("❌ [grid] 入场失败: token=%s level=%dc bestAsk=%dc size=%.4f error=%v", 
+		log.Errorf("❌ [grid] 入场失败: token=%s level=%dc bestAsk=%dc size=%.4f error=%v",
 			e.TokenType, *level, bestAsk.Cents, size, err)
 		return
 	}
@@ -522,7 +568,7 @@ func (s *Strategy) handleOrderUpdate(ctx context.Context, order *domain.Order) {
 		}
 		target := domain.Price{Cents: meta.TargetExitCents}
 		req := execution.MultiLegRequest{
-			Name:      fmt.Sprintf("grid_exit_%s_%dc", strings.ToLower(string(meta.TokenType)), meta.GridLevel),
+			Name:       fmt.Sprintf("grid_exit_%s_%dc", strings.ToLower(string(meta.TokenType)), meta.GridLevel),
 			MarketSlug: order.MarketSlug,
 			Legs: []execution.LegIntent{{
 				Name:      "sell_tp",
@@ -745,7 +791,7 @@ func (s *Strategy) tryPlaceExit(ctx context.Context, m *domain.Market, meta *tra
 	}
 
 	req := execution.MultiLegRequest{
-		Name:      fmt.Sprintf("grid_exit_%s_%dc", strings.ToLower(string(meta.TokenType)), meta.GridLevel),
+		Name:       fmt.Sprintf("grid_exit_%s_%dc", strings.ToLower(string(meta.TokenType)), meta.GridLevel),
 		MarketSlug: m.Slug,
 		Legs: []execution.LegIntent{{
 			Name:      "sell_tp",
@@ -887,7 +933,7 @@ func (s *Strategy) flattenPositions(ctx context.Context, m *domain.Market, remai
 			return
 		}
 		req := execution.MultiLegRequest{
-			Name:      fmt.Sprintf("grid_flatten_%s", strings.ToLower(string(tt))),
+			Name:       fmt.Sprintf("grid_flatten_%s", strings.ToLower(string(tt))),
 			MarketSlug: m.Slug,
 			Legs: []execution.LegIntent{{
 				Name:      "sell_flatten",
