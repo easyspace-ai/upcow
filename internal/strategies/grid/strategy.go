@@ -90,6 +90,11 @@ type trackedOrder struct {
 
 	// 出场单是否已挂（部分成交时也会挂）
 	ExitPlaced bool
+
+	// 出场下单重试（应对“刚成交立刻卖但平台还没同步持仓”的延迟）
+	ExitAttempts     int
+	NextExitAttemptAt time.Time
+	LastExitError    string
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -218,6 +223,8 @@ func (s *Strategy) step(loopCtx context.Context) {
 
 	// 5) 先处理订单更新（止盈/清理必须不受 cooldown/stopNewEntries 等限制）
 	s.drainOrderUpdates(loopCtx, m)
+	// 5.1) 出场重试：即使没有新的订单更新，也要按计划重试挂止盈
+	s.retryPendingExits(loopCtx, m)
 	// 轮次推进：当上一轮所有订单都结束后，按配置决定是否开启下一轮
 	s.maybeAdvanceRound(m.Slug)
 
@@ -377,6 +384,164 @@ func (s *Strategy) step(loopCtx context.Context) {
 			tt, *level, bestAsk.Cents, size, targetExit, m.Slug)
 		return
 	}
+}
+
+func (s *Strategy) retryPendingExits(loopCtx context.Context, m *domain.Market) {
+	if s == nil || s.TradingService == nil || m == nil {
+		return
+	}
+	now := time.Now()
+	for _, meta := range s.tracked {
+		if meta == nil {
+			continue
+		}
+		if meta.Kind != kindEntry || meta.ExitPlaced {
+			continue
+		}
+		if meta.MarketSlug != "" && m.Slug != "" && meta.MarketSlug != m.Slug {
+			continue
+		}
+		if meta.SeenFilled <= 0 {
+			continue
+		}
+		if !meta.NextExitAttemptAt.IsZero() && now.Before(meta.NextExitAttemptAt) {
+			continue
+		}
+		s.tryPlaceExit(loopCtx, m, meta)
+	}
+}
+
+func (s *Strategy) shouldRetryExit(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	// 覆盖常见“持仓/余额尚未同步”的报错关键词（交易所/网关差异较大，宁可宽松一点）
+	for _, kw := range []string{
+		"position",
+		"balance",
+		"insufficient",
+		"not enough",
+		"available",
+		"allowance",
+		"holdings",
+		"shares",
+		"amount",
+	} {
+		if strings.Contains(msg, kw) {
+			return true
+		}
+	}
+	// 默认也重试（但由退避控制频率），避免因为关键词不匹配而永远不挂止盈
+	return true
+}
+
+func (s *Strategy) scheduleExitRetry(loopCtx context.Context, meta *trackedOrder) {
+	if meta == nil {
+		return
+	}
+	// 指数退避：200ms * 2^k，封顶 8s
+	k := meta.ExitAttempts
+	if k < 0 {
+		k = 0
+	}
+	delay := 200 * time.Millisecond * time.Duration(1<<minInt(k, 6)) // 200ms..12.8s-ish，后面再 cap
+	if delay > 8*time.Second {
+		delay = 8 * time.Second
+	}
+	meta.NextExitAttemptAt = time.Now().Add(delay)
+
+	// 无 tick 的 loop：用一次性定时唤醒来触发重试
+	go func(next time.Time) {
+		d := time.Until(next)
+		if d < 0 {
+			d = 0
+		}
+		select {
+		case <-time.After(d):
+			common.TrySignal(s.signalC)
+		case <-loopCtx.Done():
+			return
+		}
+	}(meta.NextExitAttemptAt)
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func (s *Strategy) tryPlaceExit(loopCtx context.Context, m *domain.Market, meta *trackedOrder) {
+	if s == nil || s.TradingService == nil || m == nil || meta == nil {
+		return
+	}
+
+	// 以最新累计成交量为准（可能从 partial -> filled）
+	exitSize := meta.SeenFilled
+	if exitSize <= 0 {
+		return
+	}
+
+	target := domain.Price{Cents: meta.TargetExitCents}
+	exitOrderType := types.OrderTypeGTC
+	// 保护：很小的 size 用 FAK 兜底（避免交易所最小 shares 约束导致挂单被拒）
+	if exitSize < 5.0 {
+		exitOrderType = types.OrderTypeFAK
+	}
+
+	req := execution.MultiLegRequest{
+		Name:      fmt.Sprintf("grid_exit_%s_%dc", strings.ToLower(string(meta.TokenType)), meta.GridLevel),
+		MarketSlug: m.Slug,
+		Legs: []execution.LegIntent{{
+			Name:      "sell_tp",
+			AssetID:   meta.AssetID,
+			TokenType: meta.TokenType,
+			Side:      types.SideSell,
+			Price:     target,
+			Size:      exitSize,
+			OrderType: exitOrderType,
+		}},
+		Hedge: execution.AutoHedgeConfig{Enabled: false},
+	}
+
+	orderCtx, cancel := context.WithTimeout(loopCtx, 25*time.Second)
+	created, err := s.TradingService.ExecuteMultiLeg(orderCtx, req)
+	cancel()
+	if err != nil || len(created) == 0 || created[0] == nil || created[0].OrderID == "" {
+		meta.ExitAttempts++
+		if err != nil {
+			meta.LastExitError = err.Error()
+		} else {
+			meta.LastExitError = "unknown exit order failure"
+		}
+
+		if s.shouldRetryExit(err) {
+			log.Warnf("⏳ [grid] 挂止盈失败，准备重试: token=%s level=%dc tp=%dc size=%.4f attempts=%d err=%s",
+				meta.TokenType, meta.GridLevel, meta.TargetExitCents, exitSize, meta.ExitAttempts, meta.LastExitError)
+			s.scheduleExitRetry(loopCtx, meta)
+		}
+		return
+	}
+
+	// 成功：标记并追踪出场单
+	meta.ExitPlaced = true
+	meta.NextExitAttemptAt = time.Time{}
+	oid := created[0].OrderID
+	s.tracked[oid] = &trackedOrder{
+		Kind:            kindExit,
+		TokenType:       meta.TokenType,
+		AssetID:         meta.AssetID,
+		MarketSlug:      m.Slug,
+		GridLevel:       meta.GridLevel,
+		Side:            types.SideSell,
+		EntryPriceCents: meta.EntryPriceCents,
+		TargetExitCents: meta.TargetExitCents,
+		RequestedSize:   exitSize,
+	}
+	log.Infof("🎯 [grid] 挂止盈成功: token=%s entry=%dc tp=%dc size=%.4f orderType=%s market=%s",
+		meta.TokenType, meta.EntryPriceCents, meta.TargetExitCents, exitSize, exitOrderType, m.Slug)
 }
 
 func (s *Strategy) applyInventoryNeutrality(marketSlug string, targets []domain.TokenType) []domain.TokenType {
@@ -564,51 +729,8 @@ func (s *Strategy) drainOrderUpdates(loopCtx context.Context, m *domain.Market) 
 
 			// 入场单：只要出现“有成交且尚未挂止盈”，就挂止盈（覆盖 FAK 的 partial fill）
 			if meta.Kind == kindEntry && !meta.ExitPlaced && o.FilledSize > 0 {
-				exitSize := o.FilledSize
-				if exitSize <= 0 {
-					continue
-				}
-				target := domain.Price{Cents: meta.TargetExitCents}
-				exitOrderType := types.OrderTypeGTC
-				// 保护：当 exitSize 很小（例如用户配置 orderSize=3 且发生 partial fill）时，
-				// GTC 止盈单可能不满足交易所的最小 shares 约束。此时用 FAK 作为降级路径，避免“永远挂不上止盈”。
-				if exitSize < 5.0 {
-					exitOrderType = types.OrderTypeFAK
-				}
-				req := execution.MultiLegRequest{
-					Name:      fmt.Sprintf("grid_exit_%s_%dc", strings.ToLower(string(meta.TokenType)), meta.GridLevel),
-					MarketSlug: m.Slug,
-					Legs: []execution.LegIntent{{
-						Name:      "sell_tp",
-						AssetID:   meta.AssetID,
-						TokenType: meta.TokenType,
-						Side:      types.SideSell,
-						Price:     target,
-						Size:      exitSize,
-						OrderType: exitOrderType,
-					}},
-					Hedge: execution.AutoHedgeConfig{Enabled: false},
-				}
-				orderCtx, cancel := context.WithTimeout(loopCtx, 25*time.Second)
-				created, err := s.TradingService.ExecuteMultiLeg(orderCtx, req)
-				cancel()
-				if err == nil && len(created) > 0 && created[0] != nil && created[0].OrderID != "" {
-					meta.ExitPlaced = true
-					// 追踪出场单，便于后续清理
-					s.tracked[created[0].OrderID] = &trackedOrder{
-						Kind:            kindExit,
-						TokenType:       meta.TokenType,
-						AssetID:         meta.AssetID,
-						MarketSlug:      m.Slug,
-						GridLevel:       meta.GridLevel,
-						Side:            types.SideSell,
-						EntryPriceCents: meta.EntryPriceCents,
-						TargetExitCents: meta.TargetExitCents,
-						RequestedSize:   exitSize,
-					}
-					log.Infof("🎯 [grid] 挂止盈: token=%s entry=%dc tp=%dc size=%.4f market=%s",
-						meta.TokenType, meta.EntryPriceCents, meta.TargetExitCents, exitSize, m.Slug)
-				}
+				// 触发一次立即尝试；失败会进入重试队列（指数退避）
+				s.tryPlaceExit(loopCtx, m, meta)
 			}
 
 			// 清理：已结束的订单就不再追踪（避免 map 无限增长）
