@@ -24,9 +24,10 @@ import (
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/config"
 
-	gorillaWS "github.com/gorilla/websocket"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	gorillaWS "github.com/gorilla/websocket"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -41,14 +42,14 @@ var (
 
 // 全局订单薄存储（用于存储完整的买五、卖五数据）
 var (
-	globalOrderbook   = make(map[domain.TokenType][]orderLevel) // UP/DOWN 的 bids
+	globalOrderbook     = make(map[domain.TokenType][]orderLevel) // UP/DOWN 的 bids
 	globalOrderbookAsks = make(map[domain.TokenType][]orderLevel) // UP/DOWN 的 asks
-	globalOrderbookMu sync.RWMutex
+	globalOrderbookMu   sync.RWMutex
 )
 
 // 文件日志记录器（只写入文件，不输出到终端）
 var (
-	fileLogger *log.Logger
+	fileLogger     *log.Logger
 	fileLoggerOnce sync.Once
 )
 
@@ -61,20 +62,28 @@ func initFileLogger() {
 			// 如果创建失败，使用临时文件
 			logDir = os.TempDir()
 		}
-		
+
 		// 日志文件路径
 		logFile := filepath.Join(logDir, "price-watcher-tui.log")
-		
+
 		// 打开日志文件（追加模式）
 		file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 		if err != nil {
 			// 如果打开失败，使用空设备（丢弃日志）
 			file = os.NewFile(0, os.DevNull)
 		}
-		
+
 		// 创建日志记录器（只写入文件，不输出到终端）
 		fileLogger = log.New(file, "", log.LstdFlags)
 	})
+}
+
+// fileLoggerRTDS 实现 RTDS Logger 接口，将日志写入文件
+type fileLoggerRTDS struct{}
+
+func (l *fileLoggerRTDS) Printf(format string, v ...interface{}) {
+	initFileLogger()
+	fileLogger.Printf(format, v...)
 }
 
 var (
@@ -93,17 +102,17 @@ var (
 		Foreground(lipgloss.Color("2")) // 绿色
 
 	downStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("1")) // 红色
+			Foreground(lipgloss.Color("1")) // 红色
 
 	borderStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("238"))
 
 	bidStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("2")) // 绿色
+			Foreground(lipgloss.Color("2")) // 绿色
 
 	askStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("1")) // 红色
+			Foreground(lipgloss.Color("1")) // 红色
 
 	priceStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -184,15 +193,15 @@ type connectedMsg struct {
 func initialModel() model {
 	ctx, cancel := context.WithCancel(context.Background())
 	return model{
-		upBids:     make([]orderLevel, 0),
-		upAsks:     make([]orderLevel, 0),
-		downBids:   make([]orderLevel, 0),
-		downAsks:   make([]orderLevel, 0),
-		connected:  false,
-		ctx:        ctx,
-		cancel:     cancel,
-		bestBook:   marketstate.NewAtomicBestBook(),
-		btcPrice:   0,
+		upBids:      make([]orderLevel, 0),
+		upAsks:      make([]orderLevel, 0),
+		downBids:    make([]orderLevel, 0),
+		downAsks:    make([]orderLevel, 0),
+		connected:   false,
+		ctx:         ctx,
+		cancel:      cancel,
+		bestBook:    marketstate.NewAtomicBestBook(),
+		btcPrice:    0,
 		btcPriceStr: "N/A",
 	}
 }
@@ -225,7 +234,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switchCycleCmd(currentSlug, time.Unix(currentTs, 0)),
 			)
 		}
-		
+
 		// 每次 tick 都更新订单薄和 BTC 价格
 		if m.bestBook != nil && m.connected {
 			snap := m.bestBook.Load()
@@ -255,7 +264,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		
+
 		// 更新 BTC 价格
 		globalBTCPriceMu.RLock()
 		if globalBTCPrice > 0 {
@@ -263,7 +272,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.btcPriceStr = fmt.Sprintf("$%.2f", globalBTCPrice)
 		}
 		globalBTCPriceMu.RUnlock()
-		
+
 		return m, tickCmd()
 
 	case priceUpdateMsg:
@@ -434,12 +443,12 @@ func renderOrderbook(title string, bids []orderLevel, asks []orderLevel) string 
 	s.WriteString(titleStyled)
 	s.WriteString("\n\n")
 
-	// 显示卖单（asks）- 从高到低（价格高的在上）
+	// 显示卖单（asks）- 从低到高（价格低的在上，最接近盘口）
 	s.WriteString(askStyle.Render("卖单 (Asks)"))
 	s.WriteString("\n")
 	if len(asks) > 0 {
-		// asks 应该按价格从高到低显示
-		for i := len(asks) - 1; i >= 0 && i >= len(asks)-orderbookDepth; i-- {
+		// asks 已经按价格从低到高排序（最接近盘口的在前），直接显示前5档
+		for i := 0; i < len(asks) && i < orderbookDepth; i++ {
 			ask := asks[i]
 			s.WriteString(fmt.Sprintf("  %6.2f  %8.2f\n", ask.Price*100, ask.Size))
 		}
@@ -450,12 +459,19 @@ func renderOrderbook(title string, bids []orderLevel, asks []orderLevel) string 
 	s.WriteString("\n")
 
 	// 显示中间价
+	// 注意：asks[0] 是最低的卖价（最接近盘口），bids[0] 是最高的买价（最接近盘口）
 	var midPrice float64
 	if len(bids) > 0 && len(asks) > 0 {
-		midPrice = (bids[0].Price + asks[0].Price) / 2.0
+		// 中间价 = (最高买价 + 最低卖价) / 2
+		// asks 是从低到高排序，asks[0] 是最低卖价（最接近盘口）
+		// bids 是从高到低排序，bids[0] 是最高买价（最接近盘口）
+		lowestAsk := asks[0].Price
+		highestBid := bids[0].Price
+		midPrice = (highestBid + lowestAsk) / 2.0
 	} else if len(bids) > 0 {
 		midPrice = bids[0].Price
 	} else if len(asks) > 0 {
+		// asks 从低到高，最低卖价在最前
 		midPrice = asks[0].Price
 	}
 	if midPrice > 0 {
@@ -466,10 +482,11 @@ func renderOrderbook(title string, bids []orderLevel, asks []orderLevel) string 
 
 	s.WriteString("\n")
 
-	// 显示买单（bids）- 从高到低
+	// 显示买单（bids）- 从高到低（价格高的在上）
 	s.WriteString(bidStyle.Render("买单 (Bids)"))
 	s.WriteString("\n")
 	if len(bids) > 0 {
+		// bids 按价格从高到低显示（价格高的在上）
 		for i := 0; i < len(bids) && i < orderbookDepth; i++ {
 			bid := bids[i]
 			s.WriteString(fmt.Sprintf("  %6.2f  %8.2f\n", bid.Price*100, bid.Size))
@@ -553,6 +570,8 @@ func connectCmd() tea.Cmd {
 		go startBookListener(ctx, market, proxyURL)
 
 		// 连接 RTDS 获取 BTC 价格
+		// 使用文件日志记录器，避免日志输出到终端干扰 TUI
+		initFileLogger()
 		rtdsConfig := &rtds.ClientConfig{
 			URL:            rtds.RTDSWebSocketURL,
 			ProxyURL:       proxyURL,
@@ -562,6 +581,7 @@ func connectCmd() tea.Cmd {
 			Reconnect:      true,
 			ReconnectDelay: 5 * time.Second,
 			MaxReconnect:   10,
+			Logger:         &fileLoggerRTDS{}, // 使用文件日志记录器
 		}
 		rtdsClient := rtds.NewClientWithConfig(rtdsConfig)
 
@@ -638,7 +658,7 @@ type bookHandler struct {
 // startBookListener 启动独立的 WebSocket 连接来监听 book 消息
 func startBookListener(ctx context.Context, market *domain.Market, proxyURL string) {
 	wsURL := "wss://ws-subscriptions-clob.polymarket.com/ws/market"
-	
+
 	// 设置代理
 	var dialer gorillaWS.Dialer
 	if proxyURL != "" {
@@ -739,20 +759,20 @@ func handleBookMessage(message []byte, market *domain.Market) {
 		Price string `json:"price"`
 		Size  string `json:"size"`
 	}
-	
+
 	type bookMessage struct {
 		EventType string         `json:"event_type"`
 		AssetID   string         `json:"asset_id"`
 		Market    string         `json:"market"`
 		Timestamp string         `json:"timestamp"`
 		Hash      string         `json:"hash"`
-		BestBid   string         `json:"best_bid"`   // 可选字段
-		BestAsk   string         `json:"best_ask"`   // 可选字段
-		Price     string         `json:"price"`      // 可选字段
-		Bids      []wsOrderLevel `json:"bids"`       // 文档示例中使用 bids
-		Asks      []wsOrderLevel `json:"asks"`       // 文档示例中使用 asks
-		Buys      []wsOrderLevel `json:"buys"`       // 文档描述中使用 buys（兼容）
-		Sells     []wsOrderLevel `json:"sells"`      // 文档描述中使用 sells（兼容）
+		BestBid   string         `json:"best_bid"` // 可选字段
+		BestAsk   string         `json:"best_ask"` // 可选字段
+		Price     string         `json:"price"`    // 可选字段
+		Bids      []wsOrderLevel `json:"bids"`     // 文档示例中使用 bids
+		Asks      []wsOrderLevel `json:"asks"`     // 文档示例中使用 asks
+		Buys      []wsOrderLevel `json:"buys"`     // 文档描述中使用 buys（兼容）
+		Sells     []wsOrderLevel `json:"sells"`    // 文档描述中使用 sells（兼容）
 	}
 
 	var bm bookMessage
@@ -792,15 +812,14 @@ func handleBookMessage(message []byte, market *domain.Market) {
 		asks = bm.Sells
 	}
 
-	// 解析前5档买单（bids 按价格从高到低排序）
-	bidsList := make([]orderLevel, 0, orderbookDepth)
-	for i := 0; i < len(bids) && i < orderbookDepth; i++ {
-		bid := bids[i]
+	// 解析所有买单并排序（从高到低，最接近盘口的5档）
+	bidsList := make([]orderLevel, 0, len(bids))
+	for _, bid := range bids {
 		if bid.Price == "" || bid.Size == "" {
 			continue
 		}
 		price, err := strconv.ParseFloat(bid.Price, 64)
-		if err != nil || price <= 0 {
+		if err != nil || price <= 0 || price > 1.0 {
 			continue
 		}
 		size, err := strconv.ParseFloat(bid.Size, 64)
@@ -812,16 +831,27 @@ func handleBookMessage(message []byte, market *domain.Market) {
 			Size:  size,
 		})
 	}
+	// 对买单按价格从高到低排序（价格高的最接近盘口）
+	for i := 0; i < len(bidsList)-1; i++ {
+		for j := i + 1; j < len(bidsList); j++ {
+			if bidsList[i].Price < bidsList[j].Price {
+				bidsList[i], bidsList[j] = bidsList[j], bidsList[i]
+			}
+		}
+	}
+	// 只保留前5档（最接近盘口的5档）
+	if len(bidsList) > orderbookDepth {
+		bidsList = bidsList[:orderbookDepth]
+	}
 
-	// 解析前5档卖单（asks 按价格从低到高排序）
-	asksList := make([]orderLevel, 0, orderbookDepth)
-	for i := 0; i < len(asks) && i < orderbookDepth; i++ {
-		ask := asks[i]
+	// 解析所有卖单并排序（从低到高，最接近盘口的5档）
+	asksList := make([]orderLevel, 0, len(asks))
+	for _, ask := range asks {
 		if ask.Price == "" || ask.Size == "" {
 			continue
 		}
 		price, err := strconv.ParseFloat(ask.Price, 64)
-		if err != nil || price <= 0 {
+		if err != nil || price <= 0 || price > 1.0 {
 			continue
 		}
 		size, err := strconv.ParseFloat(ask.Size, 64)
@@ -832,6 +862,18 @@ func handleBookMessage(message []byte, market *domain.Market) {
 			Price: price,
 			Size:  size,
 		})
+	}
+	// 对卖单按价格从低到高排序（价格低的最接近盘口）
+	for i := 0; i < len(asksList)-1; i++ {
+		for j := i + 1; j < len(asksList); j++ {
+			if asksList[i].Price > asksList[j].Price {
+				asksList[i], asksList[j] = asksList[j], asksList[i]
+			}
+		}
+	}
+	// 只保留前5档（最接近盘口的5档）
+	if len(asksList) > orderbookDepth {
+		asksList = asksList[:orderbookDepth]
 	}
 
 	// 更新全局订单薄（首次订阅时是快照，之后是增量更新）
@@ -873,6 +915,28 @@ func parseTokenIDs(clobTokenIDs string) (yesAssetID, noAssetID string) {
 }
 
 func main() {
+	// 初始化文件日志记录器
+	initFileLogger()
+
+	// 重定向 logrus 输出到文件，避免干扰 TUI
+	// MarketStream 和其他组件使用 logrus，需要重定向到文件
+	logDir := "logs"
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		logDir = os.TempDir()
+	}
+	logFile := filepath.Join(logDir, "price-watcher-tui.log")
+	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err == nil {
+		// 设置 logrus 输出到文件（不输出到终端）
+		logrus.SetOutput(file)
+		logrus.SetLevel(logrus.InfoLevel)
+		logrus.SetFormatter(&logrus.TextFormatter{
+			FullTimestamp:   true,
+			TimestampFormat: "2006-01-02 15:04:05",
+			DisableColors:   true, // 禁用颜色，因为写入文件
+		})
+	}
+
 	// 启用日志文件（用于调试）
 	if len(os.Getenv("DEBUG")) > 0 {
 		f, err := tea.LogToFile("debug.log", "debug")
@@ -887,4 +951,3 @@ func main() {
 		log.Fatalf("运行程序失败: %v", err)
 	}
 }
-
