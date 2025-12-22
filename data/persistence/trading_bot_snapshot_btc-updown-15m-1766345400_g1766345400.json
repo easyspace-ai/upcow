@@ -1,0 +1,44 @@
+{
+  "updated_at": "2025-12-22T03:31:29.456072+08:00",
+  "balance": 9.816886,
+  "open_orders": [],
+  "positions": [
+    {
+      "ID": "btc-updown-15m-1766345400_27916450885346862673256917348291272135456718992221607090969790704752468003153_down",
+      "MarketSlug": "btc-updown-15m-1766345400",
+      "Market": null,
+      "EntryOrder": {
+        "OrderID": "0x48be7b841eec8e673ad92a9e44ceb8a429e0e6c84a974b7f479cdf357a1cf90e",
+        "MarketSlug": "btc-updown-15m-1766345400",
+        "AssetID": "27916450885346862673256917348291272135456718992221607090969790704752468003153",
+        "Side": "BUY",
+        "Price": {
+          "Cents": 65
+        },
+        "Size": 3,
+        "FilledSize": 3,
+        "GridLevel": 0,
+        "TokenType": "down",
+        "HedgeOrderID": null,
+        "CreatedAt": "2025-12-22T03:31:21.841975+08:00",
+        "FilledAt": "2025-12-22T03:31:27.45517+08:00",
+        "IsEntryOrder": true,
+        "PairOrderID": null,
+        "Status": "filled",
+        "OrderType": "FAK"
+      },
+      "HedgeOrder": null,
+      "EntryPrice": {
+        "Cents": 65
+      },
+      "EntryTime": "2025-12-22T03:31:27.453701+08:00",
+      "ExitOrder": null,
+      "ExitPrice": null,
+      "ExitTime": null,
+      "Size": 1.66,
+      "TokenType": "down",
+      "Status": "open",
+      "Unhedged": false
+    }
+  ]
+}

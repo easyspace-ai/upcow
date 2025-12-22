@@ -672,9 +672,14 @@ func (e *OrderEngine) handleProcessTrade(cmd *ProcessTradeCommand) {
 	// 1. 检查订单是否存在
 	order, exists := e.orderStore[trade.OrderID]
 	if !exists {
-		// 订单不存在，保存交易等待订单
+		// 订单不存在，说明这个订单不是通过我们的系统下的（可能是手动下单）
+		// 但是，trade事件中的orderID可能是对手方的订单ID，而不是用户自己的订单ID
+		// 为了避免为对手方的订单创建订单对象，我们只处理已经在OrderEngine中注册过的订单
+		// 如果订单不存在，说明这个订单不是用户自己的，应该跳过
+		orderEngineLog.Debugf("⚠️ [OrderEngine] trade事件中的订单不存在于OrderEngine: orderID=%s tradeID=%s，可能是对手方的订单，跳过创建",
+			trade.OrderID, trade.ID)
+		// 保存trade到pendingTrades，等待订单更新事件（如果真的是用户自己的订单，订单更新事件会到达）
 		e.pendingTrades[trade.ID] = trade
-		orderEngineLog.Debugf("订单不存在，保存交易等待订单: tradeID=%s, orderID=%s", trade.ID, trade.OrderID)
 		return
 	}
 
@@ -1010,6 +1015,9 @@ func (e *OrderEngine) emitOrderUpdate(order *domain.Order) {
 	if len(handlers) == 0 || order == nil {
 		return
 	}
+
+	orderEngineLog.Debugf("📤 [OrderEngine] 触发订单更新: orderID=%s status=%s marketSlug=%s assetID=%s handlers=%d",
+		order.OrderID, order.Status, order.MarketSlug, order.AssetID, len(handlers))
 
 	// 串行执行（确定性优先；避免并发导致策略状态竞态）
 	for _, h := range handlers {

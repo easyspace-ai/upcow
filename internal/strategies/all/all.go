@@ -8,6 +8,7 @@ import (
 	_ "github.com/betbot/gobet/internal/strategies/datarecorder"
 	_ "github.com/betbot/gobet/internal/strategies/grid"
 	_ "github.com/betbot/gobet/internal/strategies/momentum"
+	_ "github.com/betbot/gobet/internal/strategies/orderlistener"
 	_ "github.com/betbot/gobet/internal/strategies/pairedtrading"
 	_ "github.com/betbot/gobet/internal/strategies/pairlock"
 	_ "github.com/betbot/gobet/internal/strategies/threshold"

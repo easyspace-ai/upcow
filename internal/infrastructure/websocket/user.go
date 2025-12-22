@@ -145,20 +145,27 @@ func (u *UserWebSocket) orderDispatchLoop() {
 			copy(handlers, u.orderHandlers)
 			u.mu.RUnlock()
 
-			for _, h := range handlers {
+			userLog.Infof("📤 [UserWebSocket] 分发订单更新: orderID=%s status=%s filledSize=%.4f handlers=%d",
+				job.order.OrderID, job.order.Status, job.order.FilledSize, len(handlers))
+
+			for i, h := range handlers {
 				if h == nil {
+					userLog.Warnf("⚠️ [UserWebSocket] handler[%d] 为 nil，跳过", i)
 					continue
 				}
-				func(handler ports.OrderUpdateHandler) {
+				func(idx int, handler ports.OrderUpdateHandler) {
 					defer func() {
 						if r := recover(); r != nil {
-							userLog.Errorf("订单更新处理器 panic: %v", r)
+							userLog.Errorf("❌ [UserWebSocket] handler[%d] panic: orderID=%s error=%v", idx, job.order.OrderID, r)
 						}
 					}()
+					userLog.Infof("➡️ [UserWebSocket] 调用 handler[%d]: orderID=%s", idx, job.order.OrderID)
 					if err := handler.OnOrderUpdate(job.ctx, job.order); err != nil {
-						userLog.Errorf("订单更新处理器执行失败: %v", err)
+						userLog.Errorf("❌ [UserWebSocket] handler[%d] 执行失败: orderID=%s error=%v", idx, job.order.OrderID, err)
+					} else {
+						userLog.Infof("✅ [UserWebSocket] handler[%d] 执行成功: orderID=%s", idx, job.order.OrderID)
 					}
-				}(h)
+				}(i, h)
 			}
 		}
 	}
@@ -652,18 +659,50 @@ func (u *UserWebSocket) handleMessages(ctx context.Context) {
 		}
 
 		// 解析消息
+		rawMessage := string(message) // 保存原始消息用于日志
 		var msg map[string]interface{}
 		if err := json.Unmarshal(message, &msg); err != nil {
-			userLog.Debugf("解析消息失败: %v", err)
+			userLog.Errorf("❌ [UserWebSocket] 解析消息失败: error=%v raw=%s", err, rawMessage)
 			continue
 		}
 
 		eventType, _ := msg["event_type"].(string)
+		// 记录原始消息的关键字段，便于调试
+		orderID, _ := msg["id"].(string)
+		assetID, _ := msg["asset_id"].(string)
+		side, _ := msg["side"].(string)
+		userLog.Infof("📨 [UserWebSocket] 收到 WebSocket 消息: event_type=%s orderID=%s assetID=%s side=%s rawKeys=%v",
+			eventType, orderID, assetID, side, func() []string {
+				keys := make([]string, 0, len(msg))
+				for k := range msg {
+					keys = append(keys, k)
+				}
+				return keys
+			}())
+		
 		switch eventType {
 		case "order":
+			userLog.Infof("📨 [UserWebSocket] 开始处理订单消息: orderID=%s", orderID)
 			u.handleOrderMessage(ctx, msg)
 		case "trade":
+			userLog.Infof("📨 [UserWebSocket] 处理交易消息: orderID=%s assetID=%s", orderID, assetID)
 			u.handleTradeMessage(ctx, msg)
+		case "":
+			// event_type 为空，可能是其他类型的消息，尝试检查是否有订单相关字段
+			if orderID != "" || assetID != "" {
+				userLog.Warnf("⚠️ [UserWebSocket] event_type 为空但包含订单字段: orderID=%s assetID=%s side=%s raw=%s",
+					orderID, assetID, side, rawMessage)
+				// 尝试作为订单消息处理
+				if orderID != "" {
+					userLog.Infof("🔄 [UserWebSocket] 尝试将空 event_type 消息作为订单处理: orderID=%s", orderID)
+					u.handleOrderMessage(ctx, msg)
+				}
+			} else {
+				userLog.Debugf("📨 [UserWebSocket] event_type 为空且无订单字段: raw=%s", rawMessage)
+			}
+		default:
+			userLog.Warnf("⚠️ [UserWebSocket] 未知事件类型: event_type=%s orderID=%s assetID=%s raw=%s",
+				eventType, orderID, assetID, rawMessage)
 		}
 	}
 }
@@ -678,16 +717,28 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 	originalSizeStr, _ := msg["original_size"].(string)
 	sizeMatchedStr, _ := msg["size_matched"].(string)
 	orderTypeStr, _ := msg["type"].(string) // PLACEMENT, UPDATE, CANCELLATION
+	
+	// 检查必要字段是否存在
+	if orderID == "" {
+		userLog.Warnf("⚠️ [UserWebSocket] 订单消息缺少 orderID，跳过处理: msg=%v", msg)
+		return
+	}
+	
+	userLog.Infof("🔍 [UserWebSocket] 解析订单消息: orderID=%s assetID=%s side=%s type=%s price=%s originalSize=%s sizeMatched=%s",
+		orderID, assetID, sideStr, orderTypeStr, priceStr, originalSizeStr, sizeMatchedStr)
 
 	// 解析价格和数量
 	price, err := parsePriceString(priceStr)
 	if err != nil {
-		userLog.Debugf("解析订单价格失败: %v", err)
+		userLog.Errorf("❌ [UserWebSocket] 解析订单价格失败: orderID=%s priceStr=%s error=%v", orderID, priceStr, err)
 		return
 	}
 
 	originalSize, _ := strconv.ParseFloat(originalSizeStr, 64)
 	sizeMatched, _ := strconv.ParseFloat(sizeMatchedStr, 64)
+	
+	userLog.Infof("✅ [UserWebSocket] 订单解析完成: orderID=%s price=%dc originalSize=%.4f sizeMatched=%.4f",
+		orderID, price.Cents, originalSize, sizeMatched)
 
 	// 确定订单方向
 	var side types.Side
@@ -720,7 +771,8 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 		AssetID:   assetID,
 		Side:      side,
 		Price:     price,
-		Size:      sizeMatched,
+		Size:      originalSize, // 使用原始大小，而不是已成交大小
+		FilledSize: sizeMatched, // 已成交大小
 		Status:    status,
 		CreatedAt: time.Now(),
 	}
@@ -737,10 +789,15 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 	} else if orderTypeStr == "PLACEMENT" {
 		order.Status = domain.OrderStatusOpen
 	}
+	
+	userLog.Infof("📦 [UserWebSocket] 订单对象构建完成: orderID=%s status=%s side=%s price=%dc size=%.4f filledSize=%.4f assetID=%s",
+		order.OrderID, order.Status, order.Side, order.Price.Cents, order.Size, order.FilledSize, order.AssetID)
 
 	// 投递到有界队列，由固定 worker 串行执行 handlers，避免 goroutine 爆炸
 	select {
 	case u.orderUpdateC <- orderUpdateJob{ctx: ctx, order: order}:
+		userLog.Infof("📥 [UserWebSocket] 收到订单消息: orderID=%s type=%s status=%s side=%s price=%dc filledSize=%.4f handlers=%d",
+			orderID, orderTypeStr, status, sideStr, price.Cents, sizeMatched, len(u.orderHandlers))
 	default:
 		userLog.Warnf("⚠️ orderUpdate 队列已满，丢弃订单更新: orderID=%s", orderID)
 		u.notifyDrop("order", map[string]string{

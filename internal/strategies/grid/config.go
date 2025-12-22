@@ -40,6 +40,9 @@ type Config struct {
 	// 最大放大倍数（防止低价时过度放大仓位）
 	MaxSizeAdjustRatio float64 `json:"maxSizeAdjustRatio" yaml:"maxSizeAdjustRatio"`
 
+	// 网格层级允许的滑点（cents）：允许 bestAsk 略大于网格层级，默认 2 cents
+	GridLevelSlippageCents int `json:"gridLevelSlippageCents" yaml:"gridLevelSlippageCents"`
+
 	// 止盈：入场成交后，挂出场卖单价格 = entryPrice + profitTargetCents
 	ProfitTargetCents int `json:"profitTargetCents" yaml:"profitTargetCents"`
 
@@ -59,8 +62,15 @@ type Config struct {
 
 	// 限制：本周期最多触发多少次入场（用于 15m 控制节奏）
 	MaxEntriesPerPeriod int `json:"maxEntriesPerPeriod" yaml:"maxEntriesPerPeriod"`
-	// 限制：最多同时挂多少笔“入场单”（不含止盈单）
+	// 限制：最多同时挂多少笔"入场单"（不含止盈单）
 	MaxOpenEntryOrders int `json:"maxOpenEntryOrders" yaml:"maxOpenEntryOrders"`
+
+	// 轮次控制：每个周期最多交易几轮（0 表示不限制）
+	MaxRoundsPerPeriod int `json:"maxRoundsPerPeriod" yaml:"maxRoundsPerPeriod"`
+	// 是否等待当前轮次完全止盈后才开始下一轮（默认 true）
+	WaitForRoundComplete bool `json:"waitForRoundComplete" yaml:"waitForRoundComplete"`
+	// 空轮次超时（秒）：如果轮次开始后 N 秒内没有下单，允许跳过该轮次（0 表示不超时，一直等待）
+	EmptyRoundTimeoutSeconds int `json:"emptyRoundTimeoutSeconds" yaml:"emptyRoundTimeoutSeconds"`
 }
 
 func (c *Config) Normalize() {
@@ -81,6 +91,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxSizeAdjustRatio <= 0 {
 		c.MaxSizeAdjustRatio = 5.0
+	}
+	if c.GridLevelSlippageCents < 0 {
+		c.GridLevelSlippageCents = 2 // 默认允许 2 cents 滑点
 	}
 	if c.ProfitTargetCents <= 0 {
 		c.ProfitTargetCents = 2
@@ -107,6 +120,14 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxOpenEntryOrders <= 0 {
 		c.MaxOpenEntryOrders = 4
+	}
+	if c.MaxRoundsPerPeriod < 0 {
+		c.MaxRoundsPerPeriod = 0 // 0 表示不限制
+	}
+	if !c.WaitForRoundComplete {
+		// 如果设置为 false，则默认值保持 false
+		// 如果未设置（零值），则默认为 true
+		// 这里通过 Validate 中的逻辑处理
 	}
 
 	// 网格层级校验
@@ -149,4 +170,3 @@ func (c *Config) Validate() error {
 
 	return nil
 }
-

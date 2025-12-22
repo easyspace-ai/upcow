@@ -291,7 +291,7 @@ func (h *sessionPriceHandler) OnPriceChanged(ctx context.Context, event *events.
 		}
 	}
 
-	sessionLog.Debugf("📥 [sessionPriceHandler] 收到价格变化事件，转发到 Session: %s @ %dc (Session=%s)",
+	sessionLog.Infof("📥 [sessionPriceHandler] 收到价格变化事件，转发到 Session: %s @ %dc (Session=%s)",
 		event.TokenType, event.NewPrice.Cents, h.session.Name)
 	h.session.EmitPriceChanged(ctx, event)
 	return nil
@@ -337,7 +337,7 @@ func (s *ExchangeSession) Close() error {
 func (s *ExchangeSession) OnPriceChanged(handler stream.PriceChangeHandler) {
 	s.priceChangeHandlers.Add(handler)
 	handlerCount := s.priceChangeHandlers.Count()
-	sessionLog.Debugf("✅ [Session %s] 注册价格变化处理器，当前 handlers 数量=%d", s.Name, handlerCount)
+	sessionLog.Infof("✅ [Session %s] 注册价格变化处理器，当前 handlers 数量=%d", s.Name, handlerCount)
 }
 
 // EmitPriceChanged 触发价格变化事件
@@ -369,55 +369,86 @@ func (s *ExchangeSession) OnOrderUpdate(handler OrderHandler) {
 func (s *ExchangeSession) EmitOrderUpdate(ctx context.Context, order *domain.Order) {
 	// 架构层隔离：只处理属于当前 market 的订单事件
 	market := s.Market()
+	marketSlug := ""
+	if market != nil {
+		marketSlug = market.Slug
+	}
+	sessionLog.Infof("📥 [Session %s] 收到订单更新事件: orderID=%s status=%s filledSize=%.4f marketSlug=%s assetID=%s currentMarket=%s",
+		s.Name, order.OrderID, order.Status, order.FilledSize, order.MarketSlug, order.AssetID, marketSlug)
+	
+	sessionLog.Infof("🔍 [Session %s] 开始过滤订单事件: orderID=%s orderMarketSlug=%s orderAssetID=%s currentMarketSlug=%s currentYESAssetID=%s currentNOAssetID=%s",
+		s.Name, order.OrderID, order.MarketSlug, order.AssetID, marketSlug,
+		func() string {
+			if market != nil {
+				return market.YesAssetID
+			}
+			return ""
+		}(),
+		func() string {
+			if market != nil {
+				return market.NoAssetID
+			}
+			return ""
+		}())
+	
 	if order != nil && market != nil {
 		// 1) 有 MarketSlug：严格匹配
 		if order.MarketSlug != "" && market.Slug != "" && order.MarketSlug != market.Slug {
-			sessionLog.Debugf("⚠️ [Session %s] 丢弃跨周期订单事件: orderID=%s orderMarket=%s currentMarket=%s",
+			sessionLog.Infof("⚠️ [Session %s] 丢弃跨周期订单事件: orderID=%s orderMarket=%s currentMarket=%s",
 				s.Name, order.OrderID, order.MarketSlug, market.Slug)
 			return
 		}
 		// 2) 用 AssetID 匹配（更可靠）
 		if order.AssetID != "" && market.YesAssetID != "" && market.NoAssetID != "" {
 			if order.AssetID != market.YesAssetID && order.AssetID != market.NoAssetID {
-				sessionLog.Debugf("⚠️ [Session %s] 丢弃非当前 market 的订单事件: orderID=%s assetID=%s currentYES=%s currentNO=%s",
+				sessionLog.Infof("⚠️ [Session %s] 丢弃非当前 market 的订单事件: orderID=%s assetID=%s currentYES=%s currentNO=%s",
 					s.Name, order.OrderID, order.AssetID, market.YesAssetID, market.NoAssetID)
 				return
 			}
 			// 补齐 MarketSlug/TokenType（让下游永远有一致的周期归属信息）
 			if order.MarketSlug == "" && market.Slug != "" {
 				order.MarketSlug = market.Slug
+				sessionLog.Infof("📝 [Session %s] 补齐订单 MarketSlug: orderID=%s marketSlug=%s", s.Name, order.OrderID, order.MarketSlug)
 			}
 			if order.TokenType == "" {
 				if order.AssetID == market.YesAssetID {
 					order.TokenType = domain.TokenTypeUp
+					sessionLog.Infof("📝 [Session %s] 补齐订单 TokenType: orderID=%s tokenType=up", s.Name, order.OrderID)
 				} else if order.AssetID == market.NoAssetID {
 					order.TokenType = domain.TokenTypeDown
+					sessionLog.Infof("📝 [Session %s] 补齐订单 TokenType: orderID=%s tokenType=down", s.Name, order.OrderID)
 				}
 			}
 		}
 	}
+	
+	sessionLog.Infof("✅ [Session %s] 订单事件过滤通过: orderID=%s marketSlug=%s tokenType=%s", s.Name, order.OrderID, order.MarketSlug, order.TokenType)
 
 	s.mu.RLock()
 	handlers := s.orderHandlers
 	s.mu.RUnlock()
 
-	sessionLog.Debugf("📊 Session %s 触发订单更新事件: orderID=%s, status=%s", s.Name, order.OrderID, order.Status)
+	sessionLog.Infof("📊 [Session %s] 触发订单更新事件: orderID=%s status=%s filledSize=%.4f handlers=%d", s.Name, order.OrderID, order.Status, order.FilledSize, len(handlers))
 
 	// 串行执行（确定性优先，避免并发导致的状态竞态）
-	for _, handler := range handlers {
+	for i, handler := range handlers {
 		if handler == nil {
+			sessionLog.Warnf("⚠️ [Session %s] handler[%d] 为 nil，跳过: orderID=%s", s.Name, i, order.OrderID)
 			continue
 		}
-		func(h OrderHandler) {
+		func(idx int, h OrderHandler) {
 			defer func() {
 				if r := recover(); r != nil {
-					sessionLog.Errorf("订单更新处理器 panic: %v", r)
+					sessionLog.Errorf("❌ [Session %s] handler[%d] panic: orderID=%s error=%v", s.Name, idx, order.OrderID, r)
 				}
 			}()
+			sessionLog.Infof("➡️ [Session %s] 调用 handler[%d]: orderID=%s", s.Name, idx, order.OrderID)
 			if err := h.OnOrderUpdate(ctx, order); err != nil {
-				sessionLog.Errorf("订单更新处理器执行失败: %v", err)
+				sessionLog.Errorf("❌ [Session %s] handler[%d] 执行失败: orderID=%s error=%v", s.Name, idx, order.OrderID, err)
+			} else {
+				sessionLog.Infof("✅ [Session %s] handler[%d] 执行成功: orderID=%s", s.Name, idx, order.OrderID)
 			}
-		}(handler)
+		}(i, handler)
 	}
 }
 

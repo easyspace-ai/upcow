@@ -155,7 +155,7 @@ func (m *MarketStream) DialAndConnect(ctx context.Context) error {
 		return fmt.Errorf("MarketStream 已关闭，取消重连")
 	default:
 	}
-	
+
 	conn, err := m.Dial(ctx)
 	if err != nil {
 		return err
@@ -281,7 +281,7 @@ func (m *MarketStream) reconnector(ctx context.Context) {
 			return
 		case <-m.reconnectC:
 			marketLog.Warnf("收到重连信号，冷却 %s...", reconnectCoolDownPeriod)
-			
+
 			// 冷却期间检查关闭状态（使用 select 非阻塞检查）
 			select {
 			case <-m.closeC:
@@ -292,7 +292,7 @@ func (m *MarketStream) reconnector(ctx context.Context) {
 			case <-time.After(reconnectCoolDownPeriod):
 				// 冷却完成，继续重连
 			}
-			
+
 			// 重连前再次检查关闭状态
 			select {
 			case <-m.closeC:
@@ -303,7 +303,7 @@ func (m *MarketStream) reconnector(ctx context.Context) {
 			default:
 				// 继续重连
 			}
-			
+
 			marketLog.Warnf("重新连接...")
 			if err := m.DialAndConnect(ctx); err != nil {
 				marketLog.Warnf("重连失败: %v，将再次尝试...", err)
@@ -642,11 +642,11 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 		spread = -spread
 	}
 	if spread > marketDataMaxSpreadCents {
-		marketLog.Warnf("⚠️ [book->price] 盘口价差过大，忽略价格事件: token=%s bid=%dc ask=%dc spread=%dc market=%s",
-			tokenType, bidCents, askCents, spread, m.market.Slug)
+		//marketLog.Warnf("⚠️ [book->price] 盘口价差过大，忽略价格事件: token=%s bid=%dc ask=%dc spread=%dc market=%s",
+		//	tokenType, bidCents, askCents, spread, m.market.Slug)
 		return
 	}
-	mid := int(bidCents)+int(askCents)
+	mid := int(bidCents) + int(askCents)
 	mid = (mid + 1) / 2
 	newPrice := domain.Price{Cents: mid}
 	source := "book.mid"
@@ -787,7 +787,7 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 				assetID[:12]+"...", bidCents, askCents, spread, currentMarketSlug)
 			continue
 		}
-		mid := int(bidCents)+int(askCents)
+		mid := int(bidCents) + int(askCents)
 		mid = (mid + 1) / 2
 		newPrice := domain.Price{Cents: mid}
 
@@ -834,8 +834,9 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 
 		// 直接触发回调（不使用事件总线）
 		// 注意：这里使用 handlerCount（在函数开头定义）
-		marketLog.Infof("📤 [价格事件] 触发价格变化回调: 市场=%s, Token=%s, 价格=%dc (handlers=%d)",
-			currentMarketSlug, tokenType, latest.price.Cents, handlerCount)
+		//marketLog.Infof("📤 [价格事件] 触发价格变化回调: 市场=%s, Token=%s, 价格=%dc (handlers=%d)",
+		//	currentMarketSlug, tokenType, latest.price.Cents, handlerCount)
+		//
 		m.handlers.Emit(ctx, event)
 	}
 }
