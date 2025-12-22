@@ -29,8 +29,8 @@ exchangeStrategies:
                              # 示例：如果设置为 30，当价格跌到 30c 时卖出
 
      # ========== 订单配置 ==========
-     orderSize: 3.0          # 订单大小：每次买入/卖出的 share 数量（Polymarket 要求最小 5 shares）
-                             # 注意：如果配置小于 5，系统会自动调整为 5
+    orderSize: 5.0          # 订单大小：每次买入/卖出的 share 数量（Polymarket 要求最小 5 shares）
+                            # 注意：如果配置小于 5，系统会自动调整为 5
      tokenType: ""           # Token 类型：""=监控所有, "YES"=只买UP, "NO"=只买DOWN
 
      # ========== 止盈止损（美分，表示价格差）==========
@@ -113,7 +113,7 @@ log_by_cycle: true        # 是否按周期命名日志文件（一个周期一�
 
 # 纸交易模式（dry run）
 # 如果设置为 true，不会进行真实交易，只在日志中打印订单信息，方便测试策略
-dry_run: true            # 纸交易模式：true = 仅模拟交易，false = 真实交易
+dry_run: false           # 纸交易模式：true = 仅模拟交易，false = 真实交易
 
 # 订单状态同步配置
 # 定期通过API同步订单状态，作为WebSocket的补充机制
