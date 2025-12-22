@@ -46,14 +46,11 @@ type Config struct {
 	MaxSizeAdjustRatio float64 `json:"maxSizeAdjustRatio" yaml:"maxSizeAdjustRatio"`
 
 	// 网格层级允许的滑点（cents）：允许 bestAsk 略大于网格层级，默认 2 cents
+	// 例如 gridLevel=62, slippage=2，则允许 bestAsk<=64 触发入场。
 	GridLevelSlippageCents int `json:"gridLevelSlippageCents" yaml:"gridLevelSlippageCents"`
 
 	// 止盈：入场成交后，挂出场卖单价格 = entryPrice + profitTargetCents
 	ProfitTargetCents int `json:"profitTargetCents" yaml:"profitTargetCents"`
-
-	// 入场滑点容忍：允许 bestAsk 略高于网格层级（cents）。
-	// 例如 gridLevel=62, slippage=2，则允许 bestAsk<=64 触发入场。
-	GridLevelSlippageCents int `json:"gridLevelSlippageCents" yaml:"gridLevelSlippageCents"`
 
 	// 轮次控制：
 	// - 0 表示不限制轮次（但仍受 MaxEntriesPerPeriod 限制）
@@ -85,10 +82,6 @@ type Config struct {
 	// 限制：最多同时挂多少笔"入场单"（不含止盈单）
 	MaxOpenEntryOrders int `json:"maxOpenEntryOrders" yaml:"maxOpenEntryOrders"`
 
-	// 轮次控制：每个周期最多交易几轮（0 表示不限制）
-	MaxRoundsPerPeriod int `json:"maxRoundsPerPeriod" yaml:"maxRoundsPerPeriod"`
-	// 是否等待当前轮次完全止盈后才开始下一轮（默认 true）
-	WaitForRoundComplete bool `json:"waitForRoundComplete" yaml:"waitForRoundComplete"`
 	// 空轮次超时（秒）：如果轮次开始后 N 秒内没有下单，允许跳过该轮次（0 表示不超时，一直等待）
 	EmptyRoundTimeoutSeconds int `json:"emptyRoundTimeoutSeconds" yaml:"emptyRoundTimeoutSeconds"`
 }
@@ -172,11 +165,7 @@ func (c *Config) Validate() error {
 	if c.MaxRoundsPerPeriod < 0 {
 		c.MaxRoundsPerPeriod = 0 // 0 表示不限制
 	}
-	if !c.WaitForRoundComplete {
-		// 如果设置为 false，则默认值保持 false
-		// 如果未设置（零值），则默认为 true
-		// 这里通过 Validate 中的逻辑处理
-	}
+	// WaitForRoundComplete 的默认值处理在 WaitForRoundCompleteEnabled() 方法中
 
 	// 网格层级校验
 	if len(c.GridLevels) == 0 {

@@ -291,8 +291,8 @@ func (h *sessionPriceHandler) OnPriceChanged(ctx context.Context, event *events.
 		}
 	}
 
-	sessionLog.Infof("📥 [sessionPriceHandler] 收到价格变化事件，转发到 Session: %s @ %dc (Session=%s)",
-		event.TokenType, event.NewPrice.Cents, h.session.Name)
+	//sessionLog.Infof("📥 [sessionPriceHandler] 收到价格变化事件，转发到 Session: %s @ %dc (Session=%s)",
+	//	event.TokenType, event.NewPrice.Cents, h.session.Name)
 	h.session.EmitPriceChanged(ctx, event)
 	return nil
 }
@@ -375,7 +375,7 @@ func (s *ExchangeSession) EmitOrderUpdate(ctx context.Context, order *domain.Ord
 	}
 	sessionLog.Infof("📥 [Session %s] 收到订单更新事件: orderID=%s status=%s filledSize=%.4f marketSlug=%s assetID=%s currentMarket=%s",
 		s.Name, order.OrderID, order.Status, order.FilledSize, order.MarketSlug, order.AssetID, marketSlug)
-	
+
 	sessionLog.Infof("🔍 [Session %s] 开始过滤订单事件: orderID=%s orderMarketSlug=%s orderAssetID=%s currentMarketSlug=%s currentYESAssetID=%s currentNOAssetID=%s",
 		s.Name, order.OrderID, order.MarketSlug, order.AssetID, marketSlug,
 		func() string {
@@ -390,7 +390,7 @@ func (s *ExchangeSession) EmitOrderUpdate(ctx context.Context, order *domain.Ord
 			}
 			return ""
 		}())
-	
+
 	if order != nil && market != nil {
 		// 1) 有 MarketSlug：严格匹配
 		if order.MarketSlug != "" && market.Slug != "" && order.MarketSlug != market.Slug {
@@ -421,7 +421,7 @@ func (s *ExchangeSession) EmitOrderUpdate(ctx context.Context, order *domain.Ord
 			}
 		}
 	}
-	
+
 	sessionLog.Infof("✅ [Session %s] 订单事件过滤通过: orderID=%s marketSlug=%s tokenType=%s", s.Name, order.OrderID, order.MarketSlug, order.TokenType)
 
 	s.mu.RLock()
