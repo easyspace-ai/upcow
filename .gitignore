@@ -40,7 +40,7 @@ data/market-data.json
 # Environment
 .env
 .env.local
-config.yaml
+ 
 
 # Build artifacts
 *.a
