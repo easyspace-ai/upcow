@@ -671,13 +671,29 @@ func startBookListener(ctx context.Context, market *domain.Market, proxyURL stri
 	// 初始化文件日志
 	initFileLogger()
 
-	// 连接 WebSocket
-	conn, _, err := dialer.Dial(wsURL, nil)
-	if err != nil {
-		fileLogger.Printf("连接订单薄 WebSocket 失败: %v", err)
+	// 连接 WebSocket（带重试机制）
+	var conn *gorillaWS.Conn
+	maxRetries := 3
+	for i := 0; i < maxRetries; i++ {
+		var err error
+		conn, _, err = dialer.Dial(wsURL, nil)
+		if err == nil {
+			break
+		}
+		fileLogger.Printf("连接订单薄 WebSocket 失败 (尝试 %d/%d): %v", i+1, maxRetries, err)
+		if i < maxRetries-1 {
+			time.Sleep(time.Duration(i+1) * time.Second)
+		}
+	}
+	if conn == nil {
+		fileLogger.Printf("连接订单薄 WebSocket 失败，已重试 %d 次", maxRetries)
 		return
 	}
-	defer conn.Close()
+	defer func() {
+		if conn != nil {
+			conn.Close()
+		}
+	}()
 
 	// 订阅市场
 	subscribeMsg := map[string]interface{}{
@@ -696,8 +712,18 @@ func startBookListener(ctx context.Context, market *domain.Market, proxyURL stri
 		case <-ctx.Done():
 			return
 		default:
+			// 检查连接状态
+			if conn == nil {
+				fileLogger.Printf("WebSocket 连接已关闭")
+				return
+			}
+
 			// 设置读取超时，避免阻塞
-			conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+			if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+				fileLogger.Printf("设置读取超时失败: %v", err)
+				return
+			}
+
 			_, message, err := conn.ReadMessage()
 			if err != nil {
 				// 检查是否是超时错误
@@ -705,7 +731,13 @@ func startBookListener(ctx context.Context, market *domain.Market, proxyURL stri
 					// 超时，继续循环
 					continue
 				}
-				fileLogger.Printf("读取订单薄消息失败: %v", err)
+				// 检查是否是连接关闭错误
+				if gorillaWS.IsUnexpectedCloseError(err, gorillaWS.CloseGoingAway, gorillaWS.CloseAbnormalClosure) {
+					fileLogger.Printf("WebSocket 连接意外关闭: %v", err)
+				} else {
+					fileLogger.Printf("读取订单薄消息失败: %v", err)
+				}
+				// 连接失败，退出 goroutine（不 panic）
 				return
 			}
 
@@ -713,8 +745,11 @@ func startBookListener(ctx context.Context, market *domain.Market, proxyURL stri
 			if len(message) > 0 {
 				msgStr := string(message)
 				if msgStr == "PING" {
-					if err := conn.WriteMessage(gorillaWS.TextMessage, []byte("PONG")); err != nil {
-						fileLogger.Printf("回复 PONG 失败: %v", err)
+					if conn != nil {
+						if err := conn.WriteMessage(gorillaWS.TextMessage, []byte("PONG")); err != nil {
+							fileLogger.Printf("回复 PONG 失败: %v", err)
+							return
+						}
 					}
 					continue
 				}

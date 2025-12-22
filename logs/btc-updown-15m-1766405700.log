@@ -1,0 +1,54 @@
+[36mINFO[0m[25-12-22 20:15:00] 日志文件已切换到新周期: logs/btc-updown-15m-1766405700.log 
+[36mINFO[0m[25-12-22 20:15:00] 🔗 [Session polymarket] 注册 sessionPriceHandler 到 MarketStream  [36mcomponent[0m=session
+[36mINFO[0m[25-12-22 20:15:00] ✅ [注册] MarketStream 注册价格变化处理器，当前 handlers 数量=1，市场=  [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-22 20:15:00] ✅ [Session polymarket] MarketStream handlers 数量=1 (注册后)  [36mcomponent[0m=session
+[36mINFO[0m[25-12-22 20:15:00] 使用代理连接 WebSocket: http://127.0.0.1:15236      [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-22 20:15:00] 使用代理连接用户订单 WebSocket: http://127.0.0.1:15236  [36mcomponent[0m=user_websocket
+[36mINFO[0m[25-12-22 20:15:01] 用户订单 WebSocket 已连接                            [36mcomponent[0m=user_websocket
+[36mINFO[0m[25-12-22 20:15:01] 用户订单 WebSocket 已连接                            [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-22 20:15:01] 📡 订阅市场资产: YES=96190475538130913250904977383375572320588391599745605408734119684910295691932, NO=35863184601363993890064580527182753628040557787123077892631911190906187957586  [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-22 20:15:01] ✅ 订阅消息已发送                                     [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-22 20:15:01] 市场价格 WebSocket 已连接: btc-updown-15m-1766405700  [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-22 20:15:01] ✅ [Session polymarket] MarketStream handlers 数量=1 (连接后)  [36mcomponent[0m=session
+[36mINFO[0m[25-12-22 20:15:01] [Session polymarket] 市场数据流已连接                 [36mcomponent[0m=session
+[36mINFO[0m[25-12-22 20:15:01] [Session polymarket] 用户数据流已就绪                 [36mcomponent[0m=session
+[36mINFO[0m[25-12-22 20:15:01] ✅ [周期切换] 新会话 MarketStream handlers 数量=1，市场=btc-updown-15m-1766405700  [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-22 20:15:01] ✅ [周期切换] 新会话 Session priceChangeHandlers 数量=0，市场=btc-updown-15m-1766405700  [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-22 20:15:01] 创建会话: market=btc-updown-15m-1766405700        [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-22 20:15:01] 已切换到下一个市场: btc-updown-15m-1766405700          [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-22 20:15:01] 触发会话切换回调，重新注册策略到新会话                           [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-22 20:15:01] 🔄 [周期切换] 检测到会话切换，重新注册策略到新会话: btc-updown-15m-1766405700 
+[36mINFO[0m[25-12-22 20:15:01] ✅ [周期切换] 已设置当前市场: btc-updown-15m-1766405700   [36mcomponent[0m=trading_service
+[33mWARN[0m[25-12-22 20:15:01] 🔄 [周期切换] 已重置本地状态：orders/positions/cache/inflight（prev=btc-updown-15m-1766404800 -> new=btc-updown-15m-1766405700 gen=1766405700）  [33mcomponent[0m=trading_service
+[33mWARN[0m[25-12-22 20:15:01] 🔄 [周期切换] OrderEngine 已重置运行时状态: newMarket=btc-updown-15m-1766405700 reason=TradingService.SetCurrentMarket gen=1766405700  [33mcomponent[0m=order_engine
+[36mINFO[0m[25-12-22 20:15:01] 🔄 [周期切换] 准备调用策略 grid 的 Subscribe 方法           [36mcomponent[0m=trader
+[36mINFO[0m[25-12-22 20:15:01] ✅ [Session polymarket] 注册价格变化处理器，当前 handlers 数量=1  [36mcomponent[0m=session
+[36mINFO[0m[25-12-22 20:15:01] ✅ [grid] 策略已订阅订单更新和价格更新 (session=polymarket)  [36mstrategy[0m=grid
+[36mINFO[0m[25-12-22 20:15:01] ✅ [周期切换] 策略 grid 的 Subscribe 方法执行完成           [36mcomponent[0m=trader
+[36mINFO[0m[25-12-22 20:15:01] ✅ [周期切换] 策略 grid 已订阅会话 polymarket             [36mcomponent[0m=trader
+[36mINFO[0m[25-12-22 20:15:01] 🔄 [周期切换] 策略 grid 已切换到新 session=polymarket     [36mcomponent[0m=trader
+[36mINFO[0m[25-12-22 20:15:01] ✅ [周期切换] 策略已切换到新 session，market=btc-updown-15m-1766405700 
+[36mINFO[0m[25-12-22 20:15:02] 📥 [sessionPriceHandler] 首次收到价格事件: up @ 46c (Session=polymarket)  [36mcomponent[0m=session
+[36mINFO[0m[25-12-22 20:16:09] 后台预加载: 发现 1 个缺失的周期数据（需要预加载: [btc-updown-15m-1766406600]，缓存大小: 2） 
+[36mINFO[0m[25-12-22 20:16:10] 从 API 获取市场信息成功: btc-updown-15m-1766406600 (YES: 402988110413..., NO: 100015334978...) 
+[36mINFO[0m[25-12-22 20:16:10] 后台预加载完成: 成功=1, 失败=0, 当前缓存大小=3                
+[36mINFO[0m[25-12-22 20:24:12] 收到停止信号，正在关闭...                               
+[36mINFO[0m[25-12-22 20:24:12] 正在停止市场调度器...                                 
+[36mINFO[0m[25-12-22 20:24:12] 停止市场调度器...                                    [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-22 20:24:12] 🔄 [订单状态同步] 订单状态同步已停止                          [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-22 20:24:12] 🛑 OrderEngine 停止                              [36mcomponent[0m=order_engine
+[36mINFO[0m[25-12-22 20:24:12] 市场调度器已停止                                      [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-22 20:24:12] 🔄 [关闭] MarketStream 已清空所有 handlers，市场=btc-updown-15m-1766405700  [36mcomponent[0m=market_stream
+[33mWARN[0m[25-12-22 20:24:12] WebSocket 读取错误: read tcp 127.0.0.1:54785->127.0.0.1:15236: use of closed network connection，触发重连  [33mcomponent[0m=market_stream
+[36mINFO[0m[25-12-22 20:24:12] ✅ [unsubscribe] MarketStream 已关闭并完成退订：market=btc-updown-15m-1766405700, elapsed=165.75µs  [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-22 20:24:12] ✅ [unsubscribe] Session 已关闭并完成退订：session=polymarket, market=btc-updown-15m-1766405700, elapsed=193.541µs  [36mcomponent[0m=session
+[36mINFO[0m[25-12-22 20:24:12] 正在关闭策略...                                    
+[36mINFO[0m[25-12-22 20:24:12] shutting down...                              [36mcomponent[0m=graceful_shutdown
+[36mINFO[0m[25-12-22 20:24:12] 没有注册的关闭回调                                    
+[36mINFO[0m[25-12-22 20:24:12] 正在停止交易服务...                                  
+[36mINFO[0m[25-12-22 20:24:12] 正在停止交易服务...                                   [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-22 20:24:12] 交易服务已停止                                       [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-22 20:24:12] ✅ CommandExecutor 已停止                         [36mcomponent[0m=command_executor
+[36mINFO[0m[25-12-22 20:24:12] ✅ WorkerPoolCommandExecutor 已停止               [36mcomponent[0m=command_executor_pool
+[36mINFO[0m[25-12-22 20:24:12] ✅ [unsubscribe] Session 已关闭并完成退订：session=polymarket, market=btc-updown-15m-1766405700, elapsed=1.333µs  [36mcomponent[0m=session
+[36mINFO[0m[25-12-22 20:24:12] ✅ 交易机器人已停止                                   
