@@ -62,6 +62,10 @@ type Config struct {
 
 	// 周期后段不再新增入场（秒）。例如 120 表示最后 2 分钟不再开新仓。
 	StopNewEntriesSeconds int `json:"stopNewEntriesSeconds" yaml:"stopNewEntriesSeconds"`
+	// 周期结束前强制清仓（秒）：用于“不赌方向”，避免带仓进入结算。
+	// - 当剩余时间 <= FlattenSecondsBeforeEnd 时：撤掉所有入场单，并将本周期持仓用 FAK 快速卖出。
+	// - 0 表示关闭该功能。
+	FlattenSecondsBeforeEnd *int `json:"flattenSecondsBeforeEnd" yaml:"flattenSecondsBeforeEnd"`
 
 	// 预热（ms）：刚连上 WS 的脏快照期间不交易
 	WarmupMs int `json:"warmupMs" yaml:"warmupMs"`
@@ -119,6 +123,14 @@ func (c *Config) Validate() error {
 	}
 	if c.StopNewEntriesSeconds < 0 {
 		c.StopNewEntriesSeconds = 0
+	}
+	// 默认开启一个较短的清仓窗口，避免带仓进结算；用户显式设置为 0 可关闭。
+	if c.FlattenSecondsBeforeEnd == nil {
+		v := 60
+		c.FlattenSecondsBeforeEnd = &v
+	} else if *c.FlattenSecondsBeforeEnd < 0 {
+		v := 0
+		c.FlattenSecondsBeforeEnd = &v
 	}
 	if c.WarmupMs < 0 {
 		c.WarmupMs = 0

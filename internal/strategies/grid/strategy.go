@@ -54,6 +54,7 @@ type Strategy struct {
 	lastSubmitAt time.Time
 	entriesThisCycle int
 	roundsCompleted  int
+	flattenedThisCycle bool
 
 	// 追踪我们自己提交的订单：orderID -> meta
 	tracked map[string]*trackedOrder
@@ -198,6 +199,7 @@ func (s *Strategy) step(loopCtx context.Context) {
 		s.lastSubmitAt = time.Time{}
 		s.entriesThisCycle = 0
 		s.roundsCompleted = 0
+		s.flattenedThisCycle = false
 		s.tracked = make(map[string]*trackedOrder)
 		s.usedLevel = make(map[domain.TokenType]map[int]bool)
 		log.Infof("🔄 [grid] 周期切换，重置状态: market=%s", m.Slug)
@@ -230,11 +232,23 @@ func (s *Strategy) step(loopCtx context.Context) {
 		return
 	}
 
-	// 6) 周期后段不再新增入场
-	if s.StopNewEntriesSeconds > 0 && m.Timestamp > 0 {
+	// 6) 周期后段控制：清仓/停止新增
+	if m.Timestamp > 0 {
 		elapsed := now.Unix() - m.Timestamp
 		remain := int64(900) - elapsed
-		if remain <= int64(s.StopNewEntriesSeconds) {
+
+		// 6.1 清仓：不赌方向 —— 周期结束前把本周期持仓出清
+		if !s.flattenedThisCycle {
+			flattenSeconds := s.flattenSecondsBeforeEnd()
+			if flattenSeconds > 0 && remain <= int64(flattenSeconds) {
+				s.flattenPositions(loopCtx, m, remain)
+				s.flattenedThisCycle = true
+				return
+			}
+		}
+
+		// 6.2 停止新增入场
+		if s.StopNewEntriesSeconds > 0 && remain <= int64(s.StopNewEntriesSeconds) {
 			return
 		}
 	}
@@ -357,6 +371,77 @@ func (s *Strategy) step(loopCtx context.Context) {
 			tt, *level, bestAsk.Cents, size, targetExit, m.Slug)
 		return
 	}
+}
+
+func (s *Strategy) flattenSecondsBeforeEnd() int {
+	if s == nil || s.FlattenSecondsBeforeEnd == nil {
+		return 0
+	}
+	if *s.FlattenSecondsBeforeEnd <= 0 {
+		return 0
+	}
+	return *s.FlattenSecondsBeforeEnd
+}
+
+func (s *Strategy) flattenPositions(loopCtx context.Context, m *domain.Market, remain int64) {
+	if s == nil || s.TradingService == nil || m == nil {
+		return
+	}
+	// 先撤掉所有入场单，避免清仓时又被入场单“补回去”
+	cancelCtx, cancel := context.WithTimeout(loopCtx, 10*time.Second)
+	s.cancelAllEntryOrders(cancelCtx, m.Slug)
+	cancel()
+
+	// 汇总本周期持仓（按 tokenType）
+	var upSize, downSize float64
+	for _, p := range s.TradingService.GetOpenPositionsForMarket(m.Slug) {
+		if p == nil || !p.IsOpen() || p.Size <= 0 {
+			continue
+		}
+		if p.TokenType == domain.TokenTypeUp {
+			upSize += p.Size
+		} else if p.TokenType == domain.TokenTypeDown {
+			downSize += p.Size
+		}
+	}
+	if upSize <= 0 && downSize <= 0 {
+		log.Infof("🧹 [grid] 清仓窗口到达(remain=%ds)，但无持仓需要处理: market=%s", remain, m.Slug)
+		return
+	}
+
+	log.Warnf("🧹 [grid] 清仓窗口到达(remain=%ds)：开始出清持仓 up=%.4f down=%.4f market=%s",
+		remain, upSize, downSize, m.Slug)
+
+	// 逐边用 FAK 快速卖出（不赌方向：宁可小滑点，也不要带仓进结算）
+	sellOne := func(tt domain.TokenType, assetID string, size float64) {
+		if size <= 0 || assetID == "" {
+			return
+		}
+		ctx, cancel := context.WithTimeout(loopCtx, 20*time.Second)
+		defer cancel()
+		bestBid, err := orderutil.QuoteSellPrice(ctx, s.TradingService, assetID, 0)
+		if err != nil || bestBid.Cents <= 0 {
+			return
+		}
+		req := execution.MultiLegRequest{
+			Name:      fmt.Sprintf("grid_flatten_%s", strings.ToLower(string(tt))),
+			MarketSlug: m.Slug,
+			Legs: []execution.LegIntent{{
+				Name:      "sell_flatten",
+				AssetID:   assetID,
+				TokenType: tt,
+				Side:      types.SideSell,
+				Price:     bestBid,
+				Size:      size,
+				OrderType: types.OrderTypeFAK,
+			}},
+			Hedge: execution.AutoHedgeConfig{Enabled: false},
+		}
+		_, _ = s.TradingService.ExecuteMultiLeg(ctx, req)
+	}
+
+	sellOne(domain.TokenTypeUp, m.YesAssetID, upSize)
+	sellOne(domain.TokenTypeDown, m.NoAssetID, downSize)
 }
 
 func (s *Strategy) maybeAdvanceRound(marketSlug string) {
