@@ -53,6 +53,7 @@ type Strategy struct {
 	firstSeenAt  time.Time
 	lastSubmitAt time.Time
 	entriesThisCycle int
+	roundsCompleted  int
 
 	// 追踪我们自己提交的订单：orderID -> meta
 	tracked map[string]*trackedOrder
@@ -196,6 +197,7 @@ func (s *Strategy) step(loopCtx context.Context) {
 		s.firstSeenAt = now
 		s.lastSubmitAt = time.Time{}
 		s.entriesThisCycle = 0
+		s.roundsCompleted = 0
 		s.tracked = make(map[string]*trackedOrder)
 		s.usedLevel = make(map[domain.TokenType]map[int]bool)
 		log.Infof("🔄 [grid] 周期切换，重置状态: market=%s", m.Slug)
@@ -206,14 +208,25 @@ func (s *Strategy) step(loopCtx context.Context) {
 
 	// 4) 预热
 	if s.WarmupMs > 0 && now.Sub(s.firstSeenAt) < time.Duration(s.WarmupMs)*time.Millisecond {
+		// 即使预热，也要处理订单更新（避免刚启动时错过成交/撤单导致状态不收敛）
+		s.drainOrderUpdates(loopCtx, m)
 		return
 	}
+
+	// 5) 先处理订单更新（止盈/清理必须不受 cooldown/stopNewEntries 等限制）
+	s.drainOrderUpdates(loopCtx, m)
+	// 轮次推进：当上一轮所有订单都结束后，按配置决定是否开启下一轮
+	s.maybeAdvanceRound(m.Slug)
 
 	// 5) 冷却 + 入场次数上限
 	if !s.lastSubmitAt.IsZero() && now.Sub(s.lastSubmitAt) < time.Duration(s.CooldownMs)*time.Millisecond {
 		return
 	}
 	if s.entriesThisCycle >= s.MaxEntriesPerPeriod {
+		return
+	}
+	// 轮次上限：达到上限后不再新增入场（但仍会继续处理订单更新）
+	if s.MaxRoundsPerPeriod > 0 && s.roundsCompleted >= s.MaxRoundsPerPeriod {
 		return
 	}
 
@@ -279,11 +292,15 @@ func (s *Strategy) step(loopCtx context.Context) {
 
 		// 盘口 quote：要求 bestAsk <= level 才入场
 		orderCtx, cancel := context.WithTimeout(loopCtx, 25*time.Second)
+		maxCents := *level + s.GridLevelSlippageCents
+		if maxCents > 99 {
+			maxCents = 99
+		}
 		bestAsk, size, skipped, _, _, _, _, err := common.QuoteAndAdjustBuy(
 			orderCtx,
 			s.TradingService,
 			assetID,
-			*level, // maxCents：把网格层级当作硬上限
+			maxCents, // maxCents：允许层级上方一定滑点容忍
 			s.OrderSize,
 			s.MinOrderSize,
 			s.AutoAdjustSize,
@@ -340,9 +357,58 @@ func (s *Strategy) step(loopCtx context.Context) {
 			tt, *level, bestAsk.Cents, size, targetExit, m.Slug)
 		return
 	}
+}
 
-	// 12) 处理订单更新：推进成交/挂止盈/清理状态
-	s.drainOrderUpdates(loopCtx, m)
+func (s *Strategy) maybeAdvanceRound(marketSlug string) {
+	if s == nil || s.TradingService == nil {
+		return
+	}
+	// 没有用过任何层级，说明还没开始一轮
+	if !s.hasAnyUsedLevel() {
+		return
+	}
+	// 等待本轮完全结束（默认 true）
+	if s.WaitForRoundCompleteEnabled() && !s.isRoundComplete(marketSlug) {
+		return
+	}
+	// 本轮已结束：清空 usedLevel，让下一轮可以复用层级
+	// 注意：roundsCompleted 表示“已完成轮次”计数；到达上限后，入场逻辑会被短路。
+	s.roundsCompleted++
+	s.usedLevel = make(map[domain.TokenType]map[int]bool)
+	log.Infof("🔁 [grid] 本轮已完成，开始下一轮: completed=%d market=%s", s.roundsCompleted, marketSlug)
+}
+
+func (s *Strategy) hasAnyUsedLevel() bool {
+	for _, m := range s.usedLevel {
+		if len(m) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Strategy) isRoundComplete(marketSlug string) bool {
+	// round complete 的定义：没有任何“我们追踪的”入场/止盈单仍处于 open/pending/partial
+	orders := s.TradingService.GetActiveOrders()
+	for _, o := range orders {
+		if o == nil || o.OrderID == "" {
+			continue
+		}
+		if marketSlug != "" && o.MarketSlug != "" && o.MarketSlug != marketSlug {
+			continue
+		}
+		meta := s.tracked[o.OrderID]
+		if meta == nil {
+			continue
+		}
+		if meta.Kind != kindEntry && meta.Kind != kindExit {
+			continue
+		}
+		if o.Status == domain.OrderStatusOpen || o.Status == domain.OrderStatusPartial || o.Status == domain.OrderStatusPending {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Strategy) drainOrderUpdates(loopCtx context.Context, m *domain.Market) {
@@ -373,6 +439,12 @@ func (s *Strategy) drainOrderUpdates(loopCtx context.Context, m *domain.Market) 
 					continue
 				}
 				target := domain.Price{Cents: meta.TargetExitCents}
+				exitOrderType := types.OrderTypeGTC
+				// 保护：当 exitSize 很小（例如用户配置 orderSize=3 且发生 partial fill）时，
+				// GTC 止盈单可能不满足交易所的最小 shares 约束。此时用 FAK 作为降级路径，避免“永远挂不上止盈”。
+				if exitSize < 5.0 {
+					exitOrderType = types.OrderTypeFAK
+				}
 				req := execution.MultiLegRequest{
 					Name:      fmt.Sprintf("grid_exit_%s_%dc", strings.ToLower(string(meta.TokenType)), meta.GridLevel),
 					MarketSlug: m.Slug,
@@ -383,7 +455,7 @@ func (s *Strategy) drainOrderUpdates(loopCtx context.Context, m *domain.Market) 
 						Side:      types.SideSell,
 						Price:     target,
 						Size:      exitSize,
-						OrderType: types.OrderTypeGTC,
+						OrderType: exitOrderType,
 					}},
 					Hedge: execution.AutoHedgeConfig{Enabled: false},
 				}

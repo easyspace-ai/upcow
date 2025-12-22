@@ -43,6 +43,17 @@ type Config struct {
 	// 止盈：入场成交后，挂出场卖单价格 = entryPrice + profitTargetCents
 	ProfitTargetCents int `json:"profitTargetCents" yaml:"profitTargetCents"`
 
+	// 入场滑点容忍：允许 bestAsk 略高于网格层级（cents）。
+	// 例如 gridLevel=62, slippage=2，则允许 bestAsk<=64 触发入场。
+	GridLevelSlippageCents int `json:"gridLevelSlippageCents" yaml:"gridLevelSlippageCents"`
+
+	// 轮次控制：
+	// - 0 表示不限制轮次（但仍受 MaxEntriesPerPeriod 限制）
+	// - >0 表示每个周期最多完成多少“完整轮次”（完成的定义见策略实现）
+	MaxRoundsPerPeriod int `json:"maxRoundsPerPeriod" yaml:"maxRoundsPerPeriod"`
+	// 是否等待当前轮次完全止盈/结束后才开始下一轮（默认 true）。
+	WaitForRoundComplete *bool `json:"waitForRoundComplete" yaml:"waitForRoundComplete"`
+
 	// 风控：极端共识区间（触发冻结，不再新增仓位）
 	FreezeHighCents int `json:"freezeHighCents" yaml:"freezeHighCents"`
 	FreezeLowCents  int `json:"freezeLowCents" yaml:"freezeLowCents"`
@@ -61,6 +72,13 @@ type Config struct {
 	MaxEntriesPerPeriod int `json:"maxEntriesPerPeriod" yaml:"maxEntriesPerPeriod"`
 	// 限制：最多同时挂多少笔“入场单”（不含止盈单）
 	MaxOpenEntryOrders int `json:"maxOpenEntryOrders" yaml:"maxOpenEntryOrders"`
+}
+
+func (c *Config) WaitForRoundCompleteEnabled() bool {
+	if c == nil || c.WaitForRoundComplete == nil {
+		return true
+	}
+	return *c.WaitForRoundComplete
 }
 
 func (c *Config) Normalize() {
@@ -84,6 +102,12 @@ func (c *Config) Validate() error {
 	}
 	if c.ProfitTargetCents <= 0 {
 		c.ProfitTargetCents = 2
+	}
+	if c.GridLevelSlippageCents < 0 {
+		c.GridLevelSlippageCents = 0
+	}
+	if c.MaxRoundsPerPeriod < 0 {
+		c.MaxRoundsPerPeriod = 0
 	}
 
 	// freeze 默认：接近 0/100 时不再加仓
