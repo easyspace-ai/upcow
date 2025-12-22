@@ -30,6 +30,11 @@ type Config struct {
 	// 单向模式：当 EnableDoubleSide=false 时使用；可取 "up"/"down"/"yes"/"no"。
 	TokenType string `json:"tokenType" yaml:"tokenType"`
 
+	// 库存中性（不赌方向）：限制本周期净敞口（UP shares - DOWN shares）的绝对值。
+	// 当 |net| >= MaxNetExposureShares 时，只允许在“较少的一侧”入场，直到回到阈值内。
+	// 0 表示关闭该限制。
+	MaxNetExposureShares float64 `json:"maxNetExposureShares" yaml:"maxNetExposureShares"`
+
 	// 每次入场下单数量（shares）
 	OrderSize float64 `json:"orderSize" yaml:"orderSize"`
 
@@ -97,6 +102,13 @@ func (c *Config) Validate() error {
 
 	if c.OrderSize <= 0 {
 		return fmt.Errorf("orderSize 必须 > 0")
+	}
+	if c.MaxNetExposureShares < 0 {
+		c.MaxNetExposureShares = 0
+	}
+	if c.MaxNetExposureShares == 0 {
+		// 默认启用一个温和的净敞口限制：允许最多 2 笔入场的偏差（以 orderSize=5 计则约 10 shares）
+		c.MaxNetExposureShares = 10.0
 	}
 	if c.MinOrderSize <= 0 {
 		c.MinOrderSize = 1.1

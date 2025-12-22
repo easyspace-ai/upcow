@@ -3,6 +3,7 @@ package grid
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -277,6 +278,11 @@ func (s *Strategy) step(loopCtx context.Context) {
 	if len(tokenTargets) == 0 {
 		return
 	}
+	// 10.1 库存中性 gating：净敞口过大时，只允许补“较少的一侧”
+	tokenTargets = s.applyInventoryNeutrality(m.Slug, tokenTargets)
+	if len(tokenTargets) == 0 {
+		return
+	}
 
 	// 11) 对每个 token 尝试“最近下方层级”入场（每轮最多提交一次，避免同时双向下单风暴）
 	for _, tt := range tokenTargets {
@@ -373,6 +379,55 @@ func (s *Strategy) step(loopCtx context.Context) {
 	}
 }
 
+func (s *Strategy) applyInventoryNeutrality(marketSlug string, targets []domain.TokenType) []domain.TokenType {
+	if s == nil || s.TradingService == nil {
+		return targets
+	}
+	if s.MaxNetExposureShares <= 0 {
+		return targets
+	}
+	if !s.EnableDoubleSide {
+		// 单向模式下不做净敞口限制（否则会把策略锁死）
+		return targets
+	}
+
+	upSize, downSize := s.currentInventoryShares(marketSlug)
+	net := upSize - downSize
+	if math.Abs(net) < s.MaxNetExposureShares {
+		return targets
+	}
+
+	need := domain.TokenTypeDown
+	if net < 0 {
+		need = domain.TokenTypeUp
+	}
+
+	out := make([]domain.TokenType, 0, 1)
+	for _, tt := range targets {
+		if tt == need {
+			out = append(out, tt)
+		}
+	}
+	return out
+}
+
+func (s *Strategy) currentInventoryShares(marketSlug string) (upSize float64, downSize float64) {
+	if s == nil || s.TradingService == nil {
+		return 0, 0
+	}
+	for _, p := range s.TradingService.GetOpenPositionsForMarket(marketSlug) {
+		if p == nil || !p.IsOpen() || p.Size <= 0 {
+			continue
+		}
+		if p.TokenType == domain.TokenTypeUp {
+			upSize += p.Size
+		} else if p.TokenType == domain.TokenTypeDown {
+			downSize += p.Size
+		}
+	}
+	return upSize, downSize
+}
+
 func (s *Strategy) flattenSecondsBeforeEnd() int {
 	if s == nil || s.FlattenSecondsBeforeEnd == nil {
 		return 0
@@ -393,17 +448,7 @@ func (s *Strategy) flattenPositions(loopCtx context.Context, m *domain.Market, r
 	cancel()
 
 	// 汇总本周期持仓（按 tokenType）
-	var upSize, downSize float64
-	for _, p := range s.TradingService.GetOpenPositionsForMarket(m.Slug) {
-		if p == nil || !p.IsOpen() || p.Size <= 0 {
-			continue
-		}
-		if p.TokenType == domain.TokenTypeUp {
-			upSize += p.Size
-		} else if p.TokenType == domain.TokenTypeDown {
-			downSize += p.Size
-		}
-	}
+	upSize, downSize := s.currentInventoryShares(m.Slug)
 	if upSize <= 0 && downSize <= 0 {
 		log.Infof("🧹 [grid] 清仓窗口到达(remain=%ds)，但无持仓需要处理: market=%s", remain, m.Slug)
 		return
