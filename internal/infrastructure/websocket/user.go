@@ -48,6 +48,16 @@ type UserWebSocket struct {
 	orderUpdateC   chan orderUpdateJob
 	tradeUpdateC   chan tradeUpdateJob
 
+	// 早到事件缓冲：在 handlers 尚未注册（len==0）时，暂存最新事件并在首次注册时 flush。
+	// 这可以覆盖如下真实场景：
+	// - MarketScheduler 创建 session 时就会启动 UserWebSocket 连接，但 handler 注册在 Start() 返回后才发生
+	// - 周期切换时新 session 的 UserWebSocket 也会先连接，随后才注册路由器/TradingService
+	// 若不缓冲，这段窗口内的订单/成交事件会被“静默丢弃”，导致策略状态不一致（例如网格漏挂止盈）。
+	pendingMu      sync.Mutex
+	pendingOrders  map[string]orderUpdateJob // key=orderID（保留最新）
+	pendingTrades  map[string]tradeUpdateJob // key=tradeID（保留最新）
+	maxPendingSize int
+
 	// 丢弃补偿：当分发队列满导致事件丢弃时，触发上层对账（节流）
 	dropHandler  DropHandler
 	lastDropAtNs atomic.Int64
@@ -114,7 +124,70 @@ func NewUserWebSocket() *UserWebSocket {
 		dispatchCancel: dispatchCancel,
 		orderUpdateC:   make(chan orderUpdateJob, 2048),
 		tradeUpdateC:   make(chan tradeUpdateJob, 2048),
+		pendingOrders:  make(map[string]orderUpdateJob),
+		pendingTrades:  make(map[string]tradeUpdateJob),
+		maxPendingSize: 4096,
 	}
+}
+
+func (u *UserWebSocket) bufferOrderUpdate(job orderUpdateJob) {
+	if job.order == nil || job.order.OrderID == "" {
+		return
+	}
+	// 拷贝一份，避免上游复用/并发修改指针内容
+	cp := *job.order
+	job.order = &cp
+
+	u.pendingMu.Lock()
+	defer u.pendingMu.Unlock()
+	if u.maxPendingSize > 0 && len(u.pendingOrders) >= u.maxPendingSize {
+		// 达到上限：尽量保留“最新”，直接覆盖同 orderID；否则丢弃并触发补偿
+		if _, exists := u.pendingOrders[job.order.OrderID]; !exists {
+			userLog.Warnf("⚠️ [UserWebSocket] pendingOrders 已满，丢弃早到订单更新: orderID=%s", job.order.OrderID)
+			u.notifyDrop("order", map[string]string{"orderID": job.order.OrderID})
+			return
+		}
+	}
+	u.pendingOrders[job.order.OrderID] = job
+}
+
+func (u *UserWebSocket) bufferTradeUpdate(job tradeUpdateJob) {
+	if job.trade == nil || job.trade.ID == "" {
+		return
+	}
+	cp := *job.trade
+	job.trade = &cp
+
+	u.pendingMu.Lock()
+	defer u.pendingMu.Unlock()
+	if u.maxPendingSize > 0 && len(u.pendingTrades) >= u.maxPendingSize {
+		if _, exists := u.pendingTrades[job.trade.ID]; !exists {
+			userLog.Warnf("⚠️ [UserWebSocket] pendingTrades 已满，丢弃早到成交事件: tradeID=%s", job.trade.ID)
+			u.notifyDrop("trade", map[string]string{"tradeID": job.trade.ID})
+			return
+		}
+	}
+	u.pendingTrades[job.trade.ID] = job
+}
+
+func (u *UserWebSocket) flushPendingLocked() (orders []orderUpdateJob, trades []tradeUpdateJob) {
+	u.pendingMu.Lock()
+	defer u.pendingMu.Unlock()
+	if len(u.pendingOrders) > 0 {
+		orders = make([]orderUpdateJob, 0, len(u.pendingOrders))
+		for _, job := range u.pendingOrders {
+			orders = append(orders, job)
+		}
+		u.pendingOrders = make(map[string]orderUpdateJob)
+	}
+	if len(u.pendingTrades) > 0 {
+		trades = make([]tradeUpdateJob, 0, len(u.pendingTrades))
+		for _, job := range u.pendingTrades {
+			trades = append(trades, job)
+		}
+		u.pendingTrades = make(map[string]tradeUpdateJob)
+	}
+	return orders, trades
 }
 
 func (u *UserWebSocket) startDispatchLoops() {
@@ -147,6 +220,12 @@ func (u *UserWebSocket) orderDispatchLoop() {
 
 			userLog.Infof("📤 [UserWebSocket] 分发订单更新: orderID=%s status=%s filledSize=%.4f handlers=%d",
 				job.order.OrderID, job.order.Status, job.order.FilledSize, len(handlers))
+
+			// 关键：handlers 为空时不要“静默丢弃”，先缓冲，等 handler 注册后再 flush。
+			if len(handlers) == 0 {
+				u.bufferOrderUpdate(job)
+				continue
+			}
 
 			for i, h := range handlers {
 				if h == nil {
@@ -185,6 +264,11 @@ func (u *UserWebSocket) tradeDispatchLoop() {
 			copy(handlers, u.tradeHandlers)
 			u.mu.RUnlock()
 
+			if len(handlers) == 0 {
+				u.bufferTradeUpdate(job)
+				continue
+			}
+
 			for _, h := range handlers {
 				if h == nil {
 					continue
@@ -207,6 +291,25 @@ func (u *UserWebSocket) OnOrderUpdate(handler ports.OrderUpdateHandler) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.orderHandlers = append(u.orderHandlers, handler)
+
+	// 首次注册 handler 后，尽快 flush 早到事件（不阻塞调用方）
+	if len(u.orderHandlers) == 1 {
+		orders, _ := u.flushPendingLocked()
+		if len(orders) > 0 {
+			go func(batch []orderUpdateJob) {
+				for _, job := range batch {
+					select {
+					case u.orderUpdateC <- job:
+					default:
+						if job.order != nil {
+							userLog.Warnf("⚠️ [UserWebSocket] flush early orderUpdate 队列已满，丢弃: orderID=%s", job.order.OrderID)
+							u.notifyDrop("order", map[string]string{"orderID": job.order.OrderID})
+						}
+					}
+				}
+			}(orders)
+		}
+	}
 }
 
 // OnTradeUpdate 注册交易更新回调（BBGO风格）
@@ -214,6 +317,24 @@ func (u *UserWebSocket) OnTradeUpdate(handler ports.TradeUpdateHandler) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.tradeHandlers = append(u.tradeHandlers, handler)
+
+	if len(u.tradeHandlers) == 1 {
+		_, trades := u.flushPendingLocked()
+		if len(trades) > 0 {
+			go func(batch []tradeUpdateJob) {
+				for _, job := range batch {
+					select {
+					case u.tradeUpdateC <- job:
+					default:
+						if job.trade != nil {
+							userLog.Warnf("⚠️ [UserWebSocket] flush early tradeUpdate 队列已满，丢弃: tradeID=%s", job.trade.ID)
+							u.notifyDrop("trade", map[string]string{"tradeID": job.trade.ID})
+						}
+					}
+				}
+			}(trades)
+		}
+	}
 }
 
 // Connect 连接到用户订单 WebSocket
@@ -679,7 +800,7 @@ func (u *UserWebSocket) handleMessages(ctx context.Context) {
 				}
 				return keys
 			}())
-		
+
 		switch eventType {
 		case "order":
 			userLog.Infof("📨 [UserWebSocket] 开始处理订单消息: orderID=%s", orderID)
@@ -717,13 +838,13 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 	originalSizeStr, _ := msg["original_size"].(string)
 	sizeMatchedStr, _ := msg["size_matched"].(string)
 	orderTypeStr, _ := msg["type"].(string) // PLACEMENT, UPDATE, CANCELLATION
-	
+
 	// 检查必要字段是否存在
 	if orderID == "" {
 		userLog.Warnf("⚠️ [UserWebSocket] 订单消息缺少 orderID，跳过处理: msg=%v", msg)
 		return
 	}
-	
+
 	userLog.Infof("🔍 [UserWebSocket] 解析订单消息: orderID=%s assetID=%s side=%s type=%s price=%s originalSize=%s sizeMatched=%s",
 		orderID, assetID, sideStr, orderTypeStr, priceStr, originalSizeStr, sizeMatchedStr)
 
@@ -736,7 +857,7 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 
 	originalSize, _ := strconv.ParseFloat(originalSizeStr, 64)
 	sizeMatched, _ := strconv.ParseFloat(sizeMatchedStr, 64)
-	
+
 	userLog.Infof("✅ [UserWebSocket] 订单解析完成: orderID=%s price=%dc originalSize=%.4f sizeMatched=%.4f",
 		orderID, price.Cents, originalSize, sizeMatched)
 
@@ -767,14 +888,14 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 
 	// 构建订单领域对象
 	order := &domain.Order{
-		OrderID:   orderID,
-		AssetID:   assetID,
-		Side:      side,
-		Price:     price,
-		Size:      originalSize, // 使用原始大小，而不是已成交大小
-		FilledSize: sizeMatched, // 已成交大小
-		Status:    status,
-		CreatedAt: time.Now(),
+		OrderID:    orderID,
+		AssetID:    assetID,
+		Side:       side,
+		Price:      price,
+		Size:       originalSize, // 使用原始大小，而不是已成交大小
+		FilledSize: sizeMatched,  // 已成交大小
+		Status:     status,
+		CreatedAt:  time.Now(),
 	}
 
 	// BBGO风格：直接触发回调，不使用事件总线
@@ -789,7 +910,7 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 	} else if orderTypeStr == "PLACEMENT" {
 		order.Status = domain.OrderStatusOpen
 	}
-	
+
 	userLog.Infof("📦 [UserWebSocket] 订单对象构建完成: orderID=%s status=%s side=%s price=%dc size=%.4f filledSize=%.4f assetID=%s",
 		order.OrderID, order.Status, order.Side, order.Price.Cents, order.Size, order.FilledSize, order.AssetID)
 
