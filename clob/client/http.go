@@ -213,7 +213,8 @@ func parseResponse(resp *http.Response, result interface{}) error {
 		bodyBytes, _ := io.ReadAll(reader)
 		errorMsg := fmt.Sprintf("HTTP 错误 %d: %s", resp.StatusCode, string(bodyBytes))
 		fmt.Printf("[HTTP DEBUG] %s\n", errorMsg)
-		return fmt.Errorf(errorMsg)
+		// 使用常量 format string，避免 go vet 报错
+		return fmt.Errorf("%s", errorMsg)
 	}
 
 	if result != nil {

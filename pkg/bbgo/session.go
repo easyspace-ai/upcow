@@ -197,7 +197,29 @@ func (s *ExchangeSession) startPriceLoop(ctx context.Context) {
 				case <-loopCtx.Done():
 					return
 				case <-s.priceSignalC:
+					handlers := s.priceChangeHandlers.Snapshot()
+					if len(handlers) == 0 {
+						// 关键：不要在“尚未注册策略 handler”时把合并后的最新价格清空。
+						// 否则会出现“连接刚建立收到一次价格，但策略还没 Subscribe，于是该价格被丢弃；
+						// 若后续短时间内没有新的价格事件，策略将看起来永远收不到价格，从而无法开单”。
+						//
+						// 这里仅打印一条诊断日志（尽量从 latestPrices 里取一个样本），并保留缓存，
+						// 等策略 handler 注册后由 OnPriceChanged 触发一次 flush。
+						s.priceMu.Lock()
+						pe, ok := s.latestPrices[domain.TokenTypeUp]
+						if !ok || pe.event == nil {
+							pe, ok = s.latestPrices[domain.TokenTypeDown]
+						}
+						s.priceMu.Unlock()
+						if ok && pe.event != nil {
+							sessionLog.Warnf("⚠️ [Session %s] priceChangeHandlers 为空，价格更新将被丢弃！事件: %s @ %dc",
+								s.Name, pe.event.TokenType, pe.event.NewPrice.Cents)
+						}
+						continue
+					}
+
 					// 合并：每次只处理最新 UP/DOWN（或其他 tokenType）的事件
+					// 注意：只有在确认“有 handler 可以处理”后才 drain 缓存，避免丢失早到的第一笔行情。
 					s.priceMu.Lock()
 					batch := make([]priceEvent, 0, len(s.latestPrices))
 					// 为确定性：固定顺序处理
@@ -212,17 +234,6 @@ func (s *ExchangeSession) startPriceLoop(ctx context.Context) {
 					s.priceMu.Unlock()
 
 					if len(batch) == 0 {
-						continue
-					}
-
-					handlers := s.priceChangeHandlers.Snapshot()
-					if len(handlers) == 0 {
-						// 保留原有诊断日志
-						last := batch[len(batch)-1]
-						if last.event != nil {
-							sessionLog.Warnf("⚠️ [Session %s] priceChangeHandlers 为空，价格更新将被丢弃！事件: %s @ %dc",
-								s.Name, last.event.TokenType, last.event.NewPrice.Cents)
-						}
 						continue
 					}
 
@@ -338,6 +349,18 @@ func (s *ExchangeSession) OnPriceChanged(handler stream.PriceChangeHandler) {
 	s.priceChangeHandlers.Add(handler)
 	handlerCount := s.priceChangeHandlers.Count()
 	sessionLog.Infof("✅ [Session %s] 注册价格变化处理器，当前 handlers 数量=%d", s.Name, handlerCount)
+
+	// 如果在策略 Subscribe 之前已经收到了价格事件（latestPrices 非空），
+	// 这里主动触发一次 flush，确保策略能拿到“最新价”并开始工作。
+	s.priceMu.Lock()
+	hasPending := len(s.latestPrices) > 0
+	s.priceMu.Unlock()
+	if hasPending {
+		select {
+		case s.priceSignalC <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // EmitPriceChanged 触发价格变化事件
