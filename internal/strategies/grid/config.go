@@ -30,6 +30,11 @@ type Config struct {
 	// 单向模式：当 EnableDoubleSide=false 时使用；可取 "up"/"down"/"yes"/"no"。
 	TokenType string `json:"tokenType" yaml:"tokenType"`
 
+	// 库存中性（不赌方向）：限制本周期净敞口（UP shares - DOWN shares）的绝对值。
+	// 当 |net| >= MaxNetExposureShares 时，只允许在“较少的一侧”入场，直到回到阈值内。
+	// 0 表示关闭该限制。
+	MaxNetExposureShares float64 `json:"maxNetExposureShares" yaml:"maxNetExposureShares"`
+
 	// 每次入场下单数量（shares）
 	OrderSize float64 `json:"orderSize" yaml:"orderSize"`
 
@@ -46,6 +51,17 @@ type Config struct {
 	// 止盈：入场成交后，挂出场卖单价格 = entryPrice + profitTargetCents
 	ProfitTargetCents int `json:"profitTargetCents" yaml:"profitTargetCents"`
 
+	// 入场滑点容忍：允许 bestAsk 略高于网格层级（cents）。
+	// 例如 gridLevel=62, slippage=2，则允许 bestAsk<=64 触发入场。
+	GridLevelSlippageCents int `json:"gridLevelSlippageCents" yaml:"gridLevelSlippageCents"`
+
+	// 轮次控制：
+	// - 0 表示不限制轮次（但仍受 MaxEntriesPerPeriod 限制）
+	// - >0 表示每个周期最多完成多少“完整轮次”（完成的定义见策略实现）
+	MaxRoundsPerPeriod int `json:"maxRoundsPerPeriod" yaml:"maxRoundsPerPeriod"`
+	// 是否等待当前轮次完全止盈/结束后才开始下一轮（默认 true）。
+	WaitForRoundComplete *bool `json:"waitForRoundComplete" yaml:"waitForRoundComplete"`
+
 	// 风控：极端共识区间（触发冻结，不再新增仓位）
 	FreezeHighCents int `json:"freezeHighCents" yaml:"freezeHighCents"`
 	FreezeLowCents  int `json:"freezeLowCents" yaml:"freezeLowCents"`
@@ -54,6 +70,10 @@ type Config struct {
 
 	// 周期后段不再新增入场（秒）。例如 120 表示最后 2 分钟不再开新仓。
 	StopNewEntriesSeconds int `json:"stopNewEntriesSeconds" yaml:"stopNewEntriesSeconds"`
+	// 周期结束前强制清仓（秒）：用于“不赌方向”，避免带仓进入结算。
+	// - 当剩余时间 <= FlattenSecondsBeforeEnd 时：撤掉所有入场单，并将本周期持仓用 FAK 快速卖出。
+	// - 0 表示关闭该功能。
+	FlattenSecondsBeforeEnd *int `json:"flattenSecondsBeforeEnd" yaml:"flattenSecondsBeforeEnd"`
 
 	// 预热（ms）：刚连上 WS 的脏快照期间不交易
 	WarmupMs int `json:"warmupMs" yaml:"warmupMs"`
@@ -73,6 +93,13 @@ type Config struct {
 	EmptyRoundTimeoutSeconds int `json:"emptyRoundTimeoutSeconds" yaml:"emptyRoundTimeoutSeconds"`
 }
 
+func (c *Config) WaitForRoundCompleteEnabled() bool {
+	if c == nil || c.WaitForRoundComplete == nil {
+		return true
+	}
+	return *c.WaitForRoundComplete
+}
+
 func (c *Config) Normalize() {
 	// 兼容旧配置：snake_case -> camelCase
 	if len(c.GridLevels) == 0 && len(c.GridLevelsLegacy) > 0 {
@@ -86,6 +113,13 @@ func (c *Config) Validate() error {
 	if c.OrderSize <= 0 {
 		return fmt.Errorf("orderSize 必须 > 0")
 	}
+	if c.MaxNetExposureShares < 0 {
+		c.MaxNetExposureShares = 0
+	}
+	if c.MaxNetExposureShares == 0 {
+		// 默认启用一个温和的净敞口限制：允许最多 2 笔入场的偏差（以 orderSize=5 计则约 10 shares）
+		c.MaxNetExposureShares = 10.0
+	}
 	if c.MinOrderSize <= 0 {
 		c.MinOrderSize = 1.1
 	}
@@ -98,6 +132,12 @@ func (c *Config) Validate() error {
 	if c.ProfitTargetCents <= 0 {
 		c.ProfitTargetCents = 2
 	}
+	if c.GridLevelSlippageCents < 0 {
+		c.GridLevelSlippageCents = 0
+	}
+	if c.MaxRoundsPerPeriod < 0 {
+		c.MaxRoundsPerPeriod = 0
+	}
 
 	// freeze 默认：接近 0/100 时不再加仓
 	if c.FreezeHighCents <= 0 {
@@ -108,6 +148,14 @@ func (c *Config) Validate() error {
 	}
 	if c.StopNewEntriesSeconds < 0 {
 		c.StopNewEntriesSeconds = 0
+	}
+	// 默认开启一个较短的清仓窗口，避免带仓进结算；用户显式设置为 0 可关闭。
+	if c.FlattenSecondsBeforeEnd == nil {
+		v := 60
+		c.FlattenSecondsBeforeEnd = &v
+	} else if *c.FlattenSecondsBeforeEnd < 0 {
+		v := 0
+		c.FlattenSecondsBeforeEnd = &v
 	}
 	if c.WarmupMs < 0 {
 		c.WarmupMs = 0

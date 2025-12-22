@@ -15,24 +15,96 @@ proxy:
 # - 其余 key 是策略 ID（如 updown, grid, threshold, arbitrage 等）
 # - value 是该策略的配置
 exchangeStrategies:
-
-  # 订单监听策略（测试用：监听所有订单，自动挂止盈）
-  # - on: polymarket
-  #   orderlistener:
-  #     profitTargetCents: 4  # 止盈利润（分）：监听到订单成交时，加多少分利润挂止盈单
-
-  #网格策略配置（已注释，如需启用请取消注释）
+  # 网格策略（推荐：0 费用环境下小利润高周转，不赌方向）
   - on: polymarket
     grid:
-      gridLevels: [62, 65, 71, 77,86,90,93,94,95,96]  # 网格层级列表（分）
-      orderSize: 3                  # 订单大小（share数量）
-      minOrderSize: 1.1            # 最小下单金额（USDC）
-      enableDoubleSide: true       # 双向交易
-      profitTargetCents: 3         # 止盈目标（分）
-      gridLevelSlippageCents: 2    # 允许 bestAsk 略高于网格层级（cents）
-      maxRoundsPerPeriod: 0        # 每个周期最多交易几轮（0=不限制，默认等待当前轮次完全止盈后才开始下一轮）
-      waitForRoundComplete: true   # 是否等待当前轮次完全止盈后才开始下一轮（默认 true）
+      # 网格层级列表（cents，必须严格递增）
+      gridLevels: [62, 65, 71, 77, 86, 90, 93, 94, 95, 96]
 
+      # 双向交易（同时跑 UP/DOWN），并用净敞口阈值保持"库存中性"
+      enableDoubleSide: true
+      maxNetExposureShares: 10
+
+      # 下单参数（50 USDC 起步）
+      orderSize: 5
+      minOrderSize: 1.1
+      autoAdjustSize: false
+
+      # 小利润滚动（0 费用前提下可设更小）
+      profitTargetCents: 2
+
+      # 触发容忍：允许 bestAsk 略高于网格层级（避免一直错过）
+      gridLevelSlippageCents: 2
+
+      # 高频周转：不等整轮，层级止盈完成就可复用
+      maxRoundsPerPeriod: 0
+      waitForRoundComplete: false
+
+      # 节奏与风险控制
+      cooldownMs: 150
+      maxEntriesPerPeriod: 60
+      maxOpenEntryOrders: 10
+      stopNewEntriesSeconds: 180   # 最后 3 分钟不再开新仓，只处理止盈/清仓
+      flattenSecondsBeforeEnd: 90
+
+  # threshold 策略（如需启用请自行加回）
+  
+  # #Updown 策略配置（价格变化时自动下单）
+  # - on: polymarket
+  #   updown:
+  #     tokenType: "up"              # Token 类型：up/down/yes/no，默认 up
+  #     orderSize: 3.0               # 订单大小（shares），必须 > 0
+  #     oncePerCycle: true           # 每个周期只下1次单（默认 true，避免信号风暴）
+  #     minOrderSize: 1.1            # 最小订单金额（USDC），默认 1.1
+  #     maxBuySlippageCents: 0       # 最大买入滑点（美分），0 表示不限制
+  #     warmupMs: 500                # 预热期（毫秒），默认 1200ms。设置为 0 可关闭预热期，但可能增加误触发风险
+  #     maxBuyPriceCents: 80         # 买入价硬上限（分），默认 80，过滤极端价格
+  #     maxSpreadCents: 5            # 盘口价差上限（分），默认 5，过滤假盘口
+  
+  # 网格策略配置（已注释，如需启用请取消注释）
+  # - on: polymarket
+  #   grid:
+  #     grid_levels: [62, 65, 71, 77]  # 网格层级列表（分）
+  #     order_size: 3                  # 订单大小（share数量）
+  #     min_order_size: 1.1            # 最小下单金额（USDC）
+  #     enable_rebuy: true             # 允许重新买入
+  #     enable_double_side: true       # 双向交易
+  #     profit_target: 3               # 止盈目标（分）
+  #     max_unhedged_loss: 10          # 最大未对冲损失（分）
+  #     hard_stop_price: 50            # 硬止损价格（分）
+  #     elastic_stop_price: 40         # 弹性止损价格（分）
+  #     max_rounds_per_period: 1       # 每个周期最大轮数
+  
+  # 价格阈值策略配置（已注释，如需启用请取消注释）
+  # - on: polymarket
+  #   threshold:
+  #     buy_threshold: 0.62      # 买入阈值（小数，例如 0.62 表示 62 cents）
+  #     sell_threshold: 0        # 卖出阈值（小数，0 表示不卖出）
+  #     order_size: 3.0          # 订单大小
+  #     token_type: ""           # Token 类型：YES、NO 或空字符串（监控所有）
+  #     profit_target_cents: 3   # 止盈目标（分），例如 3 表示 +3 cents（价格比买入价高 3 cents 时卖出）
+  #     stop_loss_cents: 10      # 止损目标（分），例如 10 表示 -10 cents（价格比买入价低 10 cents 时卖出）
+  
+  # 套利策略配置（适用于 btc-updown-15m-* 市场，已注释，如需启用请取消注释）
+  # 当前配置适用于 40 USDC 资金量测试
+  # - on: polymarket
+  #   arbitrage:
+  #     lock_start_minutes: 10    # 锁盈阶段起始时间（分钟，从10分钟开始进入锁定阶段）
+  #     early_lock_price_threshold: 0.85  # 提前锁盈价格阈值（默认0.85，当UP或DOWN价格达到此阈值时提前进入锁盈阶段）
+  #     target_up_base: 2.0       # UP胜目标利润（USDC，适合40 USDC资金量，目标5%收益率）
+  #     target_down_base: 2.0      # DOWN胜目标利润（USDC，适合40 USDC资金量，目标5%收益率）
+  #     base_target: 30.0          # 基础建仓目标持仓量（从1500降至30，适合40 USDC资金量）
+  #     build_lot_size: 3.0       # 建仓阶段单次下单量（从18降至3，适合40 USDC资金量）
+  #     max_up_increment: 3.0      # 锁盈阶段单次最大UP加仓量（从100降至3，适合40 USDC资金量）
+  #     max_down_increment: 3.0   # 锁盈阶段单次最大DOWN加仓量（从100降至3，适合40 USDC资金量）
+  #     small_increment: 1.5       # 反向保险小额加仓量（从20降至1.5，适合40 USDC资金量）
+  #     min_order_size: 1.1       # 最小下单金额（USDC，默认1.1，交易所要求不能小于1）
+  
+  # 数据记录策略配置（不交易，只记录数据，已注释，如需启用请取消注释）
+  # - on: polymarket
+  #   datarecorder:
+  #       output_dir: "data/recordings"  # CSV 文件保存目录
+  #       use_rtds_fallback: true        # 是否使用 RTDS 作为目标价备选方案
 # 系统级配置
 order_status_check_timeout: 3   # 订单状态检查超时时间（秒），如果WebSocket在此时长内没有更新，则启用API轮询，默认3秒
 order_status_check_interval: 3  # 订单状态API轮询间隔（秒），默认3秒
@@ -48,7 +120,7 @@ log_by_cycle: true        # 是否按周期命名日志文件（一个周期一�
 
 # 纸交易模式（dry run）
 # 如果设置为 true，不会进行真实交易，只在日志中打印订单信息，方便测试策略
-dry_run: true            # 纸交易模式：true = 仅模拟交易，false = 真实交易
+dry_run: false           # 纸交易模式：true = 仅模拟交易，false = 真实交易
 
 # 订单状态同步配置
 # 定期通过API同步订单状态，作为WebSocket的补充机制

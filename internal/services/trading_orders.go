@@ -42,6 +42,11 @@ func (o *OrdersService) PlaceOrder(ctx context.Context, order *domain.Order) (cr
 		}
 	}
 
+	// 调整/归一化订单（在去重 key 前）
+	// - 关键：OrderType 为空时默认按 GTC 处理，否则会导致最小 share 调整不生效
+	// - 去重 key 也应基于“实际会发送”的订单参数
+	order = o.adjustOrderSize(order)
+
 	// 执行层去重：同一订单 key 的短窗口去重（避免重复下单/重复 IO）
 	dedupKey := fmt.Sprintf(
 		"%s|%s|%s|%dc|%.4f|%s",
@@ -66,9 +71,6 @@ func (o *OrdersService) PlaceOrder(ctx context.Context, order *domain.Order) (cr
 			}
 		}()
 	}
-
-	// 调整订单大小（在发送命令前）
-	order = o.adjustOrderSize(order)
 
 	// 发送下单命令到 OrderEngine
 	reply := make(chan *PlaceOrderResult, 1)
@@ -120,6 +122,12 @@ func (o *OrdersService) adjustOrderSize(order *domain.Order) *domain.Order {
 	s := o.s
 	// 创建订单副本
 	adjustedOrder := *order
+
+	// 归一化 OrderType：上层常传空字符串表示“默认”
+	// IOExecutor 会将空 OrderType 当作 GTC；这里必须一致，否则最小 share 调整逻辑会被绕过。
+	if adjustedOrder.OrderType == "" {
+		adjustedOrder.OrderType = types.OrderTypeGTC
+	}
 
 	// 计算订单所需金额（USDC）
 	requiredAmount := adjustedOrder.Price.ToDecimal() * adjustedOrder.Size

@@ -3,6 +3,7 @@ package grid
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/execution"
 	"github.com/betbot/gobet/internal/strategies/common"
+	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/bbgo"
 )
@@ -50,6 +52,8 @@ type Strategy struct {
 	firstSeenAt  time.Time
 	lastSubmitAt time.Time
 	entriesThisCycle int
+	roundsCompleted  int
+	flattenedThisCycle bool
 
 	// 轮次跟踪
 	currentRound      int                              // 当前轮次编号（从1开始）
@@ -80,9 +84,20 @@ type trackedOrder struct {
 	EntryPriceCents int
 	TargetExitCents int
 	RequestedSize   float64
-	SeenFilled      float64
-	ExitPlaced      bool
-	RoundID         int
+
+	// 已处理的成交量（用于从 OrderUpdate 计算 delta）
+	SeenFilled float64
+
+	// 出场单是否已挂（部分成交时也会挂）
+	ExitPlaced bool
+
+	// 出场下单重试（应对"刚成交立刻卖但平台还没同步持仓"的延迟）
+	ExitAttempts      int
+	NextExitAttemptAt time.Time
+	LastExitError     string
+
+	// 轮次ID
+	RoundID int
 }
 
 func (s *Strategy) ID() string      { return ID }
@@ -182,6 +197,8 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 		s.firstSeenAt = now
 		s.lastSubmitAt = time.Time{}
 		s.entriesThisCycle = 0
+		s.roundsCompleted = 0
+		s.flattenedThisCycle = false
 		s.tracked = make(map[string]*trackedOrder)
 		s.usedLevel = make(map[domain.TokenType]map[int]bool)
 		s.currentRound = 0
@@ -201,6 +218,13 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 		return
 	}
 
+	// 先处理订单更新（止盈/清理必须不受 cooldown/stopNewEntries 等限制）
+	s.drainOrderUpdates(ctx, m)
+	// 出场重试：即使没有新的订单更新，也要按计划重试挂止盈
+	s.retryPendingExits(ctx, m)
+	// 轮次推进：当上一轮所有订单都结束后，按配置决定是否开启下一轮
+	s.maybeAdvanceRound(m.Slug)
+
 	// 冷却 + 入场次数上限
 	s.mu.RLock()
 	lastSubmitAt := s.lastSubmitAt
@@ -216,9 +240,13 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 		log.Infof("🔍 [grid] processPrice: 达到最大入场次数限制，跳过 token=%s price=%dc entriesThisCycle=%d", e.TokenType, e.NewPrice.Cents, entriesThisCycle)
 		return
 	}
+	// 轮次上限：达到上限后不再新增入场（但仍会继续处理订单更新）
+	if s.MaxRoundsPerPeriod > 0 && s.roundsCompleted >= s.MaxRoundsPerPeriod {
+		return
+	}
 
 	// 轮次控制：检查是否可以开始新轮次
-	waitForComplete := s.WaitForRoundComplete || currentRound == 0
+	waitForComplete := s.WaitForRoundCompleteEnabled() || currentRound == 0
 	if !s.canStartNewRoundWithWait(m.Slug, waitForComplete, now) {
 		if currentRound > 0 && waitForComplete && !s.isRoundComplete(currentRound, now) {
 			log.Debugf("🔍 [grid] processPrice: 等待当前轮次完成 (round=%d)", currentRound)
@@ -239,11 +267,23 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 	currentRound = s.currentRound
 	s.mu.Unlock()
 
-	// 周期后段不再新增入场
-	if s.StopNewEntriesSeconds > 0 && m.Timestamp > 0 {
+	// 周期后段控制：清仓/停止新增
+	if m.Timestamp > 0 {
 		elapsed := now.Unix() - m.Timestamp
 		remain := int64(900) - elapsed
-		if remain <= int64(s.StopNewEntriesSeconds) {
+
+		// 6.1 清仓：不赌方向 —— 周期结束前把本周期持仓出清
+		if !s.flattenedThisCycle {
+			flattenSeconds := s.flattenSecondsBeforeEnd()
+			if flattenSeconds > 0 && remain <= int64(flattenSeconds) {
+				s.flattenPositions(ctx, m, remain)
+				s.flattenedThisCycle = true
+				return
+			}
+		}
+
+		// 6.2 停止新增入场
+		if s.StopNewEntriesSeconds > 0 && remain <= int64(s.StopNewEntriesSeconds) {
 			return
 		}
 	}
@@ -273,6 +313,11 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 	tokenTargets := s.targetTokens()
 	if len(tokenTargets) == 0 {
 		log.Infof("🔍 [grid] processPrice: 无目标 token")
+		return
+	}
+	// 10.1 库存中性 gating：净敞口过大时，只允许补“较少的一侧”
+	tokenTargets = s.applyInventoryNeutrality(m.Slug, tokenTargets)
+	if len(tokenTargets) == 0 {
 		return
 	}
 
@@ -313,11 +358,11 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 			return
 		}
 
-	// 盘口 quote：允许 bestAsk <= level + slippage 才入场
-	maxCents := *level + s.GridLevelSlippageCents
-	if maxCents > 99 {
-		maxCents = 99
-	}
+		// 盘口 quote：要求 bestAsk <= level + slippage 才入场
+		maxCents := *level + s.GridLevelSlippageCents
+		if maxCents > 99 {
+			maxCents = 99
+		}
 	orderCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	bestAsk, size, skipped, _, _, _, _, err := common.QuoteAndAdjustBuy(
 		orderCtx,
@@ -428,6 +473,25 @@ func (s *Strategy) processOrders(ctx context.Context) {
 	}
 }
 
+// drainOrderUpdates 处理队列中的所有订单更新（非阻塞）
+func (s *Strategy) drainOrderUpdates(ctx context.Context, m *domain.Market) {
+	for {
+		select {
+		case order := <-s.orderC:
+			if order == nil || order.OrderID == "" {
+				continue
+			}
+			// 只处理当前市场的订单
+			if m != nil && m.Slug != "" && order.MarketSlug != "" && order.MarketSlug != m.Slug {
+				continue
+			}
+			s.handleOrderUpdate(ctx, order)
+		default:
+			return
+		}
+	}
+}
+
 // handleOrderUpdate 处理单个订单更新
 func (s *Strategy) handleOrderUpdate(ctx context.Context, order *domain.Order) {
 	s.mu.RLock()
@@ -501,6 +565,7 @@ func (s *Strategy) handleOrderUpdate(ctx context.Context, order *domain.Order) {
 	// 清理：已结束的订单就不再追踪
 	if order.Status == domain.OrderStatusFilled || order.Status == domain.OrderStatusCanceled || order.Status == domain.OrderStatusFailed {
 		s.mu.Lock()
+		meta := s.tracked[order.OrderID]
 		// 如果是当前轮次的入场订单，从轮次跟踪中移除
 		for roundID, roundOrders := range s.roundEntryOrders {
 			if _, exists := roundOrders[order.OrderID]; exists {
@@ -510,6 +575,23 @@ func (s *Strategy) handleOrderUpdate(ctx context.Context, order *domain.Order) {
 					s.completeRound(roundID, order.MarketSlug)
 				}
 				break
+			}
+		}
+		// 关键：让网格"多轮次"跑起来 —— 当一个层级的订单生命周期结束后，释放该层级可再次入场。
+		// - 入场单（FAK）如果没成交就结束：应释放 usedLevel（否则会永久跳过该层级）
+		// - 止盈单（GTC/FAK）成交：代表该层级完成一轮获利，释放 usedLevel 以便再次在同层级循环
+		// - 止盈单取消/失败：通常仍持仓未了结，避免加倍暴露，因此不自动释放
+		if meta != nil {
+			if meta.Kind == kindEntry {
+				// entry 生命周期结束（常见：FAK 未成交 -> canceled/failed）
+				if order.FilledSize <= 0 && (order.Status == domain.OrderStatusCanceled || order.Status == domain.OrderStatusFailed) {
+					s.releaseLevel(meta.TokenType, meta.GridLevel)
+				}
+			} else if meta.Kind == kindExit {
+				// exit 成交：完成一轮
+				if order.Status == domain.OrderStatusFilled {
+					s.releaseLevel(meta.TokenType, meta.GridLevel)
+				}
 			}
 		}
 		delete(s.tracked, order.OrderID)
@@ -566,6 +648,315 @@ func (s *Strategy) completeRound(roundID int, marketSlug string) {
 	// 清空已使用的层级
 	s.usedLevel = make(map[domain.TokenType]map[int]bool)
 	log.Infof("🔄 [grid] 开始新轮次: round=%d market=%s", s.currentRound, marketSlug)
+}
+
+func (s *Strategy) retryPendingExits(ctx context.Context, m *domain.Market) {
+	if s == nil || s.TradingService == nil || m == nil {
+		return
+	}
+	now := time.Now()
+	for _, meta := range s.tracked {
+		if meta == nil {
+			continue
+		}
+		if meta.Kind != kindEntry || meta.ExitPlaced {
+			continue
+		}
+		if meta.MarketSlug != "" && m.Slug != "" && meta.MarketSlug != m.Slug {
+			continue
+		}
+		if meta.SeenFilled <= 0 {
+			continue
+		}
+		if !meta.NextExitAttemptAt.IsZero() && now.Before(meta.NextExitAttemptAt) {
+			continue
+		}
+		s.tryPlaceExit(ctx, m, meta)
+	}
+}
+
+func (s *Strategy) shouldRetryExit(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	// 覆盖常见“持仓/余额尚未同步”的报错关键词（交易所/网关差异较大，宁可宽松一点）
+	for _, kw := range []string{
+		"position",
+		"balance",
+		"insufficient",
+		"not enough",
+		"available",
+		"allowance",
+		"holdings",
+		"shares",
+		"amount",
+	} {
+		if strings.Contains(msg, kw) {
+			return true
+		}
+	}
+	// 默认也重试（但由退避控制频率），避免因为关键词不匹配而永远不挂止盈
+	return true
+}
+
+func (s *Strategy) scheduleExitRetry(ctx context.Context, meta *trackedOrder) {
+	if meta == nil {
+		return
+	}
+	// 指数退避：200ms * 2^k，封顶 8s
+	k := meta.ExitAttempts
+	if k < 0 {
+		k = 0
+	}
+	delay := 200 * time.Millisecond * time.Duration(1<<minInt(k, 6)) // 200ms..12.8s-ish，后面再 cap
+	if delay > 8*time.Second {
+		delay = 8 * time.Second
+	}
+	meta.NextExitAttemptAt = time.Now().Add(delay)
+
+	// 重试会在下次 processPrice 调用时通过 retryPendingExits 自动触发
+	// 不需要额外的信号机制
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func (s *Strategy) tryPlaceExit(ctx context.Context, m *domain.Market, meta *trackedOrder) {
+	if s == nil || s.TradingService == nil || m == nil || meta == nil {
+		return
+	}
+
+	// 以最新累计成交量为准（可能从 partial -> filled）
+	exitSize := meta.SeenFilled
+	if exitSize <= 0 {
+		return
+	}
+
+	target := domain.Price{Cents: meta.TargetExitCents}
+	exitOrderType := types.OrderTypeGTC
+	// 保护：很小的 size 用 FAK 兜底（避免交易所最小 shares 约束导致挂单被拒）
+	if exitSize < 5.0 {
+		exitOrderType = types.OrderTypeFAK
+	}
+
+	req := execution.MultiLegRequest{
+		Name:      fmt.Sprintf("grid_exit_%s_%dc", strings.ToLower(string(meta.TokenType)), meta.GridLevel),
+		MarketSlug: m.Slug,
+		Legs: []execution.LegIntent{{
+			Name:      "sell_tp",
+			AssetID:   meta.AssetID,
+			TokenType: meta.TokenType,
+			Side:      types.SideSell,
+			Price:     target,
+			Size:      exitSize,
+			OrderType: exitOrderType,
+		}},
+		Hedge: execution.AutoHedgeConfig{Enabled: false},
+	}
+
+	orderCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	created, err := s.TradingService.ExecuteMultiLeg(orderCtx, req)
+	cancel()
+	if err != nil || len(created) == 0 || created[0] == nil || created[0].OrderID == "" {
+		meta.ExitAttempts++
+		if err != nil {
+			meta.LastExitError = err.Error()
+		} else {
+			meta.LastExitError = "unknown exit order failure"
+		}
+
+		if s.shouldRetryExit(err) {
+			log.Warnf("⏳ [grid] 挂止盈失败，准备重试: token=%s level=%dc tp=%dc size=%.4f attempts=%d err=%s",
+				meta.TokenType, meta.GridLevel, meta.TargetExitCents, exitSize, meta.ExitAttempts, meta.LastExitError)
+			s.scheduleExitRetry(ctx, meta)
+		}
+		return
+	}
+
+	// 成功：标记并追踪出场单
+	meta.ExitPlaced = true
+	meta.NextExitAttemptAt = time.Time{}
+	oid := created[0].OrderID
+	s.tracked[oid] = &trackedOrder{
+		Kind:            kindExit,
+		TokenType:       meta.TokenType,
+		AssetID:         meta.AssetID,
+		MarketSlug:      m.Slug,
+		GridLevel:       meta.GridLevel,
+		Side:            types.SideSell,
+		EntryPriceCents: meta.EntryPriceCents,
+		TargetExitCents: meta.TargetExitCents,
+		RequestedSize:   exitSize,
+	}
+	log.Infof("🎯 [grid] 挂止盈成功: token=%s entry=%dc tp=%dc size=%.4f orderType=%s market=%s",
+		meta.TokenType, meta.EntryPriceCents, meta.TargetExitCents, exitSize, exitOrderType, m.Slug)
+}
+
+func (s *Strategy) applyInventoryNeutrality(marketSlug string, targets []domain.TokenType) []domain.TokenType {
+	if s == nil || s.TradingService == nil {
+		return targets
+	}
+	if s.MaxNetExposureShares <= 0 {
+		return targets
+	}
+	if !s.EnableDoubleSide {
+		// 单向模式下不做净敞口限制（否则会把策略锁死）
+		return targets
+	}
+
+	upSize, downSize := s.currentInventoryShares(marketSlug)
+	net := upSize - downSize
+	if math.Abs(net) < s.MaxNetExposureShares {
+		return targets
+	}
+
+	need := domain.TokenTypeDown
+	if net < 0 {
+		need = domain.TokenTypeUp
+	}
+
+	out := make([]domain.TokenType, 0, 1)
+	for _, tt := range targets {
+		if tt == need {
+			out = append(out, tt)
+		}
+	}
+	return out
+}
+
+func (s *Strategy) currentInventoryShares(marketSlug string) (upSize float64, downSize float64) {
+	if s == nil || s.TradingService == nil {
+		return 0, 0
+	}
+	for _, p := range s.TradingService.GetOpenPositionsForMarket(marketSlug) {
+		if p == nil || !p.IsOpen() || p.Size <= 0 {
+			continue
+		}
+		if p.TokenType == domain.TokenTypeUp {
+			upSize += p.Size
+		} else if p.TokenType == domain.TokenTypeDown {
+			downSize += p.Size
+		}
+	}
+	return upSize, downSize
+}
+
+func (s *Strategy) flattenSecondsBeforeEnd() int {
+	if s == nil || s.FlattenSecondsBeforeEnd == nil {
+		return 0
+	}
+	if *s.FlattenSecondsBeforeEnd <= 0 {
+		return 0
+	}
+	return *s.FlattenSecondsBeforeEnd
+}
+
+func (s *Strategy) flattenPositions(ctx context.Context, m *domain.Market, remain int64) {
+	if s == nil || s.TradingService == nil || m == nil {
+		return
+	}
+	// 先撤掉所有入场单，避免清仓时又被入场单“补回去”
+	cancelCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	s.cancelAllEntryOrders(cancelCtx, m.Slug)
+	cancel()
+
+	// 汇总本周期持仓（按 tokenType）
+	upSize, downSize := s.currentInventoryShares(m.Slug)
+	if upSize <= 0 && downSize <= 0 {
+		log.Infof("🧹 [grid] 清仓窗口到达(remain=%ds)，但无持仓需要处理: market=%s", remain, m.Slug)
+		return
+	}
+
+	log.Warnf("🧹 [grid] 清仓窗口到达(remain=%ds)：开始出清持仓 up=%.4f down=%.4f market=%s",
+		remain, upSize, downSize, m.Slug)
+
+	// 逐边用 FAK 快速卖出（不赌方向：宁可小滑点，也不要带仓进结算）
+	sellOne := func(tt domain.TokenType, assetID string, size float64) {
+		if size <= 0 || assetID == "" {
+			return
+		}
+		ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		bestBid, err := orderutil.QuoteSellPrice(ctx, s.TradingService, assetID, 0)
+		if err != nil || bestBid.Cents <= 0 {
+			return
+		}
+		req := execution.MultiLegRequest{
+			Name:      fmt.Sprintf("grid_flatten_%s", strings.ToLower(string(tt))),
+			MarketSlug: m.Slug,
+			Legs: []execution.LegIntent{{
+				Name:      "sell_flatten",
+				AssetID:   assetID,
+				TokenType: tt,
+				Side:      types.SideSell,
+				Price:     bestBid,
+				Size:      size,
+				OrderType: types.OrderTypeFAK,
+			}},
+			Hedge: execution.AutoHedgeConfig{Enabled: false},
+		}
+		_, _ = s.TradingService.ExecuteMultiLeg(ctx, req)
+	}
+
+	sellOne(domain.TokenTypeUp, m.YesAssetID, upSize)
+	sellOne(domain.TokenTypeDown, m.NoAssetID, downSize)
+}
+
+func (s *Strategy) maybeAdvanceRound(marketSlug string) {
+	if s == nil || s.TradingService == nil {
+		return
+	}
+	// 没有用过任何层级，说明还没开始一轮
+	if !s.hasAnyUsedLevel() {
+		return
+	}
+	// 等待本轮完全结束（默认 true）
+	if s.WaitForRoundCompleteEnabled() && !s.isMarketRoundComplete(marketSlug) {
+		return
+	}
+	// 本轮已结束：清空 usedLevel，让下一轮可以复用层级
+	// 注意：roundsCompleted 表示“已完成轮次”计数；到达上限后，入场逻辑会被短路。
+	s.roundsCompleted++
+	s.usedLevel = make(map[domain.TokenType]map[int]bool)
+	log.Infof("🔁 [grid] 本轮已完成，开始下一轮: completed=%d market=%s", s.roundsCompleted, marketSlug)
+}
+
+func (s *Strategy) hasAnyUsedLevel() bool {
+	for _, m := range s.usedLevel {
+		if len(m) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Strategy) isMarketRoundComplete(marketSlug string) bool {
+	// round complete 的定义：没有任何"我们追踪的"入场/止盈单仍处于 open/pending/partial
+	orders := s.TradingService.GetActiveOrders()
+	for _, o := range orders {
+		if o == nil || o.OrderID == "" {
+			continue
+		}
+		if marketSlug != "" && o.MarketSlug != "" && o.MarketSlug != marketSlug {
+			continue
+		}
+		meta := s.tracked[o.OrderID]
+		if meta == nil {
+			continue
+		}
+		if meta.Kind != kindEntry && meta.Kind != kindExit {
+			continue
+		}
+		if o.Status == domain.OrderStatusOpen || o.Status == domain.OrderStatusPartial || o.Status == domain.OrderStatusPending {
+			return false
+		}
+	}
+	return true
 }
 
 // canStartNewRoundWithWait 检查是否可以开始新轮次
@@ -651,6 +1042,16 @@ func (s *Strategy) targetTokens() []domain.TokenType {
 // isFrozenPrice 检查价格是否在冻结区间
 func (s *Strategy) isFrozenPrice(cents int) bool {
 	return cents <= 1 || cents >= 99
+}
+
+func (s *Strategy) releaseLevel(tt domain.TokenType, level int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m := s.usedLevel[tt]
+	if m == nil {
+		return
+	}
+	delete(m, level)
 }
 
 // nearestLowerOrEqual 找到 <= priceCents 的最大层级
