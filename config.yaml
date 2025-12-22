@@ -44,7 +44,7 @@ exchangeStrategies:
      cooldownMs: 150
      maxEntriesPerPeriod: 60
      maxOpenEntryOrders: 10
-     stopNewEntriesSeconds: 180
+     stopNewEntriesSeconds: 180   # 最后 3 分钟不再开新仓，只处理止盈/清仓
      flattenSecondsBeforeEnd: 90
 
   # threshold 策略（如需启用请自行加回）
