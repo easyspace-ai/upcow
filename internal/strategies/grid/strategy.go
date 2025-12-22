@@ -483,6 +483,21 @@ func (s *Strategy) drainOrderUpdates(loopCtx context.Context, m *domain.Market) 
 
 			// 清理：已结束的订单就不再追踪（避免 map 无限增长）
 			if o.Status == domain.OrderStatusFilled || o.Status == domain.OrderStatusCanceled || o.Status == domain.OrderStatusFailed {
+				// 关键：让网格“多轮次”跑起来 —— 当一个层级的订单生命周期结束后，释放该层级可再次入场。
+				// - 入场单（FAK）如果没成交就结束：应释放 usedLevel（否则会永久跳过该层级）
+				// - 止盈单（GTC/FAK）成交：代表该层级完成一轮获利，释放 usedLevel 以便再次在同层级循环
+				// - 止盈单取消/失败：通常仍持仓未了结，避免加倍暴露，因此不自动释放
+				if meta.Kind == kindEntry {
+					// entry 生命周期结束（常见：FAK 未成交 -> canceled/failed）
+					if o.FilledSize <= 0 && (o.Status == domain.OrderStatusCanceled || o.Status == domain.OrderStatusFailed) {
+						s.releaseLevel(meta.TokenType, meta.GridLevel)
+					}
+				} else if meta.Kind == kindExit {
+					// exit 成交：完成一轮
+					if o.Status == domain.OrderStatusFilled {
+						s.releaseLevel(meta.TokenType, meta.GridLevel)
+					}
+				}
 				delete(s.tracked, o.OrderID)
 			}
 		default:
@@ -596,6 +611,14 @@ func (s *Strategy) markLevelUsed(tt domain.TokenType, level int) {
 		s.usedLevel[tt] = m
 	}
 	m[level] = true
+}
+
+func (s *Strategy) releaseLevel(tt domain.TokenType, level int) {
+	m := s.usedLevel[tt]
+	if m == nil {
+		return
+	}
+	delete(m, level)
 }
 
 func nearestLowerOrEqual(levels []int, priceCents int) *int {
