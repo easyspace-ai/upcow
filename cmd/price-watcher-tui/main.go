@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -17,11 +18,15 @@ import (
 
 	"github.com/betbot/gobet/clob/client"
 	"github.com/betbot/gobet/clob/rtds"
+	"github.com/betbot/gobet/clob/signing"
+	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/infrastructure/websocket"
 	"github.com/betbot/gobet/internal/marketstate"
 	"github.com/betbot/gobet/internal/services"
+	_ "github.com/betbot/gobet/internal/strategies/all"
+	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/config"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -33,6 +38,8 @@ import (
 const (
 	orderbookDepth = 5 // 显示订单薄的深度（买五、卖五）
 )
+
+var enableTradingInPageMode = true
 
 // 全局 BTC 价格存储（简化处理）
 var (
@@ -140,6 +147,10 @@ type model struct {
 	err       error
 
 	// 内部状态
+	enableTrading bool
+	scheduler     *bbgo.MarketScheduler
+	cleanup       func()
+
 	marketStream *websocket.MarketStream
 	rtdsClient   *rtds.Client
 	market       *domain.Market
@@ -188,28 +199,33 @@ type connectedMsg struct {
 	bestBook     *marketstate.AtomicBestBook
 	cycle        string
 	start        time.Time
+
+	// page-mode trading
+	scheduler *bbgo.MarketScheduler
+	cleanup   func()
 }
 
 func initialModel() model {
 	ctx, cancel := context.WithCancel(context.Background())
 	return model{
-		upBids:      make([]orderLevel, 0),
-		upAsks:      make([]orderLevel, 0),
-		downBids:    make([]orderLevel, 0),
-		downAsks:    make([]orderLevel, 0),
-		connected:   false,
-		ctx:         ctx,
-		cancel:      cancel,
-		bestBook:    marketstate.NewAtomicBestBook(),
-		btcPrice:    0,
-		btcPriceStr: "N/A",
+		upBids:        make([]orderLevel, 0),
+		upAsks:        make([]orderLevel, 0),
+		downBids:      make([]orderLevel, 0),
+		downAsks:      make([]orderLevel, 0),
+		connected:     false,
+		enableTrading: enableTradingInPageMode,
+		ctx:           ctx,
+		cancel:        cancel,
+		bestBook:      marketstate.NewAtomicBestBook(),
+		btcPrice:      0,
+		btcPriceStr:   "N/A",
 	}
 }
 
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		tickCmd(),
-		connectCmd(),
+		connectCmd(m.ctx, m.enableTrading),
 	)
 }
 
@@ -218,6 +234,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
+			if m.cleanup != nil {
+				m.cleanup()
+			}
 			if m.cancel != nil {
 				m.cancel()
 			}
@@ -225,14 +244,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tickMsg:
-		// 检查周期切换
-		currentTs := services.GetCurrent15MinTimestamp()
-		currentSlug := services.Generate15MinSlug(currentTs)
-		if m.currentCycle != currentSlug {
-			return m, tea.Batch(
-				tickCmd(),
-				switchCycleCmd(currentSlug, time.Unix(currentTs, 0)),
-			)
+		// page 模式：如果启用交易，则由 MarketScheduler 驱动周期切换（UI 只读当前 market）
+		if m.enableTrading && m.scheduler != nil {
+			if mk := m.scheduler.CurrentMarket(); mk != nil {
+				if m.currentCycle != mk.Slug {
+					m.currentCycle = mk.Slug
+					m.cycleStart = time.Unix(mk.Timestamp, 0)
+				}
+				// bestBook 会在 session 切换时更新，保险起见 tick 时也读一次
+				if sess := m.scheduler.CurrentSession(); sess != nil && sess.BestBook() != nil {
+					m.bestBook = sess.BestBook()
+				}
+			}
+		} else {
+			// 监控模式：按本地时间推算周期并重连
+			currentTs := services.GetCurrent15MinTimestamp()
+			currentSlug := services.Generate15MinSlug(currentTs)
+			if m.currentCycle != currentSlug {
+				return m, tea.Batch(
+					tickCmd(),
+					switchCycleCmd(currentSlug, time.Unix(currentTs, 0)),
+				)
+			}
 		}
 
 		// 每次 tick 都更新订单薄和 BTC 价格
@@ -297,7 +330,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case cycleChangeMsg:
 		m.currentCycle = msg.Cycle
 		m.cycleStart = msg.Start
-		return m, reconnectCmd()
+		// 监控模式才需要 reconnect
+		if !m.enableTrading {
+			return m, reconnectCmd(m.ctx, m.enableTrading)
+		}
+		return m, nil
 
 	case connectedMsg:
 		m.marketStream = msg.marketStream
@@ -307,6 +344,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentCycle = msg.cycle
 		m.cycleStart = msg.start
 		m.connected = true
+		m.scheduler = msg.scheduler
+		m.cleanup = msg.cleanup
 		// 启动 BTC 价格更新 goroutine
 		return m, startBTCPriceUpdateCmd(msg.rtdsClient)
 
@@ -506,7 +545,7 @@ func tickCmd() tea.Cmd {
 	})
 }
 
-func connectCmd() tea.Cmd {
+func connectCmd(ctx context.Context, enableTrading bool) tea.Cmd {
 	return func() tea.Msg {
 		// 加载配置
 		config.SetConfigPath("config.yaml")
@@ -515,59 +554,69 @@ func connectCmd() tea.Cmd {
 			return fmt.Errorf("加载配置失败: %w", err)
 		}
 
-		ctx := context.Background()
-
-		// 获取当前周期的市场
-		currentTs := services.GetCurrent15MinTimestamp()
-		currentSlug := services.Generate15MinSlug(currentTs)
-
-		// 获取市场信息
-		gammaMarket, err := client.FetchMarketFromGamma(ctx, currentSlug)
-		if err != nil {
-			return fmt.Errorf("获取市场信息失败: %w", err)
-		}
-
-		// 解析 token IDs
-		yesAssetID, noAssetID := parseTokenIDs(gammaMarket.ClobTokenIDs)
-		if yesAssetID == "" || noAssetID == "" {
-			return fmt.Errorf("解析 token IDs 失败: %s", gammaMarket.ClobTokenIDs)
-		}
-
-		market := &domain.Market{
-			Slug:        gammaMarket.Slug,
-			ConditionID: gammaMarket.ConditionID,
-			YesAssetID:  yesAssetID,
-			NoAssetID:   noAssetID,
-			Timestamp:   currentTs,
-		}
-
 		// 设置代理
 		proxyURL := ""
 		if cfg.Proxy != nil {
 			proxyURL = fmt.Sprintf("http://%s:%d", cfg.Proxy.Host, cfg.Proxy.Port)
 		}
 
-		// 创建 MarketStream
-		marketStream := websocket.NewMarketStream()
-		marketStream.SetProxyURL(proxyURL)
+		// page 模式：启动交易机器人（修复：此前仅监控，不会真正跑 grid 下单）
+		var (
+			scheduler      *bbgo.MarketScheduler
+			tradingCleanup func()
+			market         *domain.Market
+			bestBook       *marketstate.AtomicBestBook
+			marketStream   *websocket.MarketStream
+			currentSlug    string
+			currentTs      int64
+		)
+		if enableTrading {
+			scheduler, market, bestBook, tradingCleanup, err = startTradingBotForPageMode(ctx, cfg, proxyURL)
+			if err != nil {
+				return err
+			}
+			currentSlug = market.Slug
+			currentTs = market.Timestamp
+		} else {
+			// 监控模式：仅连接 MarketStream
+			currentTs = services.GetCurrent15MinTimestamp()
+			currentSlug = services.Generate15MinSlug(currentTs)
 
-		// 创建价格处理器（用于触发更新）
-		handler := &priceHandler{}
-		marketStream.OnPriceChanged(handler)
+			gammaMarket, err := client.FetchMarketFromGamma(ctx, currentSlug)
+			if err != nil {
+				return fmt.Errorf("获取市场信息失败: %w", err)
+			}
 
-		// 连接市场数据流
-		if err := marketStream.Connect(ctx, market); err != nil {
-			return fmt.Errorf("连接市场数据流失败: %w", err)
-		}
+			yesAssetID, noAssetID := parseTokenIDs(gammaMarket.ClobTokenIDs)
+			if yesAssetID == "" || noAssetID == "" {
+				return fmt.Errorf("解析 token IDs 失败: %s", gammaMarket.ClobTokenIDs)
+			}
 
-		// 使用 MarketStream 自带的 BestBook
-		bestBook := marketStream.BestBook()
-		if bestBook == nil {
-			return fmt.Errorf("MarketStream BestBook 为空")
+			market = &domain.Market{
+				Slug:        gammaMarket.Slug,
+				ConditionID: gammaMarket.ConditionID,
+				YesAssetID:  yesAssetID,
+				NoAssetID:   noAssetID,
+				Timestamp:   currentTs,
+			}
+
+			marketStream = websocket.NewMarketStream()
+			marketStream.SetProxyURL(proxyURL)
+			handler := &priceHandler{}
+			marketStream.OnPriceChanged(handler)
+			if err := marketStream.Connect(ctx, market); err != nil {
+				return fmt.Errorf("连接市场数据流失败: %w", err)
+			}
+			bestBook = marketStream.BestBook()
+			if bestBook == nil {
+				return fmt.Errorf("MarketStream BestBook 为空")
+			}
 		}
 
 		// 启动 goroutine 监听 book 消息以获取完整的订单薄数据（买五、卖五）
-		go startBookListener(ctx, market, proxyURL)
+		if market != nil {
+			go startBookListener(ctx, market, proxyURL)
+		}
 
 		// 连接 RTDS 获取 BTC 价格
 		// 使用文件日志记录器，避免日志输出到终端干扰 TUI
@@ -598,6 +647,8 @@ func connectCmd() tea.Cmd {
 			bestBook:     bestBook,
 			cycle:        currentSlug,
 			start:        time.Unix(currentTs, 0),
+			scheduler:    scheduler,
+			cleanup:      tradingCleanup,
 		}
 	}
 }
@@ -635,8 +686,8 @@ func switchCycleCmd(slug string, start time.Time) tea.Cmd {
 	}
 }
 
-func reconnectCmd() tea.Cmd {
-	return connectCmd()
+func reconnectCmd(ctx context.Context, enableTrading bool) tea.Cmd {
+	return connectCmd(ctx, enableTrading)
 }
 
 // priceHandler 价格变化处理器（MarketStream 会自动更新 BestBook，这里只需要占位）
@@ -915,6 +966,11 @@ func parseTokenIDs(clobTokenIDs string) (yesAssetID, noAssetID string) {
 }
 
 func main() {
+	// page 模式默认启用交易（网格开单）；如只想监控可加 -no-trade
+	noTrade := flag.Bool("no-trade", false, "仅监控（不启动交易策略/不开单）")
+	flag.Parse()
+	enableTradingInPageMode = !*noTrade
+
 	// 初始化文件日志记录器
 	initFileLogger()
 
@@ -950,4 +1006,167 @@ func main() {
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("运行程序失败: %v", err)
 	}
+}
+
+// startTradingBotForPageMode 启动交易机器人（用于 page/TUI 模式）。
+// 修复点：以前 price-watcher-tui 只连接 MarketStream 做展示，不会启动 TradingService/策略，因此 grid 在 page 模式下永远不会开单。
+func startTradingBotForPageMode(
+	ctx context.Context,
+	cfg *config.Config,
+	proxyURL string,
+) (scheduler *bbgo.MarketScheduler, market *domain.Market, bestBook *marketstate.AtomicBestBook, cleanup func(), err error) {
+	if cfg == nil {
+		return nil, nil, nil, nil, fmt.Errorf("配置为空")
+	}
+
+	privateKey, err := signing.PrivateKeyFromHex(cfg.Wallet.PrivateKey)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("解析私钥失败: %w", err)
+	}
+
+	// 推导 API key（User WS 需要）
+	tempClient := client.NewClient(
+		"https://clob.polymarket.com",
+		types.ChainPolygon,
+		privateKey,
+		nil,
+	)
+	creds, err := tempClient.CreateOrDeriveAPIKey(ctx, nil)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("推导 API 凭证失败: %w", err)
+	}
+
+	clobClient := client.NewClient(
+		"https://clob.polymarket.com",
+		types.ChainPolygon,
+		privateKey,
+		creds,
+	)
+
+	marketDataService := services.NewMarketDataService(clobClient)
+	tradingService := services.NewTradingService(clobClient, cfg.DryRun)
+	if cfg.Wallet.FunderAddress != "" {
+		tradingService.SetFunderAddress(cfg.Wallet.FunderAddress, types.SignatureTypeGnosisSafe)
+	}
+	tradingService.SetOrderStatusSyncConfig(cfg.OrderStatusSyncIntervalWithOrders, cfg.OrderStatusSyncIntervalWithoutOrders)
+	tradingService.SetMinOrderSize(cfg.MinOrderSize)
+	tradingService.SetMinShareSize(cfg.MinShareSize)
+
+	environ := bbgo.NewEnvironment()
+	environ.SetMarketDataService(marketDataService)
+	environ.SetTradingService(tradingService)
+	environ.SetExecutor(bbgo.NewSerialCommandExecutor(2048))
+	environ.SetConcurrentExecutor(bbgo.NewWorkerPoolCommandExecutor(2048, cfg.ConcurrentExecutorWorkers))
+	if cfg.DirectModeDebounce > 0 {
+		environ.SetDirectModeDebounce(cfg.DirectModeDebounce)
+	}
+
+	trader := bbgo.NewTrader(environ)
+	loader := bbgo.NewStrategyLoader(tradingService)
+	for _, mount := range cfg.ExchangeStrategies {
+		shouldMount := false
+		for _, on := range mount.On {
+			if on == "polymarket" {
+				shouldMount = true
+				break
+			}
+		}
+		if !shouldMount {
+			continue
+		}
+		strategy, e := loader.LoadStrategy(ctx, mount.StrategyID, mount.Config)
+		if e != nil {
+			return nil, nil, nil, nil, fmt.Errorf("加载策略 %s 失败: %w", mount.StrategyID, e)
+		}
+		trader.AddStrategy(strategy)
+	}
+
+	if err := trader.InjectServices(ctx); err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("注入服务失败: %w", err)
+	}
+	if err := trader.Initialize(ctx); err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("初始化策略失败: %w", err)
+	}
+
+	userCreds := &websocket.UserCredentials{
+		APIKey:     creds.Key,
+		Secret:     creds.Secret,
+		Passphrase: creds.Passphrase,
+	}
+	scheduler = bbgo.NewMarketScheduler(
+		environ,
+		marketDataService,
+		"polymarket",
+		proxyURL,
+		userCreds,
+	)
+
+	// 架构层路由器：page 模式同样需要把 TradingService 的订单更新转发给 session，策略才能收到 OnOrderUpdate
+	eventRouter := bbgo.NewSessionEventRouter()
+	tradingService.OnOrderUpdate(eventRouter)
+
+	// 启动市场调度器（创建初始 session）
+	if err := scheduler.Start(ctx); err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("启动市场调度器失败: %w", err)
+	}
+	session := scheduler.CurrentSession()
+	market = scheduler.CurrentMarket()
+	if session == nil || market == nil {
+		return nil, nil, nil, nil, fmt.Errorf("无法获取当前会话或市场")
+	}
+
+	// 注入当前市场信息与 bestBook（执行层/策略 quote 依赖）
+	tradingService.SetCurrentMarketInfo(market)
+	tradingService.SetBestBook(session.BestBook())
+	bestBook = session.BestBook()
+
+	// 注册 session gate
+	eventRouter.SetSession(session)
+	if session.UserDataStream != nil {
+		session.UserDataStream.OnOrderUpdate(eventRouter)
+		session.UserDataStream.OnTradeUpdate(eventRouter)
+	}
+	session.OnTradeUpdate(tradingService)
+
+	// 周期切换时更新路由与交易服务指向，并让 Trader 切换 session
+	scheduler.OnSessionSwitch(func(_ *bbgo.ExchangeSession, newSession *bbgo.ExchangeSession, newMarket *domain.Market) {
+		if newMarket != nil {
+			tradingService.SetCurrentMarketInfo(newMarket)
+		}
+		if newSession != nil {
+			tradingService.SetBestBook(newSession.BestBook())
+			eventRouter.SetSession(newSession)
+			if newSession.UserDataStream != nil {
+				newSession.UserDataStream.OnOrderUpdate(eventRouter)
+				newSession.UserDataStream.OnTradeUpdate(eventRouter)
+			}
+			newSession.OnTradeUpdate(tradingService)
+			_ = trader.SwitchSession(ctx, newSession)
+		} else {
+			tradingService.SetBestBook(nil)
+		}
+	})
+
+	// 启动环境 + 策略
+	if err := environ.Start(ctx); err != nil {
+		_ = scheduler.Stop(context.Background())
+		return nil, nil, nil, nil, fmt.Errorf("启动环境失败: %w", err)
+	}
+	if err := trader.StartWithSession(ctx, session); err != nil {
+		_ = scheduler.Stop(context.Background())
+		return nil, nil, nil, nil, fmt.Errorf("启动策略失败: %w", err)
+	}
+
+	cleanup = func() {
+		// 避免阻塞 UI：尽量快速 stop
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if scheduler != nil {
+			_ = scheduler.Stop(stopCtx)
+		}
+		tradingService.Stop()
+		_ = environ.Close()
+	}
+
+	return scheduler, market, bestBook, cleanup, nil
 }

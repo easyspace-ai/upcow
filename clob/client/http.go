@@ -8,8 +8,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 // HTTPClient HTTP 客户端接口
@@ -212,8 +215,10 @@ func parseResponse(resp *http.Response, result interface{}) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(reader)
 		errorMsg := fmt.Sprintf("HTTP 错误 %d: %s", resp.StatusCode, string(bodyBytes))
-		fmt.Printf("[HTTP DEBUG] %s\n", errorMsg)
-		return fmt.Errorf(errorMsg)
+		if os.Getenv("CLOB_HTTP_DEBUG") != "" {
+			logrus.Debugf("[CLOB HTTP] %s", errorMsg)
+		}
+		return fmt.Errorf("%s", errorMsg)
 	}
 
 	if result != nil {
@@ -223,9 +228,9 @@ func parseResponse(resp *http.Response, result interface{}) error {
 			return fmt.Errorf("读取响应体失败: %w", err)
 		}
 
-		// 如果是余额查询，打印完整响应体
-		if strings.Contains(resp.Request.URL.Path, "balance-allowance") {
-			fmt.Printf("[HTTP DEBUG] 余额API完整响应体: %s\n", string(bodyBytes))
+		// 如果是余额查询，按需打印完整响应体（默认关闭，避免污染 TUI/终端输出）
+		if os.Getenv("CLOB_HTTP_DEBUG") != "" && strings.Contains(resp.Request.URL.Path, "balance-allowance") {
+			logrus.Debugf("[CLOB HTTP] balance-allowance response: %s", string(bodyBytes))
 		}
 
 		if err := json.Unmarshal(bodyBytes, result); err != nil {
