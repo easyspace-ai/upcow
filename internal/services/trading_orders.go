@@ -224,8 +224,23 @@ func (o *OrdersService) CancelOrder(ctx context.Context, orderID string) error {
 	}
 }
 
-// GetBestPrice 获取订单簿的最佳买卖价格（买一价和卖一价）
+// GetBestPrice 获取订单簿的最佳买卖价格（买一价和卖一价）。
+//
+// 注意：为了数据质量与策略安全，默认要求 bid/ask 双边都存在，且价差不超过 10c。
+// 若策略需要在更大价差环境（例如 15m 市场“价差经常打开”）做市，请使用 GetBestPriceWithMaxSpread。
 func (o *OrdersService) GetBestPrice(ctx context.Context, assetID string) (bestBid float64, bestAsk float64, err error) {
+	return o.getBestPriceWithMaxSpread(ctx, assetID, 10)
+}
+
+// GetBestPriceWithMaxSpread 获取订单簿的最佳买卖价格，并允许调用方指定最大可接受价差（cents）。
+//
+// - maxSpreadCents <= 0 表示不限制价差（仍要求双边价格都存在）
+// - 建议仅做市/做单策略使用；方向型策略仍应保持较严格的价差约束
+func (o *OrdersService) GetBestPriceWithMaxSpread(ctx context.Context, assetID string, maxSpreadCents int) (bestBid float64, bestAsk float64, err error) {
+	return o.getBestPriceWithMaxSpread(ctx, assetID, maxSpreadCents)
+}
+
+func (o *OrdersService) getBestPriceWithMaxSpread(ctx context.Context, assetID string, maxSpreadCents int) (bestBid float64, bestAsk float64, err error) {
 	s := o.s
 
 	// 快路径：优先读取 WS 推送的 AtomicBestBook（避免每次都打 REST orderbook）
@@ -248,7 +263,7 @@ func (o *OrdersService) GetBestPrice(ctx context.Context, assetID string) (bestB
 					if spreadCents < 0 {
 						spreadCents = -spreadCents
 					}
-					if spreadCents <= 10 {
+					if maxSpreadCents <= 0 || spreadCents <= maxSpreadCents {
 						return bestBid, bestAsk, nil
 					}
 					// spread 过大：回退 REST 再确认（避免 WS 脏快照）
@@ -265,7 +280,7 @@ func (o *OrdersService) GetBestPrice(ctx context.Context, assetID string) (bestB
 					if spreadCents < 0 {
 						spreadCents = -spreadCents
 					}
-					if spreadCents <= 10 {
+					if maxSpreadCents <= 0 || spreadCents <= maxSpreadCents {
 						return bestBid, bestAsk, nil
 					}
 				}
@@ -303,8 +318,8 @@ func (o *OrdersService) GetBestPrice(ctx context.Context, assetID string) (bestB
 	if spreadCents < 0 {
 		spreadCents = -spreadCents
 	}
-	if spreadCents > 10 {
-		return 0, 0, fmt.Errorf("订单簿价差过大: bestBid=%.6f bestAsk=%.6f spread=%dc", bestBid, bestAsk, spreadCents)
+	if maxSpreadCents > 0 && spreadCents > maxSpreadCents {
+		return 0, 0, fmt.Errorf("订单簿价差过大: bestBid=%.6f bestAsk=%.6f spread=%dc max=%dc", bestBid, bestAsk, spreadCents, maxSpreadCents)
 	}
 
 	return bestBid, bestAsk, nil
