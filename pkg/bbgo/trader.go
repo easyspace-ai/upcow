@@ -347,6 +347,9 @@ func (t *Trader) StartWithSession(ctx context.Context, session *ExchangeSession)
 		return fmt.Errorf("session is nil")
 	}
 
+	// 框架层周期钩子：首次启动也视作“进入一个新周期”
+	t.invokeCycleHooks(ctx, nil, session)
+
 	// 如果已经启动过，避免重复启动导致“同一策略多次 Run”
 	if t.activeSession != nil {
 		traderLog.Warnf("⚠️ Trader 已经启动过（session=%s），请使用 SwitchSession", t.activeSession.Name)
@@ -415,6 +418,10 @@ func (t *Trader) SwitchSession(ctx context.Context, session *ExchangeSession) er
 		return fmt.Errorf("session is nil")
 	}
 
+	old := t.activeSession
+	// 框架层周期钩子：在取消旧 Run 之前触发（让策略尽早清理旧周期状态）
+	t.invokeCycleHooks(ctx, old, session)
+
 	// 1) 先取消上一轮 Run（防止旧 market 状态继续运行）
 	t.cancelAllRunsLocked()
 
@@ -466,6 +473,42 @@ func (t *Trader) SwitchSession(ctx context.Context, session *ExchangeSession) er
 
 	t.activeSession = session
 	return nil
+}
+
+func (t *Trader) invokeCycleHooks(ctx context.Context, oldSession *ExchangeSession, newSession *ExchangeSession) {
+	t.strategiesMu.RLock()
+	strategies := t.strategies
+	t.strategiesMu.RUnlock()
+
+	var oldMarket *domain.Market
+	if oldSession != nil {
+		oldMarket = oldSession.Market()
+	}
+	var newMarket *domain.Market
+	if newSession != nil {
+		newMarket = newSession.Market()
+	}
+
+	for _, s := range strategies {
+		ca, ok := s.(CycleAwareStrategy)
+		if !ok {
+			continue
+		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					id := "unknown"
+					if sid, ok := s.(StrategyID); ok {
+						id = sid.ID()
+					} else if ns, ok := s.(interface{ Name() string }); ok {
+						id = ns.Name()
+					}
+					traderLog.Errorf("❌ [周期切换] strategy %s OnCycle panic: %v", id, r)
+				}
+			}()
+			ca.OnCycle(ctx, oldMarket, newMarket)
+		}()
+	}
 }
 
 // Run 运行所有策略（BBGO风格）

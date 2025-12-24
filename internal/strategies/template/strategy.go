@@ -25,7 +25,6 @@ type Strategy struct {
 	TradingService *services.TradingService
 	Config         `yaml:",inline" json:",inline"`
 
-	lastMarket string
 	fired      bool
 }
 
@@ -41,13 +40,13 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.Exchan
 	return ctx.Err()
 }
 
+func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, _ *domain.Market) {
+	s.fired = false
+}
+
 func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
 	if e == nil || e.Market == nil || s.TradingService == nil {
 		return nil
-	}
-	if e.Market.Slug != "" && e.Market.Slug != s.lastMarket {
-		s.lastMarket = e.Market.Slug
-		s.fired = false
 	}
 	if s.fired {
 		return nil

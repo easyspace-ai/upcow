@@ -28,7 +28,6 @@ type Strategy struct {
 	ThresholdStrategyConfig `yaml:",inline" json:",inline"`
 
 	lastActionAt time.Time
-	lastMarket   string
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -46,16 +45,15 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.Exchan
 	return ctx.Err()
 }
 
+func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, _ *domain.Market) {
+	s.lastActionAt = time.Time{}
+}
+
 func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
 	if e == nil || e.Market == nil || s.TradingService == nil {
 		return nil
 	}
 
-	// 周期切换：重置节流
-	if e.Market.Slug != "" && e.Market.Slug != s.lastMarket {
-		s.lastMarket = e.Market.Slug
-		s.lastActionAt = time.Time{}
-	}
 	if !s.lastActionAt.IsZero() && time.Since(s.lastActionAt) < 500*time.Millisecond {
 		return nil
 	}

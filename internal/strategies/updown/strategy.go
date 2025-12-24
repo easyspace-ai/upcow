@@ -27,7 +27,6 @@ type Strategy struct {
 	TradingService *services.TradingService
 	Config         `yaml:",inline" json:",inline"`
 
-	lastMarketSlug  string
 	tradedThisCycle bool
 	lastTradeAt     time.Time
 	firstSeenAt     time.Time
@@ -50,6 +49,13 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.Exchan
 	return ctx.Err()
 }
 
+// OnCycle 框架层周期切换回调：重置 one-shot 状态（策略无需在 OnPriceChanged 中手工对比 slug）。
+func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, _ *domain.Market) {
+	s.tradedThisCycle = false
+	s.lastTradeAt = time.Time{}
+	s.firstSeenAt = time.Now()
+}
+
 func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
 	if e != nil {
 		log.Debugf("🔔 [updown] OnPriceChanged 被调用: market=%v, token=%s, price=%.4f", 
@@ -69,18 +75,11 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	log.Debugf("✅ [updown] 通过基础检查: market=%s, token=%s, price=%.4f", 
 		e.Market.Slug, e.TokenType, e.NewPrice.ToDecimal())
 
-	// 周期切换：重置 one-shot 状态
-	if e.Market.Slug != "" && e.Market.Slug != s.lastMarketSlug {
-		log.Debugf("🔄 [updown] 周期切换: %s -> %s", s.lastMarketSlug, e.Market.Slug)
-		s.lastMarketSlug = e.Market.Slug
-		s.tradedThisCycle = false
-		s.firstSeenAt = time.Now()
-	}
 	if s.firstSeenAt.IsZero() {
 		s.firstSeenAt = time.Now()
 	}
-	log.Debugf("📊 [updown] 状态检查: lastMarketSlug=%s, currentSlug=%s, tradedThisCycle=%v, oncePerCycle=%v, lastTradeAt=%v",
-		s.lastMarketSlug, e.Market.Slug, s.tradedThisCycle, s.Config.OncePerCycle, s.lastTradeAt)
+	log.Debugf("📊 [updown] 状态检查: tradedThisCycle=%v, oncePerCycle=%v, lastTradeAt=%v",
+		s.tradedThisCycle, s.Config.OncePerCycle, s.lastTradeAt)
 
 	// 预热：避免刚连上 WS 的脏快照/假盘口
 	if s.Config.WarmupMs > 0 && time.Since(s.firstSeenAt) < time.Duration(s.Config.WarmupMs)*time.Millisecond {
