@@ -84,11 +84,16 @@ func main() {
 	clobClient := tempClient
 
 	// 创建市场数据服务
-	marketDataService := services.NewMarketDataService(clobClient)
+	spec, err := cfg.Market.Spec()
+	if err != nil {
+		logger.Errorf("market 配置无效: %v", err)
+		os.Exit(1)
+	}
+	marketDataService := services.NewMarketDataService(clobClient, spec)
 
 	// 生成 slugs
 	logger.Info("生成接下来 100 个周期的 slugs...")
-	slugs := services.GenerateNext15MinSlugs(100)
+	slugs := spec.NextSlugs(100)
 	logger.Infof("已生成 %d 个 slugs", len(slugs))
 
 	// 获取市场数据

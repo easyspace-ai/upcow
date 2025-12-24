@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +20,8 @@ import (
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/pkg/bbgo"
+	"github.com/betbot/gobet/pkg/config"
+	"github.com/betbot/gobet/pkg/marketspec"
 	"github.com/sirupsen/logrus"
 )
 
@@ -40,6 +43,12 @@ type Strategy struct {
 	binanceFutPrice float64 // Binance 期货价格
 	chainlinkPrice  float64 // Chainlink 价格
 	priceMu         sync.RWMutex
+
+	// market spec（用于订阅标的 & 周期长度）
+	marketSpec      marketspec.MarketSpec
+	underlyingUpper string // e.g. BTC
+	binanceSymbol   string // e.g. btcusdt
+	chainlinkSymbol string // e.g. btc/usd
 
 	// 市场信息
 	marketInfo struct {
@@ -112,7 +121,15 @@ func (s *Strategy) Defaults() error {
 		s.Config.MinOrderSize = 1.1
 	}
 	if s.Config.MarketIntervalSeconds == 0 {
-		s.Config.MarketIntervalSeconds = 900 // 默认15分钟
+		// 默认从全局 market 配置推导；如果不可用则退回 15m
+		if gc := config.Get(); gc != nil {
+			if sp, err := gc.Market.Spec(); err == nil {
+				s.Config.MarketIntervalSeconds = int(sp.Duration().Seconds())
+			}
+		}
+		if s.Config.MarketIntervalSeconds == 0 {
+			s.Config.MarketIntervalSeconds = 900 // 默认15分钟
+		}
 	}
 	return nil
 }
@@ -122,6 +139,18 @@ func (s *Strategy) Validate() error {
 }
 
 func (s *Strategy) Initialize() error {
+	// market spec（默认 btc/15m/updown；如果全局配置存在则以全局 market 为准）
+	spec, _ := marketspec.New("btc", "15m", "updown")
+	if gc := config.Get(); gc != nil {
+		if sp, err := gc.Market.Spec(); err == nil {
+			spec = sp
+		}
+	}
+	s.marketSpec = spec
+	s.underlyingUpper = strings.ToUpper(spec.Symbol)
+	s.binanceSymbol = strings.ToLower(s.underlyingUpper + "usdt")
+	s.chainlinkSymbol = strings.ToLower(spec.Symbol) + "/usd"
+
 	// 初始化 RTDS 客户端
 	config := rtds.DefaultClientConfig()
 	// 使用环境变量中的代理配置
@@ -146,7 +175,7 @@ func (s *Strategy) Initialize() error {
 
 	// 注册价格处理器
 	binanceHandler := rtds.CreateCryptoPriceHandler(func(price *rtds.CryptoPrice) error {
-		if price.Symbol == "btcusdt" {
+		if strings.ToLower(strings.TrimSpace(price.Symbol)) == s.binanceSymbol {
 			val := price.Value.Float64()
 			if val > 0 {
 				s.priceMu.Lock()
@@ -158,7 +187,7 @@ func (s *Strategy) Initialize() error {
 	})
 
 	chainlinkHandler := rtds.CreateCryptoPriceHandler(func(price *rtds.CryptoPrice) error {
-		if price.Symbol == "btc/usd" {
+		if strings.ToLower(strings.TrimSpace(price.Symbol)) == s.chainlinkSymbol {
 			val := price.Value.Float64()
 			if val > 0 {
 				s.priceMu.Lock()
@@ -173,10 +202,10 @@ func (s *Strategy) Initialize() error {
 	s.rtdsClient.RegisterHandler("crypto_prices_chainlink", chainlinkHandler)
 
 	// 订阅价格
-	if err := s.rtdsClient.SubscribeToCryptoPrices("binance", "btcusdt"); err != nil {
+	if err := s.rtdsClient.SubscribeToCryptoPrices("binance", s.binanceSymbol); err != nil {
 		return fmt.Errorf("订阅 Binance 价格失败: %w", err)
 	}
-	if err := s.rtdsClient.SubscribeToCryptoPrices("chainlink", "btc/usd"); err != nil {
+	if err := s.rtdsClient.SubscribeToCryptoPrices("chainlink", s.chainlinkSymbol); err != nil {
 		return fmt.Errorf("订阅 Chainlink 价格失败: %w", err)
 	}
 
@@ -269,41 +298,31 @@ func (s *Strategy) onMarketSwitch(market *domain.Market) {
 
 // ensureStrikePrice 异步获取行权价
 func (s *Strategy) ensureStrikePrice(market *domain.Market) {
-	attempts := 0
-	maxAttempts := 20
-
-	for attempts < maxAttempts {
-		startIso := time.Unix(market.Timestamp, 0).UTC().Format(time.RFC3339)
-		var endIso string
-		if s.Config.MarketIntervalSeconds > 0 {
-			endTime := time.Unix(market.Timestamp, 0).Add(time.Duration(s.Config.MarketIntervalSeconds) * time.Second)
-			endIso = endTime.UTC().Format(time.RFC3339)
-		} else {
-			endTime := time.Unix(market.Timestamp, 0).Add(15 * time.Minute)
-			endIso = endTime.UTC().Format(time.RFC3339)
-		}
-
-		log.Infof("获取官方行权价 %s 至 %s", startIso, endIso)
-		strike, err := s.fetchStrikePrice(startIso, endIso)
-		if err == nil && strike > 0 {
+	_ = market
+	// 为了支持多币种/多周期，这里不再调用“固定 BTC + fifteen 变体”的 polymarket crypto-price API。
+	// 直接等待 Chainlink 实时报价可用后，作为 strike 的近似/兜底。
+	maxAttempts := 30
+	for i := 0; i < maxAttempts; i++ {
+		s.priceMu.RLock()
+		cl := s.chainlinkPrice
+		s.priceMu.RUnlock()
+		if cl > 0 {
 			s.marketMu.Lock()
-			s.marketInfo.strikePrice = strike
+			s.marketInfo.strikePrice = cl
 			s.marketMu.Unlock()
-			log.Infof("🎯 [adaptive] 锁定官方行权价: %.2f", strike)
+			log.Infof("🎯 [adaptive] 使用 Chainlink 作为行权价兜底: %.2f (symbol=%s)", cl, s.chainlinkSymbol)
 			return
 		}
-
-		time.Sleep(5 * time.Second)
-		attempts++
+		time.Sleep(1 * time.Second)
 	}
-
-	log.Warnf("⚠️ [adaptive] 无法获取行权价，将使用 Chainlink 价格作为兜底")
+	log.Warnf("⚠️ [adaptive] 无法获取行权价（Chainlink 仍未就绪），继续等待 onTick 兜底逻辑")
 }
 
 // fetchStrikePrice 获取行权价
 func (s *Strategy) fetchStrikePrice(startIso, endIso string) (float64, error) {
 	apiURL := fmt.Sprintf(
-		"https://polymarket.com/api/crypto/crypto-price?symbol=BTC&eventStartTime=%s&variant=fifteen&endDate=%s",
+		"https://polymarket.com/api/crypto/crypto-price?symbol=%s&eventStartTime=%s&variant=fifteen&endDate=%s",
+		url.QueryEscape(s.underlyingUpper),
 		url.QueryEscape(startIso),
 		url.QueryEscape(endIso),
 	)

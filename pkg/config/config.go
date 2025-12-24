@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/betbot/gobet/pkg/marketspec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -130,6 +131,7 @@ type Config struct {
 	Wallet                               WalletConfig
 	Proxy                                *ProxyConfig
 	ExchangeStrategies                   []ExchangeStrategyMount // bbgo main 风格：动态策略挂载
+	Market                               MarketConfig            // 市场选择（symbol/timeframe/kind）
 	LogLevel                             string                  // 日志级别
 	LogFile                              string                  // 日志文件路径（可选）
 	LogByCycle                           bool                    // 是否按周期命名日志文件
@@ -143,6 +145,19 @@ type Config struct {
 	CancelOpenOrdersOnCycleStart         bool                    // 每个新周期开始时是否清空“本周期残留 open orders”（默认false）
 	ConcurrentExecutorWorkers            int                     // 并发命令执行器 worker 数（套利等），默认 8
 	DryRun                               bool                    // 纸交易模式（dry run），如果为 true，不进行真实交易，只在日志中打印订单信息
+}
+
+// MarketConfig 选择要交易/订阅的 polymarket 市场规格。
+// slug 约定：{symbol}-{kind}-{timeframe}-{periodStartUnix}
+// 例如：btc-updown-15m-1766322000
+type MarketConfig struct {
+	Symbol    string // btc/eth/sol/xrp...
+	Timeframe string // 15m/1h/4h
+	Kind      string // 默认 updown
+}
+
+func (m MarketConfig) Spec() (marketspec.MarketSpec, error) {
+	return marketspec.New(m.Symbol, m.Timeframe, m.Kind)
 }
 
 var globalConfig *Config
@@ -169,6 +184,11 @@ type ConfigFile struct {
 		Port int    `yaml:"port" json:"port"`
 	} `yaml:"proxy" json:"proxy"`
 	ExchangeStrategies                   []ExchangeStrategyMount `yaml:"exchangeStrategies" json:"exchangeStrategies"`
+	Market                               struct {
+		Symbol    string `yaml:"symbol" json:"symbol"`
+		Timeframe string `yaml:"timeframe" json:"timeframe"`
+		Kind      string `yaml:"kind" json:"kind"`
+	} `yaml:"market" json:"market"`
 	LogLevel                             string                  `yaml:"log_level" json:"log_level"`
 	LogFile                              string                  `yaml:"log_file" json:"log_file"`
 	LogByCycle                           bool                    `yaml:"log_by_cycle" json:"log_by_cycle"`
@@ -231,6 +251,37 @@ func LoadFromFile(filePath string) (*Config, error) {
 				return configFile.ExchangeStrategies
 			}
 			return nil
+		}(),
+		Market: func() MarketConfig {
+			// 默认：btc + 15m + updown
+			symbol := "btc"
+			timeframe := "15m"
+			kind := "updown"
+
+			if configFile != nil {
+				if strings.TrimSpace(configFile.Market.Symbol) != "" {
+					symbol = strings.TrimSpace(configFile.Market.Symbol)
+				}
+				if strings.TrimSpace(configFile.Market.Timeframe) != "" {
+					timeframe = strings.TrimSpace(configFile.Market.Timeframe)
+				}
+				if strings.TrimSpace(configFile.Market.Kind) != "" {
+					kind = strings.TrimSpace(configFile.Market.Kind)
+				}
+			}
+
+			// env 覆盖（最高优先级）
+			if v := strings.TrimSpace(getEnv("MARKET_SYMBOL", "")); v != "" {
+				symbol = v
+			}
+			if v := strings.TrimSpace(getEnv("MARKET_TIMEFRAME", "")); v != "" {
+				timeframe = v
+			}
+			if v := strings.TrimSpace(getEnv("MARKET_KIND", "")); v != "" {
+				kind = v
+			}
+
+			return MarketConfig{Symbol: symbol, Timeframe: timeframe, Kind: kind}
 		}(),
 		LogLevel: func() string {
 			if configFile != nil && configFile.LogLevel != "" {
@@ -509,6 +560,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Wallet.FunderAddress == "" {
 		return fmt.Errorf("WALLET_FUNDER_ADDRESS 未配置")
+	}
+	if _, err := c.Market.Spec(); err != nil {
+		return fmt.Errorf("market 配置无效: %w", err)
 	}
 	if len(c.ExchangeStrategies) == 0 {
 		return fmt.Errorf("exchangeStrategies 不能为空（请按 bbgo main 风格配置策略）")

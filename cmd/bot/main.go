@@ -71,6 +71,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 解析 market 配置（用于周期/市场选择）
+	spec, err := cfg.Market.Spec()
+	if err != nil {
+		logrus.Errorf("market 配置无效: %v", err)
+		os.Exit(1)
+	}
+
 	// 设置logrus日志级别（BBGO风格）
 	level, err := logrus.ParseLevel(cfg.LogLevel)
 	if err != nil {
@@ -94,7 +101,7 @@ func main() {
 		MaxAge:        30,
 		Compress:      true,
 		LogByCycle:    cfg.LogByCycle,
-		CycleDuration: 15 * time.Minute,
+		CycleDuration: spec.Duration(),
 	}
 	if err := logger.Init(logConfig); err != nil {
 		logrus.Errorf("重新初始化日志失败: %v", err)
@@ -161,7 +168,7 @@ func main() {
 	)
 
 	// 创建服务
-	marketDataService := services.NewMarketDataService(clobClient)
+	marketDataService := services.NewMarketDataService(clobClient, spec)
 	marketDataService.Start()
 	defer marketDataService.Stop()
 
@@ -286,6 +293,7 @@ func main() {
 		"polymarket",
 		proxyURL,
 		userCreds,
+		spec,
 	)
 
 	// 启动市场调度器（这会创建初始会话）

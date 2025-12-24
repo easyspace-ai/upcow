@@ -17,8 +17,8 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/infrastructure/websocket"
-	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/config"
+	"github.com/betbot/gobet/pkg/marketspec"
 )
 
 func main() {
@@ -32,9 +32,17 @@ func main() {
 
 	ctx := context.Background()
 
+	// market spec（默认 btc/15m/updown；如果 config 可用则以 config 为准）
+	spec, _ := marketspec.New("btc", "15m", "updown")
+	if cfg != nil {
+		if s, err := cfg.Market.Spec(); err == nil {
+			spec = s
+		}
+	}
+
 	// 获取当前周期的市场
-	currentTs := services.GetCurrent15MinTimestamp()
-	currentSlug := services.Generate15MinSlug(currentTs)
+	currentTs := spec.CurrentPeriodStartUnix(time.Now())
+	currentSlug := spec.Slug(currentTs)
 
 	// 显示启动信息
 	fmt.Printf("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
@@ -117,15 +125,15 @@ func main() {
 				marketMu.RUnlock()
 
 				now := time.Now().Unix()
-				periodEnd := currentMarket.Timestamp + 900 // 15分钟 = 900秒
+				periodEnd := currentMarket.Timestamp + int64(spec.Duration().Seconds())
 
 				if now >= periodEnd {
 					// 切换到下一个周期
-					nextTs := services.GetCurrent15MinTimestamp()
+					nextTs := spec.CurrentPeriodStartUnix(time.Now())
 					if nextTs <= currentMarket.Timestamp {
-						nextTs = currentMarket.Timestamp + 900
+						nextTs = currentMarket.Timestamp + int64(spec.Duration().Seconds())
 					}
-					nextSlug := services.Generate15MinSlug(nextTs)
+					nextSlug := spec.Slug(nextTs)
 
 					fmt.Printf("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 					fmt.Printf("🔄 周期切换检测到\n")

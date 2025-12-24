@@ -12,6 +12,7 @@ import (
 
 	"github.com/betbot/gobet/clob/client"
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/pkg/marketspec"
 	"github.com/betbot/gobet/pkg/logger"
 )
 
@@ -21,6 +22,8 @@ type MarketDataService struct {
 	cache      *marketCache
 	ctx        context.Context
 	cancel     context.CancelFunc
+
+	spec marketspec.MarketSpec
 
 	// 预加载任务去重：正在预加载的 slug
 	preloadingSlugs map[string]bool
@@ -35,8 +38,14 @@ type marketCache struct {
 }
 
 // NewMarketDataService 创建新的市场数据服务
-func NewMarketDataService(clobClient *client.Client) *MarketDataService {
+func NewMarketDataService(clobClient *client.Client, spec marketspec.MarketSpec) *MarketDataService {
 	ctx, cancel := context.WithCancel(context.Background())
+	// 兜底：避免上层传入零值导致后续 duration/slug 异常
+	if spec.Symbol == "" || spec.Timeframe == "" || spec.Kind == "" {
+		if s, err := marketspec.New("btc", "15m", "updown"); err == nil {
+			spec = s
+		}
+	}
 	return &MarketDataService{
 		clobClient: clobClient,
 		cache: &marketCache{
@@ -44,6 +53,7 @@ func NewMarketDataService(clobClient *client.Client) *MarketDataService {
 		},
 		ctx:             ctx,
 		cancel:          cancel,
+		spec:            spec,
 		preloadingSlugs: make(map[string]bool),
 	}
 }
@@ -122,12 +132,12 @@ func (s *MarketDataService) loadPreloadedData() {
 
 // startBackgroundPreload 后台预加载未来市场数据（定期运行）
 func (s *MarketDataService) startBackgroundPreload() {
-	// 每个周期（15分钟）检查一次，预加载接下来2个周期
+	// 每个周期检查一次，预加载接下来2个周期
 	// 这样既保证数据充足，又不会过度预加载
-	ticker := time.NewTicker(15 * time.Minute)
+	ticker := time.NewTicker(s.spec.Duration())
 	defer ticker.Stop()
 
-	// 立即执行一次（不等待15分钟）
+	// 立即执行一次（不等待一个完整周期）
 	s.preloadFutureMarkets()
 
 	for {
@@ -146,7 +156,7 @@ func (s *MarketDataService) startBackgroundPreload() {
 func (s *MarketDataService) preloadFutureMarkets() {
 	// 只预加载接下来2个周期（本周期之后的下一个、下下个）
 	// 这样在切换时，下一个周期的数据已经准备好了
-	slugs := GenerateNext15MinSlugs(2) // 接下来2个周期（30分钟）
+	slugs := s.spec.NextSlugs(2)
 
 	// 检查哪些市场数据缺失
 	missingSlugs := make([]string, 0)
@@ -351,32 +361,4 @@ func getString(m map[string]interface{}, key string) string {
 	return ""
 }
 
-// Generate15MinSlug 生成 15 分钟周期的 slug
-func Generate15MinSlug(timestamp int64) string {
-	return fmt.Sprintf("btc-updown-15m-%d", timestamp)
-}
-
-// GetCurrent15MinTimestamp 获取当前 15 分钟周期的时间戳
-func GetCurrent15MinTimestamp() int64 {
-	now := time.Now()
-	minutes := now.Minute()
-	roundedMinutes := (minutes / 15) * 15
-
-	periodStart := time.Date(now.Year(), now.Month(), now.Day(),
-		now.Hour(), roundedMinutes, 0, 0, now.Location())
-
-	return periodStart.Unix()
-}
-
-// GenerateNext15MinSlugs 生成接下来 N 个 15 分钟周期的 slugs
-func GenerateNext15MinSlugs(count int) []string {
-	currentTs := GetCurrent15MinTimestamp()
-	slugs := make([]string, 0, count)
-
-	for i := 0; i < count; i++ {
-		periodTs := currentTs + int64(i*900) // 15 分钟 = 900 秒
-		slugs = append(slugs, Generate15MinSlug(periodTs))
-	}
-
-	return slugs
-}
+// NOTE: slug 生成与周期对齐逻辑已迁移到 pkg/marketspec（支持多币种/多周期）。
