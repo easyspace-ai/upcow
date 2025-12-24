@@ -44,9 +44,10 @@ type Strategy struct {
 	samples map[domain.TokenType][]sample
 
 	// cycle / throttle
-	firstSeenAt     time.Time
-	lastTriggerAt   time.Time
-	tradedThisCycle bool
+	firstSeenAt        time.Time
+	lastTriggerAt      time.Time
+	tradedThisCycle    bool
+	tradesCountThisCycle int // 本周期已交易次数
 
 	// 方向级别的去重：避免同一方向在短时间内重复触发
 	lastTriggerSide    domain.TokenType
@@ -128,6 +129,7 @@ func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, _ *domain.Market
 	s.samples = make(map[domain.TokenType][]sample)
 	s.firstSeenAt = time.Now()
 	s.tradedThisCycle = false
+	s.tradesCountThisCycle = 0 // 重置交易计数
 	s.lastTriggerSide = ""
 	s.lastTriggerSideAt = time.Time{}
 	s.cycleStartMs = 0
@@ -209,8 +211,15 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		s.mu.Unlock()
 		return nil
 	}
+	// 兼容旧逻辑：OncePerCycle
 	if s.OncePerCycle && s.tradedThisCycle {
 		s.mu.Unlock()
+		return nil
+	}
+	// 新逻辑：MaxTradesPerCycle 控制（0=不设限）
+	if s.MaxTradesPerCycle > 0 && s.tradesCountThisCycle >= s.MaxTradesPerCycle {
+		s.mu.Unlock()
+		log.Debugf("🔄 [%s] 跳过：本周期交易次数已达上限 (%d/%d)", ID, s.tradesCountThisCycle, s.MaxTradesPerCycle)
 		return nil
 	}
 	if !s.lastTriggerAt.IsZero() && now.Sub(s.lastTriggerAt) < time.Duration(s.CooldownMs)*time.Millisecond {
@@ -417,8 +426,9 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		s.lastTriggerSide = winner
 		s.lastTriggerSideAt = time.Now()
 		s.tradedThisCycle = true
-		log.Infof("⚡ [%s] 触发: side=%s ask=%dc hedge=%dc vel=%.3f(c/s) move=%dc/%0.1fs bias=%s(%s) market=%s",
-			ID, winner, askCents, hedgeCents, winMet.velocity, winMet.delta, winMet.seconds, biasTok, biasReason, market.Slug)
+		s.tradesCountThisCycle++ // 增加交易计数
+		log.Infof("⚡ [%s] 触发: side=%s ask=%dc hedge=%dc vel=%.3f(c/s) move=%dc/%0.1fs bias=%s(%s) market=%s trades=%d/%d",
+			ID, winner, askCents, hedgeCents, winMet.velocity, winMet.delta, winMet.seconds, biasTok, biasReason, market.Slug, s.tradesCountThisCycle, s.MaxTradesPerCycle)
 		if biasTok != "" || biasReason != "" {
 			log.Infof("🧭 [%s] bias: token=%s reason=%s cycleStartMs=%d", ID, biasTok, biasReason, s.cycleStartMs)
 		}

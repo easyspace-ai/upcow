@@ -481,11 +481,11 @@ func renderOrderbook(title string, bids []orderLevel, asks []orderLevel) string 
 	s.WriteString(titleStyled)
 	s.WriteString("\n\n")
 
-	// 显示卖单（asks）- 从高到低（倒序，价格高的在上）
+	// 显示卖单（asks）- 从低到高（best ask 在最上面，离盘口最近）
 	s.WriteString(askStyle.Render("卖单 (Asks)"))
 	s.WriteString("\n")
 	if len(asks) > 0 {
-		// asks 已经按价格从高到低排序（倒序），直接显示前5档
+		// asks 已经按价格从低到高排序（best ask 在最前面），直接显示前5档
 		for i := 0; i < len(asks) && i < orderbookDepth; i++ {
 			ask := asks[i]
 			s.WriteString(fmt.Sprintf("  %6.2f  %8.2f\n", ask.Price*100, ask.Size))
@@ -497,19 +497,19 @@ func renderOrderbook(title string, bids []orderLevel, asks []orderLevel) string 
 	s.WriteString("\n")
 
 	// 显示中间价
-	// 注意：asks 是从高到低排序（倒序），bids 是从高到低排序
+	// 注意：asks 是从低到高排序（best ask 在最前面），bids 是从高到低排序（best bid 在最前面）
 	var midPrice float64
 	if len(bids) > 0 && len(asks) > 0 {
 		// 中间价 = (最高买价 + 最低卖价) / 2
-		// asks 是从高到低排序（倒序），最低卖价在最后
-		// bids 是从高到低排序，bids[0] 是最高买价（最接近盘口）
-		lowestAsk := asks[len(asks)-1].Price // 最低卖价在最后
-		highestBid := bids[0].Price           // 最高买价在最前
+		// asks 是从低到高排序，asks[0] 是最低卖价（best ask，最接近盘口）
+		// bids 是从高到低排序，bids[0] 是最高买价（best bid，最接近盘口）
+		lowestAsk := asks[0].Price  // 最低卖价在最前（best ask）
+		highestBid := bids[0].Price // 最高买价在最前（best bid）
 		midPrice = (highestBid + lowestAsk) / 2.0
 	} else if len(bids) > 0 {
 		midPrice = bids[0].Price
 	} else if len(asks) > 0 {
-		// asks 从低到高，最低卖价在最前
+		// asks 从低到高，最低卖价在最前（best ask）
 		midPrice = asks[0].Price
 	}
 	if midPrice > 0 {
@@ -988,7 +988,7 @@ func handleBookMessage(message []byte, market *domain.Market) {
 		bidsList = bidsList[:orderbookDepth]
 	}
 
-	// 解析所有卖单并排序（从高到低，倒序）
+	// 解析所有卖单并排序（从低到高，best ask 在最前面）
 	asksList := make([]orderLevel, 0, len(asks))
 	for _, ask := range asks {
 		if ask.Price == "" || ask.Size == "" {
@@ -1007,10 +1007,10 @@ func handleBookMessage(message []byte, market *domain.Market) {
 			Size:  size,
 		})
 	}
-	// 对卖单按价格从高到低排序（倒序）
+	// 对卖单按价格从低到高排序（best ask 在最前面，离盘口最近）
 	for i := 0; i < len(asksList)-1; i++ {
 		for j := i + 1; j < len(asksList); j++ {
-			if asksList[i].Price < asksList[j].Price {
+			if asksList[i].Price > asksList[j].Price {
 				asksList[i], asksList[j] = asksList[j], asksList[i]
 			}
 		}

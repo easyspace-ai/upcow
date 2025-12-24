@@ -148,14 +148,15 @@ type Config struct {
 }
 
 // MarketConfig 选择要交易/订阅的 polymarket 市场规格。
-// slug 约定：{symbol}-{kind}-{timeframe}-{periodStartUnix}
-// 例如：btc-updown-15m-1766322000
+// slugTemplates: 格式模板，程序根据时间替换变量
+// 支持的变量：{symbol}, {coinName}, {kind}, {timeframe}, {timestamp}, {month}, {day}, {hour}, {ampm}, {et}
 type MarketConfig struct {
-	Symbol    string // btc/eth/sol/xrp...
-	Timeframe string // 15m/1h/4h
-	Kind      string // 默认 updown
-	SlugStyle string // timestamp / polymarket_hourly_et
-	SlugPrefix string // 可选：显式指定 market slug 前缀（例如 btc-updown-15m- 或 bitcoin-up-or-down-）
+	Symbol        string            // btc/eth/sol/xrp...
+	Timeframe     string            // 15m/1h/4h
+	Kind          string            // 默认 updown
+	SlugStyle     string            // 已废弃：不再使用，格式根据 timeframe 自动选择
+	SlugPrefix    string            // 可选：显式指定 market slug 前缀（例如 btc-updown-15m- 或 bitcoin-up-or-down-）
+	SlugTemplates map[string]string // 格式模板映射：timeframe -> template
 }
 
 func (m MarketConfig) Spec() (marketspec.MarketSpec, error) {
@@ -163,11 +164,34 @@ func (m MarketConfig) Spec() (marketspec.MarketSpec, error) {
 	if err != nil {
 		return marketspec.MarketSpec{}, err
 	}
-	style, err := marketspec.ParseSlugStyle(m.SlugStyle)
-	if err != nil {
-		return marketspec.MarketSpec{}, err
+	
+	// 使用模板系统：根据 timeframe 选择模板
+	sp.SlugTemplates = m.SlugTemplates
+	
+	// 兼容旧逻辑：如果没有模板，根据 timeframe 自动选择格式
+	if len(sp.SlugTemplates) == 0 {
+		var slugStyle string
+		switch sp.Timeframe {
+		case marketspec.Timeframe1h:
+			slugStyle = "polymarket_hourly_et"
+		default:
+			slugStyle = "timestamp"
+		}
+		style, err := marketspec.ParseSlugStyle(slugStyle)
+		if err != nil {
+			return marketspec.MarketSpec{}, err
+		}
+		sp.SlugStyle = style
+	} else {
+		// 使用模板时，根据模板内容判断格式类型（用于兼容）
+		template, ok := sp.SlugTemplates[sp.Timeframe.String()]
+		if ok && strings.Contains(template, "{month}") {
+			sp.SlugStyle = marketspec.SlugStylePolymarketHourlyET
+		} else {
+			sp.SlugStyle = marketspec.SlugStyleTimestamp
+		}
 	}
-	sp.SlugStyle = style
+	
 	// 兼容：如果用户选择 hourly_et 但未填 kind，则默认使用 up-or-down
 	if sp.SlugStyle == marketspec.SlugStylePolymarketHourlyET {
 		if strings.TrimSpace(m.Kind) == "" {
@@ -202,11 +226,12 @@ type ConfigFile struct {
 	} `yaml:"proxy" json:"proxy"`
 	ExchangeStrategies                   []ExchangeStrategyMount `yaml:"exchangeStrategies" json:"exchangeStrategies"`
 	Market                               struct {
-		Symbol    string `yaml:"symbol" json:"symbol"`
-		Timeframe string `yaml:"timeframe" json:"timeframe"`
-		Kind      string `yaml:"kind" json:"kind"`
-		SlugStyle string `yaml:"slugStyle" json:"slugStyle"`
-		SlugPrefix string `yaml:"slugPrefix" json:"slugPrefix"`
+		Symbol        string            `yaml:"symbol" json:"symbol"`
+		Timeframe     string            `yaml:"timeframe" json:"timeframe"`
+		Kind          string            `yaml:"kind" json:"kind"`
+		SlugStyle     string            `yaml:"slugStyle" json:"slugStyle"`
+		SlugPrefix    string            `yaml:"slugPrefix" json:"slugPrefix"`
+		SlugTemplates map[string]string `yaml:"slugTemplates" json:"slugTemplates"`
 	} `yaml:"market" json:"market"`
 	LogLevel                             string                  `yaml:"log_level" json:"log_level"`
 	LogFile                              string                  `yaml:"log_file" json:"log_file"`
@@ -276,8 +301,15 @@ func LoadFromFile(filePath string) (*Config, error) {
 			symbol := "btc"
 			timeframe := "15m"
 			kind := "updown"
-			slugStyle := "timestamp"
 			slugPrefix := ""
+			slugTemplates := make(map[string]string)
+
+			// 默认模板
+			defaultTemplates := map[string]string{
+				"15m": "{symbol}-{kind}-{timeframe}-{timestamp}",
+				"1h":  "{coinName}-up-or-down-{month}-{day}-{hour}{ampm}-et",
+				"4h":  "{symbol}-{kind}-{timeframe}-{timestamp}",
+			}
 
 			if configFile != nil {
 				if strings.TrimSpace(configFile.Market.Symbol) != "" {
@@ -289,12 +321,17 @@ func LoadFromFile(filePath string) (*Config, error) {
 				if strings.TrimSpace(configFile.Market.Kind) != "" {
 					kind = strings.TrimSpace(configFile.Market.Kind)
 				}
-				if strings.TrimSpace(configFile.Market.SlugStyle) != "" {
-					slugStyle = strings.TrimSpace(configFile.Market.SlugStyle)
-				}
 				if strings.TrimSpace(configFile.Market.SlugPrefix) != "" {
 					slugPrefix = strings.TrimSpace(configFile.Market.SlugPrefix)
 				}
+				// 读取模板配置，如果未配置则使用默认模板
+				if configFile.Market.SlugTemplates != nil && len(configFile.Market.SlugTemplates) > 0 {
+					slugTemplates = configFile.Market.SlugTemplates
+				} else {
+					slugTemplates = defaultTemplates
+				}
+			} else {
+				slugTemplates = defaultTemplates
 			}
 
 			// env 覆盖（最高优先级）
@@ -307,14 +344,23 @@ func LoadFromFile(filePath string) (*Config, error) {
 			if v := strings.TrimSpace(getEnv("MARKET_KIND", "")); v != "" {
 				kind = v
 			}
-			if v := strings.TrimSpace(getEnv("MARKET_SLUG_STYLE", "")); v != "" {
-				slugStyle = v
-			}
 			if v := strings.TrimSpace(getEnv("MARKET_SLUG_PREFIX", "")); v != "" {
 				slugPrefix = v
 			}
 
-			return MarketConfig{Symbol: symbol, Timeframe: timeframe, Kind: kind, SlugStyle: slugStyle, SlugPrefix: slugPrefix}
+			// 如果模板为空，使用默认模板
+			if len(slugTemplates) == 0 {
+				slugTemplates = defaultTemplates
+			}
+
+			return MarketConfig{
+				Symbol:        symbol,
+				Timeframe:     timeframe,
+				Kind:          kind,
+				SlugStyle:     "",
+				SlugPrefix:    slugPrefix,
+				SlugTemplates: slugTemplates,
+			}
 		}(),
 		LogLevel: func() string {
 			if configFile != nil && configFile.LogLevel != "" {

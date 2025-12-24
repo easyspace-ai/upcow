@@ -181,10 +181,25 @@ func (m *MarketStream) DialAndConnect(ctx context.Context) error {
 	}
 
 	// 启动读取和 ping goroutine（使用连接相关的 SyncGroup）
+	// 使用额外的 recover 保护，防止 panic 导致整个程序崩溃
 	m.connSg.Add(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				marketLog.Errorf("MarketStream Read goroutine panic recovered: %v", r)
+				_ = conn.Close()
+				connCancel()
+			}
+		}()
 		m.Read(connCtx, conn, connCancel)
 	})
 	m.connSg.Add(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				marketLog.Errorf("MarketStream ping goroutine panic recovered: %v", r)
+				_ = conn.Close()
+				connCancel()
+			}
+		}()
 		m.ping(connCtx, conn, connCancel)
 	})
 	m.connSg.Run()
@@ -319,6 +334,17 @@ func (m *MarketStream) Read(ctx context.Context, conn *websocket.Conn, cancel co
 		cancel()
 	}()
 
+	// 使用 recover 捕获可能的 panic（连接失败后重复读取会导致 panic）
+	defer func() {
+		if r := recover(); r != nil {
+			// 捕获 panic，特别是 "repeated read on failed websocket connection"
+			marketLog.Errorf("WebSocket 读取时发生 panic: %v，连接可能已失败", r)
+			// 标记连接为已关闭，避免后续重复读取
+			_ = conn.Close()
+			m.Reconnect()
+		}
+	}()
+
 	for {
 		// 检查 context 是否已取消（在阻塞操作之前）
 		select {
@@ -329,6 +355,19 @@ func (m *MarketStream) Read(ctx context.Context, conn *websocket.Conn, cancel co
 		default:
 		}
 
+		// 在设置 deadline 之前，快速检查连接是否仍然有效
+		// 如果连接已经被替换，context 应该已经被取消，但为了安全起见，我们再次检查
+		m.connMu.Lock()
+		currentConn := m.conn
+		currentCtx := m.connCtx
+		m.connMu.Unlock()
+
+		// 如果连接已经被替换，说明有新的连接，旧连接应该退出
+		if currentConn != conn || currentCtx != ctx {
+			marketLog.Debugf("WebSocket 连接已被替换，退出旧的 Read goroutine")
+			return
+		}
+
 		// 设置读取超时：用 deadline 让 ReadMessage 至多阻塞 readTimeout，
 		// 这样无需每轮起 goroutine，避免长期运行下 goroutine churn。
 		if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
@@ -336,8 +375,44 @@ func (m *MarketStream) Read(ctx context.Context, conn *websocket.Conn, cancel co
 			return
 		}
 
-		_, message, err := conn.ReadMessage()
+		// 使用 recover 包装 ReadMessage 调用，防止 panic
+		// 注意：gorilla/websocket 在连接失败后重复读取会直接 panic，而不是返回错误
+		// 这是库的内部行为，我们无法改变，只能通过 recover 捕获
+		var message []byte
+		var err error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// 捕获 panic，特别是 "repeated read on failed websocket connection"
+					// 这是 gorilla/websocket 库在连接失败后重复读取时的行为
+					marketLog.Errorf("WebSocket ReadMessage 时发生 panic: %v，连接可能已失败", r)
+					err = fmt.Errorf("panic: %v", r)
+				}
+			}()
+			// 再次检查 context（在阻塞调用之前）
+			select {
+			case <-ctx.Done():
+				err = fmt.Errorf("context canceled")
+				return
+			default:
+			}
+			_, message, err = conn.ReadMessage()
+		}()
+
 		if err != nil {
+			// 检查是否是 panic 错误（连接失败后重复读取）
+			errStr := err.Error()
+			isPanicError := strings.Contains(errStr, "panic:") ||
+				strings.Contains(errStr, "repeated read on failed websocket connection")
+
+			// 如果是 panic 错误，立即关闭连接并触发重连
+			if isPanicError {
+				marketLog.Warnf("WebSocket 读取时发生 panic 错误: %v，关闭连接并触发重连", err)
+				_ = conn.Close()
+				m.Reconnect()
+				return
+			}
+
 			// 检查是否是关闭错误
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 				marketLog.Debugf("WebSocket 正常关闭")

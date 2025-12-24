@@ -73,10 +73,11 @@ func (t Timeframe) Duration() time.Duration {
 
 // MarketSpec 表示要交易/订阅的 polymarket updown 市场规格。
 type MarketSpec struct {
-	Symbol    string   // e.g. "btc", "eth"
-	Kind      string   // e.g. "updown"
-	Timeframe Timeframe
-	SlugStyle SlugStyle
+	Symbol        string            // e.g. "btc", "eth"
+	Kind          string            // e.g. "updown"
+	Timeframe     Timeframe
+	SlugStyle     SlugStyle
+	SlugTemplates map[string]string // 格式模板映射：timeframe -> template
 }
 
 var symbolRe = regexp.MustCompile(`^[a-z0-9]+$`)
@@ -139,6 +140,15 @@ func (m MarketSpec) CurrentPeriodStartUnix(now time.Time) int64 {
 }
 
 func (m MarketSpec) Slug(periodStartUnix int64) string {
+	// 优先使用模板系统
+	if m.SlugTemplates != nil {
+		template, ok := m.SlugTemplates[m.Timeframe.String()]
+		if ok && template != "" {
+			return m.renderTemplate(template, periodStartUnix)
+		}
+	}
+	
+	// 兼容旧逻辑：使用 SlugStyle
 	switch m.SlugStyle {
 	case SlugStylePolymarketHourlyET:
 		// 目前该格式主要用于 1h up-or-down 市场
@@ -149,10 +159,93 @@ func (m MarketSpec) Slug(periodStartUnix int64) string {
 	}
 }
 
+// renderTemplate 渲染模板，替换变量
+func (m MarketSpec) renderTemplate(template string, periodStartUnix int64) string {
+	result := template
+	
+	// 基础变量
+	result = strings.ReplaceAll(result, "{symbol}", m.Symbol)
+	result = strings.ReplaceAll(result, "{coinName}", m.getHourlyETCoinName())
+	result = strings.ReplaceAll(result, "{kind}", m.Kind)
+	result = strings.ReplaceAll(result, "{timeframe}", m.Timeframe.String())
+	result = strings.ReplaceAll(result, "{timestamp}", fmt.Sprintf("%d", periodStartUnix))
+	result = strings.ReplaceAll(result, "{et}", "et")
+	
+	// 时间相关变量（需要解析时间戳）
+	loc := m.location(time.Now())
+	t := time.Unix(periodStartUnix, 0).In(loc)
+	
+	// 月份（全名小写）
+	month := strings.ToLower(t.Month().String())
+	result = strings.ReplaceAll(result, "{month}", month)
+	
+	// 日期
+	result = strings.ReplaceAll(result, "{day}", fmt.Sprintf("%d", t.Day()))
+	
+	// 12小时制小时和 am/pm
+	h := t.Hour()
+	var h12 int
+	var ampm string
+	if h == 0 {
+		h12 = 12
+		ampm = "am"
+	} else if h < 12 {
+		h12 = h
+		ampm = "am"
+	} else if h == 12 {
+		h12 = 12
+		ampm = "pm"
+	} else {
+		h12 = h - 12
+		ampm = "pm"
+	}
+	result = strings.ReplaceAll(result, "{hour}", fmt.Sprintf("%d", h12))
+	result = strings.ReplaceAll(result, "{ampm}", ampm)
+	
+	return result
+}
+
 func (m MarketSpec) SlugPrefix() string {
+	// 优先使用模板系统：从模板中提取前缀（移除时间相关变量）
+	if m.SlugTemplates != nil {
+		template, ok := m.SlugTemplates[m.Timeframe.String()]
+		if ok && template != "" {
+			// 找到第一个时间变量的位置，之前的部分就是前缀
+			// 时间变量：{timestamp}, {month}, {day}, {hour}, {ampm}
+			timeVarPattern := regexp.MustCompile(`\{timestamp\}|\{month\}|\{day\}|\{hour\}|\{ampm\}`)
+			firstTimeVar := timeVarPattern.FindStringIndex(template)
+			
+			var prefix string
+			if firstTimeVar != nil {
+				// 提取时间变量之前的部分
+				prefix = template[:firstTimeVar[0]]
+			} else {
+				// 如果没有时间变量，使用整个模板（但移除 {et} 等）
+				prefix = template
+			}
+			
+			// 替换静态变量
+			prefix = strings.ReplaceAll(prefix, "{symbol}", m.Symbol)
+			prefix = strings.ReplaceAll(prefix, "{coinName}", m.getHourlyETCoinName())
+			prefix = strings.ReplaceAll(prefix, "{kind}", m.Kind)
+			prefix = strings.ReplaceAll(prefix, "{timeframe}", m.Timeframe.String())
+			prefix = strings.ReplaceAll(prefix, "{et}", "et")
+			
+			// 清理多余的连字符和尾部
+			prefix = regexp.MustCompile(`-+`).ReplaceAllString(prefix, "-")
+			prefix = strings.TrimSuffix(prefix, "-")
+			if prefix != "" {
+				return prefix + "-"
+			}
+		}
+	}
+	
+	// 兼容旧逻辑
 	switch m.SlugStyle {
 	case SlugStylePolymarketHourlyET:
-		return fmt.Sprintf("%s-up-or-down-", m.coinName())
+		// 使用硬编码映射获取币种名称（确保 BTC -> bitcoin, ETH -> ethereum）
+		coinName := m.getHourlyETCoinName()
+		return fmt.Sprintf("%s-up-or-down-", coinName)
 	default:
 		return fmt.Sprintf("%s-%s-%s-", m.Symbol, m.Kind, m.Timeframe.String())
 	}
@@ -216,6 +309,33 @@ func (m MarketSpec) coinName() string {
 	}
 }
 
+// hourlyETSlugMapping 1小时市场的硬编码映射表
+// 格式：{coinName}-up-or-down-{month}-{day}-{hour}{am|pm}-et
+// 例如：bitcoin-up-or-down-december-24-11am-et
+//       ethereum-up-or-down-december-24-11am-et
+var hourlyETSlugMapping = map[string]string{
+	// BTC 映射
+	"bitcoin": "bitcoin",
+	"btc":     "bitcoin",
+	// ETH 映射
+	"ethereum": "ethereum",
+	"eth":      "ethereum",
+	// 其他币种可以继续添加
+	"solana": "solana",
+	"sol":    "solana",
+	"xrp":    "xrp",
+}
+
+// getHourlyETCoinName 获取1小时市场使用的币种名称（硬编码映射）
+func (m MarketSpec) getHourlyETCoinName() string {
+	symbol := strings.ToLower(strings.TrimSpace(m.Symbol))
+	if coinName, ok := hourlyETSlugMapping[symbol]; ok {
+		return coinName
+	}
+	// fallback：使用 coinName() 方法
+	return m.coinName()
+}
+
 func (m MarketSpec) slugPolymarketHourlyET(periodStartUnix int64) string {
 	loc := m.location(time.Now())
 	t := time.Unix(periodStartUnix, 0).In(loc)
@@ -239,7 +359,9 @@ func (m MarketSpec) slugPolymarketHourlyET(periodStartUnix int64) string {
 		h12 = h - 12
 		ampm = "pm"
 	}
-	return fmt.Sprintf("%s-up-or-down-%s-%d-%d%s-et", m.coinName(), month, day, h12, ampm)
+	// 使用硬编码映射获取币种名称（确保 BTC -> bitcoin, ETH -> ethereum）
+	coinName := m.getHourlyETCoinName()
+	return fmt.Sprintf("%s-up-or-down-%s-%d-%d%s-et", coinName, month, day, h12, ampm)
 }
 
 var hourTokenRe = regexp.MustCompile(`^(\d{1,2})(am|pm)$`)
@@ -247,15 +369,25 @@ var hourTokenRe = regexp.MustCompile(`^(\d{1,2})(am|pm)$`)
 func parsePolymarketHourlyETSlug(slug string, now time.Time) (int64, bool) {
 	parts := strings.Split(strings.ToLower(strings.TrimSpace(slug)), "-")
 	// 预期：{coin}-up-or-down-{month}-{day}-{hour}{am|pm}-et
+	// 示例：bitcoin-up-or-down-december-24-11am-et
+	//       ethereum-up-or-down-december-24-11am-et
 	// split 后：coin, up, or, down, month, day, hourToken, et
 	if len(parts) < 8 {
 		return 0, false
 	}
+	// 验证格式：up-or-down
 	if parts[1] != "up" || parts[2] != "or" || parts[3] != "down" {
 		return 0, false
 	}
+	// 验证结尾：et
 	if parts[len(parts)-1] != "et" {
 		return 0, false
+	}
+	// 验证币种名称（支持 bitcoin, ethereum 等硬编码映射）
+	coinName := parts[0]
+	if _, ok := hourlyETSlugMapping[coinName]; !ok {
+		// 如果不在映射表中，也允许（可能是其他币种）
+		// 但确保是已知的格式
 	}
 	monthToken := parts[4]
 	dayToken := parts[5]

@@ -19,8 +19,9 @@ type Config struct {
 	MinMoveCents            int     `yaml:"minMoveCents" json:"minMoveCents"`                       // 窗口内最小上行位移（分）
 	MinVelocityCentsPerSec  float64 `yaml:"minVelocityCentsPerSec" json:"minVelocityCentsPerSec"`   // 最小速度（分/秒）
 	CooldownMs              int     `yaml:"cooldownMs" json:"cooldownMs"`                           // 触发冷却（毫秒）
-	OncePerCycle            bool    `yaml:"oncePerCycle" json:"oncePerCycle"`                       // 每周期最多触发一次
+	OncePerCycle            bool    `yaml:"oncePerCycle" json:"oncePerCycle"`                       // 每周期最多触发一次（已废弃，使用 maxTradesPerCycle）
 	WarmupMs                int     `yaml:"warmupMs" json:"warmupMs"`                               // 启动/换周期后的预热窗口（毫秒）
+	MaxTradesPerCycle       int     `yaml:"maxTradesPerCycle" json:"maxTradesPerCycle"`             // 每周期最多交易次数（0=不设限）
 
 	// 下单安全参数
 	HedgeOffsetCents int `yaml:"hedgeOffsetCents" json:"hedgeOffsetCents"` // 对侧挂单 = (100 - entryAskCents - offset)
@@ -64,6 +65,14 @@ func (c *Config) Validate() error {
 	}
 	if c.WarmupMs < 0 {
 		c.WarmupMs = 0
+	}
+	// maxTradesPerCycle: 0 表示不设限，>0 表示限制次数
+	// 如果未设置且 oncePerCycle=true，则默认为 1（向后兼容）
+	if c.MaxTradesPerCycle < 0 {
+		c.MaxTradesPerCycle = 0
+	}
+	if c.OncePerCycle && c.MaxTradesPerCycle == 0 {
+		c.MaxTradesPerCycle = 1
 	}
 	if c.HedgeOffsetCents <= 0 {
 		c.HedgeOffsetCents = 3
