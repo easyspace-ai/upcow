@@ -55,8 +55,6 @@ type Strategy struct {
 	TradingService *services.TradingService
 	Config         `yaml:",inline" json:",inline"`
 
-	guard common.MarketSlugGuard
-
 	// event aggregation
 	signalC chan struct{}
 	priceMu sync.Mutex
@@ -154,6 +152,23 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.Exchan
 	return ctx.Err()
 }
 
+// OnCycle 框架层周期切换回调：统一重置 unifiedarb 的本周期状态。
+func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, newMarket *domain.Market) {
+	now := time.Now()
+	if newMarket == nil {
+		return
+	}
+	s.resetCycle(now, newMarket)
+	// 清空“参考价格”，避免跨周期用旧价做相对滑点保护
+	s.lastPxMu.Lock()
+	s.lastPx = make(map[domain.TokenType]domain.Price)
+	s.lastPxMu.Unlock()
+	// 清空事件缓存，避免旧事件残留触发 step
+	s.priceMu.Lock()
+	s.latest = make(map[domain.TokenType]*events.PriceChangedEvent)
+	s.priceMu.Unlock()
+}
+
 func (s *Strategy) OnPriceChanged(_ context.Context, e *events.PriceChangedEvent) error {
 	if e == nil || e.Market == nil {
 		return nil
@@ -221,11 +236,6 @@ func (s *Strategy) step(loopCtx context.Context) {
 	}
 	if now.IsZero() {
 		now = time.Now()
-	}
-
-	// 3) 周期切换：重置状态
-	if s.guard.Update(m.Slug) {
-		s.resetCycle(now, m)
 	}
 
 	// 4) 先处理订单更新（更新仓位/成本/plan 状态）

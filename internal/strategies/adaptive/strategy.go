@@ -54,9 +54,6 @@ type Strategy struct {
 	makerOrders map[domain.TokenType]map[string]string // tokenType -> priceKey -> orderID
 	makerMu     sync.RWMutex
 
-	// 周期隔离
-	marketGuard common.MarketSlugGuard
-
 	// 日志时间戳
 	priceLogTs time.Time
 
@@ -198,15 +195,26 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.Exchan
 	return ctx.Err()
 }
 
+// OnCycle 框架层周期切换回调：统一在这里处理市场切换（策略内部不再基于 slug 对比做周期判断）。
+func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, newMarket *domain.Market) {
+	if newMarket == nil || newMarket.Slug == "" {
+		return
+	}
+	log.Infof("🔄 [adaptive] 周期切换: %s", newMarket.Slug)
+	s.onMarketSwitch(newMarket)
+}
+
 // OnPriceChanged 处理价格变化事件
 func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
 	if e == nil || e.Market == nil {
 		return nil
 	}
 
-	// 周期切换检测
-	if s.marketGuard.Update(e.Market.Slug) {
-		log.Infof("🔄 [adaptive] 周期切换: %s", e.Market.Slug)
+	// 兜底：如果框架的 OnCycle 尚未来得及初始化 marketInfo（极端竞态），这里做一次性初始化
+	s.marketMu.RLock()
+	inited := s.marketInfo.slug != ""
+	s.marketMu.RUnlock()
+	if !inited && e.Market.Slug != "" {
 		s.onMarketSwitch(e.Market)
 	}
 

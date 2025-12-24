@@ -290,6 +290,12 @@ func (u *UserWebSocket) tradeDispatchLoop() {
 func (u *UserWebSocket) OnOrderUpdate(handler ports.OrderUpdateHandler) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	// 去重：避免周期切换/重复注册导致同一 handler 被多次追加
+	for _, h := range u.orderHandlers {
+		if h == handler {
+			return
+		}
+	}
 	u.orderHandlers = append(u.orderHandlers, handler)
 
 	// 首次注册 handler 后，尽快 flush 早到事件（不阻塞调用方）
@@ -316,6 +322,11 @@ func (u *UserWebSocket) OnOrderUpdate(handler ports.OrderUpdateHandler) {
 func (u *UserWebSocket) OnTradeUpdate(handler ports.TradeUpdateHandler) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	for _, h := range u.tradeHandlers {
+		if h == handler {
+			return
+		}
+	}
 	u.tradeHandlers = append(u.tradeHandlers, handler)
 
 	if len(u.tradeHandlers) == 1 {

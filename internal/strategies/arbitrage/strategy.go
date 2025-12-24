@@ -9,7 +9,6 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/execution"
-	"github.com/betbot/gobet/pkg/marketmath"
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
@@ -62,17 +61,16 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 
 	orderCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
-	yesBid, yesAsk, noBid, noAsk, source, err := s.TradingService.GetTopOfBook(orderCtx, m)
-	if err != nil {
+	mq, err := s.TradingService.GetMarketQuality(orderCtx, m, nil)
+	if err != nil || mq == nil {
 		return nil
 	}
-	arb, err := marketmath.CheckArbitrage(marketmath.TopOfBook{
-		YesBidPips: yesBid.Pips,
-		YesAskPips: yesAsk.Pips,
-		NoBidPips:  noBid.Pips,
-		NoAskPips:  noAsk.Pips,
-	})
-	if err != nil || arb == nil || arb.Type != "long" {
+	// 统一盘口 gate：由服务层给出质量分/原因码
+	if !mq.Tradable() {
+		return nil
+	}
+	arb := mq.Arbitrage
+	if arb == nil || arb.Type != "long" {
 		return nil
 	}
 	// ProfitTargetCents：旧口径（0.01），换算成 pips（0.0001）
@@ -82,8 +80,8 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	}
 
 	// 使用“有效买入价”（可能来自镜像侧的 bid）
-	yesAsk = domain.Price{Pips: arb.BuyYesPips}
-	noAsk = domain.Price{Pips: arb.BuyNoPips}
+	yesAsk := domain.Price{Pips: arb.BuyYesPips}
+	noAsk := domain.Price{Pips: arb.BuyNoPips}
 
 	size := s.OrderSize
 	if yesAsk.ToDecimal() > 0 {
@@ -106,8 +104,8 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if err == nil {
 		s.rounds++
 		s.lastAt = time.Now()
-		log.Infof("🎯 [arbitrage] complete-set(effective): rounds=%d/%d profit=%dct cost=%.4f src=%s size=%.4f market=%s",
-			s.rounds, s.MaxRoundsPerPeriod, arb.ProfitPips/100, float64(arb.LongCostPips)/10000.0, source, size, m.Slug)
+		log.Infof("🎯 [arbitrage] complete-set(effective): rounds=%d/%d profit=%dct cost=%.4f src=%s score=%d size=%.4f market=%s",
+			s.rounds, s.MaxRoundsPerPeriod, arb.ProfitPips/100, float64(arb.LongCostPips)/10000.0, mq.Source, mq.Score, size, m.Slug)
 	}
 	return nil
 }

@@ -15,7 +15,7 @@ internal/strategies/<strategy_name>/
 - **下单统一入口**：报价/滑点/最小金额调整要复用 `internal/strategies/common` 的通用组件（例如 `QuoteAndAdjustBuy`）
 - **限并发**：必须使用 `common.InFlightLimiter`
 - **非阻塞信号**：必须使用 `common.TrySignal` / `common.TrySend`
-- **跨周期隔离**：必须使用 `common.MarketSlugGuard`，订单必须携带 `MarketSlug`
+- **跨周期隔离**：周期切换由框架统一管理；策略如需重置状态，实现 `bbgo.CycleAwareStrategy.OnCycle`（禁止在策略内自行对比 market slug）
 - **配置加载**：按 bbgo(main) 风格，配置由 loader 直接反序列化到策略 struct（不需要 adapter）
 
 ### 可直接复制的代码骨架
