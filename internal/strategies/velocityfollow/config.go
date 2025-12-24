@@ -26,6 +26,23 @@ type Config struct {
 	HedgeOffsetCents int `yaml:"hedgeOffsetCents" json:"hedgeOffsetCents"` // 对侧挂单 = (100 - entryAskCents - offset)
 	MaxEntryPriceCents int `yaml:"maxEntryPriceCents" json:"maxEntryPriceCents"` // 吃单价上限（分），避免 99/100 假盘口
 	MaxSpreadCents     int `yaml:"maxSpreadCents" json:"maxSpreadCents"`         // 盘口价差上限（分），避免极差盘口误触发
+
+	// Binance K线融合（可选）：用“本周期开盘第 1 根 1m K 线阴阳”作为 bias/过滤器
+	UseBinanceOpen1mBias bool   `yaml:"useBinanceOpen1mBias" json:"useBinanceOpen1mBias"`
+	BiasMode             string `yaml:"biasMode" json:"biasMode"` // "hard" | "soft"
+	Open1mMaxWaitSeconds int    `yaml:"open1mMaxWaitSeconds" json:"open1mMaxWaitSeconds"`
+	Open1mMinBodyBps     int    `yaml:"open1mMinBodyBps" json:"open1mMinBodyBps"` // 实体最小阈值（bps，1bp=0.01%）
+	Open1mMaxWickBps     int    `yaml:"open1mMaxWickBps" json:"open1mMaxWickBps"` // 影线最大阈值（bps）
+	RequireBiasReady     bool   `yaml:"requireBiasReady" json:"requireBiasReady"` // 开启 bias 后，是否必须等开盘 1m 收线再允许交易
+
+	// 当候选方向与开盘 1m bias 相反时，提高触发门槛（仅 BiasMode="soft" 时生效）
+	OppositeBiasVelocityMultiplier float64 `yaml:"oppositeBiasVelocityMultiplier" json:"oppositeBiasVelocityMultiplier"`
+	OppositeBiasMinMoveExtraCents  int     `yaml:"oppositeBiasMinMoveExtraCents" json:"oppositeBiasMinMoveExtraCents"`
+
+	// 可选：用 Binance 1s 方向做确认（借鉴 momentum bot 的“底层硬动”过滤）
+	UseBinanceMoveConfirm     bool `yaml:"useBinanceMoveConfirm" json:"useBinanceMoveConfirm"`
+	MoveConfirmWindowSeconds  int  `yaml:"moveConfirmWindowSeconds" json:"moveConfirmWindowSeconds"`   // lookback 秒数
+	MinUnderlyingMoveBps      int  `yaml:"minUnderlyingMoveBps" json:"minUnderlyingMoveBps"`         // 最小底层波动（bps）
 }
 
 func (c *Config) Validate() error {
@@ -59,6 +76,41 @@ func (c *Config) Validate() error {
 	}
 	if c.HedgeOrderSize < 0 {
 		c.HedgeOrderSize = 0
+	}
+
+	// Binance bias defaults
+	if c.BiasMode == "" {
+		c.BiasMode = "hard"
+	}
+	if c.BiasMode != "hard" && c.BiasMode != "soft" {
+		return fmt.Errorf("biasMode 必须是 hard 或 soft")
+	}
+	if c.Open1mMaxWaitSeconds <= 0 {
+		c.Open1mMaxWaitSeconds = 120
+	}
+	if c.Open1mMinBodyBps <= 0 {
+		c.Open1mMinBodyBps = 3 // 0.03%
+	}
+	if c.Open1mMaxWickBps <= 0 {
+		c.Open1mMaxWickBps = 25 // 0.25%
+	}
+	// 默认：如果你显式开启 bias，我们就等 1m 收线再做（更贴合你说的“阴阳影响很大”）
+	if c.UseBinanceOpen1mBias && !c.RequireBiasReady {
+		c.RequireBiasReady = true
+	}
+	if c.OppositeBiasVelocityMultiplier <= 0 {
+		c.OppositeBiasVelocityMultiplier = 1.5
+	}
+	if c.OppositeBiasMinMoveExtraCents < 0 {
+		c.OppositeBiasMinMoveExtraCents = 0
+	}
+
+	// Binance move confirm defaults
+	if c.MoveConfirmWindowSeconds <= 0 {
+		c.MoveConfirmWindowSeconds = 60
+	}
+	if c.MinUnderlyingMoveBps <= 0 {
+		c.MinUnderlyingMoveBps = 20 // 0.20%
 	}
 	return nil
 }

@@ -205,6 +205,13 @@ func (t *Trader) injectServicesIntoStrategy(ctx context.Context, strategy interf
 		}
 	}
 
+	// 注入 Binance Futures Klines（秒级/1分钟）
+	if t.environment.BinanceFuturesKlines != nil {
+		if err := t.injectField(strategy, "BinanceFuturesKlines", t.environment.BinanceFuturesKlines); err != nil {
+			traderLog.Debugf("failed to inject BinanceFuturesKlines into %s: %v", strategyID, err)
+		}
+	}
+
 	// 注入系统级配置（直接回调模式防抖间隔，BBGO风格：只支持直接模式）
 	if err := t.injectField(strategy, "directModeDebounce", t.environment.DirectModeDebounce); err != nil {
 		traderLog.Debugf("failed to inject directModeDebounce into %s: %v", strategyID, err)

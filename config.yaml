@@ -15,7 +15,8 @@ proxy:
 market:
   symbol: "btc"     # btc/eth/sol/xrp ...
   timeframe: "15m"  # 15m/1h/4h
-  kind: "updown"    # 当前框架默认 updown
+  kind: "updown"    # timestamp 模式下常用 updown；hourly_et 模式下可用 up-or-down
+  slugStyle: "timestamp"  # timestamp / polymarket_hourly_et
 
 # 策略配置（bbgo main 风格：exchangeStrategies 动态挂载）
 # 格式说明：
@@ -62,6 +63,43 @@ exchangeStrategies:
 
   # threshold 策略（如需启用请自行加回）
   
+  # 速度追随策略（velocityfollow）：追涨“速度快”的一侧 + 对侧互补挂单
+  # 并可选融合 Binance Futures “本周期开盘第 1 根 1m K 线阴阳”做 bias/过滤。
+  #
+  # - on: polymarket
+  #   velocityfollow:
+  #     # 基础下单
+  #     orderSize: 5
+  #     hedgeOrderSize: 0              # 0=跟随 orderSize
+  #
+  #     # “速度快”判定（窗口内上行 cents/sec）
+  #     windowSeconds: 10
+  #     minMoveCents: 3
+  #     minVelocityCentsPerSec: 0.3
+  #
+  #     cooldownMs: 1500
+  #     oncePerCycle: true
+  #     warmupMs: 800
+  #
+  #     hedgeOffsetCents: 3
+  #     maxEntryPriceCents: 95
+  #     maxSpreadCents: 5
+  #
+  #     # 开盘 1m K 线 bias（可选）
+  #     useBinanceOpen1mBias: true
+  #     biasMode: "hard"               # hard=只顺势；soft=逆势门槛更高
+  #     open1mMaxWaitSeconds: 120
+  #     open1mMinBodyBps: 3
+  #     open1mMaxWickBps: 25
+  #     requireBiasReady: true
+  #     oppositeBiasVelocityMultiplier: 1.5
+  #     oppositeBiasMinMoveExtraCents: 2
+  #
+  #     # 底层硬动确认（可选，借鉴 momentum bot）
+  #     useBinanceMoveConfirm: true
+  #     moveConfirmWindowSeconds: 60
+  #     minUnderlyingMoveBps: 20
+
   # #Updown 策略配置（价格变化时自动下单）
   # - on: polymarket
   #   updown:

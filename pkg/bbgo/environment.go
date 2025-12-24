@@ -15,6 +15,7 @@ type Environment struct {
 	// 服务
 	TradingService     *services.TradingService
 	MarketDataService  *services.MarketDataService
+	BinanceFuturesKlines *services.BinanceFuturesKlines
 	PersistenceService persistence.Service
 	Executor           CommandExecutor // 确定性：串行执行（网格等）
 	ConcurrentExecutor CommandExecutor // 并发：worker pool（套利等）
@@ -54,6 +55,11 @@ func (e *Environment) SetTradingService(ts *services.TradingService) {
 // SetMarketDataService 设置市场数据服务
 func (e *Environment) SetMarketDataService(mds *services.MarketDataService) {
 	e.MarketDataService = mds
+}
+
+// SetBinanceFuturesKlines 设置 Binance 合约 K 线服务
+func (e *Environment) SetBinanceFuturesKlines(svc *services.BinanceFuturesKlines) {
+	e.BinanceFuturesKlines = svc
 }
 
 // SetPersistenceService 设置持久化服务
@@ -109,6 +115,10 @@ func (e *Environment) Start(ctx context.Context) error {
 	if e.MarketDataService != nil {
 		e.MarketDataService.Start()
 	}
+	// 启动 Binance K 线服务
+	if e.BinanceFuturesKlines != nil {
+		e.BinanceFuturesKlines.Start()
+	}
 
 	// 启动交易服务
 	if e.TradingService != nil {
@@ -157,6 +167,11 @@ func (e *Environment) Close() error {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = e.ConcurrentExecutor.Stop(stopCtx)
 		cancel()
+	}
+
+	// 停止 Binance K 线服务
+	if e.BinanceFuturesKlines != nil {
+		e.BinanceFuturesKlines.Stop()
 	}
 
 	for _, session := range e.sessions {

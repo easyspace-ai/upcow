@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -200,6 +201,14 @@ func main() {
 	environ := bbgo.NewEnvironment()
 	environ.SetMarketDataService(marketDataService)
 	environ.SetTradingService(tradingService)
+
+	// Binance Futures Klines（1s/1m）：供策略读取秒级与 1 分钟 K 线（尤其是“开盘 1 分钟”）
+	binanceProxyURL := ""
+	if cfg.Proxy != nil {
+		binanceProxyURL = fmt.Sprintf("http://%s:%d", cfg.Proxy.Host, cfg.Proxy.Port)
+	}
+	binanceSymbol := strings.ToLower(strings.TrimSpace(cfg.Market.Symbol)) + "usdt"
+	environ.SetBinanceFuturesKlines(services.NewBinanceFuturesKlines(binanceSymbol, binanceProxyURL))
 
 	// 创建并注入全局命令执行器（串行执行交易/网络 IO，策略 loop 不直接阻塞在网络调用上）
 	environ.SetExecutor(bbgo.NewSerialCommandExecutor(2048))

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"strconv"
 	"sync"
 	"time"
 
@@ -284,7 +283,10 @@ func (s *MarketDataService) FetchMarketInfo(ctx context.Context, slug string) (*
 // 当获取到未来市场数据时，自动触发预加载更多未来市场
 func (s *MarketDataService) triggerPreloadIfNeeded(currentSlug string) {
 	// 从 slug 提取时间戳
-	currentTs := extractTimestampFromSlug(currentSlug)
+	currentTs, ok := s.spec.TimestampFromSlug(currentSlug, time.Now())
+	if !ok {
+		currentTs = time.Now().Unix()
+	}
 	now := time.Now().Unix()
 
 	// 如果这是未来的市场（时间戳 > 当前时间），触发预加载
@@ -312,7 +314,11 @@ func (s *MarketDataService) fetchFromAPI(ctx context.Context, slug string) (*dom
 	}
 
 	// 从 slug 提取时间戳
-	timestamp := extractTimestampFromSlug(slug)
+	timestamp, ok := s.spec.TimestampFromSlug(slug, time.Now())
+	if !ok {
+		// fallback：尽量用“当前 spec 对齐后的周期起点”
+		timestamp = s.spec.CurrentPeriodStartUnix(time.Now())
+	}
 
 	market := &domain.Market{
 		Slug:        slug,
@@ -339,18 +345,6 @@ func parseTokenIDs(clobTokenIDs string) (yesAssetID, noAssetID string) {
 		noAssetID = parts[1]
 	}
 	return
-}
-
-// extractTimestampFromSlug 从 slug 提取时间戳
-func extractTimestampFromSlug(slug string) int64 {
-	re := regexp.MustCompile(`-(\d+)$`)
-	matches := re.FindStringSubmatch(slug)
-	if len(matches) >= 2 {
-		if ts, err := strconv.ParseInt(matches[1], 10, 64); err == nil {
-			return ts
-		}
-	}
-	return time.Now().Unix()
 }
 
 // getString 从 map 获取字符串值
