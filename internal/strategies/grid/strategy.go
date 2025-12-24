@@ -48,7 +48,6 @@ type Strategy struct {
 	currentPrice map[domain.TokenType]*events.PriceChangedEvent
 
 	// 周期管理
-	guard              common.MarketSlugGuard
 	firstSeenAt        time.Time
 	lastSubmitAt       time.Time
 	entriesThisCycle   int
@@ -145,6 +144,32 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.Exchan
 	return ctx.Err()
 }
 
+// OnCycle 框架层周期切换回调：统一重置 grid 策略的“本周期状态”。
+func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, newMarket *domain.Market) {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.firstSeenAt = now
+	s.lastSubmitAt = time.Time{}
+	s.entriesThisCycle = 0
+	s.roundsCompleted = 0
+	s.flattenedThisCycle = false
+	s.tracked = make(map[string]*trackedOrder)
+	s.usedLevel = make(map[domain.TokenType]map[int]bool)
+	s.currentRound = 0
+	s.roundsThisCycle = 0
+	s.roundEntryOrders = make(map[int]map[string]*trackedOrder)
+	s.roundStartTime = make(map[int]time.Time)
+
+	// 更新 assetID（不同周期的市场可能有不同的 assetID）
+	if newMarket != nil && newMarket.YesAssetID != "" && newMarket.NoAssetID != "" {
+		s.yesAssetID = newMarket.YesAssetID
+		s.noAssetID = newMarket.NoAssetID
+		s.validated = true
+	}
+}
+
 // OnPriceChanged 直接处理价格事件，不通过信号机制
 func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
 	if e == nil || e.Market == nil {
@@ -223,28 +248,8 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 		now = e.Timestamp
 	}
 
-	// 周期切换：重置状态
+	// 框架层已在 OnCycle 做周期重置；这里仅做 firstSeenAt 兜底
 	s.mu.Lock()
-	if s.guard.Update(m.Slug) {
-		s.firstSeenAt = now
-		s.lastSubmitAt = time.Time{}
-		s.entriesThisCycle = 0
-		s.roundsCompleted = 0
-		s.flattenedThisCycle = false
-		s.tracked = make(map[string]*trackedOrder)
-		s.usedLevel = make(map[domain.TokenType]map[int]bool)
-		s.currentRound = 0
-		s.roundsThisCycle = 0
-		s.roundEntryOrders = make(map[int]map[string]*trackedOrder)
-		s.roundStartTime = make(map[int]time.Time)
-		// 更新 assetID（不同周期的市场可能有不同的 assetID）
-		if m.YesAssetID != "" && m.NoAssetID != "" {
-			s.yesAssetID = m.YesAssetID
-			s.noAssetID = m.NoAssetID
-			s.validated = true
-		}
-		log.Infof("🔄 [grid] 周期切换，重置状态: market=%s", m.Slug)
-	}
 	if s.firstSeenAt.IsZero() {
 		s.firstSeenAt = now
 	}
