@@ -24,6 +24,10 @@ type BinanceFuturesKlines struct {
 	mu sync.RWMutex
 	// interval -> latest
 	latest map[string]Kline
+	// interval -> startMs -> kline
+	history map[string]map[int64]Kline
+	// interval -> ordered startMs (oldest -> newest)
+	order map[string][]int64
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -59,6 +63,8 @@ func NewBinanceFuturesKlines(symbol string, proxyURL string) *BinanceFuturesKlin
 	return &BinanceFuturesKlines{
 		symbol:   s,
 		latest:   make(map[string]Kline),
+		history:  make(map[string]map[int64]Kline),
+		order:    make(map[string][]int64),
 		ctx:      ctx,
 		cancel:   cancel,
 		proxyURL: strings.TrimSpace(proxyURL),
@@ -91,13 +97,84 @@ func (b *BinanceFuturesKlines) Latest(interval string) (Kline, bool) {
 	return kl, ok
 }
 
+// Get 返回某个 interval 在指定 startTimeMs 的 kline（如果缓存里有）。
+func (b *BinanceFuturesKlines) Get(interval string, startTimeMs int64) (Kline, bool) {
+	interval = strings.ToLower(strings.TrimSpace(interval))
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	mp := b.history[interval]
+	if mp == nil {
+		return Kline{}, false
+	}
+	kl, ok := mp[startTimeMs]
+	return kl, ok
+}
+
+// NearestAtOrBefore 返回 startTimeMs <= targetMs 的最近一根 kline（用于做“lookback window”）。
+func (b *BinanceFuturesKlines) NearestAtOrBefore(interval string, targetMs int64) (Kline, bool) {
+	interval = strings.ToLower(strings.TrimSpace(interval))
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	ord := b.order[interval]
+	if len(ord) == 0 {
+		return Kline{}, false
+	}
+	mp := b.history[interval]
+	if mp == nil {
+		return Kline{}, false
+	}
+	for i := len(ord) - 1; i >= 0; i-- {
+		st := ord[i]
+		if st <= targetMs {
+			kl, ok := mp[st]
+			return kl, ok
+		}
+	}
+	return Kline{}, false
+}
+
 func (b *BinanceFuturesKlines) setLatest(kl Kline) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.latest == nil {
 		b.latest = make(map[string]Kline)
 	}
-	b.latest[strings.ToLower(kl.Interval)] = kl
+	interval := strings.ToLower(strings.TrimSpace(kl.Interval))
+	b.latest[interval] = kl
+
+	// 写入历史（用于查“开盘 1m”等非 latest 的 kline）
+	if b.history == nil {
+		b.history = make(map[string]map[int64]Kline)
+	}
+	if b.order == nil {
+		b.order = make(map[string][]int64)
+	}
+	if b.history[interval] == nil {
+		b.history[interval] = make(map[int64]Kline)
+	}
+	if _, exists := b.history[interval][kl.StartTimeMs]; !exists {
+		b.order[interval] = append(b.order[interval], kl.StartTimeMs)
+	}
+	b.history[interval][kl.StartTimeMs] = kl
+
+	// 控制内存：不同 interval 保留不同长度
+	maxLen := 0
+	switch interval {
+	case "1s":
+		maxLen = 1200 // ~20分钟
+	case "1m":
+		maxLen = 240 // ~4小时
+	default:
+		maxLen = 256
+	}
+	if maxLen > 0 && len(b.order[interval]) > maxLen {
+		overflow := len(b.order[interval]) - maxLen
+		evict := b.order[interval][:overflow]
+		b.order[interval] = b.order[interval][overflow:]
+		for _, st := range evict {
+			delete(b.history[interval], st)
+		}
+	}
 }
 
 func (b *BinanceFuturesKlines) run() {

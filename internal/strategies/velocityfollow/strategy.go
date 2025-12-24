@@ -47,6 +47,12 @@ type Strategy struct {
 	lastTriggerAt   time.Time
 	tradedThisCycle bool
 
+	// Binance-bias state (per cycle)
+	cycleStartMs int64
+	biasReady    bool
+	biasToken    domain.TokenType
+	biasReason   string
+
 	// filter: only handle current configured market
 	marketSlugPrefix string
 
@@ -103,6 +109,10 @@ func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, _ *domain.Market
 	s.samples = make(map[domain.TokenType][]sample)
 	s.firstSeenAt = time.Now()
 	s.tradedThisCycle = false
+	s.cycleStartMs = 0
+	s.biasReady = false
+	s.biasToken = ""
+	s.biasReason = ""
 	// 不清 lastTriggerAt：避免周期切换瞬间重复触发
 }
 
@@ -126,6 +136,54 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if s.firstSeenAt.IsZero() {
 		s.firstSeenAt = now
 	}
+
+	// 尽量用 market.Timestamp 作为本周期起点（框架会从 slug 解析）
+	if e.Market.Timestamp > 0 {
+		st := e.Market.Timestamp * 1000
+		if s.cycleStartMs == 0 || s.cycleStartMs != st {
+			s.cycleStartMs = st
+			s.biasReady = false
+			s.biasToken = ""
+			s.biasReason = ""
+		}
+	}
+
+	// 可选：用“开盘第 1 根 1m K线阴阳”做 bias（hard/soft）
+	if s.UseBinanceOpen1mBias {
+		// 如果等太久还没有拿到那根 1m，就降级为“无 bias”继续跑
+		if !s.biasReady && s.cycleStartMs > 0 && s.Open1mMaxWaitSeconds > 0 {
+			if now.UnixMilli()-s.cycleStartMs > int64(s.Open1mMaxWaitSeconds)*1000 {
+				s.biasReady = true
+				s.biasToken = ""
+				s.biasReason = "open1m_timeout"
+			}
+		}
+
+		if !s.biasReady && s.BinanceFuturesKlines != nil && s.cycleStartMs > 0 {
+			if k, ok := s.BinanceFuturesKlines.Get("1m", s.cycleStartMs); ok && k.IsClosed && k.Open > 0 {
+				bodyBps, wickBps, dirTok := candleStatsBps(k, domain.TokenTypeUp, domain.TokenTypeDown)
+				if bodyBps < s.Open1mMinBodyBps {
+					s.biasReady = true
+					s.biasToken = ""
+					s.biasReason = "open1m_body_too_small"
+				} else if wickBps > s.Open1mMaxWickBps {
+					s.biasReady = true
+					s.biasToken = ""
+					s.biasReason = "open1m_wick_too_large"
+				} else {
+					s.biasReady = true
+					s.biasToken = dirTok
+					s.biasReason = "open1m_ok"
+				}
+			}
+		}
+
+		if s.RequireBiasReady && !s.biasReady {
+			s.mu.Unlock()
+			return nil
+		}
+	}
+
 	if s.WarmupMs > 0 && now.Sub(s.firstSeenAt) < time.Duration(s.WarmupMs)*time.Millisecond {
 		s.mu.Unlock()
 		return nil
@@ -152,13 +210,36 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	mUp := s.computeLocked(domain.TokenTypeUp)
 	mDown := s.computeLocked(domain.TokenTypeDown)
 
+	// 根据 bias 调整阈值（soft）或直接只允许 bias 方向（hard）
+	reqMoveUp := s.MinMoveCents
+	reqMoveDown := s.MinMoveCents
+	reqVelUp := s.MinVelocityCentsPerSec
+	reqVelDown := s.MinVelocityCentsPerSec
+
+	if s.UseBinanceOpen1mBias && s.biasToken != "" && s.BiasMode == "soft" {
+		if s.biasToken == domain.TokenTypeUp {
+			reqMoveDown += s.OppositeBiasMinMoveExtraCents
+			reqVelDown *= s.OppositeBiasVelocityMultiplier
+		} else if s.biasToken == domain.TokenTypeDown {
+			reqMoveUp += s.OppositeBiasMinMoveExtraCents
+			reqVelUp *= s.OppositeBiasVelocityMultiplier
+		}
+	}
+
 	winner := domain.TokenType("")
 	winMet := metrics{}
-	if mUp.ok && mUp.delta >= s.MinMoveCents && mUp.velocity >= s.MinVelocityCentsPerSec {
+	allowUp := true
+	allowDown := true
+	if s.UseBinanceOpen1mBias && s.biasToken != "" && s.BiasMode == "hard" {
+		allowUp = s.biasToken == domain.TokenTypeUp
+		allowDown = s.biasToken == domain.TokenTypeDown
+	}
+
+	if allowUp && mUp.ok && mUp.delta >= reqMoveUp && mUp.velocity >= reqVelUp {
 		winner = domain.TokenTypeUp
 		winMet = mUp
 	}
-	if mDown.ok && mDown.delta >= s.MinMoveCents && mDown.velocity >= s.MinVelocityCentsPerSec {
+	if allowDown && mDown.ok && mDown.delta >= reqMoveDown && mDown.velocity >= reqVelDown {
 		if winner == "" || mDown.velocity > winMet.velocity {
 			winner = domain.TokenTypeDown
 			winMet = mDown
@@ -169,9 +250,36 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		return nil
 	}
 
+	// 可选：用 Binance 1s “底层硬动”过滤（借鉴 momentum bot 的 move threshold 思路）
+	if s.UseBinanceMoveConfirm {
+		if s.BinanceFuturesKlines == nil {
+			s.mu.Unlock()
+			return nil
+		}
+		nowMs := now.UnixMilli()
+		cur, okCur := s.BinanceFuturesKlines.Latest("1s")
+		past, okPast := s.BinanceFuturesKlines.NearestAtOrBefore("1s", nowMs-int64(s.MoveConfirmWindowSeconds)*1000)
+		if !okCur || !okPast || past.Close <= 0 {
+			s.mu.Unlock()
+			return nil
+		}
+		ret := (cur.Close - past.Close) / past.Close
+		retBps := int(math.Abs(ret)*10000 + 0.5)
+		dir := domain.TokenTypeDown
+		if ret >= 0 {
+			dir = domain.TokenTypeUp
+		}
+		if retBps < s.MinUnderlyingMoveBps || dir != winner {
+			s.mu.Unlock()
+			return nil
+		}
+	}
+
 	// 放锁外做 IO（下单/拉盘口）
 	// 备注：这里用一个小技巧：先把必要字段拷贝出来
 	market := e.Market
+	biasTok := s.biasToken
+	biasReason := s.biasReason
 	hedgeOffset := s.HedgeOffsetCents
 	maxEntry := s.MaxEntryPriceCents
 	maxSpread := s.MaxSpreadCents
@@ -272,8 +380,11 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if execErr == nil {
 		s.lastTriggerAt = time.Now()
 		s.tradedThisCycle = true
-		log.Infof("⚡ [%s] 触发: side=%s ask=%dc hedge=%dc vel=%.3f(c/s) move=%dc/%0.1fs market=%s",
-			ID, winner, askCents, hedgeCents, winMet.velocity, winMet.delta, winMet.seconds, market.Slug)
+		log.Infof("⚡ [%s] 触发: side=%s ask=%dc hedge=%dc vel=%.3f(c/s) move=%dc/%0.1fs bias=%s(%s) market=%s",
+			ID, winner, askCents, hedgeCents, winMet.velocity, winMet.delta, winMet.seconds, biasTok, biasReason, market.Slug)
+		if biasTok != "" || biasReason != "" {
+			log.Infof("🧭 [%s] bias: token=%s reason=%s cycleStartMs=%d", ID, biasTok, biasReason, s.cycleStartMs)
+		}
 
 		// 额外：打印 Binance 1s/1m 最新 K 线（用于你观察“开盘 1 分钟”关系）
 		if s.BinanceFuturesKlines != nil {
@@ -358,5 +469,31 @@ func ensureMinOrderSize(desiredShares float64, price float64, minUSDC float64) f
 		return minShares
 	}
 	return desiredShares
+}
+
+func candleStatsBps(k services.Kline, upTok domain.TokenType, downTok domain.TokenType) (bodyBps int, wickBps int, dirTok domain.TokenType) {
+	// body: |c-o|/o
+	body := math.Abs(k.Close-k.Open) / k.Open * 10000
+	bodyBps = int(body + 0.5)
+
+	hi := k.High
+	lo := k.Low
+	o := k.Open
+	c := k.Close
+	maxOC := math.Max(o, c)
+	minOC := math.Min(o, c)
+	upperWick := (hi - maxOC) / o * 10000
+	lowerWick := (minOC - lo) / o * 10000
+	w := math.Max(upperWick, lowerWick)
+	if w < 0 {
+		w = 0
+	}
+	wickBps = int(w + 0.5)
+
+	dirTok = downTok
+	if c >= o {
+		dirTok = upTok
+	}
+	return
 }
 

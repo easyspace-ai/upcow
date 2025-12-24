@@ -93,6 +93,34 @@ exchangeStrategies:
   #   datarecorder:
   #     output_dir: "data/recordings"  # CSV 文件保存目录
   #     use_rtds_fallback: true        # 是否使用 RTDS 作为目标价备选方案
+
+  # 速度追随策略（velocityfollow）：追涨“速度快”的一侧 + 对侧互补挂单
+  # 并可选融合 Binance Futures “本周期开盘第 1 根 1m K 线阴阳”做 bias/过滤。
+  #
+  # - on: polymarket
+  #   velocityfollow:
+  #     orderSize: 5
+  #     hedgeOrderSize: 0
+  #     windowSeconds: 10
+  #     minMoveCents: 3
+  #     minVelocityCentsPerSec: 0.3
+  #     cooldownMs: 1500
+  #     oncePerCycle: true
+  #     warmupMs: 800
+  #     hedgeOffsetCents: 3
+  #     maxEntryPriceCents: 95
+  #     maxSpreadCents: 5
+  #     useBinanceOpen1mBias: true
+  #     biasMode: "hard"
+  #     open1mMaxWaitSeconds: 120
+  #     open1mMinBodyBps: 3
+  #     open1mMaxWickBps: 25
+  #     requireBiasReady: true
+  #     oppositeBiasVelocityMultiplier: 1.5
+  #     oppositeBiasMinMoveExtraCents: 2
+  #     useBinanceMoveConfirm: true
+  #     moveConfirmWindowSeconds: 60
+  #     minUnderlyingMoveBps: 20
  
 # 系统级配置
 order_status_check_timeout: 3   # 订单状态检查超时时间（秒），如果WebSocket在此时长内没有更新，则启用API轮询，默认3秒
