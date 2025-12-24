@@ -192,6 +192,8 @@ type connectedMsg struct {
 
 func initialModel() model {
 	ctx, cancel := context.WithCancel(context.Background())
+	// 初始化全局 context
+	currentModelCtx = ctx
 	return model{
 		upBids:      make([]orderLevel, 0),
 		upAsks:      make([]orderLevel, 0),
@@ -295,6 +297,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd() // 触发下一次更新
 
 	case cycleChangeMsg:
+		// 周期切换时，先关闭旧的连接
+		initFileLogger() // 确保日志已初始化
+		if m.cancel != nil {
+			fileLogger.Printf("周期切换：关闭旧连接 (旧周期: %s -> 新周期: %s)", m.currentCycle, msg.Cycle)
+			m.cancel() // 取消旧的 context，这会停止旧的 goroutine
+		}
+		// 关闭旧的连接
+		// 注意：MarketStream 和 RTDS Client 会通过 context 取消来关闭
+		// context 取消后，相关的 goroutine 应该会自动退出
+		// 创建新的 context
+		ctx, cancel := context.WithCancel(context.Background())
+		m.ctx = ctx
+		m.cancel = cancel
+		// 设置全局变量，供 connectCmd 使用
+		currentModelCtx = ctx
+		targetCycleSlug = msg.Cycle  // 设置目标周期
+		targetCycleStart = msg.Start // 设置目标周期开始时间
+		m.connected = false          // 标记为未连接，等待新连接
 		m.currentCycle = msg.Cycle
 		m.cycleStart = msg.Start
 		return m, reconnectCmd()
@@ -307,6 +327,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentCycle = msg.cycle
 		m.cycleStart = msg.start
 		m.connected = true
+		// 确保使用正确的 context
+		if m.ctx == nil {
+			ctx, cancel := context.WithCancel(context.Background())
+			m.ctx = ctx
+			m.cancel = cancel
+			currentModelCtx = ctx // 同步到全局变量
+		}
+		// 清除目标周期信息（连接成功后不再需要）
+		targetCycleSlug = ""
+		targetCycleStart = time.Time{}
 		// 启动 BTC 价格更新 goroutine
 		return m, startBTCPriceUpdateCmd(msg.rtdsClient)
 
@@ -443,11 +473,11 @@ func renderOrderbook(title string, bids []orderLevel, asks []orderLevel) string 
 	s.WriteString(titleStyled)
 	s.WriteString("\n\n")
 
-	// 显示卖单（asks）- 从低到高（价格低的在上，最接近盘口）
+	// 显示卖单（asks）- 从高到低（倒序，价格高的在上）
 	s.WriteString(askStyle.Render("卖单 (Asks)"))
 	s.WriteString("\n")
 	if len(asks) > 0 {
-		// asks 已经按价格从低到高排序（最接近盘口的在前），直接显示前5档
+		// asks 已经按价格从高到低排序（倒序），直接显示前5档
 		for i := 0; i < len(asks) && i < orderbookDepth; i++ {
 			ask := asks[i]
 			s.WriteString(fmt.Sprintf("  %6.2f  %8.2f\n", ask.Price*100, ask.Size))
@@ -459,14 +489,14 @@ func renderOrderbook(title string, bids []orderLevel, asks []orderLevel) string 
 	s.WriteString("\n")
 
 	// 显示中间价
-	// 注意：asks[0] 是最低的卖价（最接近盘口），bids[0] 是最高的买价（最接近盘口）
+	// 注意：asks 是从高到低排序（倒序），bids 是从高到低排序
 	var midPrice float64
 	if len(bids) > 0 && len(asks) > 0 {
 		// 中间价 = (最高买价 + 最低卖价) / 2
-		// asks 是从低到高排序，asks[0] 是最低卖价（最接近盘口）
+		// asks 是从高到低排序（倒序），最低卖价在最后
 		// bids 是从高到低排序，bids[0] 是最高买价（最接近盘口）
-		lowestAsk := asks[0].Price
-		highestBid := bids[0].Price
+		lowestAsk := asks[len(asks)-1].Price // 最低卖价在最后
+		highestBid := bids[0].Price           // 最高买价在最前
 		midPrice = (highestBid + lowestAsk) / 2.0
 	} else if len(bids) > 0 {
 		midPrice = bids[0].Price
@@ -506,6 +536,14 @@ func tickCmd() tea.Cmd {
 	})
 }
 
+// connectCmd 需要访问 model 的 ctx 和周期信息，所以我们使用全局变量来传递
+// 注意：这是一个临时解决方案，更好的方式是重构代码结构
+var (
+	currentModelCtx  context.Context
+	targetCycleSlug  string
+	targetCycleStart time.Time
+)
+
 func connectCmd() tea.Cmd {
 	return func() tea.Msg {
 		// 加载配置
@@ -515,11 +553,29 @@ func connectCmd() tea.Cmd {
 			return fmt.Errorf("加载配置失败: %w", err)
 		}
 
-		ctx := context.Background()
+		// 使用全局的 context（在 cycleChangeMsg 或 Init 中设置）
+		ctx := currentModelCtx
+		if ctx == nil {
+			// 如果全局 context 为空，创建一个新的（首次连接时）
+			ctx = context.Background()
+		}
 
-		// 获取当前周期的市场
-		currentTs := services.GetCurrent15MinTimestamp()
-		currentSlug := services.Generate15MinSlug(currentTs)
+		// 获取目标周期的市场（使用全局变量中指定的周期，如果没有则使用当前周期）
+		var currentTs int64
+		var currentSlug string
+		if targetCycleSlug != "" {
+			// 使用周期切换时指定的周期
+			currentSlug = targetCycleSlug
+			currentTs = targetCycleStart.Unix()
+			initFileLogger()
+			fileLogger.Printf("连接指定周期: %s (时间戳: %d)", currentSlug, currentTs)
+		} else {
+			// 首次连接，使用当前周期
+			currentTs = services.GetCurrent15MinTimestamp()
+			currentSlug = services.Generate15MinSlug(currentTs)
+			initFileLogger()
+			fileLogger.Printf("首次连接当前周期: %s (时间戳: %d)", currentSlug, currentTs)
+		}
 
 		// 获取市场信息
 		gammaMarket, err := client.FetchMarketFromGamma(ctx, currentSlug)
@@ -657,6 +713,13 @@ type bookHandler struct {
 
 // startBookListener 启动独立的 WebSocket 连接来监听 book 消息
 func startBookListener(ctx context.Context, market *domain.Market, proxyURL string) {
+	// 使用 recover 捕获 panic，避免程序崩溃
+	defer func() {
+		if r := recover(); r != nil {
+			fileLogger.Printf("订单薄监听器 panic 恢复: %v", r)
+		}
+	}()
+
 	wsURL := "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
 	// 设置代理
@@ -718,14 +781,34 @@ func startBookListener(ctx context.Context, market *domain.Market, proxyURL stri
 				return
 			}
 
-			// 设置读取超时，避免阻塞
-			if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
-				fileLogger.Printf("设置读取超时失败: %v", err)
-				return
-			}
+			// 使用 goroutine 安全地读取消息，避免 panic
+			messageChan := make(chan []byte, 1)
+			errChan := make(chan error, 1)
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						errChan <- fmt.Errorf("读取消息 panic: %v", r)
+					}
+				}()
+				// 设置读取超时
+				if err := conn.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+					errChan <- err
+					return
+				}
+				_, msg, err := conn.ReadMessage()
+				if err != nil {
+					errChan <- err
+					return
+				}
+				messageChan <- msg
+			}()
 
-			_, message, err := conn.ReadMessage()
-			if err != nil {
+			// 等待读取结果或超时
+			var message []byte
+			select {
+			case <-ctx.Done():
+				return
+			case err := <-errChan:
 				// 检查是否是超时错误
 				if netErr, ok := err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
 					// 超时，继续循环
@@ -739,6 +822,17 @@ func startBookListener(ctx context.Context, market *domain.Market, proxyURL stri
 				}
 				// 连接失败，退出 goroutine（不 panic）
 				return
+			case msg := <-messageChan:
+				// 成功读取消息
+				message = msg
+			case <-time.After(35 * time.Second):
+				// 读取超时
+				continue
+			}
+
+			// 处理消息
+			if len(message) == 0 {
+				continue
 			}
 
 			// 处理 PING/PONG 消息
@@ -879,7 +973,7 @@ func handleBookMessage(message []byte, market *domain.Market) {
 		bidsList = bidsList[:orderbookDepth]
 	}
 
-	// 解析所有卖单并排序（从低到高，最接近盘口的5档）
+	// 解析所有卖单并排序（从高到低，倒序）
 	asksList := make([]orderLevel, 0, len(asks))
 	for _, ask := range asks {
 		if ask.Price == "" || ask.Size == "" {
@@ -898,15 +992,15 @@ func handleBookMessage(message []byte, market *domain.Market) {
 			Size:  size,
 		})
 	}
-	// 对卖单按价格从低到高排序（价格低的最接近盘口）
+	// 对卖单按价格从高到低排序（倒序）
 	for i := 0; i < len(asksList)-1; i++ {
 		for j := i + 1; j < len(asksList); j++ {
-			if asksList[i].Price > asksList[j].Price {
+			if asksList[i].Price < asksList[j].Price {
 				asksList[i], asksList[j] = asksList[j], asksList[i]
 			}
 		}
 	}
-	// 只保留前5档（最接近盘口的5档）
+	// 只保留前5档
 	if len(asksList) > orderbookDepth {
 		asksList = asksList[:orderbookDepth]
 	}

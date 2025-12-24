@@ -1,0 +1,82 @@
+# Adaptive 策略配置文件示例（Bot v5.1 复刻）
+# 
+# Adaptive 策略说明：
+# - 自适应定价模型：基于 Delta 和剩余时间计算模型概率
+# - 市场融合：70% 权重跟随市场，30% 权重使用模型
+# - 库存偏斜：根据净持仓动态调整报价
+# - 分级熔断：正常期 -> 减仓期（300s） -> 强制平仓期（180s）
+# - Maker/Taker 决策：根据价格差决定挂单还是吃单
+
+exchangeStrategies:
+  - on: polymarket
+    adaptive:
+      # ========== 策略参数 ==========
+      # k: 定价模型参数 k（默认 0.08）
+      k: 0.08
+      
+      # c: 定价模型参数 c（默认 0.10）
+      c: 0.10
+      
+      # sizePerTrade: 每次交易数量（shares，默认 12）
+      sizePerTrade: 12.0
+      
+      # inventorySkewFactor: 库存偏斜因子（默认 0.005 / 100 = 0.00005）
+      inventorySkewFactor: 0.00005
+
+      # ========== Edge 参数 ==========
+      # baseMinEdgeMaker: Maker 基础最小边距（默认 0.0005 = 0.05%）
+      baseMinEdgeMaker: 0.0005
+      
+      # baseMinEdgeTaker: Taker 基础最小边距（默认 0.003 = 0.30%）
+      baseMinEdgeTaker: 0.003
+      
+      # marketWeight: 市场权重（默认 0.7 = 70%）
+      marketWeight: 0.7
+
+      # ========== 分级熔断参数 ==========
+      # decayStartTime: 剩余时间开始衰减（秒，默认 300）
+      decayStartTime: 300
+      
+      # reduceOnlyTime: 只减不加时间（秒，默认 300）
+      reduceOnlyTime: 300
+      
+      # forceCloseTime: 强制平仓时间（秒，默认 180）
+      forceCloseTime: 180
+      
+      # maxEdgeAtZero: 结束时要求的额外利润门槛（默认 0.02 = 2%）
+      maxEdgeAtZero: 0.02
+
+      # ========== 风控参数 ==========
+      # hedgeThreshold: 净持仓阈值（默认 80）
+      hedgeThreshold: 80
+      
+      # stopQuoteThreshold: 停止报价阈值（默认 60）
+      stopQuoteThreshold: 60
+      
+      # hedgeSizeMultiplier: 对冲数量倍数（默认 1.5）
+      hedgeSizeMultiplier: 1.5
+
+      # ========== 订单限制 ==========
+      # minOrderSize: 最小订单金额（USDC，默认 1.1）
+      minOrderSize: 1.1
+
+      # ========== 市场周期配置 ==========
+      # marketIntervalSeconds: 市场周期长度（秒，默认 900 = 15分钟）
+      marketIntervalSeconds: 900
+
+# ========== 使用示例 ==========
+# 
+# 示例1：保守配置（降低风险）
+#   sizePerTrade: 5.0
+#   hedgeThreshold: 50
+#   stopQuoteThreshold: 40
+#   baseMinEdgeMaker: 0.001
+#   baseMinEdgeTaker: 0.005
+#
+# 示例2：激进配置（提高收益）
+#   sizePerTrade: 20.0
+#   hedgeThreshold: 100
+#   stopQuoteThreshold: 80
+#   baseMinEdgeMaker: 0.0003
+#   baseMinEdgeTaker: 0.002
+

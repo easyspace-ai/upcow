@@ -199,9 +199,9 @@ func (s *ExchangeSession) startPriceLoop(ctx context.Context) {
 				case <-s.priceSignalC:
 					handlers := s.priceChangeHandlers.Snapshot()
 					if len(handlers) == 0 {
-						// 关键：不要在“尚未注册策略 handler”时把合并后的最新价格清空。
-						// 否则会出现“连接刚建立收到一次价格，但策略还没 Subscribe，于是该价格被丢弃；
-						// 若后续短时间内没有新的价格事件，策略将看起来永远收不到价格，从而无法开单”。
+						// 关键：不要在"尚未注册策略 handler"时把合并后的最新价格清空。
+						// 否则会出现"连接刚建立收到一次价格，但策略还没 Subscribe，于是该价格被丢弃；
+						// 若后续短时间内没有新的价格事件，策略将看起来永远收不到价格，从而无法开单"。
 						//
 						// 这里仅打印一条诊断日志（尽量从 latestPrices 里取一个样本），并保留缓存，
 						// 等策略 handler 注册后由 OnPriceChanged 触发一次 flush。
@@ -212,11 +212,16 @@ func (s *ExchangeSession) startPriceLoop(ctx context.Context) {
 						}
 						s.priceMu.Unlock()
 						if ok && pe.event != nil {
-							sessionLog.Warnf("⚠️ [Session %s] priceChangeHandlers 为空，价格更新将被丢弃！事件: %s @ %dc",
-								s.Name, pe.event.TokenType, pe.event.NewPrice.Cents)
+							sessionLog.Warnf("⚠️ [Session %s] priceChangeHandlers 为空，价格更新将被丢弃！事件: %s @ %dc handlers数量=%d",
+								s.Name, pe.event.TokenType, pe.event.NewPrice.Cents, len(handlers))
+						} else {
+							// 即使没有价格事件，也记录一次警告，帮助诊断
+							sessionLog.Warnf("⚠️ [Session %s] priceChangeHandlers 为空，priceSignalC 收到信号但 latestPrices 也为空 handlers数量=%d",
+								s.Name, len(handlers))
 						}
 						continue
 					}
+					sessionLog.Infof("🔄 [Session %s] priceLoop: 处理价格事件 handlers数量=%d", s.Name, len(handlers))
 
 					// 合并：每次只处理最新 UP/DOWN（或其他 tokenType）的事件
 					// 注意：只有在确认“有 handler 可以处理”后才 drain 缓存，避免丢失早到的第一笔行情。
@@ -271,7 +276,7 @@ type sessionPriceHandler struct {
 }
 
 func (h *sessionPriceHandler) OnPriceChanged(ctx context.Context, event *events.PriceChangedEvent) error {
-	// 用 INFO 打一条“只出现一次”的确认日志，避免用户在 INFO 级别下误判“没运行”。
+	// 用 INFO 打一条"只出现一次"的确认日志，避免用户在 INFO 级别下误判"没运行"。
 	h.once.Do(func() {
 		if event == nil {
 			sessionLog.Infof("📥 [sessionPriceHandler] 首次收到价格事件: <nil> (Session=%s)", h.session.Name)
@@ -281,29 +286,35 @@ func (h *sessionPriceHandler) OnPriceChanged(ctx context.Context, event *events.
 			event.TokenType, event.NewPrice.Cents, h.session.Name)
 	})
 
-	// 架构层防护：Session 只分发属于“当前 market”的事件，避免周期切换时旧数据进入策略层。
+	// 架构层防护：Session 只分发属于"当前 market"的事件，避免周期切换时旧数据进入策略层。
 	// - 周期切换时 MarketScheduler 会创建新 Session 并关闭旧 Session/旧 WS，但仍可能存在乱序/延迟消息
-	// - 在这里做最终 gate，可以让策略完全不需要关心“是否旧周期”
+	// - 在这里做最终 gate，可以让策略完全不需要关心"是否旧周期"
 	if event != nil {
 		current := h.session.Market()
 		if current != nil && event.Market != nil {
 			// 优先用 timestamp 判定（单调递增且更稳定），其次用 slug 兜底
 			if current.Timestamp > 0 && event.Market.Timestamp > 0 {
 				if event.Market.Timestamp != current.Timestamp {
-					sessionLog.Debugf("⚠️ [sessionPriceHandler] 丢弃非当前周期价格事件: current=%s[%d] event=%s[%d] token=%s price=%dc session=%s",
+					sessionLog.Warnf("⚠️ [sessionPriceHandler] 丢弃非当前周期价格事件: current=%s[%d] event=%s[%d] token=%s price=%dc session=%s",
 						current.Slug, current.Timestamp, event.Market.Slug, event.Market.Timestamp, event.TokenType, event.NewPrice.Cents, h.session.Name)
 					return nil
 				}
 			} else if current.Slug != "" && event.Market.Slug != "" && event.Market.Slug != current.Slug {
-				sessionLog.Debugf("⚠️ [sessionPriceHandler] 丢弃非当前 market 价格事件: current=%s event=%s token=%s price=%dc session=%s",
+				sessionLog.Warnf("⚠️ [sessionPriceHandler] 丢弃非当前 market 价格事件: current=%s event=%s token=%s price=%dc session=%s",
 					current.Slug, event.Market.Slug, event.TokenType, event.NewPrice.Cents, h.session.Name)
 				return nil
 			}
 		}
+		// 添加 INFO 级别日志，确保能看到所有价格事件（包括被过滤的）
+		sessionLog.Infof("📥 [sessionPriceHandler] 收到价格变化事件: %s @ %dc market=%s (Session=%s)",
+			event.TokenType, event.NewPrice.Cents, func() string {
+				if event.Market != nil {
+					return event.Market.Slug
+				}
+				return "nil"
+			}(), h.session.Name)
 	}
 
-	//sessionLog.Infof("📥 [sessionPriceHandler] 收到价格变化事件，转发到 Session: %s @ %dc (Session=%s)",
-	//	event.TokenType, event.NewPrice.Cents, h.session.Name)
 	h.session.EmitPriceChanged(ctx, event)
 	return nil
 }
@@ -376,8 +387,11 @@ func (s *ExchangeSession) EmitPriceChanged(ctx context.Context, event *events.Pr
 
 	select {
 	case s.priceSignalC <- struct{}{}:
+		// 使用 Debug 级别，避免日志过多（价格事件很频繁）
+		sessionLog.Debugf("📤 [Session %s] EmitPriceChanged: 已发送价格信号 token=%s price=%dc", s.Name, event.TokenType, event.NewPrice.Cents)
 	default:
-		// 已经有信号在队列里，合并即可
+		// 已经有信号在队列里，合并即可（这种情况很常见，不需要警告）
+		sessionLog.Debugf("📤 [Session %s] EmitPriceChanged: 价格信号队列已满，合并 token=%s price=%dc", s.Name, event.TokenType, event.NewPrice.Cents)
 	}
 }
 
