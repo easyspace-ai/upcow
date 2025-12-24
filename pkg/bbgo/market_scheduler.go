@@ -25,6 +25,7 @@ type MarketScheduler struct {
 	marketDataService *services.MarketDataService
 	proxyURL          string
 	userCreds         *websocket.UserCredentials
+	wsManager         *WebSocketManager
 
 	// 当前会话
 	currentSession *ExchangeSession
@@ -56,6 +57,7 @@ func NewMarketScheduler(
 		sessionName:       sessionName,
 		proxyURL:          proxyURL,
 		userCreds:         userCreds,
+		wsManager:         NewWebSocketManager(proxyURL, userCreds),
 		ctx:               ctx,
 		cancel:            cancel,
 	}
@@ -115,26 +117,10 @@ func (s *MarketScheduler) Start(ctx context.Context) error {
 // createSession 创建新的交易所会话
 func (s *MarketScheduler) createSession(ctx context.Context, market *domain.Market) (*ExchangeSession, error) {
 	session := NewExchangeSession(s.sessionName)
-	session.SetMarket(market)
-
-	// 创建 MarketStream
-	marketStream := websocket.NewMarketStream()
-	marketStream.SetProxyURL(s.proxyURL)
-	session.SetMarketDataStream(marketStream)
-
-	// 创建 UserWebSocket（如果凭证存在）
-	if s.userCreds != nil {
-		userWebSocket := websocket.NewUserWebSocket()
-		session.SetUserDataStream(userWebSocket)
-
-		// 异步连接 UserWebSocket
-		go func() {
-			if err := userWebSocket.Connect(ctx, s.userCreds, s.proxyURL); err != nil {
-				schedulerLog.Errorf("连接用户订单 WebSocket 失败: %v", err)
-			} else {
-				schedulerLog.Infof("用户订单 WebSocket 已连接")
-			}
-		}()
+	if s.wsManager != nil {
+		_ = s.wsManager.AttachToSession(ctx, session, market)
+	} else {
+		session.SetMarket(market)
 	}
 
 	// 连接会话

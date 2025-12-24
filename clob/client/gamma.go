@@ -12,12 +12,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/betbot/gobet/pkg/cache"
 	"github.com/betbot/gobet/pkg/ratelimit"
 )
 
 var (
 	gammaRateLimiter *ratelimit.RateLimitManager
 	gammaRateLimitOnce sync.Once
+	gammaMarketCache *cache.InMemoryCache[string, *GammaMarket]
+	gammaCacheOnce   sync.Once
 )
 
 // GammaMarket Gamma API 市场数据结构
@@ -40,6 +43,14 @@ func getGammaRateLimiter() *ratelimit.RateLimitManager {
 	return gammaRateLimiter
 }
 
+func getGammaMarketCache() *cache.InMemoryCache[string, *GammaMarket] {
+	gammaCacheOnce.Do(func() {
+		// Gamma market 数据变化频率不高：默认缓存 30s 既能降低请求，又避免太陈旧
+		gammaMarketCache = cache.NewInMemoryCache[string, *GammaMarket](30 * time.Second)
+	})
+	return gammaMarketCache
+}
+
 // getProxyFromEnv 从环境变量获取代理 URL，默认使用 http://127.0.0.1:15236
 func getProxyFromEnv() string {
 	proxyVars := []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"}
@@ -54,6 +65,12 @@ func getProxyFromEnv() string {
 
 // FetchMarketFromGamma 从 Gamma API 获取市场数据（独立函数，不依赖 Client）
 func FetchMarketFromGamma(ctx context.Context, slug string) (*GammaMarket, error) {
+	if slug != "" {
+		if m, ok := getGammaMarketCache().Get(slug); ok && m != nil {
+			return m, nil
+		}
+	}
+
 	// 速率限制：等待直到允许请求
 	rateLimiter := getGammaRateLimiter()
 	if err := rateLimiter.Wait(ctx, "gamma:markets:get"); err != nil {
@@ -156,8 +173,12 @@ func FetchMarketFromGamma(ctx context.Context, slug string) (*GammaMarket, error
 	if len(markets) == 0 {
 		return nil, fmt.Errorf("未找到市场: %s", slug)
 	}
-	
-	return &markets[0], nil
+
+	out := &markets[0]
+	if slug != "" && out != nil {
+		getGammaMarketCache().Set(slug, out, 30*time.Second)
+	}
+	return out, nil
 }
 
 // FetchMultipleMarketsFromGamma 批量获取市场数据（独立函数）

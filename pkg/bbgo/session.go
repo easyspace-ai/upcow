@@ -343,7 +343,8 @@ func (s *ExchangeSession) Close() error {
 	}
 
 	if s.UserDataStream != nil {
-		// UserDataStream 的关闭逻辑在外部管理
+		// UserDataStream 也随 session 生命周期关闭（避免周期切换泄漏与重复事件源）
+		_ = s.UserDataStream.Close()
 	}
 
 	marketSlug := ""
