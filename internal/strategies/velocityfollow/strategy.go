@@ -77,12 +77,13 @@ func (s *Strategy) Initialize() error {
 	if gc := config.Get(); gc != nil {
 		if sp, err := gc.Market.Spec(); err == nil {
 			s.marketSlugPrefix = strings.ToLower(sp.SlugPrefix())
+		} else {
+			log.WithError(err).Warnf("⚠️ [%s] 读取 market 配置失败，将不做 marketSlugPrefix 过滤（可能会处理非目标市场）", ID)
 		}
 		s.minOrderSize = gc.MinOrderSize
 		s.minShareSize = gc.MinShareSize
-	}
-	if s.marketSlugPrefix == "" {
-		s.marketSlugPrefix = "btc-updown-15m-"
+	} else {
+		log.Warnf("⚠️ [%s] 全局配置未加载，将不做 marketSlugPrefix 过滤（可能会处理非目标市场）", ID)
 	}
 	if s.minOrderSize <= 0 {
 		s.minOrderSize = 1.1
@@ -122,7 +123,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	}
 
 	// 只处理目标市场（通过 prefix 匹配）
-	if !strings.HasPrefix(strings.ToLower(e.Market.Slug), s.marketSlugPrefix) {
+	if s.marketSlugPrefix != "" && !strings.HasPrefix(strings.ToLower(e.Market.Slug), s.marketSlugPrefix) {
 		return nil
 	}
 
