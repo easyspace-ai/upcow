@@ -36,3 +36,10 @@ func (s *TradingService) GetTopOfBook(ctx context.Context, market *domain.Market
 	}
 	return s.orders.GetTopOfBook(ctx, market)
 }
+
+func (s *TradingService) GetMarketQuality(ctx context.Context, market *domain.Market, opt *MarketQualityOptions) (*MarketQuality, error) {
+	if s.orders == nil {
+		return nil, fmt.Errorf("orders service not initialized")
+	}
+	return s.orders.GetMarketQuality(ctx, market, opt)
+}
