@@ -1,0 +1,41 @@
+# BTC 1h「成对锁利」MVP（pairlock）
+#
+# 用法（示例）：
+#   go run ./cmd/bot -config yml/pairlock_btc_1h_mvp.sample.yaml
+#
+# 与 15m 版本的差异：仅 timeframe 不同。你可以同时开两个进程分别跑 15m 和 1h。
+
+proxy:
+  host: "127.0.0.1"
+  port: 15236
+
+market:
+  symbol: "btc"
+  timeframe: "1h"
+  kind: "updown"
+  slugStyle: "timestamp"
+
+exchangeStrategies:
+  - on: polymarket
+    pairlock:
+      orderSize: 5
+      minOrderSize: 1.1
+      profitTargetCents: 1
+      maxRoundsPerPeriod: 60
+      cooldownMs: 250
+      entryCutoffSeconds: 20
+      onFailAction: "pause"
+      maxPlanAgeSeconds: 25
+      maxSupplementAttempts: 3
+      entryMaxBuySlippageCents: 0
+
+log_level: "info"
+log_file: "logs/pairlock_btc_1h_mvp.log"
+log_by_cycle: true
+dry_run: true
+
+minOrderSize: 1.1
+minShareSize: 5.0
+order_status_sync_interval_with_orders: 3
+order_status_sync_interval_without_orders: 30
+

@@ -17,6 +17,11 @@ type PairLockStrategyConfig struct {
 	// ProfitTargetCents 锁定利润目标（分），要求两腿总成本 <= 100 - ProfitTargetCents
 	ProfitTargetCents int `json:"profitTargetCents" yaml:"profitTargetCents"`
 
+	// EntryCutoffSeconds 禁止开新轮的截止时间（秒，距离周期结束小于该值则不再开新轮）。
+	// 目的：避免临近结算时盘口跳动/WS回报延迟导致“只成交一腿”风险显著上升。
+	// 默认：15 秒（15m/1h 都适用的保守值）。
+	EntryCutoffSeconds int `json:"entryCutoffSeconds" yaml:"entryCutoffSeconds"`
+
 	// MaxRoundsPerPeriod 单个周期（market）内最多开启轮数
 	MaxRoundsPerPeriod int `json:"maxRoundsPerPeriod" yaml:"maxRoundsPerPeriod"`
 
@@ -75,6 +80,12 @@ func (c *PairLockStrategyConfig) Validate() error {
 	}
 	if c.ProfitTargetCents < 0 || c.ProfitTargetCents > 100 {
 		return fmt.Errorf("profit_target_cents 必须在 [0,100] 范围内")
+	}
+	if c.EntryCutoffSeconds < 0 {
+		return fmt.Errorf("entry_cutoff_seconds 不能为负数")
+	}
+	if c.EntryCutoffSeconds == 0 {
+		c.EntryCutoffSeconds = 15
 	}
 	if c.MaxRoundsPerPeriod <= 0 {
 		c.MaxRoundsPerPeriod = 1

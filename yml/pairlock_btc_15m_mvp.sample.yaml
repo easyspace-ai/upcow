@@ -1,0 +1,60 @@
+# BTC 15m「成对锁利」MVP（pairlock）
+#
+# 用法（示例）：
+#   go run ./cmd/bot -config yml/pairlock_btc_15m_mvp.sample.yaml
+#
+# 注意：
+# - 钱包私钥/代理钱包地址从 /pm/data/user.json 读取（见 pkg/config）
+# - 建议先 dry_run: true 跑通流程再上真仓
+
+proxy:
+  host: "127.0.0.1"
+  port: 15236
+
+market:
+  symbol: "btc"
+  timeframe: "15m"
+  kind: "updown"
+  slugStyle: "timestamp"
+
+exchangeStrategies:
+  - on: polymarket
+    pairlock:
+      # shares：每轮两腿相同数量
+      orderSize: 5
+      # USDC：确保单腿金额>=交易所限制（服务端也会有全局 minOrderSize）
+      minOrderSize: 1.1
+
+      # ε（以“分”为单位）：要求 yesAsk + noAsk <= 100 - ε
+      # 例如 ε=1 表示至少锁 1c 利润/套（持有到结算）
+      profitTargetCents: 1
+
+      # 一个周期里最多做多少套（MVP建议先小一点）
+      maxRoundsPerPeriod: 20
+      # 触发冷却（ms）：避免每次盘口抖动都重复开仓
+      cooldownMs: 250
+
+      # 临近结算不再开新对（秒）
+      entryCutoffSeconds: 15
+
+      # 失败控制（MVP建议“失败就暂停”，人工介入看原因）
+      onFailAction: "pause"
+      maxPlanAgeSeconds: 25
+      maxSupplementAttempts: 3
+
+      # 买入滑点保护（分，0=关闭）：bestAsk 不得超过“最近观测价 + slippage”
+      entryMaxBuySlippageCents: 0
+
+log_level: "info"
+log_file: "logs/pairlock_btc_15m_mvp.log"
+log_by_cycle: true
+
+# 建议先开纸交易
+dry_run: true
+
+# 系统级
+minOrderSize: 1.1
+minShareSize: 5.0
+order_status_sync_interval_with_orders: 3
+order_status_sync_interval_without_orders: 30
+

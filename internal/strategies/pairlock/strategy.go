@@ -3,6 +3,8 @@ package pairlock
 import (
 	"context"
 	"math"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/betbot/gobet/clob/types"
@@ -58,6 +60,11 @@ func (s *PairLockStrategy) OnPriceChanged(ctx context.Context, e *events.PriceCh
 		return nil
 	}
 	m := e.Market
+
+	// 临近结算不再开新轮：降低 WS/撮合延迟导致的单腿裸露风险。
+	if s.EntryCutoffSeconds > 0 && isWithinEntryCutoff(m.Slug, m.Timestamp, s.EntryCutoffSeconds) {
+		return nil
+	}
 
 	if s.rounds >= s.MaxRoundsPerPeriod {
 		return nil
@@ -142,5 +149,77 @@ func (s *PairLockStrategy) OnPriceChanged(ctx context.Context, e *events.PriceCh
 	log.Infof("🎯 [pairlock] 开启一轮: rounds=%d/%d yesAsk=%dc noAsk=%dc total=%dc maxTotal=%dc size=%.4f market=%s",
 		s.rounds, s.MaxRoundsPerPeriod, yesAsk.ToCents(), noAsk.ToCents(), total, maxTotal, size, m.Slug)
 	return nil
+}
+
+// isWithinEntryCutoff 判断是否进入“禁止开新仓”的截止窗口。
+// 支持 slug 约定：{symbol}-{kind}-{timeframe}-{periodStartUnix}，例如 btc-updown-15m-1766322000。
+// 若无法从 timeframe 推断周期时长，则退化为仅用 market.Timestamp + 15m 估算。
+func isWithinEntryCutoff(slug string, periodStartUnix int64, cutoffSeconds int) bool {
+	if cutoffSeconds <= 0 || periodStartUnix <= 0 {
+		return false
+	}
+
+	dur := inferDurationFromSlug(slug)
+	if dur <= 0 {
+		dur = 15 * time.Minute
+	}
+	end := time.Unix(periodStartUnix, 0).Add(dur)
+	return time.Until(end) <= time.Duration(cutoffSeconds)*time.Second
+}
+
+func inferDurationFromSlug(slug string) time.Duration {
+	// 期望形式：a-b-15m-<ts> 或 a-b-1h-<ts>
+	parts := strings.Split(slug, "-")
+	if len(parts) < 2 {
+		return 0
+	}
+
+	// 优先：倒数第2段一般是 timeframe（timestamp 风格）
+	if len(parts) >= 2 {
+		tf := parts[len(parts)-2]
+		if d, ok := parseTimeframe(tf); ok {
+			return d
+		}
+	}
+
+	// 兜底：全段扫描（兼容 kind 中含 '-' 的情况）
+	for _, p := range parts {
+		if d, ok := parseTimeframe(p); ok {
+			return d
+		}
+	}
+	return 0
+}
+
+func parseTimeframe(tf string) (time.Duration, bool) {
+	tf = strings.TrimSpace(tf)
+	if tf == "" {
+		return 0, false
+	}
+	switch tf {
+	case "15m":
+		return 15 * time.Minute, true
+	case "30m":
+		return 30 * time.Minute, true
+	case "1h":
+		return time.Hour, true
+	case "4h":
+		return 4 * time.Hour, true
+	}
+
+	// 宽松解析：形如 90m / 2h
+	if strings.HasSuffix(tf, "m") {
+		n, err := strconv.Atoi(strings.TrimSuffix(tf, "m"))
+		if err == nil && n > 0 {
+			return time.Duration(n) * time.Minute, true
+		}
+	}
+	if strings.HasSuffix(tf, "h") {
+		n, err := strconv.Atoi(strings.TrimSuffix(tf, "h"))
+		if err == nil && n > 0 {
+			return time.Duration(n) * time.Hour, true
+		}
+	}
+	return 0, false
 }
 
