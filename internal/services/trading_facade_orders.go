@@ -29,3 +29,10 @@ func (s *TradingService) GetBestPrice(ctx context.Context, assetID string) (best
 	}
 	return s.orders.GetBestPrice(ctx, assetID)
 }
+
+func (s *TradingService) GetTopOfBook(ctx context.Context, market *domain.Market) (yesBid, yesAsk, noBid, noAsk domain.Price, source string, err error) {
+	if s.orders == nil {
+		return domain.Price{}, domain.Price{}, domain.Price{}, domain.Price{}, "", fmt.Errorf("orders service not initialized")
+	}
+	return s.orders.GetTopOfBook(ctx, market)
+}

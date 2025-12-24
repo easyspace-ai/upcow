@@ -14,10 +14,10 @@ import (
 // - 读取时拿到一致快照（避免多字段撕裂）
 // - 只缓存策略最常用的数据：YES/NO 的 bid/ask（以及可选的 top size）
 //
-// 价格单位：domain.Price.Cents（通常 0~100，对应 0.00~1.00）。
+// 价格单位：domain.Price.Pips（= 价格 * 10000，通常 1~9999，对应 0.0001~0.9999）。
 // size 单位：shares，按 1e4 缩放存储（uint32），即 sizeScaled = shares * 10000。
 type AtomicBestBook struct {
-	// pricesPacked: [yes_bid:16][yes_ask:16][no_bid:16][no_ask:16]
+	// pricesPacked: [yes_bid_pips:16][yes_ask_pips:16][no_bid_pips:16][no_ask_pips:16]
 	pricesPacked atomic.Uint64
 
 	// bidSizesPacked: [yes_bid_size:32][no_bid_size:32] (sizeScaled)
@@ -29,10 +29,10 @@ type AtomicBestBook struct {
 }
 
 type BestBookSnapshot struct {
-	YesBidCents uint16
-	YesAskCents uint16
-	NoBidCents  uint16
-	NoAskCents  uint16
+	YesBidPips uint16
+	YesAskPips uint16
+	NoBidPips  uint16
+	NoAskPips  uint16
 
 	YesBidSizeScaled uint32
 	YesAskSizeScaled uint32
@@ -60,10 +60,10 @@ func (b *AtomicBestBook) Load() BestBookSnapshot {
 	}
 
 	return BestBookSnapshot{
-		YesBidCents: uint16((p >> 48) & 0xFFFF),
-		YesAskCents: uint16((p >> 32) & 0xFFFF),
-		NoBidCents:  uint16((p >> 16) & 0xFFFF),
-		NoAskCents:  uint16(p & 0xFFFF),
+		YesBidPips: uint16((p >> 48) & 0xFFFF),
+		YesAskPips: uint16((p >> 32) & 0xFFFF),
+		NoBidPips:  uint16((p >> 16) & 0xFFFF),
+		NoAskPips:  uint16(p & 0xFFFF),
 
 		YesBidSizeScaled: uint32((bids >> 32) & 0xFFFFFFFF),
 		NoBidSizeScaled:  uint32(bids & 0xFFFFFFFF),
@@ -93,11 +93,11 @@ func (b *AtomicBestBook) IsFresh(maxAge time.Duration) bool {
 	return time.Since(t) <= maxAge
 }
 
-// UpdateToken 更新某一侧（YES 或 NO）的 bid/ask 价格，以及可选 top size。
+// UpdateToken 更新某一侧（YES 或 NO）的 bid/ask 价格（pips=价格*10000），以及可选 top size。
 //
 // bid/ask 任意一侧传 0 表示“不更新该字段”（保留旧值）。
 // sizeScaled 传 0 表示“不更新 size”。
-func (b *AtomicBestBook) UpdateToken(token domain.TokenType, bidCents uint16, askCents uint16, bidSizeScaled uint32, askSizeScaled uint32) {
+func (b *AtomicBestBook) UpdateToken(token domain.TokenType, bidPips uint16, askPips uint16, bidSizeScaled uint32, askSizeScaled uint32) {
 	if b == nil {
 		return
 	}
@@ -111,18 +111,18 @@ func (b *AtomicBestBook) UpdateToken(token domain.TokenType, bidCents uint16, as
 
 		switch token {
 		case domain.TokenTypeUp:
-			if bidCents != 0 {
-				yesBid = bidCents
+			if bidPips != 0 {
+				yesBid = bidPips
 			}
-			if askCents != 0 {
-				yesAsk = askCents
+			if askPips != 0 {
+				yesAsk = askPips
 			}
 		case domain.TokenTypeDown:
-			if bidCents != 0 {
-				noBid = bidCents
+			if bidPips != 0 {
+				noBid = bidPips
 			}
-			if askCents != 0 {
-				noAsk = askCents
+			if askPips != 0 {
+				noAsk = askPips
 			}
 		default:
 			// unknown tokenType: ignore

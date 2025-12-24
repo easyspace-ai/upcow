@@ -9,7 +9,7 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/execution"
-	"github.com/betbot/gobet/internal/strategies/orderutil"
+	"github.com/betbot/gobet/pkg/marketmath"
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
@@ -63,20 +63,28 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 
 	orderCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
-	yesAsk, err := orderutil.QuoteBuyPrice(orderCtx, s.TradingService, m.YesAssetID, 0)
+	yesBid, yesAsk, noBid, noAsk, source, err := s.TradingService.GetTopOfBook(orderCtx, m)
 	if err != nil {
 		return nil
 	}
-	noAsk, err := orderutil.QuoteBuyPrice(orderCtx, s.TradingService, m.NoAssetID, 0)
-	if err != nil {
+	arb, err := marketmath.CheckArbitrage(marketmath.TopOfBook{
+		YesBidPips: yesBid.Pips,
+		YesAskPips: yesAsk.Pips,
+		NoBidPips:  noBid.Pips,
+		NoAskPips:  noAsk.Pips,
+	})
+	if err != nil || arb == nil || arb.Type != "long" {
+		return nil
+	}
+	// ProfitTargetCents：旧口径（0.01），换算成 pips（0.0001）
+	targetProfitPips := s.ProfitTargetCents * 100
+	if arb.ProfitPips < targetProfitPips {
 		return nil
 	}
 
-	total := yesAsk.Cents + noAsk.Cents
-	maxTotal := 100 - s.ProfitTargetCents
-	if total > maxTotal {
-		return nil
-	}
+	// 使用“有效买入价”（可能来自镜像侧的 bid）
+	yesAsk = domain.Price{Pips: arb.BuyYesPips}
+	noAsk = domain.Price{Pips: arb.BuyNoPips}
 
 	size := s.OrderSize
 	if yesAsk.ToDecimal() > 0 {
@@ -99,8 +107,8 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if err == nil {
 		s.rounds++
 		s.lastAt = time.Now()
-		log.Infof("🎯 [arbitrage] complete-set: rounds=%d/%d total=%dc maxTotal=%dc size=%.4f market=%s",
-			s.rounds, s.MaxRoundsPerPeriod, total, maxTotal, size, m.Slug)
+		log.Infof("🎯 [arbitrage] complete-set(effective): rounds=%d/%d profit=%dct cost=%.4f src=%s size=%.4f market=%s",
+			s.rounds, s.MaxRoundsPerPeriod, arb.ProfitPips/100, float64(arb.LongCostPips)/10000.0, source, size, m.Slug)
 	}
 	return nil
 }

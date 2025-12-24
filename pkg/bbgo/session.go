@@ -212,8 +212,8 @@ func (s *ExchangeSession) startPriceLoop(ctx context.Context) {
 						}
 						s.priceMu.Unlock()
 						if ok && pe.event != nil {
-							sessionLog.Warnf("⚠️ [Session %s] priceChangeHandlers 为空，价格更新将被丢弃！事件: %s @ %dc handlers数量=%d",
-								s.Name, pe.event.TokenType, pe.event.NewPrice.Cents, len(handlers))
+							sessionLog.Warnf("⚠️ [Session %s] priceChangeHandlers 为空，价格更新将被丢弃！事件: %s @ %.4f handlers数量=%d",
+								s.Name, pe.event.TokenType, pe.event.NewPrice.ToDecimal(), len(handlers))
 						} else {
 							// 即使没有价格事件，也记录一次警告，帮助诊断
 							sessionLog.Warnf("⚠️ [Session %s] priceChangeHandlers 为空，priceSignalC 收到信号但 latestPrices 也为空 handlers数量=%d",
@@ -282,8 +282,8 @@ func (h *sessionPriceHandler) OnPriceChanged(ctx context.Context, event *events.
 			sessionLog.Infof("📥 [sessionPriceHandler] 首次收到价格事件: <nil> (Session=%s)", h.session.Name)
 			return
 		}
-		sessionLog.Infof("📥 [sessionPriceHandler] 首次收到价格事件: %s @ %dc (Session=%s)",
-			event.TokenType, event.NewPrice.Cents, h.session.Name)
+		sessionLog.Infof("📥 [sessionPriceHandler] 首次收到价格事件: %s @ %.4f (Session=%s)",
+			event.TokenType, event.NewPrice.ToDecimal(), h.session.Name)
 	})
 
 	// 架构层防护：Session 只分发属于"当前 market"的事件，避免周期切换时旧数据进入策略层。
@@ -295,19 +295,19 @@ func (h *sessionPriceHandler) OnPriceChanged(ctx context.Context, event *events.
 			// 优先用 timestamp 判定（单调递增且更稳定），其次用 slug 兜底
 			if current.Timestamp > 0 && event.Market.Timestamp > 0 {
 				if event.Market.Timestamp != current.Timestamp {
-					sessionLog.Warnf("⚠️ [sessionPriceHandler] 丢弃非当前周期价格事件: current=%s[%d] event=%s[%d] token=%s price=%dc session=%s",
-						current.Slug, current.Timestamp, event.Market.Slug, event.Market.Timestamp, event.TokenType, event.NewPrice.Cents, h.session.Name)
+					sessionLog.Warnf("⚠️ [sessionPriceHandler] 丢弃非当前周期价格事件: current=%s[%d] event=%s[%d] token=%s price=%.4f session=%s",
+						current.Slug, current.Timestamp, event.Market.Slug, event.Market.Timestamp, event.TokenType, event.NewPrice.ToDecimal(), h.session.Name)
 					return nil
 				}
 			} else if current.Slug != "" && event.Market.Slug != "" && event.Market.Slug != current.Slug {
-				sessionLog.Warnf("⚠️ [sessionPriceHandler] 丢弃非当前 market 价格事件: current=%s event=%s token=%s price=%dc session=%s",
-					current.Slug, event.Market.Slug, event.TokenType, event.NewPrice.Cents, h.session.Name)
+				sessionLog.Warnf("⚠️ [sessionPriceHandler] 丢弃非当前 market 价格事件: current=%s event=%s token=%s price=%.4f session=%s",
+					current.Slug, event.Market.Slug, event.TokenType, event.NewPrice.ToDecimal(), h.session.Name)
 				return nil
 			}
 		}
 		// 添加 INFO 级别日志，确保能看到所有价格事件（包括被过滤的）
-		sessionLog.Infof("📥 [sessionPriceHandler] 收到价格变化事件: %s @ %dc market=%s (Session=%s)",
-			event.TokenType, event.NewPrice.Cents, func() string {
+		sessionLog.Infof("📥 [sessionPriceHandler] 收到价格变化事件: %s @ %.4f market=%s (Session=%s)",
+			event.TokenType, event.NewPrice.ToDecimal(), func() string {
 				if event.Market != nil {
 					return event.Market.Slug
 				}
@@ -388,10 +388,10 @@ func (s *ExchangeSession) EmitPriceChanged(ctx context.Context, event *events.Pr
 	select {
 	case s.priceSignalC <- struct{}{}:
 		// 使用 Debug 级别，避免日志过多（价格事件很频繁）
-		sessionLog.Debugf("📤 [Session %s] EmitPriceChanged: 已发送价格信号 token=%s price=%dc", s.Name, event.TokenType, event.NewPrice.Cents)
+		sessionLog.Debugf("📤 [Session %s] EmitPriceChanged: 已发送价格信号 token=%s price=%.4f", s.Name, event.TokenType, event.NewPrice.ToDecimal())
 	default:
 		// 已经有信号在队列里，合并即可（这种情况很常见，不需要警告）
-		sessionLog.Debugf("📤 [Session %s] EmitPriceChanged: 价格信号队列已满，合并 token=%s price=%dc", s.Name, event.TokenType, event.NewPrice.Cents)
+		sessionLog.Debugf("📤 [Session %s] EmitPriceChanged: 价格信号队列已满，合并 token=%s price=%.4f", s.Name, event.TokenType, event.NewPrice.ToDecimal())
 	}
 }
 

@@ -122,7 +122,7 @@ func (s *Strategy) OnPriceChanged(_ context.Context, e *events.PriceChangedEvent
 
 	select {
 	case s.priceC <- e:
-		log.Debugf("📥 [orderlistener] 收到价格更新: token=%s price=%dc", e.TokenType, e.NewPrice.Cents)
+		log.Debugf("📥 [orderlistener] 收到价格更新: token=%s price=%.4f", e.TokenType, e.NewPrice.ToDecimal())
 	default:
 		log.Warnf("⚠️ [orderlistener] 价格更新队列已满，丢弃: token=%s", e.TokenType)
 	}
@@ -145,7 +145,7 @@ func (s *Strategy) processOrders(ctx context.Context) {
 			meta, exists := s.tracked[o.OrderID]
 			if !exists {
 				// 新订单：记录到 tracked
-				targetPriceCents := o.Price.Cents + s.ProfitTargetCents
+				targetPriceCents := o.Price.ToCents() + s.ProfitTargetCents
 				if targetPriceCents > 100 {
 					targetPriceCents = 100
 				}
@@ -155,7 +155,7 @@ func (s *Strategy) processOrders(ctx context.Context) {
 					TokenType:        o.TokenType,
 					MarketSlug:       o.MarketSlug,
 					Side:             o.Side,
-					EntryPriceCents:  o.Price.Cents,
+					EntryPriceCents:  o.Price.ToCents(),
 					TargetPriceCents: targetPriceCents,
 					FilledSize:       o.FilledSize,
 					ExitPlaced:       false,
@@ -165,8 +165,8 @@ func (s *Strategy) processOrders(ctx context.Context) {
 					ExitOrderStatus:  domain.OrderStatusPending, // 初始状态为 pending
 				}
 				s.tracked[o.OrderID] = meta
-				log.Infof("📌 [orderlistener] 监听到新订单: orderID=%s token=%s side=%s price=%dc size=%.4f market=%s",
-					o.OrderID, o.TokenType, o.Side, o.Price.Cents, o.Size, o.MarketSlug)
+				log.Infof("📌 [orderlistener] 监听到新订单: orderID=%s token=%s side=%s price=%.4f size=%.4f market=%s",
+					o.OrderID, o.TokenType, o.Side, o.Price.ToDecimal(), o.Size, o.MarketSlug)
 			} else {
 				// 更新已存在的订单
 				if o.FilledSize > meta.FilledSize {
@@ -241,7 +241,7 @@ func (s *Strategy) placeTakeProfit(ctx context.Context, meta *orderMeta, order *
 	}
 
 	// 数量 >= 5 shares，使用限价单（GTC）
-	target := domain.Price{Cents: targetPriceCents}
+	target := domain.Price{Pips: targetPriceCents * 100} // 1 cent = 100 pips
 
 	// 记录详细的止盈单信息
 	log.Infof("📋 [orderlistener] 准备挂限价止盈单: orderID=%s entryPrice=%dc targetPrice=%dc exitSize=%.4f shares orderType=GTC market=%s assetID=%s tokenType=%s",
@@ -352,10 +352,10 @@ func (s *Strategy) processPrices(ctx context.Context) {
 					continue
 				}
 				// 检查价格是否达到止盈目标
-				if e.NewPrice.Cents >= meta.TargetPriceCents {
+				if e.NewPrice.ToCents() >= meta.TargetPriceCents {
 					// 价格达到止盈目标，使用市价单止盈
-					log.Infof("📊 [orderlistener] 价格达到止盈目标: orderID=%s token=%s currentPrice=%dc targetPrice=%dc",
-						meta.OrderID, meta.TokenType, e.NewPrice.Cents, meta.TargetPriceCents)
+					log.Infof("📊 [orderlistener] 价格达到止盈目标: orderID=%s token=%s currentPrice=%.4f targetPrice=%dc",
+						meta.OrderID, meta.TokenType, e.NewPrice.ToDecimal(), meta.TargetPriceCents)
 					s.trackedMu.RUnlock()
 					s.executeMarketOrderTakeProfit(ctx, meta, e.Market)
 					s.trackedMu.RLock()
@@ -398,8 +398,8 @@ func (s *Strategy) executeMarketOrderTakeProfit(ctx context.Context, meta *order
 	}
 
 	// 记录详细的市价单止盈信息
-	log.Infof("📋 [orderlistener] 准备挂市价止盈单: orderID=%s entryPrice=%dc targetPrice=%dc exitSize=%.4f shares orderType=FAK bestBidPrice=%dc estimatedAmount=%.2f USDC market=%s assetID=%s tokenType=%s",
-		meta.OrderID, meta.EntryPriceCents, meta.TargetPriceCents, exitSize, bestBidPrice.Cents, estimatedAmount, meta.MarketSlug, meta.AssetID, meta.TokenType)
+	log.Infof("📋 [orderlistener] 准备挂市价止盈单: orderID=%s entryPrice=%dc targetPrice=%dc exitSize=%.4f shares orderType=FAK bestBidPrice=%.4f estimatedAmount=%.2f USDC market=%s assetID=%s tokenType=%s",
+		meta.OrderID, meta.EntryPriceCents, meta.TargetPriceCents, exitSize, bestBidPrice.ToDecimal(), estimatedAmount, meta.MarketSlug, meta.AssetID, meta.TokenType)
 
 	// 使用 FAK 市价单（Fill-And-Kill），使用当前最优卖价
 	req := execution.MultiLegRequest{
@@ -430,8 +430,8 @@ func (s *Strategy) executeMarketOrderTakeProfit(ctx context.Context, meta *order
 
 	if err != nil {
 		// 记录完整的失败订单信息
-		log.Errorf("❌ [orderlistener] 市价单止盈失败: entryOrderID=%s entryPrice=%dc targetPrice=%dc exitSize=%.4f shares exitOrderType=FAK exitOrderPrice=%dc bestBidPrice=%dc estimatedAmount=%.2f USDC market=%s assetID=%s tokenType=%s retryCount=%d error=%v",
-			meta.OrderID, meta.EntryPriceCents, meta.TargetPriceCents, exitSize, bestBidPrice.Cents, bestBidPrice.Cents, estimatedAmount, meta.MarketSlug, meta.AssetID, meta.TokenType, meta.RetryCount, err)
+		log.Errorf("❌ [orderlistener] 市价单止盈失败: entryOrderID=%s entryPrice=%dc targetPrice=%dc exitSize=%.4f shares exitOrderType=FAK exitOrderPrice=%.4f bestBidPrice=%.4f estimatedAmount=%.2f USDC market=%s assetID=%s tokenType=%s retryCount=%d error=%v",
+			meta.OrderID, meta.EntryPriceCents, meta.TargetPriceCents, exitSize, bestBidPrice.ToDecimal(), bestBidPrice.ToDecimal(), estimatedAmount, meta.MarketSlug, meta.AssetID, meta.TokenType, meta.RetryCount, err)
 
 		// 重试逻辑：最多重试3次，每次间隔5秒
 		maxRetries := 3
@@ -475,11 +475,11 @@ func (s *Strategy) executeMarketOrderTakeProfit(ctx context.Context, meta *order
 
 		// 记录完整的订单信息
 		if meta.RetryCount > 0 {
-			log.Infof("🎯 [orderlistener] 市价单止盈成功（重试后）: entryOrderID=%s exitOrderID=%s token=%s entryPrice=%dc exitPrice=%dc exitSize=%.4f shares exitOrderType=FAK market=%s retryCount=%d exitOrderStatus=%s bestBidPrice=%dc estimatedAmount=%.2f USDC",
-				meta.OrderID, meta.ExitOrderID, meta.TokenType, meta.EntryPriceCents, bestBidPrice.Cents, exitSize, meta.MarketSlug, meta.RetryCount, meta.ExitOrderStatus, bestBidPrice.Cents, estimatedAmount)
+			log.Infof("🎯 [orderlistener] 市价单止盈成功（重试后）: entryOrderID=%s exitOrderID=%s token=%s entryPrice=%dc exitPrice=%.4f exitSize=%.4f shares exitOrderType=FAK market=%s retryCount=%d exitOrderStatus=%s bestBidPrice=%.4f estimatedAmount=%.2f USDC",
+				meta.OrderID, meta.ExitOrderID, meta.TokenType, meta.EntryPriceCents, bestBidPrice.ToDecimal(), exitSize, meta.MarketSlug, meta.RetryCount, meta.ExitOrderStatus, bestBidPrice.ToDecimal(), estimatedAmount)
 		} else {
-			log.Infof("🎯 [orderlistener] 市价单止盈成功: entryOrderID=%s exitOrderID=%s token=%s entryPrice=%dc exitPrice=%dc exitSize=%.4f shares exitOrderType=FAK market=%s exitOrderStatus=%s bestBidPrice=%dc estimatedAmount=%.2f USDC",
-				meta.OrderID, meta.ExitOrderID, meta.TokenType, meta.EntryPriceCents, bestBidPrice.Cents, exitSize, meta.MarketSlug, meta.ExitOrderStatus, bestBidPrice.Cents, estimatedAmount)
+			log.Infof("🎯 [orderlistener] 市价单止盈成功: entryOrderID=%s exitOrderID=%s token=%s entryPrice=%dc exitPrice=%.4f exitSize=%.4f shares exitOrderType=FAK market=%s exitOrderStatus=%s bestBidPrice=%.4f estimatedAmount=%.2f USDC",
+				meta.OrderID, meta.ExitOrderID, meta.TokenType, meta.EntryPriceCents, bestBidPrice.ToDecimal(), exitSize, meta.MarketSlug, meta.ExitOrderStatus, bestBidPrice.ToDecimal(), estimatedAmount)
 		}
 	} else {
 		log.Warnf("⚠️ [orderlistener] 市价单止盈返回空订单: orderID=%s", meta.OrderID)

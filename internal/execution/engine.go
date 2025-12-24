@@ -217,7 +217,7 @@ func (e *ExecutionEngine) placeAllLegs(ctx context.Context, req MultiLegRequest)
 		leg := req.Legs[i]
 		go func() {
 			defer wg.Done()
-			if leg.AssetID == "" || leg.Size <= 0 || leg.Price.Cents <= 0 {
+			if leg.AssetID == "" || leg.Size <= 0 || leg.Price.Pips <= 0 {
 				errC <- fmt.Errorf("invalid leg %d", i)
 				return
 			}
@@ -354,7 +354,7 @@ func (e *ExecutionEngine) tryAutoHedge(ctx context.Context, st *execState) {
 		MarketSlug:   st.req.MarketSlug,
 		AssetID:      excessOrder.AssetID,
 		Side:         types.SideSell,
-		Price:        domain.Price{Cents: priceCents},
+		Price:        domain.Price{Pips: priceCents * 100}, // 1 cent = 100 pips
 		Size:         excess,
 		TokenType:    excessOrder.TokenType,
 		IsEntryOrder: false,
@@ -368,8 +368,8 @@ func (e *ExecutionEngine) tryAutoHedge(ctx context.Context, st *execState) {
 func computeInFlightKey(req MultiLegRequest) string {
 	parts := make([]string, 0, len(req.Legs))
 	for _, l := range req.Legs {
-		parts = append(parts, fmt.Sprintf("%s|%s|%s|%dc|%.4f|%s",
-			l.AssetID, l.TokenType, l.Side, l.Price.Cents, l.Size, l.OrderType))
+		parts = append(parts, fmt.Sprintf("%s|%s|%s|%.4f|%.4f|%s",
+			l.AssetID, l.TokenType, l.Side, l.Price.ToDecimal(), l.Size, l.OrderType))
 	}
 	sort.Strings(parts)
 	return strings.Join(append([]string{req.MarketSlug}, parts...), "||")

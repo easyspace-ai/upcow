@@ -81,7 +81,7 @@ func (s *PairLockStrategy) OnPriceChanged(ctx context.Context, e *events.PriceCh
 		return nil
 	}
 
-	total := yesAsk.Cents + noAsk.Cents
+	total := yesAsk.ToCents() + noAsk.ToCents()
 	maxTotal := 100 - s.ProfitTargetCents
 	if total > maxTotal {
 		return nil
@@ -143,7 +143,7 @@ func (s *PairLockStrategy) OnPriceChanged(ctx context.Context, e *events.PriceCh
 	s.rounds++
 	s.lastTradeAt = time.Now()
 	log.Infof("🎯 [pairlock] 开启一轮: rounds=%d/%d yesAsk=%dc noAsk=%dc total=%dc maxTotal=%dc size=%.4f market=%s",
-		s.rounds, s.MaxRoundsPerPeriod, yesAsk.Cents, noAsk.Cents, total, maxTotal, size, m.Slug)
+		s.rounds, s.MaxRoundsPerPeriod, yesAsk.ToCents(), noAsk.ToCents(), total, maxTotal, size, m.Slug)
 	return nil
 }
 

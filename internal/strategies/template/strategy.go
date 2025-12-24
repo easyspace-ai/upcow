@@ -78,7 +78,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	_, err = s.TradingService.ExecuteMultiLeg(orderCtx, req)
 	if err == nil {
 		s.fired = true
-		log.Infof("✅ [template] 已下单: yes @ %dc size=%.4f market=%s", price.Cents, s.OrderSize, e.Market.Slug)
+		log.Infof("✅ [template] 已下单: yes @ %.4f size=%.4f market=%s", price.ToDecimal(), s.OrderSize, e.Market.Slug)
 	}
 	return nil
 }

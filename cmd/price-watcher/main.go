@@ -219,7 +219,7 @@ func (h *priceChangeHandler) OnPriceChanged(ctx context.Context, event *events.P
 	}
 
 	// 打印价格信息
-	priceCents := float64(event.NewPrice.Cents) / 100.0
+	priceCents := event.NewPrice.ToDecimal()
 	tokenTypeStr := strings.ToUpper(string(event.TokenType))
 	printPrice(tokenTypeStr, priceCents, event.Timestamp)
 

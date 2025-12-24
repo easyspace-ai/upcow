@@ -593,24 +593,29 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 	}
 
 	// 解析 bid/ask（优先 best_*，再回退 level[0]）
-	var bidCents, askCents uint16
+	var bidPips, askPips uint16
+	var bidCents, askCents uint16 // 兼容口径：用于 spread gate（单位 0.01）
 	var bidSizeScaled, askSizeScaled uint32
 	if bm.BestBid != "" {
-		if p, err := parsePriceString(bm.BestBid); err == nil && p.Cents > 0 {
-			bidCents = uint16(p.Cents)
+		if p, err := parsePriceString(bm.BestBid); err == nil && p.Pips > 0 {
+			bidPips = uint16(p.Pips)
+			bidCents = uint16(p.ToCents())
 		}
 	} else if len(bm.Bids) > 0 && bm.Bids[0].Price != "" {
-		if p, err := parsePriceString(bm.Bids[0].Price); err == nil && p.Cents > 0 {
-			bidCents = uint16(p.Cents)
+		if p, err := parsePriceString(bm.Bids[0].Price); err == nil && p.Pips > 0 {
+			bidPips = uint16(p.Pips)
+			bidCents = uint16(p.ToCents())
 		}
 	}
 	if bm.BestAsk != "" {
-		if p, err := parsePriceString(bm.BestAsk); err == nil && p.Cents > 0 {
-			askCents = uint16(p.Cents)
+		if p, err := parsePriceString(bm.BestAsk); err == nil && p.Pips > 0 {
+			askPips = uint16(p.Pips)
+			askCents = uint16(p.ToCents())
 		}
 	} else if len(bm.Asks) > 0 && bm.Asks[0].Price != "" {
-		if p, err := parsePriceString(bm.Asks[0].Price); err == nil && p.Cents > 0 {
-			askCents = uint16(p.Cents)
+		if p, err := parsePriceString(bm.Asks[0].Price); err == nil && p.Pips > 0 {
+			askPips = uint16(p.Pips)
+			askCents = uint16(p.ToCents())
 		}
 	}
 
@@ -628,7 +633,7 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 
 	// 原子快照始终更新（供执行层读取），但事件触发要走质量 gate
 	if m.bestBook != nil {
-		m.bestBook.UpdateToken(tokenType, bidCents, askCents, bidSizeScaled, askSizeScaled)
+		m.bestBook.UpdateToken(tokenType, bidPips, askPips, bidSizeScaled, askSizeScaled)
 	}
 
 	// 架构层数据质量 gate：必须是双边盘口且价差合理，才发 PriceChangedEvent
@@ -648,20 +653,20 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 	}
 	mid := int(bidCents) + int(askCents)
 	mid = (mid + 1) / 2
-	newPrice := domain.Price{Cents: mid}
+	newPrice := domain.Price{Pips: mid * 100} // 1 cent = 100 pips
 	source := "book.mid"
 
 	// 检查是否已关闭（避免处理关闭后的延迟消息）
 	select {
 	case <-m.closeC:
-		marketLog.Debugf("⚠️ [book->price] MarketStream 已关闭，忽略价格事件: Token=%s, 价格=%dc", tokenType, newPrice.Cents)
+		marketLog.Debugf("⚠️ [book->price] MarketStream 已关闭，忽略价格事件: Token=%s, 价格=%dc", tokenType, newPrice.ToCents())
 		return
 	default:
 	}
 
 	// 【关键修复】在发送事件前，检查 handlers 是否为空（防止在关闭过程中 handlers 被清空后仍然发送事件）
 	if m.handlers.Count() == 0 {
-		marketLog.Debugf("⚠️ [book->price] handlers 已清空，忽略价格事件: Token=%s, 价格=%dc", tokenType, newPrice.Cents)
+		marketLog.Debugf("⚠️ [book->price] handlers 已清空，忽略价格事件: Token=%s, 价格=%dc", tokenType, newPrice.ToCents())
 		return
 	}
 
@@ -672,7 +677,7 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 		NewPrice:  newPrice,
 		Timestamp: time.Now(),
 	}
-	marketLog.Debugf("📤 [book->price] 触发价格变化回调: %s @ %dc (source=%s, 市场=%s)", tokenType, newPrice.Cents, source, m.market.Slug)
+	marketLog.Debugf("📤 [book->price] 触发价格变化回调: %s @ %.4f (source=%s, 市场=%s)", tokenType, newPrice.ToDecimal(), source, m.market.Slug)
 	m.handlers.Emit(ctx, event)
 }
 
@@ -749,15 +754,18 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 		}
 
 		// 解析 best bid/ask（price_change 可能包含 best_*）
-		var bidCents, askCents uint16
+		var bidPips, askPips uint16
+		var bidCents, askCents uint16 // spread gate 使用 0.01 口径
 		if bestBidStr, ok := change["best_bid"].(string); ok && bestBidStr != "" {
-			if p, err := parsePriceString(bestBidStr); err == nil && p.Cents > 0 {
-				bidCents = uint16(p.Cents)
+			if p, err := parsePriceString(bestBidStr); err == nil && p.Pips > 0 {
+				bidPips = uint16(p.Pips)
+				bidCents = uint16(p.ToCents())
 			}
 		}
 		if bestAskStr, ok := change["best_ask"].(string); ok && bestAskStr != "" {
-			if p, err := parsePriceString(bestAskStr); err == nil && p.Cents > 0 {
-				askCents = uint16(p.Cents)
+			if p, err := parsePriceString(bestAskStr); err == nil && p.Pips > 0 {
+				askPips = uint16(p.Pips)
+				askCents = uint16(p.ToCents())
 			}
 		}
 
@@ -770,7 +778,7 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 				tokenType = domain.TokenTypeDown
 			}
 			if tokenType != "" && (bidCents != 0 || askCents != 0) {
-				m.bestBook.UpdateToken(tokenType, bidCents, askCents, 0, 0)
+				m.bestBook.UpdateToken(tokenType, bidPips, askPips, 0, 0)
 			}
 		}
 
@@ -789,7 +797,7 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 		}
 		mid := int(bidCents) + int(askCents)
 		mid = (mid + 1) / 2
-		newPrice := domain.Price{Cents: mid}
+		newPrice := domain.Price{Pips: mid * 100} // 1 cent = 100 pips
 
 		latestPrices[assetID] = struct {
 			price  domain.Price
@@ -811,16 +819,16 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 		// 再次检查是否已关闭（双重保险）
 		select {
 		case <-m.closeC:
-			marketLog.Debugf("⚠️ [价格事件] MarketStream 已关闭，忽略价格事件: 市场=%s, Token=%s, 价格=%dc",
-				currentMarketSlug, tokenType, latest.price.Cents)
+			marketLog.Debugf("⚠️ [价格事件] MarketStream 已关闭，忽略价格事件: 市场=%s, Token=%s, 价格=%.4f",
+				currentMarketSlug, tokenType, latest.price.ToDecimal())
 			continue
 		default:
 		}
 
 		// 【关键修复】在发送事件前，检查 handlers 是否为空（防止在关闭过程中 handlers 被清空后仍然发送事件）
 		if m.handlers.Count() == 0 {
-			marketLog.Debugf("⚠️ [价格事件] handlers 已清空，忽略价格事件: 市场=%s, Token=%s, 价格=%dc",
-				currentMarketSlug, tokenType, latest.price.Cents)
+			marketLog.Debugf("⚠️ [价格事件] handlers 已清空，忽略价格事件: 市场=%s, Token=%s, 价格=%.4f",
+				currentMarketSlug, tokenType, latest.price.ToDecimal())
 			continue
 		}
 
@@ -835,7 +843,7 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 		// 直接触发回调（不使用事件总线）
 		// 注意：这里使用 handlerCount（在函数开头定义）
 		//marketLog.Infof("📤 [价格事件] 触发价格变化回调: 市场=%s, Token=%s, 价格=%dc (handlers=%d)",
-		//	currentMarketSlug, tokenType, latest.price.Cents, handlerCount)
+		//	currentMarketSlug, tokenType, latest.price.ToCents(), handlerCount)
 		//
 		m.handlers.Emit(ctx, event)
 	}

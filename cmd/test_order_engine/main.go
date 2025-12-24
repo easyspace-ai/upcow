@@ -43,7 +43,7 @@ func main() {
 	order := &domain.Order{
 		AssetID:   "test_asset_123",
 		Side:      types.SideBuy,
-		Price:     domain.Price{Cents: 60}, // 0.60 USDC
+		Price:     domain.PriceFromDecimal(0.60), // 0.60 USDC
 		Size:      10.0,                    // 10 shares
 		TokenType: domain.TokenTypeUp,
 		GridLevel: 60,
@@ -97,7 +97,7 @@ func main() {
 		OrderID:   createdOrder.OrderID,
 		AssetID:   "test_asset_123",
 		Side:      types.SideBuy,
-		Price:     domain.Price{Cents: 60},
+		Price:     domain.PriceFromDecimal(0.60),
 		Size:      10.0,
 		TokenType: domain.TokenTypeUp,
 		Time:      time.Now(),

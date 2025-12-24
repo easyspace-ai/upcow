@@ -53,7 +53,7 @@ func (o *OrdersService) PlaceOrder(ctx context.Context, order *domain.Order) (cr
 		order.MarketSlug,
 		order.AssetID,
 		order.Side,
-		order.Price.Cents,
+		order.Price.ToCents(),
 		order.Size,
 		order.OrderType,
 	)
@@ -236,15 +236,15 @@ func (o *OrdersService) GetBestPrice(ctx context.Context, assetID string) (bestB
 		if book != nil && market != nil && book.IsFresh(3*time.Second) {
 			snap := book.Load()
 			if assetID == market.YesAssetID {
-				if snap.YesBidCents > 0 {
-					bestBid = float64(snap.YesBidCents) / 100.0
+				if snap.YesBidPips > 0 {
+					bestBid = float64(snap.YesBidPips) / 10000.0
 				}
-				if snap.YesAskCents > 0 {
-					bestAsk = float64(snap.YesAskCents) / 100.0
+				if snap.YesAskPips > 0 {
+					bestAsk = float64(snap.YesAskPips) / 10000.0
 				}
 				// 架构层数据质量 gate：必须双边价格都存在，避免 ask-only=0.99 误触发策略
 				if bestBid > 0 && bestAsk > 0 {
-					spreadCents := int(snap.YesAskCents) - int(snap.YesBidCents)
+					spreadCents := int(snap.YesAskPips/100) - int(snap.YesBidPips/100)
 					if spreadCents < 0 {
 						spreadCents = -spreadCents
 					}
@@ -254,14 +254,14 @@ func (o *OrdersService) GetBestPrice(ctx context.Context, assetID string) (bestB
 					// spread 过大：回退 REST 再确认（避免 WS 脏快照）
 				}
 			} else if assetID == market.NoAssetID {
-				if snap.NoBidCents > 0 {
-					bestBid = float64(snap.NoBidCents) / 100.0
+				if snap.NoBidPips > 0 {
+					bestBid = float64(snap.NoBidPips) / 10000.0
 				}
-				if snap.NoAskCents > 0 {
-					bestAsk = float64(snap.NoAskCents) / 100.0
+				if snap.NoAskPips > 0 {
+					bestAsk = float64(snap.NoAskPips) / 10000.0
 				}
 				if bestBid > 0 && bestAsk > 0 {
-					spreadCents := int(snap.NoAskCents) - int(snap.NoBidCents)
+					spreadCents := int(snap.NoAskPips/100) - int(snap.NoBidPips/100)
 					if spreadCents < 0 {
 						spreadCents = -spreadCents
 					}
@@ -308,6 +308,67 @@ func (o *OrdersService) GetBestPrice(ctx context.Context, assetID string) (bestB
 	}
 
 	return bestBid, bestAsk, nil
+}
+
+// GetTopOfBook 返回当前 market 的 YES/NO 一档 bid/ask（优先 WS bestBook，必要时回退 REST）。
+//
+// 返回值为 domain.Price（1e-4 精度），可直接用于策略/执行层做“有效价格/套利”计算。
+func (o *OrdersService) GetTopOfBook(ctx context.Context, market *domain.Market) (yesBid, yesAsk, noBid, noAsk domain.Price, source string, err error) {
+	s := o.s
+	if market == nil || market.YesAssetID == "" || market.NoAssetID == "" {
+		return domain.Price{}, domain.Price{}, domain.Price{}, domain.Price{}, "", fmt.Errorf("market invalid")
+	}
+
+	// 1) WS 快路径：当前 market 且 bestBook 新鲜
+	if s != nil {
+		book := s.getBestBook()
+		cur := s.getCurrentMarketInfo()
+		if book != nil && cur != nil && cur.Slug == market.Slug && book.IsFresh(3*time.Second) {
+			snap := book.Load()
+			if snap.YesBidPips > 0 && snap.YesAskPips > 0 && snap.NoBidPips > 0 && snap.NoAskPips > 0 {
+				return domain.Price{Pips: int(snap.YesBidPips)},
+					domain.Price{Pips: int(snap.YesAskPips)},
+					domain.Price{Pips: int(snap.NoBidPips)},
+					domain.Price{Pips: int(snap.NoAskPips)},
+					"ws.bestbook",
+					nil
+			}
+		}
+	}
+
+	// 2) REST 回退：分别拉 YES/NO 的 orderbook 一档
+	yesBook, err := s.clobClient.GetOrderBook(ctx, market.YesAssetID, nil)
+	if err != nil {
+		return domain.Price{}, domain.Price{}, domain.Price{}, domain.Price{}, "", fmt.Errorf("get yes orderbook: %w", err)
+	}
+	noBook, err := s.clobClient.GetOrderBook(ctx, market.NoAssetID, nil)
+	if err != nil {
+		return domain.Price{}, domain.Price{}, domain.Price{}, domain.Price{}, "", fmt.Errorf("get no orderbook: %w", err)
+	}
+
+	parseTop := func(book *types.OrderBookSummary) (bid, ask domain.Price, e error) {
+		var bestBid, bestAsk float64
+		if book != nil && len(book.Bids) > 0 {
+			bestBid, _ = strconv.ParseFloat(book.Bids[0].Price, 64)
+		}
+		if book != nil && len(book.Asks) > 0 {
+			bestAsk, _ = strconv.ParseFloat(book.Asks[0].Price, 64)
+		}
+		if bestBid <= 0 || bestAsk <= 0 {
+			return domain.Price{}, domain.Price{}, fmt.Errorf("incomplete book: bid=%.6f ask=%.6f", bestBid, bestAsk)
+		}
+		return domain.PriceFromDecimal(bestBid), domain.PriceFromDecimal(bestAsk), nil
+	}
+
+	yb, ya, err := parseTop(yesBook)
+	if err != nil {
+		return domain.Price{}, domain.Price{}, domain.Price{}, domain.Price{}, "", fmt.Errorf("parse yes book: %w", err)
+	}
+	nb, na, err := parseTop(noBook)
+	if err != nil {
+		return domain.Price{}, domain.Price{}, domain.Price{}, domain.Price{}, "", fmt.Errorf("parse no book: %w", err)
+	}
+	return yb, ya, nb, na, "rest.orderbook", nil
 }
 
 // checkOrderBookLiquidity 检查订单簿是否有足够的流动性来匹配订单

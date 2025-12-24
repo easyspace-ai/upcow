@@ -301,8 +301,8 @@ func (s *Strategy) maybeLogState(now time.Time, m *domain.Market, ph phase, lock
 
 	qUp, qDown, cUp, cDown, pUp, pDown := s.stateSnapshot()
 	upPx, downPx := s.lastSeenPrice()
-	log.Infof("📈 [%s] state: market=%s phase=%s locked=%t minP=%.2f upPx=%dc downPx=%dc QUp=%.2f QDown=%.2f CUp=%.2f CDown=%.2f P_up=%.2f P_down=%.2f",
-		ID, m.Slug, ph, locked, minProfit, upPx.Cents, downPx.Cents, qUp, qDown, cUp, cDown, pUp, pDown)
+	log.Infof("📈 [%s] state: market=%s phase=%s locked=%t minP=%.2f upPx=%.4f downPx=%.4f QUp=%.2f QDown=%.2f CUp=%.2f CDown=%.2f P_up=%.2f P_down=%.2f",
+		ID, m.Slug, ph, locked, minProfit, upPx.ToDecimal(), downPx.ToDecimal(), qUp, qDown, cUp, cDown, pUp, pDown)
 }
 
 func (s *Strategy) lastSeenPrice() (up domain.Price, down domain.Price) {
@@ -614,7 +614,7 @@ func (s *Strategy) tryFlatten(ctx context.Context, m *domain.Market) {
 				AssetID:   assetID,
 				TokenType: token,
 				Side:      types.SideSell,
-				Price:     domain.Price{Cents: priceCents},
+				Price:     domain.Price{Pips: priceCents * 100}, // 1 cent = 100 pips
 				Size:      size,
 				OrderType: types.OrderTypeFAK,
 			},
@@ -993,7 +993,7 @@ func (s *Strategy) maybeCompleteSet(ctx context.Context, m *domain.Market, now t
 		return false
 	}
 
-	total := yesAsk.Cents + noAsk.Cents
+	total := yesAsk.ToCents() + noAsk.ToCents()
 	maxTotal := 100 - s.ProfitTargetCents
 	if total > maxTotal {
 		return false
@@ -1029,8 +1029,8 @@ func (s *Strategy) quoteBuy(ctx context.Context, m *domain.Market, tok domain.To
 		if tok == domain.TokenTypeUp {
 			ref = refUp
 		}
-		if ref.Cents > 0 {
-			refMax := ref.Cents + s.EntryMaxBuySlippageCents
+		if ref.Pips > 0 {
+			refMax := ref.ToCents() + s.EntryMaxBuySlippageCents
 			if maxCents == 0 || refMax < maxCents {
 				maxCents = refMax
 			}
@@ -1041,8 +1041,8 @@ func (s *Strategy) quoteBuy(ctx context.Context, m *domain.Market, tok domain.To
 		return domain.Price{}, err
 	}
 	// 额外防护：用于调试时快速定位是哪个阶段触发的保护
-	if maxCents > 0 && p.Cents > maxCents {
-		return domain.Price{}, fmt.Errorf("buy blocked(%s): tok=%s bestAsk=%dc max=%dc", reason, tok, p.Cents, maxCents)
+	if maxCents > 0 && p.ToCents() > maxCents {
+		return domain.Price{}, fmt.Errorf("buy blocked(%s): tok=%s bestAsk=%dc max=%dc", reason, tok, p.ToCents(), maxCents)
 	}
 	return p, nil
 }
@@ -1055,7 +1055,7 @@ func (s *Strategy) buildSingleBuyReq(m *domain.Market, tok domain.TokenType, des
 	if !ok {
 		return nil
 	}
-	if p.Cents <= 0 || p.ToDecimal() <= 0 {
+	if p.Pips <= 0 || p.ToDecimal() <= 0 {
 		return nil
 	}
 	size := ensureMinOrderSize(desiredSize, p.ToDecimal(), s.MinOrderSize)

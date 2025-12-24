@@ -52,8 +52,8 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.Exchan
 
 func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
 	if e != nil {
-		log.Debugf("🔔 [updown] OnPriceChanged 被调用: market=%v, token=%s, price=%dc", 
-			e.Market != nil, e.TokenType, e.NewPrice.Cents)
+		log.Debugf("🔔 [updown] OnPriceChanged 被调用: market=%v, token=%s, price=%.4f", 
+			e.Market != nil, e.TokenType, e.NewPrice.ToDecimal())
 	} else {
 		log.Debugf("🔔 [updown] OnPriceChanged 被调用: event=nil")
 	}
@@ -66,8 +66,8 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		log.Debugf("⏭️ [updown] 跳过：TradingService 为空")
 		return nil
 	}
-	log.Debugf("✅ [updown] 通过基础检查: market=%s, token=%s, price=%dc", 
-		e.Market.Slug, e.TokenType, e.NewPrice.Cents)
+	log.Debugf("✅ [updown] 通过基础检查: market=%s, token=%s, price=%.4f", 
+		e.Market.Slug, e.TokenType, e.NewPrice.ToDecimal())
 
 	// 周期切换：重置 one-shot 状态
 	if e.Market.Slug != "" && e.Market.Slug != s.lastMarketSlug {
@@ -141,9 +141,9 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		return nil
 	}
 
-	price := domain.Price{Cents: askCents}
+price := domain.Price{Pips: askCents * 100} // 1 cent = 100 pips
 
-	log.Debugf("📝 [updown] 准备下单: assetID=%s, price=%dc, size=%.4f", assetID, price.Cents, s.Config.OrderSize)
+	log.Debugf("📝 [updown] 准备下单: assetID=%s, price=%.4f, size=%.4f", assetID, price.ToDecimal(), s.Config.OrderSize)
 
 	req := execution.MultiLegRequest{
 		Name:       "updown_once",
@@ -166,7 +166,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if err == nil {
 		s.tradedThisCycle = true
 		s.lastTradeAt = time.Now()
-		log.Infof("✅ [updown] 已下单: token=%s price=%dc size=%.4f market=%s", token, price.Cents, s.Config.OrderSize, e.Market.Slug)
+		log.Infof("✅ [updown] 已下单: token=%s price=%.4f size=%.4f market=%s", token, price.ToDecimal(), s.Config.OrderSize, e.Market.Slug)
 	}
 
 	return nil

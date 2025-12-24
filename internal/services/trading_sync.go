@@ -245,7 +245,7 @@ func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 
 		if order.IsEntryOrder {
 			// 入场订单：价格应该在 60-90 之间
-			if order.Price.Cents >= 60 && order.Price.Cents <= 90 {
+			if order.Price.ToCents() >= 60 && order.Price.ToCents() <= 90 {
 				for _, apiOrder := range openOrdersResp {
 					apiPrice, err := strconv.ParseFloat(apiOrder.Price, 64)
 					if err != nil {
@@ -256,7 +256,7 @@ func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 					if apiOrder.AssetID == order.AssetID &&
 						apiOrder.Side == string(order.Side) &&
 						apiPriceCents >= 60 && apiPriceCents <= 90 {
-						priceDiff := math.Abs(float64(apiPriceCents - order.Price.Cents))
+						priceDiff := math.Abs(float64(apiPriceCents - order.Price.ToCents()))
 						if priceDiff <= 2 {
 							score := 1.0 / (1.0 + priceDiff)
 							if bestMatch == nil || score > bestMatch.score {
@@ -276,7 +276,7 @@ func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 			}
 		} else {
 			// 对冲订单：价格应该在 1-40 之间
-			if order.Price.Cents >= 1 && order.Price.Cents <= 40 {
+			if order.Price.ToCents() >= 1 && order.Price.ToCents() <= 40 {
 				for _, apiOrder := range openOrdersResp {
 					apiPrice, err := strconv.ParseFloat(apiOrder.Price, 64)
 					if err != nil {
@@ -287,7 +287,7 @@ func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 					if apiOrder.AssetID == order.AssetID &&
 						apiOrder.Side == string(order.Side) &&
 						apiPriceCents >= 1 && apiPriceCents <= 40 {
-						priceDiff := math.Abs(float64(apiPriceCents - order.Price.Cents))
+						priceDiff := math.Abs(float64(apiPriceCents - order.Price.ToCents()))
 						if priceDiff <= 2 {
 							score := 1.0 / (1.0 + priceDiff)
 							if bestMatch == nil || score > bestMatch.score {
@@ -315,10 +315,10 @@ func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 				orderType = "对冲订单"
 			}
 			log.Infof("🔄 [订单状态同步] 通过业务规则匹配找到%s: 本地ID=%s, 服务器ID=%s, assetID=%s, side=%s, 本地价格=%dc, 服务器价格=%dc, 匹配分数=%.2f",
-				orderType, orderID, matchedOrderID, order.AssetID, order.Side, order.Price.Cents, matchedPriceCents, bestMatch.score)
+				orderType, orderID, matchedOrderID, order.AssetID, order.Side, order.Price.ToCents(), matchedPriceCents, bestMatch.score)
 
 			order.OrderID = matchedOrderID
-			order.Price = domain.Price{Cents: matchedPriceCents}
+			order.Price = domain.Price{Pips: matchedPriceCents * 100} // 1 cent = 100 pips
 			updatedOrderIDs[orderID] = matchedOrderID
 
 			updateCmd := &UpdateOrderCommand{
@@ -333,13 +333,13 @@ func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 
 			log.Debugf("🔄 [订单状态同步] %s ID 已更新: %s -> %s", orderType, orderID, matchedOrderID)
 			matched = true
-		} else if order.IsEntryOrder || (!order.IsEntryOrder && order.Price.Cents >= 1 && order.Price.Cents <= 40) {
+		} else if order.IsEntryOrder || (!order.IsEntryOrder && order.Price.ToCents() >= 1 && order.Price.ToCents() <= 40) {
 			orderType := "入场订单"
 			if !order.IsEntryOrder {
 				orderType = "对冲订单"
 			}
 			log.Warnf("⚠️ [订单匹配失败] 无法通过业务规则匹配%s: orderID=%s, assetID=%s, side=%s, price=%dc, 可能订单已成交或取消",
-				orderType, orderID, order.AssetID, order.Side, order.Price.Cents)
+				orderType, orderID, order.AssetID, order.Side, order.Price.ToCents())
 		}
 
 		if matched {

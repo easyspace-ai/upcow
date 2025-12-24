@@ -64,13 +64,13 @@ func (h *HandlerList) Emit(ctx context.Context, event *events.PriceChangedEvent)
 	handlerCount := len(handlers)
 
 	if handlerCount == 0 {
-		log.Warnf("⚠️ [Emit] HandlerList 为空，没有处理器可触发！事件: %s @ %dc", 
-			event.TokenType, event.NewPrice.Cents)
+		log.Warnf("⚠️ [Emit] HandlerList 为空，没有处理器可触发！事件: %s @ %.4f", 
+			event.TokenType, event.NewPrice.ToDecimal())
 		return
 	}
 
-	log.Debugf("📤 [Emit] 触发 %d 个价格变化处理器: %s @ %dc", 
-		handlerCount, event.TokenType, event.NewPrice.Cents)
+	log.Debugf("📤 [Emit] 触发 %d 个价格变化处理器: %s @ %.4f", 
+		handlerCount, event.TokenType, event.NewPrice.ToDecimal())
 
 	// 串行执行（确定性优先，避免并发导致的状态竞态）
 	for i, handler := range handlers {

@@ -74,8 +74,8 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	// BUY 条件
 	ask, askErr := orderutil.QuoteBuyPrice(orderCtx, s.TradingService, assetID, s.MaxBuyPrice)
 	if askErr == nil {
-		okPrice := ask.Cents <= s.BuyThreshold
-		if s.MaxBuyPrice > 0 && ask.Cents > s.MaxBuyPrice {
+		okPrice := ask.ToCents() <= s.BuyThreshold
+		if s.MaxBuyPrice > 0 && ask.ToCents() > s.MaxBuyPrice {
 			okPrice = false
 		}
 		if okPrice {
@@ -104,7 +104,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	// SELL 条件（可选）
 	if s.SellThreshold > 0 {
 		bid, bidErr := orderutil.QuoteSellPrice(orderCtx, s.TradingService, assetID, 0)
-		if bidErr == nil && bid.Cents >= s.SellThreshold {
+		if bidErr == nil && bid.ToCents() >= s.SellThreshold {
 			req := execution.MultiLegRequest{
 				Name:      "threshold_sell",
 				MarketSlug: e.Market.Slug,

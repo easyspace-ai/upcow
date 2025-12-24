@@ -27,8 +27,8 @@ func QuoteBuyPrice(ctx context.Context, g BestPriceGetter, assetID string, maxCe
 		return domain.Price{}, fmt.Errorf("订单簿 bestAsk 无效: %.6f", bestAsk)
 	}
 	p := domain.PriceFromDecimal(bestAsk)
-	if maxCents > 0 && p.Cents > maxCents {
-		return domain.Price{}, fmt.Errorf("买入滑点保护触发: bestAsk=%dc > max=%dc", p.Cents, maxCents)
+	if maxCents > 0 && p.ToCents() > maxCents {
+		return domain.Price{}, fmt.Errorf("买入滑点保护触发: bestAsk=%dc > max=%dc", p.ToCents(), maxCents)
 	}
 	return p, nil
 }
@@ -56,8 +56,8 @@ func QuoteSellPrice(ctx context.Context, g BestPriceGetter, assetID string, minC
 		return domain.Price{}, fmt.Errorf("订单簿 bestBid 无效: %.6f", bestBid)
 	}
 	p := domain.PriceFromDecimal(bestBid)
-	if minCents > 0 && p.Cents < minCents {
-		return domain.Price{}, fmt.Errorf("卖出滑点保护触发: bestBid=%dc < min=%dc", p.Cents, minCents)
+	if minCents > 0 && p.ToCents() < minCents {
+		return domain.Price{}, fmt.Errorf("卖出滑点保护触发: bestBid=%dc < min=%dc", p.ToCents(), minCents)
 	}
 	return p, nil
 }

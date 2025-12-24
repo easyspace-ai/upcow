@@ -243,24 +243,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// 检查数据是否新鲜（60秒内，放宽限制）
 			if !snap.UpdatedAt.IsZero() && time.Since(snap.UpdatedAt) < 60*time.Second {
 				// 更新 UP 订单薄
-				if snap.YesBidCents > 0 && snap.YesAskCents > 0 {
+				if snap.YesBidPips > 0 && snap.YesAskPips > 0 {
 					m.upBids = []orderLevel{{
-						Price: float64(snap.YesBidCents) / 100.0,
+						Price: float64(snap.YesBidPips) / 10000.0,
 						Size:  float64(snap.YesBidSizeScaled) / 10000.0,
 					}}
 					m.upAsks = []orderLevel{{
-						Price: float64(snap.YesAskCents) / 100.0,
+						Price: float64(snap.YesAskPips) / 10000.0,
 						Size:  float64(snap.YesAskSizeScaled) / 10000.0,
 					}}
 				}
 				// 更新 DOWN 订单薄
-				if snap.NoBidCents > 0 && snap.NoAskCents > 0 {
+				if snap.NoBidPips > 0 && snap.NoAskPips > 0 {
 					m.downBids = []orderLevel{{
-						Price: float64(snap.NoBidCents) / 100.0,
+						Price: float64(snap.NoBidPips) / 10000.0,
 						Size:  float64(snap.NoBidSizeScaled) / 10000.0,
 					}}
 					m.downAsks = []orderLevel{{
-						Price: float64(snap.NoAskCents) / 100.0,
+						Price: float64(snap.NoAskPips) / 10000.0,
 						Size:  float64(snap.NoAskSizeScaled) / 10000.0,
 					}}
 				}
@@ -369,24 +369,24 @@ func (m model) View() string {
 			age := time.Since(snap.UpdatedAt)
 			if age < 60*time.Second {
 				// 更新 UP 订单薄
-				if snap.YesBidCents > 0 && snap.YesAskCents > 0 {
+				if snap.YesBidPips > 0 && snap.YesAskPips > 0 {
 					upBids = []orderLevel{{
-						Price: float64(snap.YesBidCents) / 100.0,
+						Price: float64(snap.YesBidPips) / 10000.0,
 						Size:  float64(snap.YesBidSizeScaled) / 10000.0,
 					}}
 					upAsks = []orderLevel{{
-						Price: float64(snap.YesAskCents) / 100.0,
+						Price: float64(snap.YesAskPips) / 10000.0,
 						Size:  float64(snap.YesAskSizeScaled) / 10000.0,
 					}}
 				}
 				// 更新 DOWN 订单薄
-				if snap.NoBidCents > 0 && snap.NoAskCents > 0 {
+				if snap.NoBidPips > 0 && snap.NoAskPips > 0 {
 					downBids = []orderLevel{{
-						Price: float64(snap.NoBidCents) / 100.0,
+						Price: float64(snap.NoBidPips) / 10000.0,
 						Size:  float64(snap.NoBidSizeScaled) / 10000.0,
 					}}
 					downAsks = []orderLevel{{
-						Price: float64(snap.NoAskCents) / 100.0,
+						Price: float64(snap.NoAskPips) / 10000.0,
 						Size:  float64(snap.NoAskSizeScaled) / 10000.0,
 					}}
 				}

@@ -157,8 +157,8 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	currentMarket := e.Market
 	s.mu.Unlock()
 
-	log.Infof("📥 [grid] OnPriceChanged: token=%s price=%dc market=%s",
-		e.TokenType, e.NewPrice.Cents, currentMarket.Slug)
+	log.Infof("📥 [grid] OnPriceChanged: token=%s price=%.4f market=%s",
+		e.TokenType, e.NewPrice.ToDecimal(), currentMarket.Slug)
 
 	// 首次验证基础条件（targetTokens 和 assetID）
 	s.mu.Lock()
@@ -188,9 +188,9 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	s.mu.Unlock()
 
 	// 直接处理价格事件
-	log.Debugf("🔍 [grid] OnPriceChanged: 准备调用 processPrice token=%s price=%dc", e.TokenType, e.NewPrice.Cents)
+	log.Debugf("🔍 [grid] OnPriceChanged: 准备调用 processPrice token=%s price=%.4f", e.TokenType, e.NewPrice.ToDecimal())
 	s.processPrice(ctx, e, currentMarket)
-	log.Debugf("🔍 [grid] OnPriceChanged: processPrice 返回 token=%s price=%dc", e.TokenType, e.NewPrice.Cents)
+	log.Debugf("🔍 [grid] OnPriceChanged: processPrice 返回 token=%s price=%.4f", e.TokenType, e.NewPrice.ToDecimal())
 
 	return nil
 }
@@ -212,7 +212,7 @@ func (s *Strategy) OnOrderUpdate(_ context.Context, order *domain.Order) error {
 
 // processPrice 处理价格事件，检查是否需要入场
 func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent, m *domain.Market) {
-	log.Infof("🔍 [grid] processPrice: 开始处理 token=%s price=%dc market=%s", e.TokenType, e.NewPrice.Cents, m.Slug)
+	log.Infof("🔍 [grid] processPrice: 开始处理 token=%s price=%.4f market=%s", e.TokenType, e.NewPrice.ToDecimal(), m.Slug)
 	if s.TradingService == nil {
 		log.Warnf("⚠️ [grid] processPrice: TradingService 为 nil")
 		return
@@ -252,7 +252,7 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 
 	// 预热
 	if s.WarmupMs > 0 && now.Sub(s.firstSeenAt) < time.Duration(s.WarmupMs)*time.Millisecond {
-		log.Debugf("🔍 [grid] processPrice: 预热中，跳过 token=%s price=%dc", e.TokenType, e.NewPrice.Cents)
+		log.Debugf("🔍 [grid] processPrice: 预热中，跳过 token=%s price=%.4f", e.TokenType, e.NewPrice.ToDecimal())
 		return
 	}
 
@@ -271,16 +271,16 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 	s.mu.RUnlock()
 
 	if !lastSubmitAt.IsZero() && now.Sub(lastSubmitAt) < time.Duration(s.CooldownMs)*time.Millisecond {
-		log.Debugf("🔍 [grid] processPrice: 冷却中，跳过 token=%s price=%dc", e.TokenType, e.NewPrice.Cents)
+		log.Debugf("🔍 [grid] processPrice: 冷却中，跳过 token=%s price=%.4f", e.TokenType, e.NewPrice.ToDecimal())
 		return
 	}
 	if entriesThisCycle >= s.MaxEntriesPerPeriod {
-		log.Infof("🔍 [grid] processPrice: 达到最大入场次数限制，跳过 token=%s price=%dc entriesThisCycle=%d", e.TokenType, e.NewPrice.Cents, entriesThisCycle)
+		log.Infof("🔍 [grid] processPrice: 达到最大入场次数限制，跳过 token=%s price=%.4f entriesThisCycle=%d", e.TokenType, e.NewPrice.ToDecimal(), entriesThisCycle)
 		return
 	}
 	// 轮次上限：达到上限后不再新增入场（但仍会继续处理订单更新）
 	if s.MaxRoundsPerPeriod > 0 && s.roundsCompleted >= s.MaxRoundsPerPeriod {
-		log.Debugf("🔍 [grid] processPrice: 达到轮次上限，跳过 token=%s price=%dc roundsCompleted=%d maxRoundsPerPeriod=%d", e.TokenType, e.NewPrice.Cents, s.roundsCompleted, s.MaxRoundsPerPeriod)
+		log.Debugf("🔍 [grid] processPrice: 达到轮次上限，跳过 token=%s price=%.4f roundsCompleted=%d maxRoundsPerPeriod=%d", e.TokenType, e.NewPrice.ToDecimal(), s.roundsCompleted, s.MaxRoundsPerPeriod)
 		return
 	}
 
@@ -290,7 +290,7 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 		if currentRound > 0 && waitForComplete && !s.isRoundComplete(currentRound, now) {
 			log.Debugf("🔍 [grid] processPrice: 等待当前轮次完成 (round=%d)", currentRound)
 		} else {
-			log.Debugf("🔍 [grid] processPrice: 无法开始新轮次，跳过 token=%s price=%dc currentRound=%d waitForComplete=%v", e.TokenType, e.NewPrice.Cents, currentRound, waitForComplete)
+			log.Debugf("🔍 [grid] processPrice: 无法开始新轮次，跳过 token=%s price=%.4f currentRound=%d waitForComplete=%v", e.TokenType, e.NewPrice.ToDecimal(), currentRound, waitForComplete)
 		}
 		return
 	}
@@ -325,14 +325,14 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 
 		// 6.2 停止新增入场
 		if s.StopNewEntriesSeconds > 0 && remain <= int64(s.StopNewEntriesSeconds) {
-			log.Debugf("🔍 [grid] processPrice: 周期后段停止新增入场，跳过 token=%s price=%dc remain=%d", e.TokenType, e.NewPrice.Cents, remain)
+			log.Debugf("🔍 [grid] processPrice: 周期后段停止新增入场，跳过 token=%s price=%.4f remain=%d", e.TokenType, e.NewPrice.ToDecimal(), remain)
 			return
 		}
 	}
 
 	// 冻结检测：任一 side 进入极端共识区间则冻结（不再新增）
-	if s.isFrozenPrice(e.NewPrice.Cents) {
-		log.Infof("🔍 [grid] processPrice: 价格冻结，跳过 token=%s price=%dc", e.TokenType, e.NewPrice.Cents)
+	if s.isFrozenPrice(e.NewPrice.ToCents()) {
+		log.Infof("🔍 [grid] processPrice: 价格冻结，跳过 token=%s price=%.4f", e.TokenType, e.NewPrice.ToDecimal())
 		if s.CancelEntryOrdersOnFreeze {
 			s.cancelAllEntryOrders(ctx, m.Slug)
 		}
@@ -342,7 +342,7 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 	// 限制并发入场单数量
 	openEntryOrders := s.countOpenEntryOrders(m.Slug)
 	if openEntryOrders >= s.MaxOpenEntryOrders {
-		log.Debugf("🔍 [grid] processPrice: 达到最大并发入场单数量，跳过 token=%s price=%dc openEntryOrders=%d maxOpenEntryOrders=%d", e.TokenType, e.NewPrice.Cents, openEntryOrders, s.MaxOpenEntryOrders)
+		log.Debugf("🔍 [grid] processPrice: 达到最大并发入场单数量，跳过 token=%s price=%.4f openEntryOrders=%d maxOpenEntryOrders=%d", e.TokenType, e.NewPrice.ToDecimal(), openEntryOrders, s.MaxOpenEntryOrders)
 		return
 	}
 
@@ -358,7 +358,7 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 	// 10.1 库存中性 gating：净敞口过大时，只允许补"较少的一侧"
 	tokenTargets = s.applyInventoryNeutrality(m.Slug, tokenTargets)
 	if len(tokenTargets) == 0 {
-		log.Debugf("🔍 [grid] processPrice: 库存中性检查后无目标 token，跳过 token=%s price=%dc", e.TokenType, e.NewPrice.Cents)
+		log.Debugf("🔍 [grid] processPrice: 库存中性检查后无目标 token，跳过 token=%s price=%.4f", e.TokenType, e.NewPrice.ToDecimal())
 		return
 	}
 
@@ -371,7 +371,7 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 		}
 	}
 	if !tokenInTarget {
-		log.Debugf("🔍 [grid] processPrice: token 不在目标列表中，跳过 token=%s price=%dc targets=%v", e.TokenType, e.NewPrice.Cents, tokenTargets)
+		log.Debugf("🔍 [grid] processPrice: token 不在目标列表中，跳过 token=%s price=%.4f targets=%v", e.TokenType, e.NewPrice.ToDecimal(), tokenTargets)
 		return
 	}
 
@@ -386,11 +386,11 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 	s.mu.RUnlock()
 	if assetID == "" {
 		// 这种情况不应该发生（已在 OnPriceChanged 中验证），但为了安全起见还是检查
-		log.Warnf("⚠️ [grid] processPrice: assetID 为空，跳过 token=%s price=%dc", e.TokenType, e.NewPrice.Cents)
+		log.Warnf("⚠️ [grid] processPrice: assetID 为空，跳过 token=%s price=%.4f", e.TokenType, e.NewPrice.ToDecimal())
 		return
 	}
 
-	priceCents := e.NewPrice.Cents
+	priceCents := e.NewPrice.ToCents()
 	level := nearestLowerOrEqual(levels, priceCents)
 	if level == nil {
 		log.Infof("🔍 [grid] processPrice: token=%s price=%dc 无匹配层级 (levels=%v)", e.TokenType, priceCents, levels)
@@ -400,7 +400,7 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 
 	// 已在该层级入场过：跳过（本周期内不重复）
 	if s.isLevelUsed(e.TokenType, *level) {
-		log.Debugf("🔍 [grid] processPrice: 层级已使用，跳过 token=%s price=%dc level=%dc", e.TokenType, e.NewPrice.Cents, *level)
+		log.Debugf("🔍 [grid] processPrice: 层级已使用，跳过 token=%s price=%.4f level=%dc", e.TokenType, e.NewPrice.ToDecimal(), *level)
 		return
 	}
 
@@ -421,24 +421,24 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 		s.MaxSizeAdjustRatio,
 	)
 	cancel()
-	if err != nil || skipped || bestAsk.Cents <= 0 || size <= 0 {
+	if err != nil || skipped || bestAsk.Pips <= 0 || size <= 0 {
 		if err != nil {
 			log.Infof("🔍 [grid] processPrice: token=%s level=%dc quote失败: %v", e.TokenType, *level, err)
 		} else if skipped {
-			log.Debugf("🔍 [grid] processPrice: token=%s level=%dc bestAsk=%dc 跳过 (skipped=true, bestAsk>%dc?)", e.TokenType, *level, bestAsk.Cents, maxCents)
+			log.Debugf("🔍 [grid] processPrice: token=%s level=%dc bestAsk=%dc 跳过 (skipped=true, bestAsk>%dc?)", e.TokenType, *level, bestAsk.ToCents(), maxCents)
 		} else {
-			log.Debugf("🔍 [grid] processPrice: token=%s level=%dc bestAsk=%dc size=%.4f 无效", e.TokenType, *level, bestAsk.Cents, size)
+			log.Debugf("🔍 [grid] processPrice: token=%s level=%dc bestAsk=%dc size=%.4f 无效", e.TokenType, *level, bestAsk.ToCents(), size)
 		}
 		return
 	}
 
 	// 额外检查：bestAsk 应该在合理范围内
-	if bestAsk.Cents > maxCents {
-		log.Debugf("🔍 [grid] processPrice: token=%s level=%dc bestAsk=%dc 超出允许范围 (max=%dc)", e.TokenType, *level, bestAsk.Cents, maxCents)
+	if bestAsk.ToCents() > maxCents {
+		log.Debugf("🔍 [grid] processPrice: token=%s level=%dc bestAsk=%dc 超出允许范围 (max=%dc)", e.TokenType, *level, bestAsk.ToCents(), maxCents)
 		return
 	}
 
-	targetExit := bestAsk.Cents + s.ProfitTargetCents
+	targetExit := bestAsk.ToCents() + s.ProfitTargetCents
 	if targetExit > 99 {
 		targetExit = 99
 	}
@@ -463,7 +463,7 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 	cancel2()
 	if err != nil {
 		log.Errorf("❌ [grid] 入场失败: token=%s level=%dc bestAsk=%dc size=%.4f error=%v",
-			e.TokenType, *level, bestAsk.Cents, size, err)
+			e.TokenType, *level, bestAsk.ToCents(), size, err)
 		return
 	}
 
@@ -474,7 +474,7 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 
 	oid := created[0].OrderID
 	log.Infof("📌 [grid] 入场: token=%s level=%dc price=%dc size=%.4f orderID=%s market=%s round=%d",
-		e.TokenType, *level, bestAsk.Cents, size, oid, m.Slug, currentRound)
+		e.TokenType, *level, bestAsk.ToCents(), size, oid, m.Slug, currentRound)
 
 	// 标记层级已使用
 	s.mu.Lock()
@@ -491,7 +491,7 @@ func (s *Strategy) processPrice(ctx context.Context, e *events.PriceChangedEvent
 		MarketSlug:      m.Slug,
 		GridLevel:       *level,
 		Side:            types.SideBuy,
-		EntryPriceCents: bestAsk.Cents,
+		EntryPriceCents: bestAsk.ToCents(),
 		TargetExitCents: targetExit,
 		RequestedSize:   size,
 		SeenFilled:      0,
@@ -566,7 +566,7 @@ func (s *Strategy) handleOrderUpdate(ctx context.Context, order *domain.Order) {
 		if exitSize <= 0 {
 			return
 		}
-		target := domain.Price{Cents: meta.TargetExitCents}
+		target := domain.Price{Pips: meta.TargetExitCents * 100} // 1 cent = 100 pips
 		req := execution.MultiLegRequest{
 			Name:       fmt.Sprintf("grid_exit_%s_%dc", strings.ToLower(string(meta.TokenType)), meta.GridLevel),
 			MarketSlug: order.MarketSlug,
@@ -783,7 +783,7 @@ func (s *Strategy) tryPlaceExit(ctx context.Context, m *domain.Market, meta *tra
 		return
 	}
 
-	target := domain.Price{Cents: meta.TargetExitCents}
+	target := domain.Price{Pips: meta.TargetExitCents * 100} // 1 cent = 100 pips
 	exitOrderType := types.OrderTypeGTC
 	// 保护：很小的 size 用 FAK 兜底（避免交易所最小 shares 约束导致挂单被拒）
 	if exitSize < 5.0 {
@@ -929,7 +929,7 @@ func (s *Strategy) flattenPositions(ctx context.Context, m *domain.Market, remai
 		ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 		bestBid, err := orderutil.QuoteSellPrice(ctx, s.TradingService, assetID, 0)
-		if err != nil || bestBid.Cents <= 0 {
+		if err != nil || bestBid.Pips <= 0 {
 			return
 		}
 		req := execution.MultiLegRequest{

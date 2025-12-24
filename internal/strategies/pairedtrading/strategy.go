@@ -71,7 +71,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if err != nil {
 		return nil
 	}
-	total := yesAsk.Cents + noAsk.Cents
+	total := yesAsk.ToCents() + noAsk.ToCents()
 	maxTotal := 100 - s.ProfitTargetCents
 	if total > maxTotal {
 		return nil
