@@ -155,6 +155,7 @@ type MarketConfig struct {
 	Timeframe string // 15m/1h/4h
 	Kind      string // 默认 updown
 	SlugStyle string // timestamp / polymarket_hourly_et
+	SlugPrefix string // 可选：显式指定 market slug 前缀（例如 btc-updown-15m- 或 bitcoin-up-or-down-）
 }
 
 func (m MarketConfig) Spec() (marketspec.MarketSpec, error) {
@@ -205,6 +206,7 @@ type ConfigFile struct {
 		Timeframe string `yaml:"timeframe" json:"timeframe"`
 		Kind      string `yaml:"kind" json:"kind"`
 		SlugStyle string `yaml:"slugStyle" json:"slugStyle"`
+		SlugPrefix string `yaml:"slugPrefix" json:"slugPrefix"`
 	} `yaml:"market" json:"market"`
 	LogLevel                             string                  `yaml:"log_level" json:"log_level"`
 	LogFile                              string                  `yaml:"log_file" json:"log_file"`
@@ -275,6 +277,7 @@ func LoadFromFile(filePath string) (*Config, error) {
 			timeframe := "15m"
 			kind := "updown"
 			slugStyle := "timestamp"
+			slugPrefix := ""
 
 			if configFile != nil {
 				if strings.TrimSpace(configFile.Market.Symbol) != "" {
@@ -288,6 +291,9 @@ func LoadFromFile(filePath string) (*Config, error) {
 				}
 				if strings.TrimSpace(configFile.Market.SlugStyle) != "" {
 					slugStyle = strings.TrimSpace(configFile.Market.SlugStyle)
+				}
+				if strings.TrimSpace(configFile.Market.SlugPrefix) != "" {
+					slugPrefix = strings.TrimSpace(configFile.Market.SlugPrefix)
 				}
 			}
 
@@ -304,8 +310,11 @@ func LoadFromFile(filePath string) (*Config, error) {
 			if v := strings.TrimSpace(getEnv("MARKET_SLUG_STYLE", "")); v != "" {
 				slugStyle = v
 			}
+			if v := strings.TrimSpace(getEnv("MARKET_SLUG_PREFIX", "")); v != "" {
+				slugPrefix = v
+			}
 
-			return MarketConfig{Symbol: symbol, Timeframe: timeframe, Kind: kind, SlugStyle: slugStyle}
+			return MarketConfig{Symbol: symbol, Timeframe: timeframe, Kind: kind, SlugStyle: slugStyle, SlugPrefix: slugPrefix}
 		}(),
 		LogLevel: func() string {
 			if configFile != nil && configFile.LogLevel != "" {

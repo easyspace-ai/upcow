@@ -2,6 +2,7 @@ package velocityfollow
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
@@ -78,16 +79,30 @@ func (s *Strategy) Initialize() error {
 	}
 
 	// 读取全局 market 配置：用于过滤 slug（防止误处理非目标市场）
-	if gc := config.Get(); gc != nil {
-		if sp, err := gc.Market.Spec(); err == nil {
-			s.marketSlugPrefix = strings.ToLower(sp.SlugPrefix())
-		}
-		s.minOrderSize = gc.MinOrderSize
-		s.minShareSize = gc.MinShareSize
+	gc := config.Get()
+	if gc == nil {
+		return fmt.Errorf("[%s] 全局配置未加载：拒绝启动（避免误交易到非目标市场）", ID)
 	}
+	sp, err := gc.Market.Spec()
+	if err != nil {
+		return fmt.Errorf("[%s] 读取 market 配置失败：%w（拒绝启动，避免误交易）", ID, err)
+	}
+	// 你当前要求：策略暂时只支持 15m / 1h
+	if sp.Timeframe != "15m" && sp.Timeframe != "1h" {
+		return fmt.Errorf("[%s] 当前仅支持 timeframe=15m/1h（收到 %q）", ID, sp.Timeframe)
+	}
+	// 优先用配置里显式指定的 slugPrefix；否则用 spec 推导
+	prefix := strings.TrimSpace(gc.Market.SlugPrefix)
+	if prefix == "" {
+		prefix = sp.SlugPrefix()
+	}
+	s.marketSlugPrefix = strings.ToLower(strings.TrimSpace(prefix))
 	if s.marketSlugPrefix == "" {
-		s.marketSlugPrefix = "btc-updown-15m-"
+		return fmt.Errorf("[%s] marketSlugPrefix 为空：拒绝启动（避免误交易）", ID)
 	}
+	s.minOrderSize = gc.MinOrderSize
+	s.minShareSize = gc.MinShareSize
+
 	if s.minOrderSize <= 0 {
 		s.minOrderSize = 1.1
 	}
