@@ -277,6 +277,7 @@ func LoadFromFile(filePath string) (*Config, error) {
 			timeframe := "15m"
 			kind := "updown"
 			slugStyle := "timestamp"
+			slugPrefix := ""
 
 			if configFile != nil {
 				if strings.TrimSpace(configFile.Market.Symbol) != "" {
@@ -290,6 +291,9 @@ func LoadFromFile(filePath string) (*Config, error) {
 				}
 				if strings.TrimSpace(configFile.Market.SlugStyle) != "" {
 					slugStyle = strings.TrimSpace(configFile.Market.SlugStyle)
+				}
+				if strings.TrimSpace(configFile.Market.SlugPrefix) != "" {
+					slugPrefix = strings.TrimSpace(configFile.Market.SlugPrefix)
 				}
 			}
 
@@ -306,8 +310,11 @@ func LoadFromFile(filePath string) (*Config, error) {
 			if v := strings.TrimSpace(getEnv("MARKET_SLUG_STYLE", "")); v != "" {
 				slugStyle = v
 			}
+			if v := strings.TrimSpace(getEnv("MARKET_SLUG_PREFIX", "")); v != "" {
+				slugPrefix = v
+			}
 
-			return MarketConfig{Symbol: symbol, Timeframe: timeframe, Kind: kind, SlugStyle: slugStyle}
+			return MarketConfig{Symbol: symbol, Timeframe: timeframe, Kind: kind, SlugStyle: slugStyle, SlugPrefix: slugPrefix}
 		}(),
 		LogLevel: func() string {
 			if configFile != nil && configFile.LogLevel != "" {
