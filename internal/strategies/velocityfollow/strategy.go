@@ -236,9 +236,22 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	s.samples[e.TokenType] = append(s.samples[e.TokenType], sample{ts: now, priceCents: priceCents})
 	s.pruneLocked(now)
 
-	// 计算 UP/DOWN 指标，选择“上行更快”的一侧触发
+	// 计算 UP/DOWN 指标，选择"上行更快"的一侧触发
 	mUp := s.computeLocked(domain.TokenTypeUp)
 	mDown := s.computeLocked(domain.TokenTypeDown)
+
+	// 获取当前价格（用于价格优先选择）
+	var upPriceCents, downPriceCents int
+	if s.PreferHigherPrice {
+		upSamples := s.samples[domain.TokenTypeUp]
+		downSamples := s.samples[domain.TokenTypeDown]
+		if len(upSamples) > 0 {
+			upPriceCents = upSamples[len(upSamples)-1].priceCents
+		}
+		if len(downSamples) > 0 {
+			downPriceCents = downSamples[len(downSamples)-1].priceCents
+		}
+	}
 
 	// 根据 bias 调整阈值（soft）或直接只允许 bias 方向（hard）
 	reqMoveUp := s.MinMoveCents
@@ -265,14 +278,62 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		allowDown = s.biasToken == domain.TokenTypeDown
 	}
 
-	if allowUp && mUp.ok && mUp.delta >= reqMoveUp && mUp.velocity >= reqVelUp {
-		winner = domain.TokenTypeUp
-		winMet = mUp
-	}
-	if allowDown && mDown.ok && mDown.delta >= reqMoveDown && mDown.velocity >= reqVelDown {
-		if winner == "" || mDown.velocity > winMet.velocity {
+	// 检查 UP 是否满足条件
+	upQualified := allowUp && mUp.ok && mUp.delta >= reqMoveUp && mUp.velocity >= reqVelUp
+	// 检查 DOWN 是否满足条件
+	downQualified := allowDown && mDown.ok && mDown.delta >= reqMoveDown && mDown.velocity >= reqVelDown
+
+	// 价格优先选择逻辑
+	if s.PreferHigherPrice && upQualified && downQualified {
+		// 两边都满足条件，优先选择价格更高的
+		if upPriceCents > downPriceCents {
+			winner = domain.TokenTypeUp
+			winMet = mUp
+		} else if downPriceCents > upPriceCents {
 			winner = domain.TokenTypeDown
 			winMet = mDown
+		} else {
+			// 价格相同，选择速度更快的（虽然通常相同）
+			if mUp.velocity >= mDown.velocity {
+				winner = domain.TokenTypeUp
+				winMet = mUp
+			} else {
+				winner = domain.TokenTypeDown
+				winMet = mDown
+			}
+		}
+		// 如果配置了最小优先价格阈值，检查是否满足
+		if s.MinPreferredPriceCents > 0 {
+			winnerPrice := upPriceCents
+			if winner == domain.TokenTypeDown {
+				winnerPrice = downPriceCents
+			}
+			if winnerPrice < s.MinPreferredPriceCents {
+				// 价格低于阈值，不触发
+				winner = ""
+			}
+		}
+	} else {
+		// 只有一边满足条件，或未启用价格优先选择，使用原逻辑
+		if upQualified {
+			winner = domain.TokenTypeUp
+			winMet = mUp
+		}
+		if downQualified {
+			if winner == "" || mDown.velocity > winMet.velocity {
+				winner = domain.TokenTypeDown
+				winMet = mDown
+			}
+		}
+		// 如果启用价格优先选择但只有一边满足，也检查价格阈值
+		if s.PreferHigherPrice && winner != "" && s.MinPreferredPriceCents > 0 {
+			winnerPrice := upPriceCents
+			if winner == domain.TokenTypeDown {
+				winnerPrice = downPriceCents
+			}
+			if winnerPrice < s.MinPreferredPriceCents {
+				winner = ""
+			}
 		}
 	}
 	if winner == "" {

@@ -40,10 +40,15 @@ type Config struct {
 	OppositeBiasVelocityMultiplier float64 `yaml:"oppositeBiasVelocityMultiplier" json:"oppositeBiasVelocityMultiplier"`
 	OppositeBiasMinMoveExtraCents  int     `yaml:"oppositeBiasMinMoveExtraCents" json:"oppositeBiasMinMoveExtraCents"`
 
-	// 可选：用 Binance 1s 方向做确认（借鉴 momentum bot 的“底层硬动”过滤）
+	// 可选：用 Binance 1s 方向做确认（借鉴 momentum bot 的"底层硬动"过滤）
 	UseBinanceMoveConfirm     bool `yaml:"useBinanceMoveConfirm" json:"useBinanceMoveConfirm"`
 	MoveConfirmWindowSeconds  int  `yaml:"moveConfirmWindowSeconds" json:"moveConfirmWindowSeconds"`   // lookback 秒数
 	MinUnderlyingMoveBps      int  `yaml:"minUnderlyingMoveBps" json:"minUnderlyingMoveBps"`         // 最小底层波动（bps）
+
+	// 价格优先选择：当 UP/DOWN 都满足速度条件时，优先选择价格更高的一边
+	// 因为订单簿是镜像的，速度通常相同，价格更高的胜率更大
+	PreferHigherPrice        bool `yaml:"preferHigherPrice" json:"preferHigherPrice"`               // 是否启用价格优先选择
+	MinPreferredPriceCents  int  `yaml:"minPreferredPriceCents" json:"minPreferredPriceCents"`     // 优先价格阈值（分），例如 50 或 60.60（转换为 6060）
 }
 
 func (c *Config) Validate() error {
@@ -120,6 +125,11 @@ func (c *Config) Validate() error {
 	}
 	if c.MinUnderlyingMoveBps <= 0 {
 		c.MinUnderlyingMoveBps = 20 // 0.20%
+	}
+
+	// 价格优先选择默认值
+	if c.PreferHigherPrice && c.MinPreferredPriceCents <= 0 {
+		c.MinPreferredPriceCents = 50 // 默认 50c
 	}
 	return nil
 }

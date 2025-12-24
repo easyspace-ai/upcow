@@ -22,7 +22,7 @@ proxy:
 #   - {et}: 时区标识 (et)
 market:
   symbol: "btc"
-  timeframe: "1h"
+  timeframe: "15m"
   kind: "updown"
   # slugTemplates: 格式模板映射（根据 timeframe 选择）
   slugTemplates:
@@ -75,6 +75,13 @@ exchangeStrategies:
       useBinanceMoveConfirm: false
       moveConfirmWindowSeconds: 60
       minUnderlyingMoveBps: 20
+
+      # ====== 价格优先选择（镜像订单簿优化）======
+      # 当 UP/DOWN 都满足速度条件时，优先选择价格更高的一边
+      # 因为订单簿是镜像的，速度通常相同，价格更高的胜率更大
+      preferHigherPrice: true          # 启用价格优先选择
+      minPreferredPriceCents: 60       # 优先价格阈值（整数分），例如 50 表示 50c，60 表示 60c
+                                       # 注意：如果配置 60，表示价格 >= 60c 才触发；如果配置 50，表示价格 >= 50c 才触发
  
 # ====== 系统级配置 ======
 order_status_check_timeout: 3
