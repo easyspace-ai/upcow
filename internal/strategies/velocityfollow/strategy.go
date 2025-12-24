@@ -2,6 +2,7 @@ package velocityfollow
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
@@ -74,17 +75,25 @@ func (s *Strategy) Initialize() error {
 	}
 
 	// 读取全局 market 配置：用于过滤 slug（防止误处理非目标市场）
-	if gc := config.Get(); gc != nil {
-		if sp, err := gc.Market.Spec(); err == nil {
-			s.marketSlugPrefix = strings.ToLower(sp.SlugPrefix())
-		} else {
-			log.WithError(err).Warnf("⚠️ [%s] 读取 market 配置失败，将不做 marketSlugPrefix 过滤（可能会处理非目标市场）", ID)
-		}
-		s.minOrderSize = gc.MinOrderSize
-		s.minShareSize = gc.MinShareSize
-	} else {
-		log.Warnf("⚠️ [%s] 全局配置未加载，将不做 marketSlugPrefix 过滤（可能会处理非目标市场）", ID)
+	gc := config.Get()
+	if gc == nil {
+		return fmt.Errorf("[%s] 全局配置未加载：拒绝启动（避免误交易到非目标市场）", ID)
 	}
+	sp, err := gc.Market.Spec()
+	if err != nil {
+		return fmt.Errorf("[%s] 读取 market 配置失败：%w（拒绝启动，避免误交易）", ID, err)
+	}
+	// 你当前要求：策略暂时只支持 15m / 1h
+	if sp.Timeframe != "15m" && sp.Timeframe != "1h" {
+		return fmt.Errorf("[%s] 当前仅支持 timeframe=15m/1h（收到 %q）", ID, sp.Timeframe)
+	}
+	s.marketSlugPrefix = strings.ToLower(strings.TrimSpace(sp.SlugPrefix()))
+	if s.marketSlugPrefix == "" {
+		return fmt.Errorf("[%s] marketSlugPrefix 为空：拒绝启动（避免误交易）", ID)
+	}
+	s.minOrderSize = gc.MinOrderSize
+	s.minShareSize = gc.MinShareSize
+
 	if s.minOrderSize <= 0 {
 		s.minOrderSize = 1.1
 	}
@@ -123,7 +132,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	}
 
 	// 只处理目标市场（通过 prefix 匹配）
-	if s.marketSlugPrefix != "" && !strings.HasPrefix(strings.ToLower(e.Market.Slug), s.marketSlugPrefix) {
+	if !strings.HasPrefix(strings.ToLower(e.Market.Slug), s.marketSlugPrefix) {
 		return nil
 	}
 
