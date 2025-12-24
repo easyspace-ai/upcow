@@ -1,0 +1,87 @@
+{
+  "updated_at": "2025-12-24T19:35:36.835869+08:00",
+  "balance": 39.211301,
+  "open_orders": [
+    {
+      "OrderID": "order_1766576132763001000",
+      "MarketSlug": "btc-updown-15m-1766575800",
+      "AssetID": "77302949163560570446955153712117659254632444530824935717125950811089240073424",
+      "Side": "BUY",
+      "Price": {
+        "Pips": 3300
+      },
+      "Size": 5,
+      "FilledSize": 0,
+      "GridLevel": 0,
+      "TokenType": "down",
+      "HedgeOrderID": null,
+      "CreatedAt": "2025-12-24T19:35:32.763002+08:00",
+      "FilledAt": null,
+      "IsEntryOrder": true,
+      "PairOrderID": null,
+      "Status": "open",
+      "OrderType": "GTC"
+    },
+    {
+      "OrderID": "order_1766576132763012000",
+      "MarketSlug": "btc-updown-15m-1766575800",
+      "AssetID": "51856338281728973469557161094350061709574499190654361254279024794799110887574",
+      "Side": "BUY",
+      "Price": {
+        "Pips": 6400
+      },
+      "Size": 5,
+      "FilledSize": 0,
+      "GridLevel": 0,
+      "TokenType": "up",
+      "HedgeOrderID": null,
+      "CreatedAt": "2025-12-24T19:35:32.763013+08:00",
+      "FilledAt": null,
+      "IsEntryOrder": true,
+      "PairOrderID": null,
+      "Status": "open",
+      "OrderType": "FAK"
+    },
+    {
+      "OrderID": "order_1766576134804459000",
+      "MarketSlug": "btc-updown-15m-1766575800",
+      "AssetID": "77302949163560570446955153712117659254632444530824935717125950811089240073424",
+      "Side": "BUY",
+      "Price": {
+        "Pips": 3200
+      },
+      "Size": 5,
+      "FilledSize": 0,
+      "GridLevel": 0,
+      "TokenType": "down",
+      "HedgeOrderID": null,
+      "CreatedAt": "2025-12-24T19:35:34.80446+08:00",
+      "FilledAt": null,
+      "IsEntryOrder": true,
+      "PairOrderID": null,
+      "Status": "open",
+      "OrderType": "GTC"
+    },
+    {
+      "OrderID": "order_1766576134804482000",
+      "MarketSlug": "btc-updown-15m-1766575800",
+      "AssetID": "51856338281728973469557161094350061709574499190654361254279024794799110887574",
+      "Side": "BUY",
+      "Price": {
+        "Pips": 6500
+      },
+      "Size": 5,
+      "FilledSize": 0,
+      "GridLevel": 0,
+      "TokenType": "up",
+      "HedgeOrderID": null,
+      "CreatedAt": "2025-12-24T19:35:34.804483+08:00",
+      "FilledAt": null,
+      "IsEntryOrder": true,
+      "PairOrderID": null,
+      "Status": "open",
+      "OrderType": "FAK"
+    }
+  ],
+  "positions": []
+}

@@ -366,12 +366,34 @@ func (e *ExecutionEngine) tryAutoHedge(ctx context.Context, st *execState) {
 }
 
 func computeInFlightKey(req MultiLegRequest) string {
+	// 优化：基于市场、方向和主要入场订单价格计算去重 key
+	// 这样可以避免相同方向、相似价格的重复下单，同时允许价格变化时的新订单
 	parts := make([]string, 0, len(req.Legs))
-	for _, l := range req.Legs {
-		parts = append(parts, fmt.Sprintf("%s|%s|%s|%.4f|%.4f|%s",
-			l.AssetID, l.TokenType, l.Side, l.Price.ToDecimal(), l.Size, l.OrderType))
+	
+	// 找到入场订单（通常是 FAK 订单）作为主要标识
+	var entryLeg *LegIntent
+	for i := range req.Legs {
+		if req.Legs[i].OrderType == types.OrderTypeFAK || req.Legs[i].Name == "taker_buy_winner" {
+			entryLeg = &req.Legs[i]
+			break
+		}
 	}
-	sort.Strings(parts)
+	
+	// 如果找到入场订单，使用更精确的去重 key（包含价格范围，允许小幅价格变化）
+	if entryLeg != nil {
+		// 价格取整到 1 cent，允许小幅价格波动
+		priceCents := int(entryLeg.Price.ToDecimal() * 100)
+		parts = append(parts, fmt.Sprintf("%s|%s|%s|%dc",
+			entryLeg.AssetID, entryLeg.TokenType, entryLeg.Side, priceCents))
+	} else {
+		// 回退到原来的逻辑
+		for _, l := range req.Legs {
+			parts = append(parts, fmt.Sprintf("%s|%s|%s|%.4f|%.4f|%s",
+				l.AssetID, l.TokenType, l.Side, l.Price.ToDecimal(), l.Size, l.OrderType))
+		}
+		sort.Strings(parts)
+	}
+	
 	return strings.Join(append([]string{req.MarketSlug}, parts...), "||")
 }
 

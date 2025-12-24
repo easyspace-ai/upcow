@@ -333,13 +333,20 @@ func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 
 			log.Debugf("🔄 [订单状态同步] %s ID 已更新: %s -> %s", orderType, orderID, matchedOrderID)
 			matched = true
-		} else if order.IsEntryOrder || (!order.IsEntryOrder && order.Price.ToCents() >= 1 && order.Price.ToCents() <= 40) {
-			orderType := "入场订单"
-			if !order.IsEntryOrder {
-				orderType = "对冲订单"
+		} else {
+			// 优化：只有在订单状态不是已成交/已取消时才记录匹配失败警告
+			// 如果订单已经通过 WebSocket 更新为 filled，说明已经成交，不需要匹配
+			if order.Status != domain.OrderStatusFilled && order.Status != domain.OrderStatusCanceled {
+				if order.IsEntryOrder || (!order.IsEntryOrder && order.Price.ToCents() >= 1 && order.Price.ToCents() <= 40) {
+					orderType := "入场订单"
+					if !order.IsEntryOrder {
+						orderType = "对冲订单"
+					}
+					// 降级为 Debug 级别，减少日志噪音
+					log.Debugf("🔄 [订单状态同步] 无法通过业务规则匹配%s: orderID=%s, assetID=%s, side=%s, price=%dc, 可能订单已成交或取消",
+						orderType, orderID, order.AssetID, order.Side, order.Price.ToCents())
+				}
 			}
-			log.Warnf("⚠️ [订单匹配失败] 无法通过业务规则匹配%s: orderID=%s, assetID=%s, side=%s, price=%dc, 可能订单已成交或取消",
-				orderType, orderID, order.AssetID, order.Side, order.Price.ToCents())
 		}
 
 		if matched {

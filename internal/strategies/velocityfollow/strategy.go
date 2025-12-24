@@ -47,6 +47,10 @@ type Strategy struct {
 	lastTriggerAt   time.Time
 	tradedThisCycle bool
 
+	// 方向级别的去重：避免同一方向在短时间内重复触发
+	lastTriggerSide    domain.TokenType
+	lastTriggerSideAt  time.Time
+
 	// Binance-bias state (per cycle)
 	cycleStartMs int64
 	biasReady    bool
@@ -109,6 +113,8 @@ func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, _ *domain.Market
 	s.samples = make(map[domain.TokenType][]sample)
 	s.firstSeenAt = time.Now()
 	s.tradedThisCycle = false
+	s.lastTriggerSide = ""
+	s.lastTriggerSideAt = time.Time{}
 	s.cycleStartMs = 0
 	s.biasReady = false
 	s.biasToken = ""
@@ -250,7 +256,21 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		return nil
 	}
 
-	// 可选：用 Binance 1s “底层硬动”过滤（借鉴 momentum bot 的 move threshold 思路）
+	// 方向级别的去重：避免同一方向在短时间内重复触发
+	// 这可以显著减少 duplicate in-flight 错误
+	if s.lastTriggerSide == winner && !s.lastTriggerSideAt.IsZero() {
+		sideCooldown := time.Duration(s.CooldownMs) * time.Millisecond
+		if sideCooldown <= 0 {
+			sideCooldown = 2 * time.Second // 默认 2 秒
+		}
+		if now.Sub(s.lastTriggerSideAt) < sideCooldown {
+			s.mu.Unlock()
+			log.Debugf("🔄 [%s] 跳过：同一方向 %s 在冷却期内（距离上次触发 %.2fs）", ID, winner, now.Sub(s.lastTriggerSideAt).Seconds())
+			return nil
+		}
+	}
+
+	// 可选：用 Binance 1s "底层硬动"过滤（借鉴 momentum bot 的 move threshold 思路）
 	if s.UseBinanceMoveConfirm {
 		if s.BinanceFuturesKlines == nil {
 			s.mu.Unlock()
@@ -379,6 +399,8 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	s.mu.Lock()
 	if execErr == nil {
 		s.lastTriggerAt = time.Now()
+		s.lastTriggerSide = winner
+		s.lastTriggerSideAt = time.Now()
 		s.tradedThisCycle = true
 		log.Infof("⚡ [%s] 触发: side=%s ask=%dc hedge=%dc vel=%.3f(c/s) move=%dc/%0.1fs bias=%s(%s) market=%s",
 			ID, winner, askCents, hedgeCents, winMet.velocity, winMet.delta, winMet.seconds, biasTok, biasReason, market.Slug)
