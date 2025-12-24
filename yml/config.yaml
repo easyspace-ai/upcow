@@ -15,6 +15,7 @@ market:
   symbol: "btc"     # btc/eth/sol/xrp ...
   timeframe: "15m"  # 15m/1h/4h
   kind: "updown"
+  slugStyle: "timestamp"  # timestamp / polymarket_hourly_et
 
 # 策略配置（bbgo main 风格：exchangeStrategies 动态挂载）
 # 格式说明：

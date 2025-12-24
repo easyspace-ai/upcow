@@ -15,7 +15,8 @@ proxy:
 market:
   symbol: "btc"     # btc/eth/sol/xrp ...
   timeframe: "15m"  # 15m/1h/4h
-  kind: "updown"    # 当前框架默认 updown
+  kind: "updown"    # timestamp 模式下常用 updown；hourly_et 模式下可用 up-or-down
+  slugStyle: "timestamp"  # timestamp / polymarket_hourly_et
 
 # 策略配置（bbgo main 风格：exchangeStrategies 动态挂载）
 # 格式说明：

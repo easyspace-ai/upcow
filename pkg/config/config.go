@@ -154,10 +154,26 @@ type MarketConfig struct {
 	Symbol    string // btc/eth/sol/xrp...
 	Timeframe string // 15m/1h/4h
 	Kind      string // 默认 updown
+	SlugStyle string // timestamp / polymarket_hourly_et
 }
 
 func (m MarketConfig) Spec() (marketspec.MarketSpec, error) {
-	return marketspec.New(m.Symbol, m.Timeframe, m.Kind)
+	sp, err := marketspec.New(m.Symbol, m.Timeframe, m.Kind)
+	if err != nil {
+		return marketspec.MarketSpec{}, err
+	}
+	style, err := marketspec.ParseSlugStyle(m.SlugStyle)
+	if err != nil {
+		return marketspec.MarketSpec{}, err
+	}
+	sp.SlugStyle = style
+	// 兼容：如果用户选择 hourly_et 但未填 kind，则默认使用 up-or-down
+	if sp.SlugStyle == marketspec.SlugStylePolymarketHourlyET {
+		if strings.TrimSpace(m.Kind) == "" {
+			sp.Kind = "up-or-down"
+		}
+	}
+	return sp, nil
 }
 
 var globalConfig *Config
@@ -188,6 +204,7 @@ type ConfigFile struct {
 		Symbol    string `yaml:"symbol" json:"symbol"`
 		Timeframe string `yaml:"timeframe" json:"timeframe"`
 		Kind      string `yaml:"kind" json:"kind"`
+		SlugStyle string `yaml:"slugStyle" json:"slugStyle"`
 	} `yaml:"market" json:"market"`
 	LogLevel                             string                  `yaml:"log_level" json:"log_level"`
 	LogFile                              string                  `yaml:"log_file" json:"log_file"`
@@ -257,6 +274,7 @@ func LoadFromFile(filePath string) (*Config, error) {
 			symbol := "btc"
 			timeframe := "15m"
 			kind := "updown"
+			slugStyle := "timestamp"
 
 			if configFile != nil {
 				if strings.TrimSpace(configFile.Market.Symbol) != "" {
@@ -267,6 +285,9 @@ func LoadFromFile(filePath string) (*Config, error) {
 				}
 				if strings.TrimSpace(configFile.Market.Kind) != "" {
 					kind = strings.TrimSpace(configFile.Market.Kind)
+				}
+				if strings.TrimSpace(configFile.Market.SlugStyle) != "" {
+					slugStyle = strings.TrimSpace(configFile.Market.SlugStyle)
 				}
 			}
 
@@ -280,8 +301,11 @@ func LoadFromFile(filePath string) (*Config, error) {
 			if v := strings.TrimSpace(getEnv("MARKET_KIND", "")); v != "" {
 				kind = v
 			}
+			if v := strings.TrimSpace(getEnv("MARKET_SLUG_STYLE", "")); v != "" {
+				slugStyle = v
+			}
 
-			return MarketConfig{Symbol: symbol, Timeframe: timeframe, Kind: kind}
+			return MarketConfig{Symbol: symbol, Timeframe: timeframe, Kind: kind, SlugStyle: slugStyle}
 		}(),
 		LogLevel: func() string {
 			if configFile != nil && configFile.LogLevel != "" {
