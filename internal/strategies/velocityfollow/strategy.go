@@ -35,6 +35,7 @@ type metrics struct {
 
 type Strategy struct {
 	TradingService *services.TradingService
+	BinanceFuturesKlines *services.BinanceFuturesKlines
 	Config         `yaml:",inline" json:",inline"`
 
 	mu sync.Mutex
@@ -273,6 +274,18 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		s.tradedThisCycle = true
 		log.Infof("⚡ [%s] 触发: side=%s ask=%dc hedge=%dc vel=%.3f(c/s) move=%dc/%0.1fs market=%s",
 			ID, winner, askCents, hedgeCents, winMet.velocity, winMet.delta, winMet.seconds, market.Slug)
+
+		// 额外：打印 Binance 1s/1m 最新 K 线（用于你观察“开盘 1 分钟”关系）
+		if s.BinanceFuturesKlines != nil {
+			if k1m, ok := s.BinanceFuturesKlines.Latest("1m"); ok {
+				log.Infof("📊 [%s] Binance 1m kline: sym=%s o=%.2f c=%.2f h=%.2f l=%.2f closed=%v startMs=%d",
+					ID, k1m.Symbol, k1m.Open, k1m.Close, k1m.High, k1m.Low, k1m.IsClosed, k1m.StartTimeMs)
+			}
+			if k1s, ok := s.BinanceFuturesKlines.Latest("1s"); ok {
+				log.Infof("📊 [%s] Binance 1s kline: sym=%s o=%.2f c=%.2f closed=%v startMs=%d",
+					ID, k1s.Symbol, k1s.Open, k1s.Close, k1s.IsClosed, k1s.StartTimeMs)
+			}
+		}
 	} else {
 		log.Warnf("⚠️ [%s] 下单失败: err=%v side=%s market=%s", ID, execErr, winner, market.Slug)
 	}
