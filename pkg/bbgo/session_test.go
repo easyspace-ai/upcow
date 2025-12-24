@@ -47,7 +47,7 @@ func TestExchangeSession_PriceBufferedUntilFirstHandler(t *testing.T) {
 	s.EmitPriceChanged(ctx, &events.PriceChangedEvent{
 		Market:    &domain.Market{Slug: "m1", Timestamp: 1},
 		TokenType: domain.TokenTypeUp,
-		NewPrice:  domain.Price{Cents: 46},
+		NewPrice:  domain.Price{Pips: 46 * 100}, // 0.46
 		Timestamp: time.Now(),
 	})
 

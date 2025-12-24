@@ -468,7 +468,7 @@ func (e *OrderEngine) validatePlaceOrder(order *domain.Order) error {
 	if order.Size <= 0 {
 		return fmt.Errorf("订单数量必须大于0")
 	}
-	if order.Price.Cents <= 0 {
+	if order.Price.Pips <= 0 {
 		return fmt.Errorf("订单价格必须大于0")
 	}
 

@@ -150,8 +150,8 @@ func (s *Strategy) Initialize() error {
 	// 注册价格处理器
 	binanceHandler := rtds.CreateCryptoPriceHandler(func(price *rtds.CryptoPrice) error {
 		if price.Symbol == "btcusdt" {
-			val, err := price.Value.Float64()
-			if err == nil && val > 0 {
+			val := price.Value.Float64()
+			if val > 0 {
 				s.priceMu.Lock()
 				s.binanceFutPrice = val
 				s.priceMu.Unlock()
@@ -162,8 +162,8 @@ func (s *Strategy) Initialize() error {
 
 	chainlinkHandler := rtds.CreateCryptoPriceHandler(func(price *rtds.CryptoPrice) error {
 		if price.Symbol == "btc/usd" {
-			val, err := price.Value.Float64()
-			if err == nil && val > 0 {
+			val := price.Value.Float64()
+			if val > 0 {
 				s.priceMu.Lock()
 				s.chainlinkPrice = val
 				s.priceMu.Unlock()
@@ -741,7 +741,7 @@ func (s *Strategy) executeTrade(ctx context.Context, action *TradeAction, market
 		return fmt.Errorf("无效价格: %.4f", action.Price)
 	}
 
-	price := domain.Price{Cents: priceCents}
+price := domain.PriceFromDecimal(action.Price)
 
 	// Maker 订单处理
 	if action.Type == "MAKER" {

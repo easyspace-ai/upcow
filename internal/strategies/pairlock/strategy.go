@@ -29,7 +29,6 @@ type PairLockStrategy struct {
 	TradingService *services.TradingService
 	PairLockStrategyConfig `yaml:",inline" json:",inline"`
 
-	lastMarketSlug string
 	rounds         int
 	lastTradeAt    time.Time
 }
@@ -49,18 +48,16 @@ func (s *PairLockStrategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbg
 	return ctx.Err()
 }
 
+func (s *PairLockStrategy) OnCycle(_ context.Context, _ *domain.Market, _ *domain.Market) {
+	s.rounds = 0
+	s.lastTradeAt = time.Time{}
+}
+
 func (s *PairLockStrategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
 	if e == nil || e.Market == nil || s.TradingService == nil {
 		return nil
 	}
 	m := e.Market
-
-	// 周期切换：重置轮数
-	if m.Slug != "" && m.Slug != s.lastMarketSlug {
-		s.lastMarketSlug = m.Slug
-		s.rounds = 0
-		s.lastTradeAt = time.Time{}
-	}
 
 	if s.rounds >= s.MaxRoundsPerPeriod {
 		return nil
@@ -81,7 +78,7 @@ func (s *PairLockStrategy) OnPriceChanged(ctx context.Context, e *events.PriceCh
 		return nil
 	}
 
-	total := yesAsk.Cents + noAsk.Cents
+	total := yesAsk.ToCents() + noAsk.ToCents()
 	maxTotal := 100 - s.ProfitTargetCents
 	if total > maxTotal {
 		return nil
@@ -143,7 +140,7 @@ func (s *PairLockStrategy) OnPriceChanged(ctx context.Context, e *events.PriceCh
 	s.rounds++
 	s.lastTradeAt = time.Now()
 	log.Infof("🎯 [pairlock] 开启一轮: rounds=%d/%d yesAsk=%dc noAsk=%dc total=%dc maxTotal=%dc size=%.4f market=%s",
-		s.rounds, s.MaxRoundsPerPeriod, yesAsk.Cents, noAsk.Cents, total, maxTotal, size, m.Slug)
+		s.rounds, s.MaxRoundsPerPeriod, yesAsk.ToCents(), noAsk.ToCents(), total, maxTotal, size, m.Slug)
 	return nil
 }
 

@@ -47,15 +47,15 @@ func (p *Position) CalculateProfit(currentPrice Price) int {
 	if p.ExitPrice != nil {
 		// 已平仓，使用出场价格
 		if p.TokenType == TokenTypeUp {
-			return p.ExitPrice.Cents - p.EntryPrice.Cents
+			return p.ExitPrice.ToCents() - p.EntryPrice.ToCents()
 		}
-		return p.EntryPrice.Cents - p.ExitPrice.Cents
+		return p.EntryPrice.ToCents() - p.ExitPrice.ToCents()
 	}
 	// 未平仓，使用当前价格
 	if p.TokenType == TokenTypeUp {
-		return currentPrice.Cents - p.EntryPrice.Cents
+		return currentPrice.ToCents() - p.EntryPrice.ToCents()
 	}
-	return p.EntryPrice.Cents - currentPrice.Cents
+	return p.EntryPrice.ToCents() - currentPrice.ToCents()
 }
 
 // CalculateLoss 计算亏损（分）

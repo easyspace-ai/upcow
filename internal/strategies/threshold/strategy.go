@@ -28,7 +28,6 @@ type Strategy struct {
 	ThresholdStrategyConfig `yaml:",inline" json:",inline"`
 
 	lastActionAt time.Time
-	lastMarket   string
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -46,16 +45,15 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.Exchan
 	return ctx.Err()
 }
 
+func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, _ *domain.Market) {
+	s.lastActionAt = time.Time{}
+}
+
 func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
 	if e == nil || e.Market == nil || s.TradingService == nil {
 		return nil
 	}
 
-	// 周期切换：重置节流
-	if e.Market.Slug != "" && e.Market.Slug != s.lastMarket {
-		s.lastMarket = e.Market.Slug
-		s.lastActionAt = time.Time{}
-	}
 	if !s.lastActionAt.IsZero() && time.Since(s.lastActionAt) < 500*time.Millisecond {
 		return nil
 	}
@@ -74,8 +72,8 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	// BUY 条件
 	ask, askErr := orderutil.QuoteBuyPrice(orderCtx, s.TradingService, assetID, s.MaxBuyPrice)
 	if askErr == nil {
-		okPrice := ask.Cents <= s.BuyThreshold
-		if s.MaxBuyPrice > 0 && ask.Cents > s.MaxBuyPrice {
+		okPrice := ask.ToCents() <= s.BuyThreshold
+		if s.MaxBuyPrice > 0 && ask.ToCents() > s.MaxBuyPrice {
 			okPrice = false
 		}
 		if okPrice {
@@ -104,7 +102,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	// SELL 条件（可选）
 	if s.SellThreshold > 0 {
 		bid, bidErr := orderutil.QuoteSellPrice(orderCtx, s.TradingService, assetID, 0)
-		if bidErr == nil && bid.Cents >= s.SellThreshold {
+		if bidErr == nil && bid.ToCents() >= s.SellThreshold {
 			req := execution.MultiLegRequest{
 				Name:      "threshold_sell",
 				MarketSlug: e.Market.Slug,

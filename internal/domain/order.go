@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"math"
 	"time"
 	"github.com/betbot/gobet/clob/types"
 )
@@ -62,50 +63,64 @@ func (o *Order) IsOpen() bool {
 	return o.Status == OrderStatusOpen
 }
 
-// Price 价格值对象（以分为单位）
+// Price 价格值对象（固定精度：1e-4）
+//
+// Polymarket 的 tick size 可能为 0.1 / 0.01 / 0.001 / 0.0001。
+// 为了让策略/执行层不丢精度，这里使用 1e-4 作为内部最小单位（pips）：
+//   - 1 pip  = 0.0001
+//   - 100 pips = 0.01（旧系统中的 1 cent）
+//   - 10000 pips = 1.0
 type Price struct {
-	Cents int // 价格（分）
+	// Pips: 价格 * 10000（范围通常 1..9999）
+	Pips int
 }
 
-// ToDecimal 转换为小数（例如 60 分 = 0.60）
+// ToDecimal 转换为小数（例如 6000 pips = 0.6000）
 func (p Price) ToDecimal() float64 {
-	return float64(p.Cents) / 100.0
+	return float64(p.Pips) / 10000.0
 }
 
-// FromDecimal 从小数创建价格
+// ToCents 返回“分（0.01）口径”的整数（用于兼容旧策略阈值/日志）。
+// 注意：这不是内部精度，只是展示/阈值换算用。
+func (p Price) ToCents() int {
+	// 100 pips = 1 cent
+	return int(math.Round(float64(p.Pips) / 100.0))
+}
+
+// PriceFromDecimal 从小数创建价格（四舍五入到 1e-4）
 func PriceFromDecimal(decimal float64) Price {
 	return Price{
-		Cents: int(decimal * 100),
+		Pips: int(math.Round(decimal * 10000)),
 	}
 }
 
 // Add 价格相加
 func (p Price) Add(other Price) Price {
-	return Price{Cents: p.Cents + other.Cents}
+	return Price{Pips: p.Pips + other.Pips}
 }
 
 // Subtract 价格相减
 func (p Price) Subtract(other Price) Price {
-	return Price{Cents: p.Cents - other.Cents}
+	return Price{Pips: p.Pips - other.Pips}
 }
 
 // GreaterThan 检查是否大于
 func (p Price) GreaterThan(other Price) bool {
-	return p.Cents > other.Cents
+	return p.Pips > other.Pips
 }
 
 // LessThan 检查是否小于
 func (p Price) LessThan(other Price) bool {
-	return p.Cents < other.Cents
+	return p.Pips < other.Pips
 }
 
 // GreaterThanOrEqual 检查是否大于等于
 func (p Price) GreaterThanOrEqual(other Price) bool {
-	return p.Cents >= other.Cents
+	return p.Pips >= other.Pips
 }
 
 // LessThanOrEqual 检查是否小于等于
 func (p Price) LessThanOrEqual(other Price) bool {
-	return p.Cents <= other.Cents
+	return p.Pips <= other.Pips
 }
 

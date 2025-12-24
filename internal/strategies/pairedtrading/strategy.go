@@ -28,7 +28,6 @@ type Strategy struct {
 	TradingService *services.TradingService
 	Config         `yaml:",inline" json:",inline"`
 
-	lastMarket string
 	rounds     int
 	lastAt     time.Time
 }
@@ -44,16 +43,16 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.Exchan
 	return ctx.Err()
 }
 
+func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, _ *domain.Market) {
+	s.rounds = 0
+	s.lastAt = time.Time{}
+}
+
 func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
 	if e == nil || e.Market == nil || s.TradingService == nil {
 		return nil
 	}
 	m := e.Market
-	if m.Slug != "" && m.Slug != s.lastMarket {
-		s.lastMarket = m.Slug
-		s.rounds = 0
-		s.lastAt = time.Time{}
-	}
 	if s.rounds >= s.MaxRoundsPerPeriod {
 		return nil
 	}
@@ -71,7 +70,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if err != nil {
 		return nil
 	}
-	total := yesAsk.Cents + noAsk.Cents
+	total := yesAsk.ToCents() + noAsk.ToCents()
 	maxTotal := 100 - s.ProfitTargetCents
 	if total > maxTotal {
 		return nil

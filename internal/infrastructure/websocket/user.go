@@ -858,8 +858,8 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 	originalSize, _ := strconv.ParseFloat(originalSizeStr, 64)
 	sizeMatched, _ := strconv.ParseFloat(sizeMatchedStr, 64)
 
-	userLog.Infof("✅ [UserWebSocket] 订单解析完成: orderID=%s price=%dc originalSize=%.4f sizeMatched=%.4f",
-		orderID, price.Cents, originalSize, sizeMatched)
+	userLog.Infof("✅ [UserWebSocket] 订单解析完成: orderID=%s price=%.4f originalSize=%.4f sizeMatched=%.4f",
+		orderID, price.ToDecimal(), originalSize, sizeMatched)
 
 	// 确定订单方向
 	var side types.Side
@@ -911,14 +911,14 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 		order.Status = domain.OrderStatusOpen
 	}
 
-	userLog.Infof("📦 [UserWebSocket] 订单对象构建完成: orderID=%s status=%s side=%s price=%dc size=%.4f filledSize=%.4f assetID=%s",
-		order.OrderID, order.Status, order.Side, order.Price.Cents, order.Size, order.FilledSize, order.AssetID)
+	userLog.Infof("📦 [UserWebSocket] 订单对象构建完成: orderID=%s status=%s side=%s price=%.4f size=%.4f filledSize=%.4f assetID=%s",
+		order.OrderID, order.Status, order.Side, order.Price.ToDecimal(), order.Size, order.FilledSize, order.AssetID)
 
 	// 投递到有界队列，由固定 worker 串行执行 handlers，避免 goroutine 爆炸
 	select {
 	case u.orderUpdateC <- orderUpdateJob{ctx: ctx, order: order}:
-		userLog.Infof("📥 [UserWebSocket] 收到订单消息: orderID=%s type=%s status=%s side=%s price=%dc filledSize=%.4f handlers=%d",
-			orderID, orderTypeStr, status, sideStr, price.Cents, sizeMatched, len(u.orderHandlers))
+		userLog.Infof("📥 [UserWebSocket] 收到订单消息: orderID=%s type=%s status=%s side=%s price=%.4f filledSize=%.4f handlers=%d",
+			orderID, orderTypeStr, status, sideStr, price.ToDecimal(), sizeMatched, len(u.orderHandlers))
 	default:
 		userLog.Warnf("⚠️ orderUpdate 队列已满，丢弃订单更新: orderID=%s", orderID)
 		u.notifyDrop("order", map[string]string{
