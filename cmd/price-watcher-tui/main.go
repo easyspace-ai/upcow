@@ -21,8 +21,8 @@ import (
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/infrastructure/websocket"
 	"github.com/betbot/gobet/internal/marketstate"
-	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/config"
+	"github.com/betbot/gobet/pkg/marketspec"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -135,6 +135,9 @@ type model struct {
 	btcPrice    float64
 	btcPriceStr string
 
+	// market spec（用于周期切换对齐）
+	marketSpec marketspec.MarketSpec
+
 	// 连接状态
 	connected bool
 	err       error
@@ -188,12 +191,14 @@ type connectedMsg struct {
 	bestBook     *marketstate.AtomicBestBook
 	cycle        string
 	start        time.Time
+	spec         marketspec.MarketSpec
 }
 
 func initialModel() model {
 	ctx, cancel := context.WithCancel(context.Background())
 	// 初始化全局 context
 	currentModelCtx = ctx
+	spec, _ := marketspec.New("btc", "15m", "updown")
 	return model{
 		upBids:      make([]orderLevel, 0),
 		upAsks:      make([]orderLevel, 0),
@@ -205,6 +210,7 @@ func initialModel() model {
 		bestBook:    marketstate.NewAtomicBestBook(),
 		btcPrice:    0,
 		btcPriceStr: "N/A",
+		marketSpec:  spec,
 	}
 }
 
@@ -228,8 +234,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		// 检查周期切换
-		currentTs := services.GetCurrent15MinTimestamp()
-		currentSlug := services.Generate15MinSlug(currentTs)
+		spec := m.marketSpec
+		currentTs := spec.CurrentPeriodStartUnix(time.Now())
+		currentSlug := spec.Slug(currentTs)
 		if m.currentCycle != currentSlug {
 			return m, tea.Batch(
 				tickCmd(),
@@ -326,6 +333,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.bestBook = msg.bestBook
 		m.currentCycle = msg.cycle
 		m.cycleStart = msg.start
+		m.marketSpec = msg.spec
 		m.connected = true
 		// 确保使用正确的 context
 		if m.ctx == nil {
@@ -553,6 +561,12 @@ func connectCmd() tea.Cmd {
 			return fmt.Errorf("加载配置失败: %w", err)
 		}
 
+		// market spec（用于周期对齐/slug 生成）
+		spec, _ := marketspec.New("btc", "15m", "updown")
+		if s, err := cfg.Market.Spec(); err == nil {
+			spec = s
+		}
+
 		// 使用全局的 context（在 cycleChangeMsg 或 Init 中设置）
 		ctx := currentModelCtx
 		if ctx == nil {
@@ -571,8 +585,8 @@ func connectCmd() tea.Cmd {
 			fileLogger.Printf("连接指定周期: %s (时间戳: %d)", currentSlug, currentTs)
 		} else {
 			// 首次连接，使用当前周期
-			currentTs = services.GetCurrent15MinTimestamp()
-			currentSlug = services.Generate15MinSlug(currentTs)
+			currentTs = spec.CurrentPeriodStartUnix(time.Now())
+			currentSlug = spec.Slug(currentTs)
 			initFileLogger()
 			fileLogger.Printf("首次连接当前周期: %s (时间戳: %d)", currentSlug, currentTs)
 		}
@@ -654,6 +668,7 @@ func connectCmd() tea.Cmd {
 			bestBook:     bestBook,
 			cycle:        currentSlug,
 			start:        time.Unix(currentTs, 0),
+			spec:         spec,
 		}
 	}
 }

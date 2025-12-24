@@ -10,6 +10,7 @@ import (
 	"github.com/betbot/gobet/internal/infrastructure/websocket"
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/logger"
+	"github.com/betbot/gobet/pkg/marketspec"
 	"github.com/sirupsen/logrus"
 )
 
@@ -26,6 +27,7 @@ type MarketScheduler struct {
 	proxyURL          string
 	userCreds         *websocket.UserCredentials
 	wsManager         *WebSocketManager
+	spec              marketspec.MarketSpec
 
 	// 当前会话
 	currentSession *ExchangeSession
@@ -49,6 +51,7 @@ func NewMarketScheduler(
 	sessionName string,
 	proxyURL string,
 	userCreds *websocket.UserCredentials,
+	spec marketspec.MarketSpec,
 ) *MarketScheduler {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &MarketScheduler{
@@ -58,6 +61,7 @@ func NewMarketScheduler(
 		proxyURL:          proxyURL,
 		userCreds:         userCreds,
 		wsManager:         NewWebSocketManager(proxyURL, userCreds),
+		spec:              spec,
 		ctx:               ctx,
 		cancel:            cancel,
 	}
@@ -75,8 +79,8 @@ func (s *MarketScheduler) Start(ctx context.Context) error {
 	schedulerLog.Info("启动市场调度器...")
 
 	// 获取当前周期的市场
-	currentTs := services.GetCurrent15MinTimestamp()
-	slug := services.Generate15MinSlug(currentTs)
+	currentTs := s.spec.CurrentPeriodStartUnix(time.Now())
+	slug := s.spec.Slug(currentTs)
 
 	market, err := s.marketDataService.FetchMarketInfo(ctx, slug)
 	if err != nil {
@@ -84,11 +88,11 @@ func (s *MarketScheduler) Start(ctx context.Context) error {
 	}
 
 	// 更新日志系统的市场周期时间戳
-	logger.SetMarketTimestamp(market.Timestamp)
+	logger.SetMarketInfo(market.Slug, market.Timestamp)
 	// 强制切换日志文件（使用市场周期时间戳命名）
 	if err := logger.CheckAndRotateLogWithForce(logger.Config{
 		LogByCycle:    true,
-		CycleDuration: 15 * time.Minute,
+		CycleDuration: s.spec.Duration(),
 		OutputFile:    "", // 空字符串表示使用保存的基础路径
 	}, true); err != nil {
 		schedulerLog.Errorf("切换日志文件失败: %v", err)
@@ -174,8 +178,8 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 	}
 
 	now := time.Now().Unix()
-	// 正常周期结束时间（15分钟后）
-	normalEndTs := currentMarket.Timestamp + 900
+	// 正常周期结束时间（timeframe duration 后）
+	normalEndTs := currentMarket.Timestamp + int64(s.spec.Duration().Seconds())
 
 	// 检查是否需要切换到下一个市场
 	// 条件：正常周期结束（15分钟后）
@@ -193,13 +197,13 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 		}
 
 		// 切换到下一个市场
-		// 计算下一个15分钟周期的时间戳
-		nextPeriodTs := services.GetCurrent15MinTimestamp()
-		// 如果当前周期还没结束，切换到下一个15分钟周期
+		// 计算下一个周期的时间戳
+		nextPeriodTs := s.spec.CurrentPeriodStartUnix(time.Now())
+		// 如果当前周期还没结束，切换到下一个周期
 		if nextPeriodTs <= currentMarket.Timestamp {
-			nextPeriodTs = currentMarket.Timestamp + 900 // 下一个15分钟周期
+			nextPeriodTs = currentMarket.Timestamp + int64(s.spec.Duration().Seconds())
 		}
-		nextSlug := services.Generate15MinSlug(nextPeriodTs)
+		nextSlug := s.spec.Slug(nextPeriodTs)
 
 		// 从缓存获取下一个市场
 		schedulerLog.Infof("准备切换到下一个市场: %s (当前周期=%d, 下一个周期=%d)",
@@ -211,11 +215,11 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 		}
 
 		// 更新日志系统的市场周期时间戳（在创建新会话之前，确保新会话的连接日志写入新周期的日志文件）
-		logger.SetMarketTimestamp(nextMarket.Timestamp)
+		logger.SetMarketInfo(nextMarket.Slug, nextMarket.Timestamp)
 		// 强制切换日志文件（在创建新会话之前）
 		if err := logger.CheckAndRotateLogWithForce(logger.Config{
 			LogByCycle:    true,
-			CycleDuration: 15 * time.Minute,
+			CycleDuration: s.spec.Duration(),
 			OutputFile:    "",
 		}, true); err != nil {
 			schedulerLog.Errorf("切换日志文件失败: %v", err)

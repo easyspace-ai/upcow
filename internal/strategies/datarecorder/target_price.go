@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/betbot/gobet/clob/rtds"
@@ -18,13 +19,26 @@ import (
 type TargetPriceFetcher struct {
 	useRTDSFallback bool
 	rtdsClient      *rtds.Client
+	intervalSeconds int64
+	symbol          string // e.g. "BTC"
+	binanceSymbol   string // e.g. "BTCUSDT"
 }
 
 // NewTargetPriceFetcher 创建新的目标价获取器
-func NewTargetPriceFetcher(useRTDSFallback bool, rtdsClient *rtds.Client) *TargetPriceFetcher {
+func NewTargetPriceFetcher(useRTDSFallback bool, rtdsClient *rtds.Client, symbol string, intervalSeconds int64) *TargetPriceFetcher {
+	sym := strings.ToUpper(strings.TrimSpace(symbol))
+	if sym == "" {
+		sym = "BTC"
+	}
+	if intervalSeconds <= 0 {
+		intervalSeconds = 900
+	}
 	return &TargetPriceFetcher{
 		useRTDSFallback: useRTDSFallback,
 		rtdsClient:      rtdsClient,
+		intervalSeconds: intervalSeconds,
+		symbol:          sym,
+		binanceSymbol:   sym + "USDT",
 	}
 }
 
@@ -41,25 +55,17 @@ type CryptoPriceAPIResponse struct {
 // FetchTargetPrice 获取目标价（上一个周期的收盘价）
 func (tpf *TargetPriceFetcher) FetchTargetPrice(ctx context.Context, currentCycleStart int64) (float64, error) {
 	// 计算上一个周期的开始和结束时间
-	prevCycleStart := currentCycleStart - 900 // 15 分钟 = 900 秒
+	prevCycleStart := currentCycleStart - tpf.intervalSeconds
 	prevCycleEnd := currentCycleStart
+	_ = prevCycleStart
 
-	// 方法 A：优先使用 API
-	price, err := tpf.fetchFromAPI(ctx, prevCycleStart, prevCycleEnd)
+	// 优先使用 Binance（更通用：支持 BTC/ETH/SOL/XRP + 15m/1h/4h）
+	price, err := tpf.fetchFromBinance(ctx, tpf.binanceSymbol, prevCycleEnd)
 	if err == nil {
-		logger.Infof("从 API 获取目标价成功: %.2f (周期: %d-%d)", price, prevCycleStart, prevCycleEnd)
+		logger.Infof("从 Binance API 获取目标价成功: %.2f (symbol=%s 时间: %d)", price, tpf.binanceSymbol, prevCycleEnd)
 		return price, nil
 	}
-
-	logger.Warnf("从 API 获取目标价失败: %v", err)
-	//
-	//// 方法 B：尝试从 Binance API 获取（备选方案）
-	//price, err = tpf.fetchFromBinance(ctx, prevCycleEnd)
-	//if err == nil {
-	//	logger.Infof("从 Binance API 获取目标价成功: %.2f (时间: %d)", price, prevCycleEnd)
-	//	return price, nil
-	//}
-	//logger.Warnf("从 Binance API 获取目标价失败: %v", err)
+	logger.Warnf("从 Binance API 获取目标价失败: %v", err)
 	//
 	//// 方法 C：如果启用 RTDS 备选方案，尝试从 RTDS 获取
 	//if tpf.useRTDSFallback {
@@ -81,7 +87,8 @@ func (tpf *TargetPriceFetcher) fetchFromAPI(ctx context.Context, startTime, endT
 	endTimeStr := time.Unix(endTime, 0).UTC().Format(time.RFC3339)
 
 	apiURL := fmt.Sprintf(
-		"https://polymarket.com/api/crypto/crypto-price?symbol=BTC&eventStartTime=%s&variant=fifteen&endDate=%s",
+		"https://polymarket.com/api/crypto/crypto-price?symbol=%s&eventStartTime=%s&variant=fifteen&endDate=%s",
+		url.QueryEscape(tpf.symbol),
 		url.QueryEscape(startTimeStr),
 		url.QueryEscape(endTimeStr),
 	)
@@ -156,11 +163,14 @@ func (tpf *TargetPriceFetcher) fetchFromAPI(ctx context.Context, startTime, endT
 	return *apiResp.OpenPrice, nil
 }
 
-// fetchFromBinance 从 Binance API 获取 BTC 价格（备选方案）
-func (tpf *TargetPriceFetcher) fetchFromBinance(ctx context.Context, timestamp int64) (float64, error) {
-	// Binance K线 API：获取指定时间点的 BTC/USDT 价格
+// fetchFromBinance 从 Binance API 获取价格（备选方案）
+func (tpf *TargetPriceFetcher) fetchFromBinance(ctx context.Context, binanceSymbol string, timestamp int64) (float64, error) {
+	// Binance K线 API：获取指定时间点的 symbol/USDT 价格
 	// 使用 1 分钟 K线，获取最接近的时间点
-	apiURL := fmt.Sprintf("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=1&endTime=%d", timestamp*1000)
+	apiURL := fmt.Sprintf("https://api.binance.com/api/v3/klines?symbol=%s&interval=1m&limit=1&endTime=%d",
+		url.QueryEscape(strings.ToUpper(strings.TrimSpace(binanceSymbol))),
+		timestamp*1000,
+	)
 
 	// 创建 HTTP 请求
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)

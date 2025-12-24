@@ -9,6 +9,13 @@ proxy:
   host: "127.0.0.1"
   port: 15236
 
+# 市场选择（通过配置切换币种与周期）
+# slug 约定：{symbol}-{kind}-{timeframe}-{periodStartUnix}
+market:
+  symbol: "btc"     # btc/eth/sol/xrp ...
+  timeframe: "15m"  # 15m/1h/4h
+  kind: "updown"
+
 # 策略配置（bbgo main 风格：exchangeStrategies 动态挂载）
 # 格式说明：
 # - on: 会话名（本项目通常是 "polymarket"）

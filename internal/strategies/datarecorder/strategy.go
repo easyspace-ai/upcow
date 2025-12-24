@@ -16,6 +16,7 @@ import (
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/config"
 	"github.com/betbot/gobet/pkg/logger"
+	"github.com/betbot/gobet/pkg/marketspec"
 	"github.com/sirupsen/logrus"
 )
 
@@ -53,6 +54,13 @@ type DataRecorderStrategy struct {
 	btcRealtimePriceUpdatedAt  time.Time // BTC 实时价最后更新时间
 	upPrice                    float64   // UP 价格
 	downPrice                  float64   // DOWN 价格
+
+	// market spec（用于过滤市场 + 周期长度）
+	marketSpec          marketspec.MarketSpec
+	marketIntervalSecs  int64
+	marketSlugPrefix    string
+	underlyingSymbol    string // e.g. "BTC"
+	chainlinkFeedSymbol string // e.g. "btc/usd"
 
 	// 统一：单线程 loop（价格合并 + tick 周期检测）
 	loopOnce     sync.Once
@@ -133,6 +141,19 @@ func (s *DataRecorderStrategy) Initialize() error {
 		return fmt.Errorf("配置验证失败: %w", err)
 	}
 
+	// market spec：默认 btc/15m/updown；如果全局配置存在则以全局 market 为准
+	spec, _ := marketspec.New("btc", "15m", "updown")
+	if globalConfig := config.Get(); globalConfig != nil {
+		if sp, err := globalConfig.Market.Spec(); err == nil {
+			spec = sp
+		}
+	}
+	s.marketSpec = spec
+	s.marketIntervalSecs = int64(spec.Duration().Seconds())
+	s.marketSlugPrefix = strings.ToLower(spec.SlugPrefix())
+	s.underlyingSymbol = strings.ToUpper(spec.Symbol)
+	s.chainlinkFeedSymbol = fmt.Sprintf("%s/usd", strings.ToLower(spec.Symbol))
+
 	// 创建数据记录器（流式写入）
 	recorder, err := NewDataRecorder(s.OutputDir)
 	if err != nil {
@@ -189,7 +210,7 @@ func (s *DataRecorderStrategy) Initialize() error {
 	if s.UseRTDSFallback != nil {
 		useFallback = *s.UseRTDSFallback
 	}
-	s.targetPriceFetcher = NewTargetPriceFetcher(useFallback, rtdsClient)
+	s.targetPriceFetcher = NewTargetPriceFetcher(useFallback, rtdsClient, s.underlyingSymbol, s.marketIntervalSecs)
 
 	// 连接 RTDS
 	logger.Infof("数据记录策略: 正在连接 RTDS...")
@@ -198,7 +219,7 @@ func (s *DataRecorderStrategy) Initialize() error {
 	}
 	logger.Infof("数据记录策略: RTDS 连接成功")
 
-	// 订阅 Chainlink BTC 价格（使用 Chainlink 作为实时价格数据源）
+	// 订阅 Chainlink 标的价格（使用 Chainlink 作为实时价格数据源）
 	// BTC 价格更新时，只更新内存中的价格，不记录数据
 	// 数据记录以 UP/DOWN 价格变化为准
 	var chainlinkFirstMsgOnce sync.Once
@@ -211,7 +232,7 @@ func (s *DataRecorderStrategy) Initialize() error {
 		})
 		// 提升日志级别，确保能看到所有 Chainlink 价格消息
 		logger.Infof("数据记录策略: 📡 收到 Chainlink 价格消息 - Symbol=%s, Value=%.2f, Timestamp=%d", sym, val, price.Timestamp)
-		if sym == "btc/usd" || sym == "btcusdt" || sym == "btc/usdt" {
+		if sym == strings.ToLower(strings.TrimSpace(s.chainlinkFeedSymbol)) {
 			btcFirstMatchOnce.Do(func() {
 				logger.Infof("数据记录策略: ✅ RTDS 已收到 BTC 实时报价首条有效消息 - symbol=%s ts=%d value=%.6f", sym, price.Timestamp, val)
 			})
@@ -251,8 +272,8 @@ func (s *DataRecorderStrategy) Initialize() error {
 	logger.Infof("数据记录策略: 注册 Chainlink 价格处理器 (topic: crypto_prices_chainlink)")
 	rtdsClient.RegisterHandler("crypto_prices_chainlink", btcHandler)
 
-	logger.Infof("数据记录策略: 正在订阅 Chainlink BTC 价格 (btc/usd)...")
-	if err := rtdsClient.SubscribeToCryptoPrices("chainlink", "btc/usd"); err != nil {
+	logger.Infof("数据记录策略: 正在订阅 Chainlink 价格 (%s)...", s.chainlinkFeedSymbol)
+	if err := rtdsClient.SubscribeToCryptoPrices("chainlink", s.chainlinkFeedSymbol); err != nil {
 		return fmt.Errorf("订阅 Chainlink BTC 价格失败: %w", err)
 	}
 	logger.Infof("数据记录策略: Chainlink BTC 价格订阅成功 (等待首条报价...)")
@@ -286,7 +307,7 @@ func (s *DataRecorderStrategy) OnPriceChanged(ctx context.Context, event *events
 		return nil
 	}
 	// 添加诊断日志（仅在 Debug 级别，避免日志过多）
-	if event.Market != nil && s.isBTC15mMarket(event.Market) {
+	if event.Market != nil && s.isSelectedMarket(event.Market) {
 		logger.Debugf("数据记录策略: 收到价格变化事件 - 市场=%s, Token=%s, 价格=%.4f",
 			event.Market.Slug, event.TokenType, event.NewPrice.ToDecimal())
 	}
@@ -305,9 +326,9 @@ func (s *DataRecorderStrategy) OnPriceChanged(ctx context.Context, event *events
 func (s *DataRecorderStrategy) onPriceChangedInternal(ctx context.Context, event *events.PriceChangedEvent) error {
 
 	// NOTE: 不要在高频回调里 fmt.Println，会污染日志且影响性能
-	// 只处理 btc-updown-15m-* 市场
-	if !s.isBTC15mMarket(event.Market) {
-		logger.Debugf("数据记录策略: 跳过非 BTC 15分钟市场 - %s", getSlugOrEmpty(event.Market))
+	// 只处理当前配置选择的市场（避免其它市场事件误入）
+	if !s.isSelectedMarket(event.Market) {
+		logger.Debugf("数据记录策略: 跳过非目标市场 - %s", getSlugOrEmpty(event.Market))
 		return nil
 	}
 
@@ -625,7 +646,11 @@ func (s *DataRecorderStrategy) checkAndSwitchCycleByTime(ctx context.Context) {
 	}
 
 	now := time.Now().Unix()
-	cycleEndTs := currentMarket.Timestamp + 900 // 15 分钟 = 900 秒
+	interval := s.marketIntervalSecs
+	if interval <= 0 {
+		interval = 900
+	}
+	cycleEndTs := currentMarket.Timestamp + interval
 
 	// 如果当前时间超过周期结束时间：只做“落盘/封存”。
 	// 不要在这里“猜下一个 market 并 StartCycle”，因为：
@@ -761,10 +786,14 @@ func (s *DataRecorderStrategy) Shutdown(ctx context.Context, wg *sync.WaitGroup)
 	log.Infof("数据记录策略: 资源清理完成")
 }
 
-// isBTC15mMarket 检查是否是 BTC 15分钟市场
-func (s *DataRecorderStrategy) isBTC15mMarket(market *domain.Market) bool {
+// isSelectedMarket 检查是否是当前配置选择的市场（通过 slug 前缀匹配）。
+func (s *DataRecorderStrategy) isSelectedMarket(market *domain.Market) bool {
 	if market == nil {
 		return false
 	}
-	return strings.HasPrefix(market.Slug, "btc-updown-15m-")
+	prefix := strings.TrimSpace(s.marketSlugPrefix)
+	if prefix == "" {
+		prefix = "btc-updown-15m-"
+	}
+	return strings.HasPrefix(strings.ToLower(market.Slug), strings.ToLower(prefix))
 }

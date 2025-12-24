@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +26,8 @@ var (
 	currentPeriod int64
 	// currentMarketTimestamp 当前市场周期时间戳（从市场 slug 提取）
 	currentMarketTimestamp int64
+	// currentMarketSlug 当前市场 slug（用于日志文件命名）
+	currentMarketSlug string
 	// logMu 日志文件切换锁
 	logMu sync.Mutex
 	// cycleDuration 周期时长（默认15分钟）
@@ -56,24 +59,31 @@ func getCurrentPeriod(cycleDuration time.Duration) int64 {
 	return periodStart.Unix()
 }
 
-// SetMarketTimestamp 设置当前市场周期时间戳（从市场 slug 提取）
-// 例如：btc-updown-15m-1765985400 -> 1765985400
-func SetMarketTimestamp(timestamp int64) {
+// SetMarketInfo 设置当前市场信息（用于日志文件命名）
+// 例如：btc-updown-15m-1765985400 -> slug="btc-updown-15m-1765985400", timestamp=1765985400
+func SetMarketInfo(slug string, timestamp int64) {
 	logMu.Lock()
 	defer logMu.Unlock()
 	currentMarketTimestamp = timestamp
+	currentMarketSlug = slug
+}
+
+// SetMarketTimestamp 兼容旧接口：只设置时间戳（不设置 slug）。
+// 建议改用 SetMarketInfo。
+func SetMarketTimestamp(timestamp int64) {
+	SetMarketInfo("", timestamp)
 }
 
 // getLogFileName 根据周期生成日志文件名
 func getLogFileName(basePath string, period int64) string {
-	// 如果设置了市场周期时间戳，使用市场格式：btc-updown-15m-{timestamp}.log
-	if currentMarketTimestamp > 0 && period == currentMarketTimestamp {
+	// 如果设置了市场周期时间戳，优先使用市场 slug 作为文件名：{slug}.log
+	if currentMarketTimestamp > 0 && period == currentMarketTimestamp && strings.TrimSpace(currentMarketSlug) != "" {
 		// 如果 basePath 包含目录，保留目录结构
 		dir := filepath.Dir(basePath)
 		ext := filepath.Ext(basePath)
 		
-		// 格式: btc-updown-15m-{timestamp}.log
-		logFileName := fmt.Sprintf("btc-updown-15m-%d%s", period, ext)
+		// 格式: {marketSlug}.log
+		logFileName := fmt.Sprintf("%s%s", strings.TrimSpace(currentMarketSlug), ext)
 		
 		if dir == "." || dir == "" {
 			return logFileName
