@@ -49,6 +49,15 @@ type Config struct {
 	// 因为订单簿是镜像的，速度通常相同，价格更高的胜率更大
 	PreferHigherPrice        bool `yaml:"preferHigherPrice" json:"preferHigherPrice"`               // 是否启用价格优先选择
 	MinPreferredPriceCents  int  `yaml:"minPreferredPriceCents" json:"minPreferredPriceCents"`     // 优先价格阈值（分），例如 50 或 60.60（转换为 6060）
+
+	// 订单执行模式：sequential（顺序）或 parallel（并发）
+	// sequential: 先下 Entry 订单，等待成交后再下 Hedge 订单（风险低，速度慢）
+	// parallel: 同时提交 Entry 和 Hedge 订单（速度快，风险高）
+	OrderExecutionMode string `yaml:"orderExecutionMode" json:"orderExecutionMode"` // "sequential" | "parallel"，默认 "sequential"
+	
+	// 顺序下单模式的参数（仅在 orderExecutionMode="sequential" 时生效）
+	SequentialCheckIntervalMs int `yaml:"sequentialCheckIntervalMs" json:"sequentialCheckIntervalMs"` // 检查订单状态的间隔（毫秒），默认 20ms（更频繁）
+	SequentialMaxWaitMs       int `yaml:"sequentialMaxWaitMs" json:"sequentialMaxWaitMs"`             // 最大等待时间（毫秒），默认 2000ms（FAK 订单通常立即成交，但纸交易模式可能需要更长时间）
 }
 
 func (c *Config) Validate() error {
@@ -131,6 +140,23 @@ func (c *Config) Validate() error {
 	if c.PreferHigherPrice && c.MinPreferredPriceCents <= 0 {
 		c.MinPreferredPriceCents = 50 // 默认 50c
 	}
+
+	// 订单执行模式默认值
+	if c.OrderExecutionMode == "" {
+		c.OrderExecutionMode = "sequential" // 默认顺序下单（更安全）
+	}
+	if c.OrderExecutionMode != "sequential" && c.OrderExecutionMode != "parallel" {
+		return fmt.Errorf("orderExecutionMode 必须是 sequential 或 parallel")
+	}
+
+	// 顺序下单模式参数默认值
+	if c.SequentialCheckIntervalMs <= 0 {
+		c.SequentialCheckIntervalMs = 20 // 默认 20ms（更频繁的检测，提高响应速度）
+	}
+	if c.SequentialMaxWaitMs <= 0 {
+		c.SequentialMaxWaitMs = 2000 // 默认 2 秒（FAK 订单通常立即成交，但纸交易模式可能需要更长时间）
+	}
+
 	return nil
 }
 

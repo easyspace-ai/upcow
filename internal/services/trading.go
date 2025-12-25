@@ -143,6 +143,11 @@ func NewTradingService(clobClient *client.Client, dryRun bool) *TradingService {
 	return service
 }
 
+// IsDryRun 返回是否为纸交易模式
+func (s *TradingService) IsDryRun() bool {
+	return s.dryRun
+}
+
 func (s *TradingService) currentEngineGeneration() int64 {
 	if s == nil {
 		return 0

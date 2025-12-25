@@ -56,12 +56,21 @@ func (e *IOExecutor) PlaceOrderAsync(
 			// 纸交易模式：模拟下单成功
 			result.Order = order
 			result.Order.Status = domain.OrderStatusOpen
+			
+			// ✅ 修复：FAK 订单在纸交易模式下立即"成交"
+			// FAK (Fill-And-Kill) 订单要么立即成交，要么立即取消
+			// 在纸交易模式下，我们模拟立即成交
+			if order.OrderType == types.OrderTypeFAK {
+				result.Order.Status = domain.OrderStatusFilled
+				result.Order.FilledSize = order.Size // 完全成交
+			}
+			
 			// 保持原始订单ID，不生成新的
 			if result.Order.OrderID == "" {
 				result.Order.OrderID = fmt.Sprintf("dry_run_%d", time.Now().UnixNano())
 			}
-			ioExecutorLog.Infof("📝 [纸交易] 模拟下单: orderID=%s, assetID=%s, side=%s, price=%.4f, size=%.4f",
-				result.Order.OrderID, order.AssetID, order.Side, order.Price.ToDecimal(), order.Size)
+			ioExecutorLog.Infof("📝 [纸交易] 模拟下单: orderID=%s, assetID=%s, side=%s, price=%.4f, size=%.4f, status=%s",
+				result.Order.OrderID, order.AssetID, order.Side, order.Price.ToDecimal(), order.Size, result.Order.Status)
 			callback(result)
 			return
 		}

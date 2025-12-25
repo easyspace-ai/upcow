@@ -1,0 +1,72 @@
+{
+  "updated_at": "2025-12-25T06:32:32.234472+08:00",
+  "balance": 15.186267,
+  "open_orders": [
+    {
+      "OrderID": "0x033f32ae051092180f785707ee00554af609d27a9403fbcf7688028041645539",
+      "MarketSlug": "btc-updown-15m-1766615400",
+      "AssetID": "17427073121973883727339969169963061273461953247649097771770319897603098381710",
+      "Side": "BUY",
+      "Price": {
+        "Pips": 1800
+      },
+      "Size": 11,
+      "FilledSize": 0,
+      "GridLevel": 0,
+      "TokenType": "down",
+      "HedgeOrderID": null,
+      "CreatedAt": "2025-12-25T06:32:24.279895+08:00",
+      "FilledAt": null,
+      "IsEntryOrder": true,
+      "PairOrderID": null,
+      "Status": "pending",
+      "OrderType": "GTC"
+    }
+  ],
+  "positions": [
+    {
+      "ID": "btc-updown-15m-1766615400_87476600490853093737359752532377379650320536287027160735332041764965099000626_up",
+      "MarketSlug": "btc-updown-15m-1766615400",
+      "Market": {
+        "Slug": "btc-updown-15m-1766615400",
+        "YesAssetID": "87476600490853093737359752532377379650320536287027160735332041764965099000626",
+        "NoAssetID": "17427073121973883727339969169963061273461953247649097771770319897603098381710",
+        "ConditionID": "0x0c538ecfdf4f0d3b0fbc01f2e3beac667a08b5e83a798165ca8332b59c297ac3",
+        "Question": "Bitcoin Up or Down - December 24, 5:30PM-5:45PM ET",
+        "Timestamp": 1766615400
+      },
+      "EntryOrder": {
+        "OrderID": "0x4ba330eef95c07e3e087b0af8d5f2213f2fc388f688082d3af95451100a0ae3f",
+        "MarketSlug": "btc-updown-15m-1766615400",
+        "AssetID": "87476600490853093737359752532377379650320536287027160735332041764965099000626",
+        "Side": "BUY",
+        "Price": {
+          "Pips": 8300
+        },
+        "Size": 11,
+        "FilledSize": 11,
+        "GridLevel": 0,
+        "TokenType": "up",
+        "HedgeOrderID": null,
+        "CreatedAt": "2025-12-25T06:32:24.280147+08:00",
+        "FilledAt": "2025-12-25T06:32:30.226033+08:00",
+        "IsEntryOrder": true,
+        "PairOrderID": null,
+        "Status": "filled",
+        "OrderType": "FAK"
+      },
+      "HedgeOrder": null,
+      "EntryPrice": {
+        "Pips": 8200
+      },
+      "EntryTime": "2025-12-25T06:32:25.243467+08:00",
+      "ExitOrder": null,
+      "ExitPrice": null,
+      "ExitTime": null,
+      "Size": 11.134145,
+      "TokenType": "down",
+      "Status": "open",
+      "Unhedged": false
+    }
+  ]
+}

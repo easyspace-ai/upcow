@@ -35,16 +35,17 @@ exchangeStrategies:
   - on: polymarket
     velocityfollow:
       # ====== 下单参数（20美金实盘配置）======
-      # 成本分析：假设平均价格 50c
-      # - Entry: 2 shares @ 50c = $1.0 (实际约 $1.1，满足 minOrderSize)
-      # - Hedge: 2 shares @ 50c = $1.0 (实际约 $1.1，满足 minOrderSize)
-      # - 每次交易总成本：约 $2.2
-      # - 20 美金可支持：约 9 次交易
-      orderSize: 4              # 保守配置：2 shares（可调整为 3）
+      # 成本分析：增加 orderSize 以减少自动调整
+      # - 如果 orderSize = 8:
+      #   - UP (15¢): 8 × 0.15 = $1.20 > $1.1 ✅ 无需调整
+      #   - DOWN (82¢): 8 × 0.82 = $6.56 > $1.1 ✅ 无需调整
+      # - 每次交易总成本：约 $7.76（高价时）或 $2.40（低价时）
+      # - 20 美金可支持：约 2-8 次交易（取决于价格）
+      orderSize: 8             # 增加数量以减少自动调整，确保满足 minOrderSize
       hedgeOrderSize: 0          # 0=跟随 orderSize（对侧挂单 shares）
 
       # ====== “速度快”判定 ======
-      windowSeconds: 10          # 速度计算窗口（秒）
+      windowSeconds: 8          # 速度计算窗口（秒）
       minMoveCents: 3            # 窗口内最小价格变化（分）
       minVelocityCentsPerSec: 0.3 # 最小速度阈值（分/秒）
 
@@ -52,10 +53,10 @@ exchangeStrategies:
       cooldownMs: 1500           # 触发冷却时间（毫秒）
       oncePerCycle: true         # 每周期最多触发一次（已废弃，使用 maxTradesPerCycle）
       warmupMs: 800              # 周期切换后的预热窗口（毫秒）
-      maxTradesPerCycle: 1       # 每周期最多交易次数（0=不设限，测试阶段设为 1）
+      maxTradesPerCycle: 3       # 每周期最多交易次数（0=不设限，测试阶段设为 1）
 
       # ====== 安全参数 ======
-      hedgeOffsetCents: 3        # 对侧挂单价 = (100 - entryAskCents - offset)
+      hedgeOffsetCents: 4        # 对侧挂单价 = (100 - entryAskCents - offset)
       maxEntryPriceCents: 95     # 吃单价上限（分），避免 99/100 假盘口
       maxSpreadCents: 5          # 盘口价差上限（分），避免极差盘口误触发
 
@@ -82,6 +83,15 @@ exchangeStrategies:
       preferHigherPrice: true          # 启用价格优先选择
       minPreferredPriceCents: 60       # 优先价格阈值（整数分），例如 50 表示 50c，60 表示 60c
                                        # 注意：如果配置 60，表示价格 >= 60c 才触发；如果配置 50，表示价格 >= 50c 才触发
+
+      # ====== 订单执行模式 ======
+      # sequential: 顺序下单（先下 Entry，成交后再下 Hedge）- 风险低，速度慢（~200-500ms）
+      # parallel: 并发下单（同时提交 Entry 和 Hedge）- 速度快（~100-200ms），风险高
+      orderExecutionMode: "sequential"  # "sequential" 或 "parallel"，默认 "sequential"
+      
+      # 顺序下单模式参数（仅在 orderExecutionMode="sequential" 时生效）
+      sequentialCheckIntervalMs: 50    # 检查订单状态的间隔（毫秒），默认 50ms
+      sequentialMaxWaitMs: 1000        # 最大等待时间（毫秒），默认 1000ms（FAK 订单通常立即成交）
  
 # ====== 系统级配置 ======
 order_status_check_timeout: 3
@@ -96,7 +106,7 @@ log_by_cycle: true
  
 # 实盘交易开关（⚠️ 实盘前必须改为 false）
 # 建议：先用 dry_run: true 测试，确认逻辑和日志 OK 再改 false
-dry_run: false  # ⚠️ 实盘模式：已启用真实交易
+dry_run: true  # ⚠️ 实盘模式：已启用真实交易
  
 order_status_sync_interval_with_orders: 3
 order_status_sync_interval_without_orders: 30

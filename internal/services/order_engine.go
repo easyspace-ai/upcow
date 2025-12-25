@@ -382,19 +382,29 @@ func (e *OrderEngine) handlePlaceOrder(cmd *PlaceOrderCommand) {
 	// 周期隔离：旧周期命令直接拒绝（避免切周期后仍下单/回流）
 	if cmd.Gen != e.generation {
 		e.stats.Errors++
+		// 使用非阻塞发送，避免阻塞 OrderEngine 主循环
 		select {
 		case cmd.Reply <- &PlaceOrderResult{
 			Error: fmt.Errorf("stale cycle command: place order dropped (cmdGen=%d engineGen=%d)", cmd.Gen, e.generation),
 		}:
-		default:
+		case <-cmd.Context.Done():
+			// Context 已取消，接收端可能已经超时退出
+		case <-time.After(100 * time.Millisecond):
+			// 超时保护：如果 100ms 内无法发送，记录警告但不阻塞
+			orderEngineLog.Warnf("回复 stale cycle 命令超时: cmdGen=%d engineGen=%d", cmd.Gen, e.generation)
 		}
 		return
 	}
 	// 1. 风控校验（在状态循环中同步执行）
 	if err := e.validatePlaceOrder(cmd.Order); err != nil {
+		// 使用非阻塞发送，避免阻塞 OrderEngine 主循环
 		select {
 		case cmd.Reply <- &PlaceOrderResult{Error: err}:
-		default:
+		case <-cmd.Context.Done():
+			// Context 已取消，接收端可能已经超时退出
+		case <-time.After(100 * time.Millisecond):
+			// 超时保护：如果 100ms 内无法发送，记录警告但不阻塞
+			orderEngineLog.Warnf("回复验证错误命令超时: orderID=%s", cmd.Order.OrderID)
 		}
 		return
 	}
@@ -403,12 +413,17 @@ func (e *OrderEngine) handlePlaceOrder(cmd *PlaceOrderCommand) {
 	requiredAmount := cmd.Order.Price.ToDecimal() * cmd.Order.Size
 	// 在纸模式下跳过余额检查，或者设置一个很大的初始余额
 	if !e.dryRun && e.balance < requiredAmount {
+		// 使用非阻塞发送，避免阻塞 OrderEngine 主循环
 		select {
 		case cmd.Reply <- &PlaceOrderResult{
 			Error: fmt.Errorf("余额不足: 需要 %.2f USDC，当前余额 %.2f USDC",
 				requiredAmount, e.balance),
 		}:
-		default:
+		case <-cmd.Context.Done():
+			// Context 已取消，接收端可能已经超时退出
+		case <-time.After(100 * time.Millisecond):
+			// 超时保护：如果 100ms 内无法发送，记录警告但不阻塞
+			orderEngineLog.Warnf("回复余额不足命令超时: orderID=%s", cmd.Order.OrderID)
 		}
 		return
 	}
@@ -446,10 +461,17 @@ func (e *OrderEngine) handlePlaceOrder(cmd *PlaceOrderCommand) {
 		}
 		e.SubmitCommand(updateCmd)
 
-		// 回复原始命令
+		// 回复原始命令（使用非阻塞发送，避免阻塞回调 goroutine）
+		// 如果接收端已经超时退出，这里不应该阻塞
 		select {
 		case cmd.Reply <- result:
+			// 成功发送
 		case <-cmd.Context.Done():
+			// Context 已取消，接收端可能已经超时退出，不阻塞
+			orderEngineLog.Debugf("回复命令时 context 已取消，接收端可能已超时: orderID=%s", cmd.Order.OrderID)
+		case <-time.After(100 * time.Millisecond):
+			// 超时保护：如果 100ms 内无法发送，记录警告但不阻塞
+			orderEngineLog.Warnf("回复命令超时（接收端可能已退出）: orderID=%s, 命令类型=%s", cmd.Order.OrderID, cmd.CommandType())
 		}
 	})
 
@@ -534,9 +556,16 @@ func (e *OrderEngine) handleCancelOrder(cmd *CancelOrderCommand) {
 		}
 		e.SubmitCommand(updateCmd)
 
+		// 使用非阻塞发送，避免阻塞回调 goroutine
 		select {
 		case cmd.Reply <- err:
-		default:
+			// 成功发送
+		case <-cmd.Context.Done():
+			// Context 已取消，接收端可能已经超时退出，不阻塞
+			orderEngineLog.Debugf("回复取消命令时 context 已取消: orderID=%s", cmd.OrderID)
+		case <-time.After(100 * time.Millisecond):
+			// 超时保护：如果 100ms 内无法发送，记录警告但不阻塞
+			orderEngineLog.Warnf("回复取消命令超时（接收端可能已退出）: orderID=%s", cmd.OrderID)
 		}
 	})
 }
@@ -736,23 +765,31 @@ func (e *OrderEngine) updatePositionFromTrade(trade *domain.Trade, order *domain
 			Size:       0,
 			TokenType:  trade.TokenType,
 			Status:     domain.PositionStatusOpen,
+			CostBasis:  0,
+			AvgPrice:   0,
+			TotalFilledSize: 0,
 		}
 		e.positions[positionID] = position
 	}
 
-	// 更新仓位大小
+	// 更新仓位大小和成本基础
 	if trade.Side == types.SideBuy {
 		// 买入交易：增加仓位
 		position.Size += trade.Size
+		// 累加成本基础（支持多次成交）
+		position.AddFill(trade.Size, trade.Price)
 	} else {
 		// 卖出交易：减少仓位
 		position.Size -= trade.Size
 		if position.Size < 0 {
 			position.Size = 0
 		}
+		// 卖出时也累加成本基础（用于计算平均成本）
+		// 注意：卖出会减少持仓，但成本基础仍然累加（用于计算盈亏）
+		position.AddFill(trade.Size, trade.Price)
 	}
 
-	// 更新入场订单
+	// 更新入场订单（如果这是首次成交）
 	if position.EntryOrder == nil {
 		position.EntryOrder = order
 		position.EntryPrice = trade.Price

@@ -319,11 +319,12 @@ func (o *OrdersService) GetTopOfBook(ctx context.Context, market *domain.Market)
 		return domain.Price{}, domain.Price{}, domain.Price{}, domain.Price{}, "", fmt.Errorf("market invalid")
 	}
 
-	// 1) WS 快路径：当前 market 且 bestBook 新鲜
+	// 1) WS 快路径：当前 market 且 bestBook 新鲜（放宽新鲜度要求，从 3 秒增加到 10 秒）
+	// 这样可以减少 REST API 调用，降低超时风险
 	if s != nil {
 		book := s.getBestBook()
 		cur := s.getCurrentMarketInfo()
-		if book != nil && cur != nil && cur.Slug == market.Slug && book.IsFresh(3*time.Second) {
+		if book != nil && cur != nil && cur.Slug == market.Slug && book.IsFresh(10*time.Second) {
 			snap := book.Load()
 			if snap.YesBidPips > 0 && snap.YesAskPips > 0 && snap.NoBidPips > 0 && snap.NoAskPips > 0 {
 				return domain.Price{Pips: int(snap.YesBidPips)},
@@ -336,14 +337,39 @@ func (o *OrdersService) GetTopOfBook(ctx context.Context, market *domain.Market)
 		}
 	}
 
-	// 2) REST 回退：分别拉 YES/NO 的 orderbook 一档
-	yesBook, err := s.clobClient.GetOrderBook(ctx, market.YesAssetID, nil)
-	if err != nil {
-		return domain.Price{}, domain.Price{}, domain.Price{}, domain.Price{}, "", fmt.Errorf("get yes orderbook: %w", err)
-	}
-	noBook, err := s.clobClient.GetOrderBook(ctx, market.NoAssetID, nil)
-	if err != nil {
-		return domain.Price{}, domain.Price{}, domain.Price{}, domain.Price{}, "", fmt.Errorf("get no orderbook: %w", err)
+	// 2) REST 回退：分别拉 YES/NO 的 orderbook 一档（添加重试机制）
+	maxRetries := 2
+	var yesBook, noBook *types.OrderBookSummary
+	var restErr error
+	
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			// 重试前等待一小段时间
+			select {
+			case <-ctx.Done():
+				return domain.Price{}, domain.Price{}, domain.Price{}, domain.Price{}, "", ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+		
+		yesBook, restErr = s.clobClient.GetOrderBook(ctx, market.YesAssetID, nil)
+		if restErr != nil {
+			if attempt < maxRetries-1 {
+				continue // 重试
+			}
+			return domain.Price{}, domain.Price{}, domain.Price{}, domain.Price{}, "", fmt.Errorf("get yes orderbook (after %d attempts): %w", maxRetries, restErr)
+		}
+		
+		noBook, restErr = s.clobClient.GetOrderBook(ctx, market.NoAssetID, nil)
+		if restErr != nil {
+			if attempt < maxRetries-1 {
+				continue // 重试
+			}
+			return domain.Price{}, domain.Price{}, domain.Price{}, domain.Price{}, "", fmt.Errorf("get no orderbook (after %d attempts): %w", maxRetries, restErr)
+		}
+		
+		// 成功获取两个订单簿
+		break
 	}
 
 	parseTop := func(book *types.OrderBookSummary) (bid, ask domain.Price, e error) {
