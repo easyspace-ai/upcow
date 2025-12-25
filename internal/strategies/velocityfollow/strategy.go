@@ -59,19 +59,19 @@ type Strategy struct {
 	samples map[domain.TokenType][]sample
 
 	// 周期状态管理
-	firstSeenAt        time.Time // 首次看到价格的时间
-	lastTriggerAt      time.Time // 上次触发时间（用于冷却）
-	tradedThisCycle    bool      // 本周期是否已交易（兼容旧逻辑）
-	tradesCountThisCycle int     // 本周期已交易次数（新逻辑）
+	firstSeenAt          time.Time // 首次看到价格的时间
+	lastTriggerAt        time.Time // 上次触发时间（用于冷却）
+	tradedThisCycle      bool      // 本周期是否已交易（兼容旧逻辑）
+	tradesCountThisCycle int       // 本周期已交易次数（新逻辑）
 
 	// 方向级别的去重：避免同一方向在短时间内重复触发
 	lastTriggerSide   domain.TokenType
 	lastTriggerSideAt time.Time
 
 	// 订单跟踪：利用本地订单状态管理（新架构特性）
-	lastEntryOrderID     string                    // 最后下单的 Entry 订单ID
-	lastHedgeOrderID     string                    // 最后下单的 Hedge 订单ID
-	lastEntryOrderStatus domain.OrderStatus        // Entry 订单状态
+	lastEntryOrderID     string                   // 最后下单的 Entry 订单ID
+	lastHedgeOrderID     string                   // 最后下单的 Hedge 订单ID
+	lastEntryOrderStatus domain.OrderStatus       // Entry 订单状态
 	pendingOrders        map[string]*domain.Order // 待确认的订单（通过订单ID跟踪）
 
 	// Binance bias 状态（每周期）
@@ -161,7 +161,7 @@ func (s *Strategy) Initialize() error {
 func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
 	session.OnPriceChanged(s)
 	log.Infof("✅ [%s] 策略已订阅价格变化事件 (session=%s)", ID, session.Name)
-	
+
 	// 在 Subscribe 时也注册订单更新回调（兜底方案，确保回调已注册）
 	// 因为此时 TradingService 肯定已经注入，且周期切换时会重新调用 Subscribe
 	if s.TradingService != nil {
@@ -267,7 +267,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 				}(*order.HedgeOrderID)
 			}
 		}
-		
+
 		// Entry 订单成交时，记录日志（用于顺序下单模式的成交检测）
 		if order.Status == domain.OrderStatusFilled {
 			log.Infof("✅ [%s] Entry 订单已成交（通过订单更新回调）: orderID=%s filledSize=%.4f",
@@ -586,9 +586,9 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 				continue
 			}
 			// 检查是否相同方向且状态为 open/pending
-			if order.TokenType == winner && 
-			   (order.Status == domain.OrderStatusOpen || order.Status == domain.OrderStatusPending) {
-				log.Debugf("🔄 [%s] 发现已有相同方向的订单，取消旧订单: orderID=%s status=%s", 
+			if order.TokenType == winner &&
+				(order.Status == domain.OrderStatusOpen || order.Status == domain.OrderStatusPending) {
+				log.Debugf("🔄 [%s] 发现已有相同方向的订单，取消旧订单: orderID=%s status=%s",
 					ID, order.OrderID, order.Status)
 				// 取消旧订单（不等待结果，异步执行）
 				go func(orderID string) {
@@ -633,7 +633,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 
 	// 验证价格有效性
 	if yesBidDec <= 0 || yesAskDec <= 0 || noBidDec <= 0 || noAskDec <= 0 {
-		log.Debugf("⚠️ [%s] 订单簿价格无效: YES bid=%.4f ask=%.4f, NO bid=%.4f ask=%.4f", 
+		log.Debugf("⚠️ [%s] 订单簿价格无效: YES bid=%.4f ask=%.4f, NO bid=%.4f ask=%.4f",
 			ID, yesBidDec, yesAskDec, noBidDec, noAskDec)
 		return nil
 	}
@@ -699,10 +699,10 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	// 检查有效价格是否合理（总成本应该接近 $1，允许一定误差）
 	totalCostDec := effectiveBuyEntry + effectiveBuyHedge
 	totalCostCents := int(totalCostDec*100 + 0.5)
-	
+
 	// 如果总成本过高（> $1.05），说明价格可能有问题，拒绝下单
 	if totalCostCents > 105 {
-		log.Warnf("⚠️ [%s] 价格滑点保护触发: 总成本过高 (%dc > 105c, entry=%dc hedge=%dc, source=%s)", 
+		log.Warnf("⚠️ [%s] 价格滑点保护触发: 总成本过高 (%dc > 105c, entry=%dc hedge=%dc, source=%s)",
 			ID, totalCostCents, entryAskCents, hedgeAskCents, source)
 		return nil
 	}
@@ -713,7 +713,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		hedgeAskCents, int(hedgeAskDec*100+0.5), int((1-entryBidDec)*100+0.5),
 		totalCostCents, source)
 
-	entryPrice := domain.Price{Pips: entryAskCents * 100}   // 1 cent = 100 pips
+	entryPrice := domain.Price{Pips: entryAskCents * 100} // 1 cent = 100 pips
 	hedgePrice := domain.Price{Pips: hedgeAskCents * 100} // 1 cent = 100 pips
 
 	entryAskDec = effectiveBuyEntry
@@ -722,7 +722,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	// size：确保满足最小金额/最小 shares（GTC）
 	entryShares := ensureMinOrderSize(orderSize, entryAskDec, minOrderSize)
 	hedgeShares := ensureMinOrderSize(hedgeSize, hedgeDec, minOrderSize)
-	
+
 	// 确保两边数量相等：使用较大的数量，避免因价格差异导致数量不一致
 	maxShares := entryShares
 	if hedgeShares > maxShares {
@@ -730,7 +730,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	}
 	entryShares = maxShares
 	hedgeShares = maxShares
-	
+
 	// 确保满足最小 share 数量（GTC 限价单）
 	if entryShares < minShareSize {
 		entryShares = minShareSize
@@ -747,9 +747,9 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		entryShares = maxShares
 		hedgeShares = maxShares
 	}
-	
+
 	// 记录订单数量信息（用于验证两边是否相等）
-	log.Debugf("📊 [%s] 订单数量: Entry=%.4f shares @ %dc, Hedge=%.4f shares @ %dc (已确保相等)", 
+	log.Debugf("📊 [%s] 订单数量: Entry=%.4f shares @ %dc, Hedge=%.4f shares @ %dc (已确保相等)",
 		ID, entryShares, entryAskCents, hedgeShares, hedgeAskCents)
 
 	// 9. 订单执行：根据配置选择顺序或并发执行
@@ -780,18 +780,15 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market, winner domain.TokenType,
 	entryAsset, hedgeAsset string, entryPrice, hedgePrice domain.Price, entryShares, hedgeShares float64,
 	entryAskCents, hedgeAskCents int, winMet metrics, biasTok, biasReason string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	// 使用更短的超时时间（10秒），快速失败，避免阻塞策略
 	orderCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	// ===== 顺序下单：先买主单（Entry），成交后再下对冲单（Hedge）=====
 	// 主单：价格 >= minPreferredPriceCents 的订单（FAK，立即成交或取消）
-	log.Infof("📤 [%s] 步骤1: 下主单 Entry (side=%s price=%dc size=%.4f FAK)", 
+	log.Infof("📤 [%s] 步骤1: 下主单 Entry (side=%s price=%dc size=%.4f FAK)",
 		ID, winner, entryAskCents, entryShares)
-	
+
 	entryOrder := &domain.Order{
 		MarketSlug:   market.Slug,
 		AssetID:      entryAsset,
@@ -804,21 +801,21 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 		Status:       domain.OrderStatusPending,
 		CreatedAt:    time.Now(),
 	}
-	
+
 	entryOrderResult, execErr := s.TradingService.PlaceOrder(orderCtx, entryOrder)
 	if execErr != nil {
 		log.Warnf("⚠️ [%s] 主单下单失败: err=%v side=%s market=%s", ID, execErr, winner, market.Slug)
 		return nil
 	}
-	
+
 	if entryOrderResult == nil || entryOrderResult.OrderID == "" {
 		log.Warnf("⚠️ [%s] 主单下单失败: 订单ID为空", ID)
 		return nil
 	}
-	
-	log.Infof("✅ [%s] 主单已提交: orderID=%s status=%s", 
+
+	log.Infof("✅ [%s] 主单已提交: orderID=%s status=%s",
 		ID, entryOrderResult.OrderID, entryOrderResult.Status)
-	
+
 	// 等待主单成交（FAK 订单要么立即成交，要么立即取消）
 	// 优化：使用更短的检查间隔和更长的等待时间，同时使用订单更新回调来检测成交
 	maxWaitTime := time.Duration(s.Config.SequentialMaxWaitMs) * time.Millisecond
@@ -831,16 +828,16 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 	}
 	entryFilled := false
 	entryOrderID := entryOrderResult.OrderID
-	
+
 	// ✅ 修复：在纸交易模式下，FAK 订单应该立即成交
 	// 因为 io_executor 在纸交易模式下会将 FAK 订单状态设置为 filled
 	if s.TradingService != nil && s.TradingService.IsDryRun() && entryOrderResult.OrderType == types.OrderTypeFAK {
 		// 纸交易模式：FAK 订单立即成交
 		entryFilled = true
-		log.Infof("✅ [%s] 主单已成交（纸交易模式，FAK 订单立即成交）: orderID=%s", 
+		log.Infof("✅ [%s] 主单已成交（纸交易模式，FAK 订单立即成交）: orderID=%s",
 			ID, entryOrderID)
 	}
-	
+
 	// 先检查一次订单状态（可能已经成交）
 	if !entryFilled && s.TradingService != nil {
 		activeOrders := s.TradingService.GetActiveOrders()
@@ -848,19 +845,19 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 			if order.OrderID == entryOrderID {
 				if order.Status == domain.OrderStatusFilled {
 					entryFilled = true
-					log.Infof("✅ [%s] 主单已成交（立即检查）: orderID=%s filledSize=%.4f", 
+					log.Infof("✅ [%s] 主单已成交（立即检查）: orderID=%s filledSize=%.4f",
 						ID, order.OrderID, order.FilledSize)
 					break
-				} else if order.Status == domain.OrderStatusFailed || 
-						  order.Status == domain.OrderStatusCanceled {
-					log.Warnf("⚠️ [%s] 主单失败/取消（立即检查）: orderID=%s status=%s", 
+				} else if order.Status == domain.OrderStatusFailed ||
+					order.Status == domain.OrderStatusCanceled {
+					log.Warnf("⚠️ [%s] 主单失败/取消（立即检查）: orderID=%s status=%s",
 						ID, order.OrderID, order.Status)
 					return nil
 				}
 			}
 		}
 	}
-	
+
 	// 如果未成交，轮询检查订单状态（使用更短的间隔）
 	if !entryFilled {
 		deadline := time.Now().Add(maxWaitTime)
@@ -874,44 +871,44 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 					if order.OrderID == entryOrderID {
 						if order.Status == domain.OrderStatusFilled {
 							entryFilled = true
-							log.Infof("✅ [%s] 主单已成交（轮询检查，第%d次）: orderID=%s filledSize=%.4f", 
+							log.Infof("✅ [%s] 主单已成交（轮询检查，第%d次）: orderID=%s filledSize=%.4f",
 								ID, checkCount, order.OrderID, order.FilledSize)
 							break
-						} else if order.Status == domain.OrderStatusFailed || 
-								  order.Status == domain.OrderStatusCanceled {
-							log.Warnf("⚠️ [%s] 主单失败/取消（轮询检查，第%d次）: orderID=%s status=%s", 
+						} else if order.Status == domain.OrderStatusFailed ||
+							order.Status == domain.OrderStatusCanceled {
+							log.Warnf("⚠️ [%s] 主单失败/取消（轮询检查，第%d次）: orderID=%s status=%s",
 								ID, checkCount, order.OrderID, order.Status)
 							return nil
 						}
 					}
 				}
 			}
-			
+
 			if entryFilled {
 				break
 			}
-			
+
 			// 等待一小段时间后再次检查（使用更短的间隔）
 			time.Sleep(checkInterval)
 		}
-		
+
 		if !entryFilled {
-			log.Debugf("🔄 [%s] 主单轮询检查完成（共检查%d次）: orderID=%s 未在预期时间内成交", 
+			log.Debugf("🔄 [%s] 主单轮询检查完成（共检查%d次）: orderID=%s 未在预期时间内成交",
 				ID, checkCount, entryOrderID)
 		}
 	}
-	
+
 	if !entryFilled {
-		log.Warnf("⚠️ [%s] 主单未在预期时间内成交: orderID=%s (可能部分成交或仍在处理中)", 
+		log.Warnf("⚠️ [%s] 主单未在预期时间内成交: orderID=%s (可能部分成交或仍在处理中)",
 			ID, entryOrderID)
 		// 即使主单未完全成交，也继续下对冲单（使用实际成交数量）
 		// 但为了安全，我们仍然继续执行
 	}
-	
+
 	// ===== 步骤2: 主单成交后，下对冲单（Hedge）=====
-	log.Infof("📤 [%s] 步骤2: 下对冲单 Hedge (side=%s price=%dc size=%.4f GTC)", 
+	log.Infof("📤 [%s] 步骤2: 下对冲单 Hedge (side=%s price=%dc size=%.4f GTC)",
 		ID, opposite(winner), hedgeAskCents, hedgeShares)
-	
+
 	hedgeOrder := &domain.Order{
 		MarketSlug:   market.Slug,
 		AssetID:      hedgeAsset,
@@ -925,43 +922,53 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 		Status:       domain.OrderStatusPending,
 		CreatedAt:    time.Now(),
 	}
-	
+
 	hedgeOrderResult, hedgeErr := s.TradingService.PlaceOrder(orderCtx, hedgeOrder)
+	hedgeOrderID := ""
 	if hedgeErr != nil {
-		log.Warnf("⚠️ [%s] 对冲单下单失败: err=%v (主单已成交，需要手动处理)", 
+		log.Warnf("⚠️ [%s] 对冲单下单失败: err=%v (主单已成交，需要手动处理)",
 			ID, hedgeErr)
 		// 主单已成交，对冲单失败，这是一个风险情况
 		execErr = hedgeErr
 	} else if hedgeOrderResult != nil && hedgeOrderResult.OrderID != "" {
-		log.Infof("✅ [%s] 对冲单已提交: orderID=%s status=%s (关联主单=%s)", 
+		hedgeOrderID = hedgeOrderResult.OrderID
+		log.Infof("✅ [%s] 对冲单已提交: orderID=%s status=%s (关联主单=%s)",
 			ID, hedgeOrderResult.OrderID, hedgeOrderResult.Status, entryOrderID)
 	}
-	
+
 	// 更新订单关联关系（如果对冲单成功）
-	if hedgeOrderResult != nil && hedgeOrderResult.OrderID != "" {
+	if hedgeOrderID != "" {
 		// 更新主单的对冲订单ID
 		if entryOrderResult != nil {
-			entryOrderResult.HedgeOrderID = &hedgeOrderResult.OrderID
+			entryOrderResult.HedgeOrderID = &hedgeOrderID
 		}
-		s.lastHedgeOrderID = hedgeOrderResult.OrderID
 	}
-	
+
+	var tradesCount int
 	if execErr == nil && entryOrderResult != nil {
-		s.lastTriggerAt = time.Now()
+		now := time.Now()
+		// 只在更新共享状态时持锁，避免阻塞订单更新回调/行情分发（性能关键）
+		s.mu.Lock()
+		s.lastTriggerAt = now
 		s.lastTriggerSide = winner
-		s.lastTriggerSideAt = time.Now()
+		s.lastTriggerSideAt = now
 		s.tradedThisCycle = true
 		s.tradesCountThisCycle++ // 增加交易计数
-		
+
 		// 更新订单跟踪状态
 		s.lastEntryOrderID = entryOrderResult.OrderID
 		s.lastEntryOrderStatus = entryOrderResult.Status
 		if entryFilled {
 			s.lastEntryOrderStatus = domain.OrderStatusFilled
 		}
-		
+		if hedgeOrderID != "" {
+			s.lastHedgeOrderID = hedgeOrderID
+		}
+		tradesCount = s.tradesCountThisCycle
+		s.mu.Unlock()
+
 		log.Infof("⚡ [%s] 触发(顺序): side=%s ask=%dc hedge=%dc vel=%.3f(c/s) move=%dc/%0.1fs bias=%s(%s) market=%s trades=%d/%d",
-			ID, winner, entryAskCents, hedgeAskCents, winMet.velocity, winMet.delta, winMet.seconds, biasTok, biasReason, market.Slug, s.tradesCountThisCycle, s.MaxTradesPerCycle)
+			ID, winner, entryAskCents, hedgeAskCents, winMet.velocity, winMet.delta, winMet.seconds, biasTok, biasReason, market.Slug, tradesCount, s.MaxTradesPerCycle)
 		if biasTok != "" || biasReason != "" {
 			log.Infof("🧭 [%s] bias: token=%s reason=%s cycleStartMs=%d", ID, biasTok, biasReason, s.cycleStartMs)
 		}
@@ -998,9 +1005,6 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 func (s *Strategy) executeParallel(ctx context.Context, market *domain.Market, winner domain.TokenType,
 	entryAsset, hedgeAsset string, entryPrice, hedgePrice domain.Price, entryShares, hedgeShares float64,
 	entryAskCents, hedgeAskCents int, winMet metrics, biasTok, biasReason string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	// 使用更短的超时时间（10秒），快速失败，避免阻塞策略
 	orderCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -1033,13 +1037,17 @@ func (s *Strategy) executeParallel(ctx context.Context, market *domain.Market, w
 	}
 
 	createdOrders, execErr := s.TradingService.ExecuteMultiLeg(orderCtx, req)
+	var tradesCount int
 	if execErr == nil && len(createdOrders) > 0 {
-		s.lastTriggerAt = time.Now()
+		now := time.Now()
+		// 只在更新共享状态时持锁（性能关键）
+		s.mu.Lock()
+		s.lastTriggerAt = now
 		s.lastTriggerSide = winner
-		s.lastTriggerSideAt = time.Now()
+		s.lastTriggerSideAt = now
 		s.tradedThisCycle = true
 		s.tradesCountThisCycle++ // 增加交易计数
-		
+
 		// 更新订单跟踪状态
 		for _, order := range createdOrders {
 			if order == nil || order.OrderID == "" {
@@ -1052,9 +1060,11 @@ func (s *Strategy) executeParallel(ctx context.Context, market *domain.Market, w
 				s.lastHedgeOrderID = order.OrderID
 			}
 		}
-		
+		tradesCount = s.tradesCountThisCycle
+		s.mu.Unlock()
+
 		log.Infof("⚡ [%s] 触发(并发): side=%s ask=%dc hedge=%dc vel=%.3f(c/s) move=%dc/%0.1fs bias=%s(%s) market=%s trades=%d/%d orders=%d",
-			ID, winner, entryAskCents, hedgeAskCents, winMet.velocity, winMet.delta, winMet.seconds, biasTok, biasReason, market.Slug, s.tradesCountThisCycle, s.MaxTradesPerCycle, len(createdOrders))
+			ID, winner, entryAskCents, hedgeAskCents, winMet.velocity, winMet.delta, winMet.seconds, biasTok, biasReason, market.Slug, tradesCount, s.MaxTradesPerCycle, len(createdOrders))
 		if biasTok != "" || biasReason != "" {
 			log.Infof("🧭 [%s] bias: token=%s reason=%s cycleStartMs=%d", ID, biasTok, biasReason, s.cycleStartMs)
 		}
@@ -1168,4 +1178,3 @@ func candleStatsBps(k services.Kline, upTok domain.TokenType, downTok domain.Tok
 	}
 	return
 }
-

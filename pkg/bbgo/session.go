@@ -221,7 +221,8 @@ func (s *ExchangeSession) startPriceLoop(ctx context.Context) {
 						}
 						continue
 					}
-					sessionLog.Infof("🔄 [Session %s] priceLoop: 处理价格事件 handlers数量=%d", s.Name, len(handlers))
+					// 热路径：每次 flush 都打 INFO 会严重拖慢行情线程并刷爆日志；降级为 Debug
+					sessionLog.Debugf("🔄 [Session %s] priceLoop: 处理价格事件 handlers数量=%d", s.Name, len(handlers))
 
 					// 合并：每次只处理最新 UP/DOWN（或其他 tokenType）的事件
 					// 注意：只有在确认“有 handler 可以处理”后才 drain 缓存，避免丢失早到的第一笔行情。
@@ -305,8 +306,8 @@ func (h *sessionPriceHandler) OnPriceChanged(ctx context.Context, event *events.
 				return nil
 			}
 		}
-		// 添加 INFO 级别日志，确保能看到所有价格事件（包括被过滤的）
-		sessionLog.Infof("📥 [sessionPriceHandler] 收到价格变化事件: %s @ %.4f market=%s (Session=%s)",
+		// 热路径：每个价格事件都打 INFO 会极大影响吞吐与延迟；默认降级为 Debug（首条仍为 INFO）
+		sessionLog.Debugf("📥 [sessionPriceHandler] 收到价格变化事件: %s @ %.4f market=%s (Session=%s)",
 			event.TokenType, event.NewPrice.ToDecimal(), func() string {
 				if event.Market != nil {
 					return event.Market.Slug

@@ -66,6 +66,10 @@ type MarketStream struct {
 
 	// 原子快照：top-of-book（供策略/执行快速读取）
 	bestBook *marketstate.AtomicBestBook
+
+	// 热路径降噪：对“盘口价差过大”的 WARN 做限频，避免刷屏拖慢主循环
+	spreadWarnMu sync.Mutex
+	spreadWarnAt map[string]time.Time // key: assetID
 }
 
 // NewMarketStream 创建新的市场数据流
@@ -79,7 +83,23 @@ func NewMarketStream() *MarketStream {
 		lastPong:      time.Now(),
 		lastMessageAt: time.Now(),
 		bestBook:      marketstate.NewAtomicBestBook(),
+		spreadWarnAt:  make(map[string]time.Time),
 	}
+}
+
+// shouldLogWideSpreadWarn 对同一 asset 的 “wide spread” 警告做限频（默认每 2 秒最多一条）。
+func (m *MarketStream) shouldLogWideSpreadWarn(assetID string) bool {
+	if m == nil || assetID == "" {
+		return false
+	}
+	now := time.Now()
+	m.spreadWarnMu.Lock()
+	defer m.spreadWarnMu.Unlock()
+	if last, ok := m.spreadWarnAt[assetID]; ok && now.Sub(last) < 2*time.Second {
+		return false
+	}
+	m.spreadWarnAt[assetID] = now
+	return true
 }
 
 // BestBook 返回当前 MarketStream 的原子 top-of-book 快照（可能为 nil）。
@@ -866,8 +886,14 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 			spread = -spread
 		}
 		if spread > marketDataMaxSpreadCents {
-			marketLog.Warnf("⚠️ [price_change->price] 盘口价差过大，忽略价格事件: assetID=%s bid=%dc ask=%dc spread=%dc market=%s",
-				assetID[:12]+"...", bidCents, askCents, spread, currentMarketSlug)
+			if m.shouldLogWideSpreadWarn(assetID) {
+				aid := assetID
+				if len(aid) > 12 {
+					aid = aid[:12] + "..."
+				}
+				marketLog.Warnf("⚠️ [price_change->price] 盘口价差过大，忽略价格事件: assetID=%s bid=%dc ask=%dc spread=%dc market=%s",
+					aid, bidCents, askCents, spread, currentMarketSlug)
+			}
 			continue
 		}
 		mid := int(bidCents) + int(askCents)
