@@ -8,9 +8,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
+
+// HTTP 调试输出默认关闭（开启方式：设置环境变量 GOBET_HTTP_DEBUG=1）
+var httpDebug = os.Getenv("GOBET_HTTP_DEBUG") != ""
 
 // HTTPClient HTTP 客户端接口
 type HTTPClient interface {
@@ -63,7 +67,9 @@ func (h *httpClient) get(endpoint string, headers map[string]string, params map[
 	reqURL := h.host + endpoint
 
 	// 先打印初始 URL（在添加参数之前）
-	fmt.Printf("[HTTP DEBUG] GET 初始URL: %s\n", reqURL)
+	if httpDebug {
+		fmt.Printf("[HTTP DEBUG] GET 初始URL: %s\n", reqURL)
+	}
 
 	if len(params) > 0 {
 		u, err := url.Parse(reqURL)
@@ -77,7 +83,9 @@ func (h *httpClient) get(endpoint string, headers map[string]string, params map[
 		u.RawQuery = q.Encode()
 		reqURL = u.String()
 		// 打印最终 URL（包含查询参数）
-		fmt.Printf("[HTTP DEBUG] GET 最终URL: %s\n", reqURL)
+		if httpDebug {
+			fmt.Printf("[HTTP DEBUG] GET 最终URL: %s\n", reqURL)
+		}
 	}
 
 	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
@@ -119,8 +127,10 @@ func (h *httpClient) post(endpoint string, headers map[string]string, body inter
 		bodyReader = bytes.NewReader(bodyBytes)
 
 		// 调试：打印实际发送的请求
-		fmt.Printf("[HTTP DEBUG] POST %s\n", reqURL)
-		fmt.Printf("[HTTP DEBUG] Body: %s\n", string(bodyBytes))
+		if httpDebug {
+			fmt.Printf("[HTTP DEBUG] POST %s\n", reqURL)
+			fmt.Printf("[HTTP DEBUG] Body: %s\n", string(bodyBytes))
+		}
 	}
 
 	req, err := http.NewRequest(http.MethodPost, reqURL, bodyReader)
@@ -142,11 +152,15 @@ func (h *httpClient) post(endpoint string, headers map[string]string, body inter
 	duration := time.Since(startTime)
 
 	if err != nil {
-		fmt.Printf("[HTTP DEBUG] 请求失败 (耗时: %v): %v\n", duration, err)
+		if httpDebug {
+			fmt.Printf("[HTTP DEBUG] 请求失败 (耗时: %v): %v\n", duration, err)
+		}
 		return nil, err
 	}
 
-	fmt.Printf("[HTTP DEBUG] 请求完成 (耗时: %v), 状态码: %d\n", duration, resp.StatusCode)
+	if httpDebug {
+		fmt.Printf("[HTTP DEBUG] 请求完成 (耗时: %v), 状态码: %d\n", duration, resp.StatusCode)
+	}
 	return resp, nil
 }
 
@@ -212,7 +226,9 @@ func parseResponse(resp *http.Response, result interface{}) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(reader)
 		errorMsg := fmt.Sprintf("HTTP 错误 %d: %s", resp.StatusCode, string(bodyBytes))
-		fmt.Printf("[HTTP DEBUG] %s\n", errorMsg)
+		if httpDebug {
+			fmt.Printf("[HTTP DEBUG] %s\n", errorMsg)
+		}
 		// 使用常量 format string，避免 go vet 报错
 		return fmt.Errorf("%s", errorMsg)
 	}
@@ -226,7 +242,9 @@ func parseResponse(resp *http.Response, result interface{}) error {
 
 		// 如果是余额查询，打印完整响应体
 		if strings.Contains(resp.Request.URL.Path, "balance-allowance") {
-			fmt.Printf("[HTTP DEBUG] 余额API完整响应体: %s\n", string(bodyBytes))
+			if httpDebug {
+				fmt.Printf("[HTTP DEBUG] 余额API完整响应体: %s\n", string(bodyBytes))
+			}
 		}
 
 		if err := json.Unmarshal(bodyBytes, result); err != nil {

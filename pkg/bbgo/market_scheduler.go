@@ -153,17 +153,53 @@ func (s *MarketScheduler) createSession(ctx context.Context, market *domain.Mark
 func (s *MarketScheduler) scheduleLoop() {
 	defer s.wg.Done()
 
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
 	for {
+		// 热路径优化：不再每秒轮询，改为“睡到下个周期边界再检查”。
+		// 仍可被 ctx.Done() 立即打断，且在时间漂移/边界附近会自动回到短周期检查。
+		sleepFor := s.nextScheduleSleep()
+		timer := time.NewTimer(sleepFor)
 		select {
 		case <-s.ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
+			// 到点检查/切换
 			s.checkAndSwitchMarket()
 		}
 	}
+}
+
+// nextScheduleSleep 计算调度循环下一次醒来的时间。
+// - 正常情况下：睡到当前 market 的周期结束边界（减少无意义唤醒）
+// - 异常/边界情况下：回退为短睡眠，确保能及时切换
+func (s *MarketScheduler) nextScheduleSleep() time.Duration {
+	s.mu.RLock()
+	currentMarket := s.currentMarket
+	s.mu.RUnlock()
+
+	if currentMarket == nil {
+		return 1 * time.Second
+	}
+
+	endTs := currentMarket.Timestamp + int64(s.spec.Duration().Seconds())
+	deadline := time.Unix(endTs, 0)
+	d := time.Until(deadline)
+
+	// 已过期/接近边界：快速检查（避免卡在负 duration）
+	if d <= 0 {
+		return 50 * time.Millisecond
+	}
+
+	// 边界前做一次“提前唤醒”，给切换/日志滚动/连接时间留一点余量
+	if d > 500*time.Millisecond {
+		d -= 500 * time.Millisecond
+	}
+
+	// 防御：避免睡得过久导致对时间漂移完全无感；15m/1h 这种周期里每 30s 醒一次足够
+	if d > 30*time.Second {
+		return 30 * time.Second
+	}
+	return d
 }
 
 // checkAndSwitchMarket 检查并切换市场

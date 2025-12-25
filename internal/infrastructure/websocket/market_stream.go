@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -66,6 +67,10 @@ type MarketStream struct {
 
 	// 原子快照：top-of-book（供策略/执行快速读取）
 	bestBook *marketstate.AtomicBestBook
+
+	// 热路径降噪：对“盘口价差过大”的 WARN 做限频，避免刷屏拖慢主循环
+	spreadWarnMu sync.Mutex
+	spreadWarnAt map[string]time.Time // key: assetID
 }
 
 // NewMarketStream 创建新的市场数据流
@@ -79,7 +84,23 @@ func NewMarketStream() *MarketStream {
 		lastPong:      time.Now(),
 		lastMessageAt: time.Now(),
 		bestBook:      marketstate.NewAtomicBestBook(),
+		spreadWarnAt:  make(map[string]time.Time),
 	}
+}
+
+// shouldLogWideSpreadWarn 对同一 asset 的 “wide spread” 警告做限频（默认每 2 秒最多一条）。
+func (m *MarketStream) shouldLogWideSpreadWarn(assetID string) bool {
+	if m == nil || assetID == "" {
+		return false
+	}
+	now := time.Now()
+	m.spreadWarnMu.Lock()
+	defer m.spreadWarnMu.Unlock()
+	if last, ok := m.spreadWarnAt[assetID]; ok && now.Sub(last) < 2*time.Second {
+		return false
+	}
+	m.spreadWarnAt[assetID] = now
+	return true
 }
 
 // BestBook 返回当前 MarketStream 的原子 top-of-book 快照（可能为 nil）。
@@ -526,68 +547,42 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 		}
 	}
 
-	var msgType struct {
-		EventType string `json:"event_type"`
-	}
-	if err := json.Unmarshal(message, &msgType); err != nil {
-		// 非 JSON 消息：只在 debug 记录，避免刷屏
-		msgPreview := message
-		if len(msgPreview) > 200 {
-			msgPreview = msgPreview[:200]
-		}
-		marketLog.Debugf("解析消息类型失败(可能是非JSON): %v, msg=%q", err, string(msgPreview))
-		return
-	}
-
-	switch msgType.EventType {
-	case "price_change":
-		// 检查 handlers 数量（用于调试）
-		handlerCount := m.handlers.Count()
-		if handlerCount == 0 {
-			marketLog.Warnf("⚠️ [消息处理] 收到 price_change 消息但 handlers 为空！市场=%s", m.market.Slug)
-		} else {
-			marketLog.Debugf("📨 [消息处理] 收到 price_change 消息，handlers 数量=%d，市场=%s", handlerCount, m.market.Slug)
-		}
-		var msg map[string]interface{}
-		if err := json.Unmarshal(message, &msg); err != nil {
-			marketLog.Warnf("解析价格变化消息失败: %v", err)
-			return
-		}
-		// 关键过滤：只处理“当前周期 market conditionId”的消息，避免其它 market 误入策略
-		if msgMarket, _ := msg["market"].(string); !m.shouldProcessMarketMessage(msgMarket) {
-			expected := ""
-			slug := ""
-			if m.market != nil {
-				expected = m.market.ConditionID
-				slug = m.market.Slug
-			}
-			marketLog.Debugf("🚫 [market过滤] 丢弃 price_change: msg.market=%s expected=%s slug=%s", msgMarket, expected, slug)
-			return
-		}
-		m.handlePriceChange(ctx, msg)
-	case "subscribed":
+	switch detectEventTypeCode(message) {
+	case evtPriceChange:
+		m.handlePriceChange(ctx, message)
+	case evtSubscribed:
 		marketLog.Infof("✅ MarketStream 收到订阅成功消息")
 		// 订阅成功但长时间没任何数据时，给出更明确的诊断提示
 		m.lastMsgMu.RLock()
 		last := m.lastMessageAt
 		m.lastMsgMu.RUnlock()
 		_ = last // 预留：后续可在此处启动定时诊断（不在这里启动 goroutine，避免重复启动）
-	case "pong":
+	case evtPong:
 		m.healthCheckMu.Lock()
 		m.lastPong = time.Now()
 		m.healthCheckMu.Unlock()
 		marketLog.Debugf("收到 PONG 响应")
-	case "book":
+	case evtBook:
 		// 兼容：某些情况下服务器只推 book（快照/增量），未推 price_change。
 		// 为了不让策略“完全看不到实时 up/down”，这里从 book 中提取 best_ask/best_bid 并发出 PriceChangedEvent。
 		m.handleBookAsPrice(ctx, message)
-	case "tick_size_change":
-		// Tick size 变化（可选处理）
+	case evtTickSizeChange:
 		marketLog.Debugf("收到 tick size 变化消息")
-	case "last_trade_price":
-		// 最后交易价格（可选处理）
+	case evtLastTradePrice:
 		marketLog.Debugf("💰 收到最后交易价格消息（价格变化应通过 price_change 事件发送）")
 	default:
+		// 未知类型：回退到 json.Unmarshal 获取 event_type 用于可观测性（非热路径）
+		var msgType struct {
+			EventType string `json:"event_type"`
+		}
+		if err := json.Unmarshal(message, &msgType); err != nil {
+			msgPreview := message
+			if len(msgPreview) > 200 {
+				msgPreview = msgPreview[:200]
+			}
+			marketLog.Debugf("解析消息类型失败(可能是非JSON): %v, msg=%q", err, string(msgPreview))
+			return
+		}
 		msgPreview := message
 		if len(msgPreview) > 200 {
 			msgPreview = msgPreview[:200]
@@ -599,6 +594,188 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 type orderLevel struct {
 	Price string `json:"price"`
 	Size  string `json:"size"`
+}
+
+type eventTypeCode uint8
+
+const (
+	evtUnknown eventTypeCode = iota
+	evtPriceChange
+	evtSubscribed
+	evtPong
+	evtBook
+	evtTickSizeChange
+	evtLastTradePrice
+)
+
+// detectEventTypeCode 尽量用低开销方式从 JSON 中提取 event_type，避免每条消息都 json.Unmarshal 一次。
+// 这是热路径优化：只服务于我们已知的几个 event_type；未知类型会回退到 json.Unmarshal 获取字符串。
+func detectEventTypeCode(message []byte) eventTypeCode {
+	// 查找 "event_type"
+	i := bytes.Index(message, []byte(`"event_type"`))
+	if i < 0 {
+		return evtUnknown
+	}
+	// 查找 ':'（允许中间存在空格）
+	j := bytes.IndexByte(message[i:], ':')
+	if j < 0 {
+		return evtUnknown
+	}
+	j = i + j + 1
+	for j < len(message) {
+		c := message[j]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			j++
+			continue
+		}
+		break
+	}
+	if j >= len(message) || message[j] != '"' {
+		return evtUnknown
+	}
+	j++
+	k := j
+	for k < len(message) && message[k] != '"' {
+		k++
+	}
+	if k <= j || k >= len(message) {
+		return evtUnknown
+	}
+	et := message[j:k]
+
+	switch {
+	case bytes.Equal(et, []byte("price_change")):
+		return evtPriceChange
+	case bytes.Equal(et, []byte("subscribed")):
+		return evtSubscribed
+	case bytes.Equal(et, []byte("pong")):
+		return evtPong
+	case bytes.Equal(et, []byte("book")):
+		return evtBook
+	case bytes.Equal(et, []byte("tick_size_change")):
+		return evtTickSizeChange
+	case bytes.Equal(et, []byte("last_trade_price")):
+		return evtLastTradePrice
+	default:
+		return evtUnknown
+	}
+}
+
+var (
+	keyMarket       = []byte(`"market"`)
+	keyPriceChanges = []byte(`"price_changes"`)
+	keyAssetID      = []byte(`"asset_id"`)
+	keyBestBid      = []byte(`"best_bid"`)
+	keyBestAsk      = []byte(`"best_ask"`)
+)
+
+func findJSONStringValue(msg []byte, key []byte) ([]byte, bool) {
+	// 找到 key
+	i := bytes.Index(msg, key)
+	if i < 0 {
+		return nil, false
+	}
+	// 找到 ':'
+	j := bytes.IndexByte(msg[i+len(key):], ':')
+	if j < 0 {
+		return nil, false
+	}
+	j = i + len(key) + j + 1
+	// skip spaces
+	for j < len(msg) {
+		c := msg[j]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			j++
+			continue
+		}
+		break
+	}
+	if j >= len(msg) || msg[j] != '"' {
+		return nil, false
+	}
+	j++
+	start := j
+	escaped := false
+	for j < len(msg) {
+		c := msg[j]
+		if escaped {
+			escaped = false
+			j++
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			j++
+			continue
+		}
+		if c == '"' {
+			return msg[start:j], true
+		}
+		j++
+	}
+	return nil, false
+}
+
+func findJSONArrayStart(msg []byte, key []byte) (int, bool) {
+	i := bytes.Index(msg, key)
+	if i < 0 {
+		return 0, false
+	}
+	j := bytes.IndexByte(msg[i+len(key):], ':')
+	if j < 0 {
+		return 0, false
+	}
+	j = i + len(key) + j + 1
+	for j < len(msg) {
+		c := msg[j]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			j++
+			continue
+		}
+		break
+	}
+	if j >= len(msg) || msg[j] != '[' {
+		return 0, false
+	}
+	return j, true
+}
+
+func scanJSONObjectEnd(msg []byte, start int) (int, bool) {
+	if start < 0 || start >= len(msg) || msg[start] != '{' {
+		return 0, false
+	}
+	depth := 0
+	inStr := false
+	esc := false
+	for i := start; i < len(msg); i++ {
+		c := msg[i]
+		if inStr {
+			if esc {
+				esc = false
+				continue
+			}
+			if c == '\\' {
+				esc = true
+				continue
+			}
+			if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i + 1, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // shouldProcessMarketMessage 决定是否处理某条 market-channel 消息。
@@ -757,7 +934,7 @@ func (m *MarketStream) handleBookAsPrice(ctx context.Context, message []byte) {
 }
 
 // handlePriceChange 处理价格变化（直接回调，不使用事件总线）
-func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]interface{}) {
+func (m *MarketStream) handlePriceChange(ctx context.Context, message []byte) {
 	// 检查是否已关闭（避免处理关闭后的延迟消息）
 	select {
 	case <-m.closeC:
@@ -774,86 +951,105 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 	default:
 	}
 
-	// 关键过滤：只允许当前周期 market conditionId 的消息进入策略
-	if msgMarket, _ := msg["market"].(string); !m.shouldProcessMarketMessage(msgMarket) {
-		expected := ""
-		slug := ""
-		if m.market != nil {
-			expected = m.market.ConditionID
-			slug = m.market.Slug
-		}
-		marketLog.Debugf("🚫 [market过滤] 忽略 price_change: msg.market=%s expected=%s slug=%s", msgMarket, expected, slug)
+	if m.market == nil || m.market.Slug == "" {
 		return
 	}
 
-	priceChanges, ok := msg["price_changes"].([]interface{})
+	// 极限热路径：手写解析 market + price_changes（失败则回退到 json.Unmarshal 的慢路径）
+	if m.handlePriceChangeFast(ctx, message) {
+		return
+	}
+
+	m.handlePriceChangeSlow(ctx, message)
+}
+
+func (m *MarketStream) handlePriceChangeFast(ctx context.Context, message []byte) bool {
+	marketBytes, ok := findJSONStringValue(message, keyMarket)
 	if !ok {
-		marketLog.Debugf("⚠️ [价格处理] 价格变化消息中没有 price_changes 字段")
-		return
+		return false
+	}
+	// 关键过滤：只允许当前周期 market conditionId 的消息进入策略（避免 string 分配）
+	if m.market == nil || !bytes.EqualFold(marketBytes, []byte(m.market.ConditionID)) {
+		return true // 已知是别的 market，直接丢弃（不算失败）
 	}
 
-	// 检查 handlers 数量
-	handlerCount := m.handlers.Count()
-	if handlerCount == 0 {
-		marketLog.Debugf("⚠️ [价格处理] MarketStream.handlers 为空，价格更新将被丢弃！市场=%s", m.market.Slug)
-		return
+	// handlers 为空直接丢弃（避免无意义计算）
+	if m.handlers.Count() == 0 {
+		return true
 	}
 
-	// 检查当前市场是否匹配（防止处理旧周期的消息）
-	currentMarketSlug := ""
-	if m.market != nil {
-		currentMarketSlug = m.market.Slug
-	}
-	if currentMarketSlug == "" {
-		marketLog.Debugf("⚠️ [价格处理] MarketStream.market 为空，忽略价格变化消息")
-		return
+	arrStart, ok := findJSONArrayStart(message, keyPriceChanges)
+	if !ok {
+		return false
 	}
 
-	marketLog.Debugf("📊 [价格处理] 收到价格变化消息，handlers 数量=%d，市场=%s", handlerCount, currentMarketSlug)
+	currentMarketSlug := m.market.Slug
+	var upPrice, downPrice domain.Price
+	upOK := false
+	downOK := false
 
-	latestPrices := make(map[string]struct {
-		price  domain.Price
-		source string
-	})
+	yesID := m.market.YesAssetID
+	noID := m.market.NoAssetID
 
-	// 处理每个价格变化
-	for _, pc := range priceChanges {
-		change, ok := pc.(map[string]interface{})
+	// iterate array objects
+	i := arrStart + 1
+	for i < len(message) {
+		// skip spaces/commas
+		for i < len(message) {
+			c := message[i]
+			if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ',' {
+				i++
+				continue
+			}
+			break
+		}
+		if i >= len(message) || message[i] == ']' {
+			break
+		}
+		if message[i] != '{' {
+			return false
+		}
+		end, ok := scanJSONObjectEnd(message, i)
 		if !ok {
+			return false
+		}
+		obj := message[i:end]
+		i = end
+
+		assetIDb, ok := findJSONStringValue(obj, keyAssetID)
+		if !ok || len(assetIDb) == 0 {
+			continue
+		}
+		isUp := bytes.Equal(assetIDb, []byte(yesID))
+		isDown := bytes.Equal(assetIDb, []byte(noID))
+		if !isUp && !isDown {
 			continue
 		}
 
-		assetID, _ := change["asset_id"].(string)
-		if assetID == "" {
-			continue
-		}
-
-		// 解析 best bid/ask（price_change 可能包含 best_*）
+		// 解析 bid/ask（pips/cents），允许单边更新 bestBook
 		var bidPips, askPips uint16
-		var bidCents, askCents uint16 // spread gate 使用 0.01 口径
-		if bestBidStr, ok := change["best_bid"].(string); ok && bestBidStr != "" {
-			if p, err := parsePriceString(bestBidStr); err == nil && p.Pips > 0 {
+		bidCents := 0
+		askCents := 0
+
+		if bb, ok := findJSONStringValue(obj, keyBestBid); ok && len(bb) > 0 {
+			if p, err := parsePriceBytes(bb); err == nil && p.Pips > 0 {
 				bidPips = uint16(p.Pips)
-				bidCents = uint16(p.ToCents())
+				bidCents = pipsToCents(p.Pips)
 			}
 		}
-		if bestAskStr, ok := change["best_ask"].(string); ok && bestAskStr != "" {
-			if p, err := parsePriceString(bestAskStr); err == nil && p.Pips > 0 {
+		if ba, ok := findJSONStringValue(obj, keyBestAsk); ok && len(ba) > 0 {
+			if p, err := parsePriceBytes(ba); err == nil && p.Pips > 0 {
 				askPips = uint16(p.Pips)
-				askCents = uint16(p.ToCents())
+				askCents = pipsToCents(p.Pips)
 			}
 		}
 
 		// 更新 AtomicBestBook（允许单边更新）
-		if m.bestBook != nil && m.market != nil {
-			var tokenType domain.TokenType
-			if assetID == m.market.YesAssetID {
-				tokenType = domain.TokenTypeUp
-			} else if assetID == m.market.NoAssetID {
-				tokenType = domain.TokenTypeDown
-			}
-			if tokenType != "" && (bidCents != 0 || askCents != 0) {
-				m.bestBook.UpdateToken(tokenType, bidPips, askPips, 0, 0)
+		if m.bestBook != nil && (bidCents != 0 || askCents != 0) {
+			if isUp {
+				m.bestBook.UpdateToken(domain.TokenTypeUp, bidPips, askPips, 0, 0)
+			} else {
+				m.bestBook.UpdateToken(domain.TokenTypeDown, bidPips, askPips, 0, 0)
 			}
 		}
 
@@ -861,67 +1057,191 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, msg map[string]int
 		if bidCents == 0 || askCents == 0 {
 			continue
 		}
-		spread := int(askCents) - int(bidCents)
+		spread := askCents - bidCents
 		if spread < 0 {
 			spread = -spread
 		}
 		if spread > marketDataMaxSpreadCents {
-			marketLog.Warnf("⚠️ [price_change->price] 盘口价差过大，忽略价格事件: assetID=%s bid=%dc ask=%dc spread=%dc market=%s",
-				assetID[:12]+"...", bidCents, askCents, spread, currentMarketSlug)
+			assetID := string(assetIDb) // only on warn path
+			if m.shouldLogWideSpreadWarn(assetID) {
+				aid := assetID
+				if len(aid) > 12 {
+					aid = aid[:12] + "..."
+				}
+				marketLog.Warnf("⚠️ [price_change->price] 盘口价差过大，忽略价格事件: assetID=%s bid=%dc ask=%dc spread=%dc market=%s",
+					aid, bidCents, askCents, spread, currentMarketSlug)
+			}
 			continue
 		}
-		mid := int(bidCents) + int(askCents)
+
+		mid := bidCents + askCents
 		mid = (mid + 1) / 2
 		newPrice := domain.Price{Pips: mid * 100} // 1 cent = 100 pips
 
-		latestPrices[assetID] = struct {
-			price  domain.Price
-			source string
-		}{price: newPrice, source: "mid"}
-	}
-
-	// 触发回调
-	for assetID, latest := range latestPrices {
-		var tokenType domain.TokenType
-		if assetID == m.market.YesAssetID {
-			tokenType = domain.TokenTypeUp
-		} else if assetID == m.market.NoAssetID {
-			tokenType = domain.TokenTypeDown
+		if isUp {
+			upPrice = newPrice
+			upOK = true
 		} else {
-			continue
+			downPrice = newPrice
+			downOK = true
 		}
-
-		// 再次检查是否已关闭（双重保险）
-		select {
-		case <-m.closeC:
-			marketLog.Debugf("⚠️ [价格事件] MarketStream 已关闭，忽略价格事件: 市场=%s, Token=%s, 价格=%.4f",
-				currentMarketSlug, tokenType, latest.price.ToDecimal())
-			continue
-		default:
-		}
-
-		// 【关键修复】在发送事件前，检查 handlers 是否为空（防止在关闭过程中 handlers 被清空后仍然发送事件）
-		if m.handlers.Count() == 0 {
-			marketLog.Debugf("⚠️ [价格事件] handlers 已清空，忽略价格事件: 市场=%s, Token=%s, 价格=%.4f",
-				currentMarketSlug, tokenType, latest.price.ToDecimal())
-			continue
-		}
-
-		event := &events.PriceChangedEvent{
-			Market:    m.market,
-			TokenType: tokenType,
-			OldPrice:  nil,
-			NewPrice:  latest.price,
-			Timestamp: time.Now(),
-		}
-
-		// 直接触发回调（不使用事件总线）
-		// 注意：这里使用 handlerCount（在函数开头定义）
-		//marketLog.Infof("📤 [价格事件] 触发价格变化回调: 市场=%s, Token=%s, 价格=%dc (handlers=%d)",
-		//	currentMarketSlug, tokenType, latest.price.ToCents(), handlerCount)
-		//
-		m.handlers.Emit(ctx, event)
 	}
+
+	if upOK {
+		m.emitPriceChanged(ctx, domain.TokenTypeUp, upPrice, currentMarketSlug)
+	}
+	if downOK {
+		m.emitPriceChanged(ctx, domain.TokenTypeDown, downPrice, currentMarketSlug)
+	}
+	return true
+}
+
+func (m *MarketStream) handlePriceChangeSlow(ctx context.Context, message []byte) {
+	type priceChange struct {
+		AssetID string `json:"asset_id"`
+		BestBid string `json:"best_bid"`
+		BestAsk string `json:"best_ask"`
+	}
+	type priceChangeMessage struct {
+		Market       string        `json:"market"`
+		PriceChanges []priceChange `json:"price_changes"`
+	}
+
+	var pm priceChangeMessage
+	if err := json.Unmarshal(message, &pm); err != nil {
+		marketLog.Debugf("解析 price_change 消息失败: %v", err)
+		return
+	}
+
+	// 关键过滤：只允许当前周期 market conditionId 的消息进入策略
+	if !m.shouldProcessMarketMessage(pm.Market) {
+		marketLog.Debugf("🚫 [market过滤] 丢弃 price_change: msg.market=%s expected=%s slug=%s",
+			pm.Market, m.market.ConditionID, m.market.Slug)
+		return
+	}
+
+	// handlers 为空直接丢弃（避免无意义计算）
+	if m.handlers.Count() == 0 {
+		return
+	}
+
+	currentMarketSlug := m.market.Slug
+
+	// price_change 只关心当前 YES/NO 两个资产：用局部变量替代 map（零分配）
+	var upPrice, downPrice domain.Price
+	upOK := false
+	downOK := false
+
+	for _, ch := range pm.PriceChanges {
+		assetID := ch.AssetID
+		if assetID == "" {
+			continue
+		}
+
+		isUp := assetID == m.market.YesAssetID
+		isDown := assetID == m.market.NoAssetID
+		if !isUp && !isDown {
+			continue
+		}
+
+		// 解析 bid/ask（pips/cents），允许单边更新 bestBook
+		var bidPips, askPips uint16
+		bidCents := 0
+		askCents := 0
+
+		if ch.BestBid != "" {
+			if p, err := parsePriceString(ch.BestBid); err == nil && p.Pips > 0 {
+				bidPips = uint16(p.Pips)
+				bidCents = pipsToCents(p.Pips)
+			}
+		}
+		if ch.BestAsk != "" {
+			if p, err := parsePriceString(ch.BestAsk); err == nil && p.Pips > 0 {
+				askPips = uint16(p.Pips)
+				askCents = pipsToCents(p.Pips)
+			}
+		}
+
+		// 更新 AtomicBestBook（允许单边更新）
+		if m.bestBook != nil && (bidCents != 0 || askCents != 0) {
+			if isUp {
+				m.bestBook.UpdateToken(domain.TokenTypeUp, bidPips, askPips, 0, 0)
+			} else {
+				m.bestBook.UpdateToken(domain.TokenTypeDown, bidPips, askPips, 0, 0)
+			}
+		}
+
+		// 事件触发使用 mid（双边 + 价差 gate）
+		if bidCents == 0 || askCents == 0 {
+			continue
+		}
+		spread := askCents - bidCents
+		if spread < 0 {
+			spread = -spread
+		}
+		if spread > marketDataMaxSpreadCents {
+			if m.shouldLogWideSpreadWarn(assetID) {
+				aid := assetID
+				if len(aid) > 12 {
+					aid = aid[:12] + "..."
+				}
+				marketLog.Warnf("⚠️ [price_change->price] 盘口价差过大，忽略价格事件: assetID=%s bid=%dc ask=%dc spread=%dc market=%s",
+					aid, bidCents, askCents, spread, currentMarketSlug)
+			}
+			continue
+		}
+
+		mid := bidCents + askCents
+		mid = (mid + 1) / 2
+		newPrice := domain.Price{Pips: mid * 100} // 1 cent = 100 pips
+
+		if isUp {
+			upPrice = newPrice
+			upOK = true
+		} else {
+			downPrice = newPrice
+			downOK = true
+		}
+	}
+
+	// 触发回调（最多 2 次）
+	if upOK {
+		m.emitPriceChanged(ctx, domain.TokenTypeUp, upPrice, currentMarketSlug)
+	}
+	if downOK {
+		m.emitPriceChanged(ctx, domain.TokenTypeDown, downPrice, currentMarketSlug)
+	}
+}
+
+func pipsToCents(pips int) int {
+	// 100 pips = 1 cent；四舍五入到最近的 cent（等价于原 ToCents 的 round）
+	if pips >= 0 {
+		return (pips + 50) / 100
+	}
+	return (pips - 50) / 100
+}
+
+func (m *MarketStream) emitPriceChanged(ctx context.Context, tokenType domain.TokenType, price domain.Price, marketSlug string) {
+	// 再次检查是否已关闭（双重保险）
+	select {
+	case <-m.closeC:
+		return
+	default:
+	}
+
+	// 在发送事件前，检查 handlers 是否为空（关闭过程中会被清空）
+	if m.handlers.Count() == 0 {
+		return
+	}
+
+	event := &events.PriceChangedEvent{
+		Market:    m.market,
+		TokenType: tokenType,
+		OldPrice:  nil,
+		NewPrice:  price,
+		Timestamp: time.Now(),
+	}
+	m.handlers.Emit(ctx, event)
 }
 
 // Close 关闭连接
