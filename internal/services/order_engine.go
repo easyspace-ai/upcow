@@ -138,6 +138,9 @@ func (c *ClosePositionCommand) ID() string                    { return c.id }
 type QueryStateCommand struct {
 	id    string
 	Query QueryType
+	// 可选参数：用于 QueryOrder / QueryPosition 等需要 ID 的查询
+	OrderID    string
+	PositionID string
 	Reply chan *StateSnapshot
 }
 
@@ -749,7 +752,11 @@ func (e *OrderEngine) handleProcessTrade(cmd *ProcessTradeCommand) {
 	}
 
 	// 3. 从活跃订单中移除
-	delete(e.openOrders, order.OrderID)
+	// ⚠️ 修复：不能在部分成交时从 openOrders 删除，否则上层会误判“订单不在活跃列表”
+	// 只有在订单完全成交时才从 openOrders 移除
+	if order.Status == domain.OrderStatusFilled {
+		delete(e.openOrders, order.OrderID)
+	}
 
 	// 4. 更新仓位
 	e.updatePositionFromTrade(trade, order)
@@ -761,7 +768,12 @@ func (e *OrderEngine) handleProcessTrade(cmd *ProcessTradeCommand) {
 	e.emitOrderUpdate(order)
 
 	e.stats.ProcessedTrades++
-	orderEngineLog.Infof("✅ 交易已处理: tradeID=%s, orderID=%s, size=%.2f", trade.ID, trade.OrderID, trade.Size)
+	feeStr := ""
+	if trade.Fee > 0 {
+		feeStr = fmt.Sprintf(", fee=%.6f", trade.Fee)
+	}
+	orderEngineLog.Infof("✅ 交易已处理: tradeID=%s, orderID=%s, side=%s price=%.4f size=%.4f%s",
+		trade.ID, trade.OrderID, trade.Side, trade.Price.ToDecimal(), trade.Size, feeStr)
 }
 
 // updatePositionFromTrade 从交易更新仓位
@@ -1002,12 +1014,33 @@ func (e *OrderEngine) handleQueryState(cmd *QueryStateCommand) {
 		// Balance already set
 
 	case QueryOrder:
-		// 需要额外的参数，这里简化处理
-		snapshot.Error = fmt.Errorf("QueryOrder 需要额外的订单ID参数")
+		oid := cmd.OrderID
+		if oid == "" {
+			snapshot.Error = fmt.Errorf("QueryOrder 需要 OrderID")
+			break
+		}
+		// 优先从 orderStore 读（包含已成交/已取消/失败），其次从 openOrders 兜底
+		if o, ok := e.orderStore[oid]; ok && o != nil {
+			snapshot.Order = o
+			break
+		}
+		if o, ok := e.openOrders[oid]; ok && o != nil {
+			snapshot.Order = o
+			break
+		}
+		snapshot.Error = fmt.Errorf("订单不存在: %s", oid)
 
 	case QueryPosition:
-		// 需要额外的参数，这里简化处理
-		snapshot.Error = fmt.Errorf("QueryPosition 需要额外的仓位ID参数")
+		pid := cmd.PositionID
+		if pid == "" {
+			snapshot.Error = fmt.Errorf("QueryPosition 需要 PositionID")
+			break
+		}
+		if p, ok := e.positions[pid]; ok && p != nil {
+			snapshot.Position = p
+			break
+		}
+		snapshot.Error = fmt.Errorf("仓位不存在: %s", pid)
 	}
 
 	select {

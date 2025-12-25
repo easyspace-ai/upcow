@@ -343,23 +343,20 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 		if order.Status == domain.OrderStatusFailed || order.Status == domain.OrderStatusCanceled {
 			log.Warnf("⚠️ [%s] Hedge 订单失败/取消: orderID=%s status=%s",
 				ID, order.OrderID, order.Status)
-			
-			// 查找对应的 Entry 订单
-			if s.TradingService != nil {
-				activeOrders := s.TradingService.GetActiveOrders()
-				for _, entryOrder := range activeOrders {
-					if entryOrder.HedgeOrderID != nil && *entryOrder.HedgeOrderID == order.OrderID {
-						if entryOrder.Status == domain.OrderStatusFilled {
-							// Entry 订单已成交，记录未对冲风险
-							log.Errorf("🚨 [%s] 【风险警告】Hedge 订单失败但 Entry 订单已成交！Entry orderID=%s, Hedge orderID=%s",
-								ID, entryOrder.OrderID, order.OrderID)
-							s.mu.Lock()
-							if s.unhedgedEntries == nil {
-								s.unhedgedEntries = make(map[string]*domain.Order)
-							}
-							s.unhedgedEntries[entryOrder.OrderID] = entryOrder
-							s.mu.Unlock()
+
+			// ✅ 修复：对冲单（Hedge）在创建时会携带关联的 Entry 订单ID（order.HedgeOrderID）
+			// 这里直接按关联 ID 查询（包含已成交订单），避免 GetActiveOrders 只含 openOrders 导致漏判。
+			if s.TradingService != nil && order.HedgeOrderID != nil && *order.HedgeOrderID != "" {
+				entryID := *order.HedgeOrderID
+				if entryOrder, ok := s.TradingService.GetOrder(entryID); ok && entryOrder != nil {
+					if entryOrder.Status == domain.OrderStatusFilled {
+						// Entry 订单已成交，记录未对冲风险
+						log.Errorf("🚨 [%s] 【风险警告】Hedge 订单失败但 Entry 订单已成交！Entry orderID=%s, Hedge orderID=%s",
+							ID, entryOrder.OrderID, order.OrderID)
+						if s.unhedgedEntries == nil {
+							s.unhedgedEntries = make(map[string]*domain.Order)
 						}
+						s.unhedgedEntries[entryOrder.OrderID] = entryOrder
 					}
 				}
 			}
@@ -853,26 +850,20 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		hedgeAskDec = yesAskDec
 	}
 
-	// ===== 计算有效价格（考虑镜像订单簿）=====
-	// 买 Entry: 直接买 entryAsk 或 通过卖 hedge (成本 = 1 - hedgeBid)
-	effectiveBuyEntry := entryAskDec
-	if 1-hedgeBidDec < effectiveBuyEntry {
-		effectiveBuyEntry = 1 - hedgeBidDec
-	}
+	// ===== 价格选择（关键修复）=====
+	// 目标：避免 “Entry 吃单 + Hedge 吃单” 造成双边点差成本，使得总成本 > 100c（结构性必亏）。
+	//
+	// 约束：
+	// - Entry 是 FAK：必须使用订单簿实际 ask（taker）
+	// - Hedge 是 GTC：应使用“互补挂单价格”在买一侧做 maker（由 hedgeOffsetCents 提供保护边际）
+	entryAskCents := int(entryAskDec*100 + 0.5)       // FAK 实际下单 ask（cents）
+	entryBidCents := int(entryBidDec*100 + 0.5)
+	hedgeBidCents := int(hedgeBidDec*100 + 0.5)
+	hedgeAskCentsDirect := int(hedgeAskDec*100 + 0.5) // 对侧当前 ask（仅用于防止挂单穿价）
 
-	// 买 Hedge: 直接买 hedgeAsk 或 通过卖 entry (成本 = 1 - entryBid)
-	effectiveBuyHedge := hedgeAskDec
-	if 1-entryBidDec < effectiveBuyHedge {
-		effectiveBuyHedge = 1 - entryBidDec
-	}
-
-	// 转换为分（cents）
-	entryAskCents := int(effectiveBuyEntry*100 + 0.5)
-	hedgeAskCents := int(effectiveBuyHedge*100 + 0.5)
-
-	// 价格验证
-	if entryAskCents <= 0 || entryAskCents >= 100 || hedgeAskCents <= 0 || hedgeAskCents >= 100 {
-		log.Debugf("⚠️ [%s] 有效价格无效: entry=%dc hedge=%dc", ID, entryAskCents, hedgeAskCents)
+	// 基础验证
+	if entryAskCents <= 0 || entryAskCents >= 100 || hedgeAskCentsDirect <= 0 || hedgeAskCentsDirect >= 100 {
+		log.Debugf("⚠️ [%s] 订单簿价格无效: entryAsk=%dc hedgeAsk=%dc", ID, entryAskCents, hedgeAskCentsDirect)
 		return nil
 	}
 
@@ -883,7 +874,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	}
 
 	// 价差检查（使用实际价差，而非互补价）
-	entrySpread := entryAskCents - int(entryBidDec*100+0.5)
+	entrySpread := entryAskCents - entryBidCents
 	if entrySpread < 0 {
 		entrySpread = -entrySpread
 	}
@@ -892,65 +883,51 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		return nil
 	}
 
-	// ===== 价格保护 =====
-	// 策略特点：
-	// - Entry: FAK（吃单，立即成交，价格固定）
-	// - Hedge: GTC（挂单，限价单，实际成交价格可能比下单价格更好）
-	// - 策略是赚波动的钱的，不是做套利的
-	//
-	// 注意：由于订单簿价差，Entry + Hedge 下单价格通常 > 100c，但：
-	// 1. Hedge 是限价单，如果市场价格下跌，可能以更好价格成交
-	// 2. 策略通过价格波动赚钱，不是通过套利
-	// 3. 只检查 Entry 价格上限（因为 Entry 是 FAK，价格固定）
-
-	totalCostDec := effectiveBuyEntry + effectiveBuyHedge
-	totalCostCents := int(totalCostDec*100 + 0.5)
-
-	// ⚠️ 重要：总成本检查 - 确保 Entry + Hedge <= 100c，否则无论哪边赢都会亏损
-	// 这是策略的核心保护机制：如果总成本 > 100c，说明订单簿价差过大，应该跳过下单
-	// 策略目标是"锁定利润"或"最小化亏损"，而不是"赚波动的钱"
-	maxTotalCostCents := 100 // 最大总成本（100c = $1.00）
-	if totalCostCents > maxTotalCostCents {
-		log.Debugf("⏭️ [%s] 跳过：总成本过高 (%dc > %dc)，Entry=%dc + Hedge=%dc，无论哪边赢都会亏损",
-			ID, totalCostCents, maxTotalCostCents, entryAskCents, hedgeAskCents)
-		return nil // 跳过这次下单
+	// Hedge 挂单价格：互补挂单 = 100 - entryAsk - hedgeOffset
+	// 这确保最坏情况下（hedge 以该限价成交）总成本 = 100 - hedgeOffset（留出 offset 作为边际）。
+	hedgeLimitCents := 100 - entryAskCents - hedgeOffset
+	if hedgeLimitCents <= 0 || hedgeLimitCents >= 100 {
+		log.Debugf("⏭️ [%s] 跳过：Hedge 互补挂单价格无效: entryAsk=%dc hedgeOffset=%dc => hedgeLimit=%dc",
+			ID, entryAskCents, hedgeOffset, hedgeLimitCents)
+		return nil
 	}
+	// 防止“挂单穿价”变成 taker：买单价格必须严格小于当前 ask
+	if hedgeLimitCents >= hedgeAskCentsDirect {
+		hedgeLimitCents = hedgeAskCentsDirect - 1
+	}
+	if hedgeLimitCents <= 0 {
+		log.Debugf("⏭️ [%s] 跳过：Hedge 挂单会穿价且无法降到有效区间: hedgeAsk=%dc", ID, hedgeAskCentsDirect)
+		return nil
+	}
+	// 兼容下游变量命名：hedgeAskCents 在策略内一直代表“对冲腿下单价格（cents）”
+	hedgeAskCents := hedgeLimitCents
 
-	// 如果总成本接近100c，记录警告但仍允许下单（允许小幅价差）
-	if totalCostCents >= 99 {
-		log.Debugf("💰 [%s] 总成本接近上限: Entry=%dc + Hedge=%dc = %dc (接近100c，利润空间很小)",
-			ID, entryAskCents, hedgeAskCents, totalCostCents)
+	totalCostCents := entryAskCents + hedgeLimitCents
+	if totalCostCents > 100 {
+		// 理论上不会发生（互补价 + offset），但做最后一道保护，避免浮点/取整误差带来结构性必亏
+		log.Debugf("⏭️ [%s] 跳过：总成本过高 (%dc > 100c): Entry=%dc + Hedge=%dc (bid=%dc ask=%dc)",
+			ID, totalCostCents, entryAskCents, hedgeLimitCents, hedgeBidCents, hedgeAskCentsDirect)
+		return nil
 	}
 
 	// 只检查 Entry 价格上限（Entry 是 FAK，价格固定）
 	// 如果 Entry 价格过高（> 95c），记录警告但仍允许下单（由 maxEntryPriceCents 控制）
 	if entryAskCents > 95 {
-		log.Debugf("💰 [%s] Entry 价格较高: %dc (hedge=%dc, 总成本=%dc, source=%s)",
-			ID, entryAskCents, hedgeAskCents, totalCostCents, source)
+		log.Debugf("💰 [%s] Entry 价格较高: %dc (hedgeLimit=%dc, 总成本=%dc, source=%s)",
+			ID, entryAskCents, hedgeLimitCents, totalCostCents, source)
 	}
 
-	// 记录有效价格信息
-	log.Debugf("💰 [%s] 有效价格计算: Entry=%dc (直接=%dc, 镜像=%dc), Hedge=%dc (直接=%dc, 镜像=%dc), 总成本=%dc, source=%s",
-		ID, entryAskCents, int(entryAskDec*100+0.5), int((1-hedgeBidDec)*100+0.5),
-		hedgeAskCents, int(hedgeAskDec*100+0.5), int((1-entryBidDec)*100+0.5),
-		totalCostCents, source)
+	// 最终下单价格
+	entryPriceForFAK := domain.Price{Pips: entryAskCents * 100}   // FAK：使用实际 ask
+	hedgePrice := domain.Price{Pips: hedgeLimitCents * 100}       // GTC：互补挂单价（maker）
+	entryPriceDec := entryPriceForFAK.ToDecimal()
+	hedgeDec := hedgePrice.ToDecimal()
 
-	// ⚠️ 重要：FAK 订单必须使用订单簿的实际 ask 价格，而不是有效价格
-	// 有效价格（effectiveBuyEntry）是用于计算成本的，可能比实际 ask 价格更低
-	// 但 FAK 订单需要匹配订单簿中的实际 sell 订单，所以必须使用实际的 ask 价格
-	// 对于 GTC 订单，可以使用有效价格（因为限价单可以等待更好的价格）
-	entryPriceForFAK := domain.Price{Pips: int(entryAskDec*100+0.5) * 100} // 使用实际 ask 价格
-	hedgePrice := domain.Price{Pips: hedgeAskCents * 100}                  // GTC 订单可以使用有效价格
-
-	// 记录价格选择信息
-	log.Infof("💰 [%s] 价格选择: Entry FAK使用实际ask=%dc (有效价格=%dc用于成本计算), Hedge GTC使用有效价格=%dc",
-		ID, int(entryAskDec*100+0.5), entryAskCents, hedgeAskCents)
-
-	entryAskDec = effectiveBuyEntry // 用于成本计算
-	hedgeDec := effectiveBuyHedge
+	log.Infof("💰 [%s] 价格选择: Entry FAK ask=%dc, Hedge GTC limit=%dc (hedgeOffset=%dc, hedgeBid=%dc hedgeAsk=%dc, totalCost=%dc, source=%s)",
+		ID, entryAskCents, hedgeLimitCents, hedgeOffset, hedgeBidCents, hedgeAskCentsDirect, totalCostCents, source)
 
 	// size：确保满足最小金额/最小 shares（GTC）
-	entryShares := ensureMinOrderSize(orderSize, entryAskDec, minOrderSize)
+	entryShares := ensureMinOrderSize(orderSize, entryPriceDec, minOrderSize)
 	hedgeShares := ensureMinOrderSize(hedgeSize, hedgeDec, minOrderSize)
 
 	// 确保两边数量相等：使用较大的数量，避免因价格差异导致数量不一致
@@ -1186,22 +1163,18 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 		}
 	}
 
-	// 如果订单结果中没有成交信息，再检查本地订单状态
+	// 如果订单结果中没有成交信息，再检查本地订单状态（包含已成交订单）
+	// ⚠️ 修复：GetActiveOrders 只包含 openOrders，订单一旦 filled 会从列表移除，导致“误判未成交”。
 	if !entryFilled && s.TradingService != nil {
-		activeOrders := s.TradingService.GetActiveOrders()
-		for _, order := range activeOrders {
-			if order.OrderID == entryOrderID {
-				if order.Status == domain.OrderStatusFilled {
-					entryFilled = true
-					log.Infof("✅ [%s] 主单已成交（立即检查）: orderID=%s filledSize=%.4f",
-						ID, order.OrderID, order.FilledSize)
-					break
-				} else if order.Status == domain.OrderStatusFailed ||
-					order.Status == domain.OrderStatusCanceled {
-					log.Warnf("⚠️ [%s] 主单失败/取消（立即检查）: orderID=%s status=%s",
-						ID, order.OrderID, order.Status)
-					return nil
-				}
+		if ord, ok := s.TradingService.GetOrder(entryOrderID); ok && ord != nil {
+			if ord.Status == domain.OrderStatusFilled {
+				entryFilled = true
+				log.Infof("✅ [%s] 主单已成交（立即检查）: orderID=%s filledSize=%.4f",
+					ID, ord.OrderID, ord.FilledSize)
+			} else if ord.Status == domain.OrderStatusFailed || ord.Status == domain.OrderStatusCanceled {
+				log.Warnf("⚠️ [%s] 主单失败/取消（立即检查）: orderID=%s status=%s",
+					ID, ord.OrderID, ord.Status)
+				return nil
 			}
 		}
 	}
@@ -1212,22 +1185,17 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 		checkCount := 0
 		for time.Now().Before(deadline) {
 			checkCount++
-			// 查询订单状态（使用本地订单状态管理）
+			// 查询订单状态（包含已成交/已取消）
 			if s.TradingService != nil {
-				activeOrders := s.TradingService.GetActiveOrders()
-				for _, order := range activeOrders {
-					if order.OrderID == entryOrderID {
-						if order.Status == domain.OrderStatusFilled {
-							entryFilled = true
-							log.Infof("✅ [%s] 主单已成交（轮询检查，第%d次）: orderID=%s filledSize=%.4f",
-								ID, checkCount, order.OrderID, order.FilledSize)
-							break
-						} else if order.Status == domain.OrderStatusFailed ||
-							order.Status == domain.OrderStatusCanceled {
-							log.Warnf("⚠️ [%s] 主单失败/取消（轮询检查，第%d次）: orderID=%s status=%s",
-								ID, checkCount, order.OrderID, order.Status)
-							return nil
-						}
+				if ord, ok := s.TradingService.GetOrder(entryOrderID); ok && ord != nil {
+					if ord.Status == domain.OrderStatusFilled {
+						entryFilled = true
+						log.Infof("✅ [%s] 主单已成交（轮询检查，第%d次）: orderID=%s filledSize=%.4f",
+							ID, checkCount, ord.OrderID, ord.FilledSize)
+					} else if ord.Status == domain.OrderStatusFailed || ord.Status == domain.OrderStatusCanceled {
+						log.Warnf("⚠️ [%s] 主单失败/取消（轮询检查，第%d次）: orderID=%s status=%s",
+							ID, checkCount, ord.OrderID, ord.Status)
+						return nil
 					}
 				}
 			}
@@ -1251,6 +1219,33 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 			ID, entryOrderID)
 		// 即使主单未完全成交，也继续下对冲单（使用实际成交数量）
 		// 但为了安全，我们仍然继续执行
+	}
+
+	// ✅ 修复：若 Entry 下单前发生了价格上调（例如使用卖二价缓冲），必须同步重算 Hedge 互补挂单价，
+	// 否则可能出现 entryPrice 上调后 totalCost > 100c 的结构性必亏。
+	{
+		entryCentsNow := int(entryPrice.ToDecimal()*100 + 0.5)
+		if entryCentsNow > 0 && entryCentsNow < 100 && s.HedgeOffsetCents > 0 {
+			newHedgeLimit := 100 - entryCentsNow - s.HedgeOffsetCents
+			if newHedgeLimit > 0 && newHedgeLimit < 100 {
+				// 防止穿价：确保买单价格 < 当前 ask
+				if s.TradingService != nil {
+					_, bestAsk, err := s.TradingService.GetBestPrice(orderCtx, hedgeAsset)
+					if err == nil && bestAsk > 0 {
+						askCents := int(bestAsk*100 + 0.5)
+						if newHedgeLimit >= askCents {
+							newHedgeLimit = askCents - 1
+						}
+					}
+				}
+				if newHedgeLimit > 0 && newHedgeLimit < 100 && newHedgeLimit != hedgeAskCents {
+					log.Infof("💰 [%s] Hedge 价格随 Entry 调整而重算: entry=%dc hedge(old)=%dc -> hedge(new)=%dc (offset=%dc)",
+						ID, entryCentsNow, hedgeAskCents, newHedgeLimit, s.HedgeOffsetCents)
+					hedgeAskCents = newHedgeLimit
+					hedgePrice = domain.Price{Pips: hedgeAskCents * 100}
+				}
+			}
+		}
 	}
 
 	// ===== 步骤2: 主单成交后，下对冲单（Hedge）=====
@@ -1391,13 +1386,9 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 		// 计算 Hedge 订单成本（无论是否已成交）
 		// 如果对冲单已成交，使用实际成交价格；如果未成交，使用下单价格
 		if hedgeOrderID != "" && s.TradingService != nil {
-			activeOrders := s.TradingService.GetActiveOrders()
 			var hedgeOrder *domain.Order
-			for _, order := range activeOrders {
-				if order.OrderID == hedgeOrderID {
-					hedgeOrder = order
-					break
-				}
+			if ord, ok := s.TradingService.GetOrder(hedgeOrderID); ok {
+				hedgeOrder = ord
 			}
 
 			if hedgeOrder != nil {
@@ -1474,22 +1465,18 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 		// 计算 Hedge 成本（用于日志显示）
 		hedgeCostDisplay := 0.0
 		if hedgeOrderID != "" && s.TradingService != nil {
-			activeOrders := s.TradingService.GetActiveOrders()
-			for _, order := range activeOrders {
-				if order.OrderID == hedgeOrderID {
-					hedgeFilledSize := order.FilledSize
-					if hedgeFilledSize <= 0 {
-						hedgeFilledSize = hedgeShares
-					}
-					var hedgeActualPriceCents int
-					if order.FilledPrice != nil {
-						hedgeActualPriceCents = order.FilledPrice.ToCents()
-					} else {
-						hedgeActualPriceCents = hedgeAskCents
-					}
-					hedgeCostDisplay = float64(hedgeActualPriceCents) / 100.0 * hedgeFilledSize
-					break
+			if ord, ok := s.TradingService.GetOrder(hedgeOrderID); ok && ord != nil {
+				hedgeFilledSize := ord.FilledSize
+				if hedgeFilledSize <= 0 {
+					hedgeFilledSize = hedgeShares
 				}
+				var hedgeActualPriceCents int
+				if ord.FilledPrice != nil {
+					hedgeActualPriceCents = ord.FilledPrice.ToCents()
+				} else {
+					hedgeActualPriceCents = hedgeAskCents
+				}
+				hedgeCostDisplay = float64(hedgeActualPriceCents) / 100.0 * hedgeFilledSize
 			}
 		}
 		totalCostDisplay := entryCost + hedgeCostDisplay
@@ -1499,7 +1486,8 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 
 		// 启动对冲单重下监控（如果对冲单未成交）
 		if hedgeOrderID != "" && s.HedgeReorderTimeoutSeconds > 0 {
-			go s.monitorAndReorderHedge(ctx, market, entryOrderID, hedgeOrderID, hedgeAsset, hedgePrice, hedgeShares, entryFilledTime, entryFilledSize, entryAskCents, winner)
+			// 使用 Entry 实际下单价格（不是“信号时刻的 ask”）作为对冲成本约束基准
+			go s.monitorAndReorderHedge(ctx, market, entryOrderID, hedgeOrderID, hedgeAsset, hedgePrice, hedgeShares, entryFilledTime, entryFilledSize, entryOrderPriceCents, winner)
 		}
 	}
 
@@ -1676,16 +1664,9 @@ func (s *Strategy) monitorAndReorderHedge(ctx context.Context, market *domain.Ma
 					return
 				}
 
-				activeOrders := s.TradingService.GetActiveOrders()
 				hedgeFilled := false
-
-				for _, order := range activeOrders {
-					if order.OrderID == hedgeOrderID {
-						if order.Status == domain.OrderStatusFilled {
-							hedgeFilled = true
-						}
-						break
-					}
+				if ord, ok := s.TradingService.GetOrder(hedgeOrderID); ok && ord != nil {
+					hedgeFilled = ord.Status == domain.OrderStatusFilled
 				}
 
 				if hedgeFilled {
@@ -1709,36 +1690,36 @@ func (s *Strategy) monitorAndReorderHedge(ctx context.Context, market *domain.Ma
 				reorderCtx, reorderCancel := context.WithTimeout(ctx, 5*time.Second)
 				defer reorderCancel()
 
-				yesBid, yesAsk, noBid, noAsk, source, err := s.TradingService.GetTopOfBook(reorderCtx, market)
+				_, yesAsk, _, noAsk, source, err := s.TradingService.GetTopOfBook(reorderCtx, market)
 				if err != nil {
 					log.Warnf("⚠️ [%s] 重新获取订单簿价格失败，使用原价格: err=%v", ID, err)
 					// 使用原价格继续
 				} else {
-					// 重新计算有效价格
-					var hedgeAskDec float64
-					var entryBidDec float64
-					if winner == domain.TokenTypeUp {
-						// Entry 是 UP，Hedge 是 DOWN
-						hedgeAskDec = noAsk.ToDecimal()
-						entryBidDec = yesBid.ToDecimal()
-					} else {
-						// Entry 是 DOWN，Hedge 是 UP
-						hedgeAskDec = yesAsk.ToDecimal()
-						entryBidDec = noBid.ToDecimal()
-					}
-
-					// 计算有效价格（考虑镜像订单簿）
-					effectiveBuyHedge := hedgeAskDec
-					if 1-entryBidDec < effectiveBuyHedge {
-						effectiveBuyHedge = 1 - entryBidDec
-					}
-
-					hedgeAskCents := int(effectiveBuyHedge*100 + 0.5)
+					// ✅ 修复：对冲单重下也必须遵守“互补挂单”原则，避免追价买到 ask 导致结构性必亏
 					oldPriceCents := int(hedgePrice.ToDecimal()*100 + 0.5)
-					hedgePrice = domain.Price{Pips: hedgeAskCents * 100}
+					hedgeAskCentsDirect := int(yesAsk.ToCents())
+					if winner == domain.TokenTypeUp {
+						// Hedge 是 DOWN
+						hedgeAskCentsDirect = noAsk.ToCents()
+					}
 
-					log.Infof("💰 [%s] 重新计算对冲单价格: 原价格=%dc 新价格=%dc (source=%s)",
-						ID, oldPriceCents, hedgeAskCents, source)
+					// 基于 Entry 成本约束的最大对冲价格（cents）
+					// 注：entryAskCents 是 Entry 下单时的实际 ask（FAK）；用它来约束 hedge 的最坏成本。
+					maxHedgeCents := 100 - entryAskCents - s.HedgeOffsetCents
+					newLimitCents := maxHedgeCents
+					if hedgeAskCentsDirect > 0 && newLimitCents >= hedgeAskCentsDirect {
+						newLimitCents = hedgeAskCentsDirect - 1
+					}
+					if newLimitCents <= 0 || newLimitCents >= 100 {
+						log.Errorf("🚨 [%s] 对冲重下失败：互补挂单价格无效: entryAsk=%dc hedgeOffset=%dc => maxHedge=%dc (hedgeAsk=%dc)",
+							ID, entryAskCents, s.HedgeOffsetCents, maxHedgeCents, hedgeAskCentsDirect)
+						// 保守处理：停止重下，维持未对冲风险提示
+						return
+					}
+
+					hedgePrice = domain.Price{Pips: newLimitCents * 100}
+					log.Infof("💰 [%s] 重新计算对冲单价格: 原=%dc 新=%dc (max=%dc hedgeAsk=%dc source=%s)",
+						ID, oldPriceCents, newLimitCents, maxHedgeCents, hedgeAskCentsDirect, source)
 				}
 
 				// 重新下单
@@ -1784,16 +1765,12 @@ func (s *Strategy) monitorAndReorderHedge(ctx context.Context, market *domain.Ma
 					continue
 				}
 
-				activeOrders := s.TradingService.GetActiveOrders()
-				for _, order := range activeOrders {
-					if order.OrderID == hedgeOrderID {
-						if order.Status == domain.OrderStatusFilled {
-							// 对冲单已成交，停止监控
-							log.Infof("✅ [%s] 对冲单监控结束：对冲单已成交 orderID=%s (耗时 %.1f秒)",
-								ID, hedgeOrderID, time.Since(entryFilledTime).Seconds())
-							return
-						}
-						break
+				if ord, ok := s.TradingService.GetOrder(hedgeOrderID); ok && ord != nil {
+					if ord.Status == domain.OrderStatusFilled {
+						// 对冲单已成交，停止监控
+						log.Infof("✅ [%s] 对冲单监控结束：对冲单已成交 orderID=%s (耗时 %.1f秒)",
+							ID, hedgeOrderID, time.Since(entryFilledTime).Seconds())
+						return
 					}
 				}
 			}

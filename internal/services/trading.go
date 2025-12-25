@@ -419,6 +419,7 @@ func (s *TradingService) WaitOrderResult(ctx context.Context, orderID string, ti
 	cmd := &QueryStateCommand{
 		id:    fmt.Sprintf("query_order_%s", orderID),
 		Query: QueryOrder,
+		OrderID: orderID,
 		Reply: reply,
 	}
 

@@ -953,6 +953,7 @@ func (u *UserWebSocket) handleTradeMessage(ctx context.Context, msg map[string]i
 	status, _ := msg["status"].(string) // MATCHED, MINED, CONFIRMED, RETRYING, FAILED
 	takerOrderID, _ := msg["taker_order_id"].(string)
 	makerOrders, _ := msg["maker_orders"].([]interface{})
+	feeRateBpsAny := msg["fee_rate_bps"]
 
 	// 只处理 MATCHED 状态的交易（实际成交的交易）
 	if status != "MATCHED" {
@@ -1006,6 +1007,29 @@ func (u *UserWebSocket) handleTradeMessage(ctx context.Context, msg map[string]i
 		Price:   price,
 		Size:    size,
 		Time:    time.Now(),
+	}
+
+	// 解析 fee_rate_bps（如果存在），并计算手续费（USDC）
+	// 说明：fee_rate_bps 通常以 bps（1/10000）表示，手续费按成交名义金额计。
+	// 若字段缺失或解析失败，则 Fee 保持为 0。
+	if feeRateBpsAny != nil {
+		var feeRateBps float64
+		switch v := feeRateBpsAny.(type) {
+		case float64:
+			feeRateBps = v
+		case string:
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				feeRateBps = f
+			}
+		case json.Number:
+			if f, err := v.Float64(); err == nil {
+				feeRateBps = f
+			}
+		}
+		if feeRateBps > 0 {
+			notional := price.ToDecimal() * size
+			trade.Fee = notional * feeRateBps / 10000.0
+		}
 	}
 
 	// 确定 TokenType（从 outcome 字段，如果有）

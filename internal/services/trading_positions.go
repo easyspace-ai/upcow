@@ -15,6 +15,7 @@ func (p *PositionsService) GetPosition(positionID string) (*domain.Position, err
 	cmd := &QueryStateCommand{
 		id:    fmt.Sprintf("query_position_%d", time.Now().UnixNano()),
 		Query: QueryPosition,
+		PositionID: positionID,
 		Reply: reply,
 	}
 
