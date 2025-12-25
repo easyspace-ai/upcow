@@ -818,6 +818,15 @@ func (e *OrderEngine) updatePositionFromTrade(trade *domain.Trade, order *domain
 		// 卖出时也累加成本基础（用于计算平均成本）
 		// 注意：卖出会减少持仓，但成本基础仍然累加（用于计算盈亏）
 		position.AddFill(trade.Size, trade.Price)
+
+		// ✅ 当卖出导致持仓归零时，自动标记仓位已关闭（形成完整闭环）
+		if position.Size == 0 && position.Status == domain.PositionStatusOpen {
+			exitTime := trade.Time
+			position.ExitPrice = &trade.Price
+			position.ExitTime = &exitTime
+			position.ExitOrder = order
+			position.Status = domain.PositionStatusClosed
+		}
 	}
 
 	// 更新入场订单（如果这是首次成交）

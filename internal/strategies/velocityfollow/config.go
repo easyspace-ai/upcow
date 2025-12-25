@@ -67,7 +67,20 @@ type Config struct {
 
 	// 库存偏斜机制：当净持仓超过阈值时，降低该方向的交易频率
 	InventoryThreshold float64 `yaml:"inventoryThreshold" json:"inventoryThreshold"` // 净持仓阈值（shares），默认 0（禁用）
+
+	// ====== 出场（平仓）参数：让策略形成“可盈利闭环” ======
+	// 说明：Entry 是买入（BUY），出场为卖出（SELL）。
+	// - takeProfitCents / stopLossCents 是“相对入场均价”的价差（分），用当前 bestBid 触发并用 SELL FAK 执行。
+	// - maxHoldSeconds 是时间止损：超过该时间仍未触发 TP/SL，则强制平仓。
+	// - exitCooldownMs 防止频繁重复下卖单（与执行层去重共同作用）。
+	TakeProfitCents int  `yaml:"takeProfitCents" json:"takeProfitCents"` // 止盈阈值（分，>=0；0=禁用）
+	StopLossCents   int  `yaml:"stopLossCents" json:"stopLossCents"`     // 止损阈值（分，>=0；0=禁用）
+	MaxHoldSeconds  int  `yaml:"maxHoldSeconds" json:"maxHoldSeconds"`   // 最大持仓时间（秒，>=0；0=禁用）
+	ExitCooldownMs  int  `yaml:"exitCooldownMs" json:"exitCooldownMs"`   // 出场冷却（毫秒，默认 1500）
+	ExitBothSidesIfHedged *bool `yaml:"exitBothSidesIfHedged" json:"exitBothSidesIfHedged"` // 若同周期同时持有 UP/DOWN，则同时卖出平仓（默认 true）
 }
+
+func boolPtr(b bool) *bool { return &b }
 
 func (c *Config) Validate() error {
 	if c.OrderSize <= 0 {
@@ -182,6 +195,23 @@ func (c *Config) Validate() error {
 	// 建议值：根据订单大小设置，例如 orderSize=6.5，threshold=50 意味着约 7-8 个订单的净持仓
 	if c.InventoryThreshold < 0 {
 		c.InventoryThreshold = 0
+	}
+
+	// 出场参数默认值与校验
+	if c.TakeProfitCents < 0 {
+		return fmt.Errorf("takeProfitCents 不能为负数")
+	}
+	if c.StopLossCents < 0 {
+		return fmt.Errorf("stopLossCents 不能为负数")
+	}
+	if c.MaxHoldSeconds < 0 {
+		return fmt.Errorf("maxHoldSeconds 不能为负数")
+	}
+	if c.ExitCooldownMs <= 0 {
+		c.ExitCooldownMs = 1500
+	}
+	if c.ExitBothSidesIfHedged == nil {
+		c.ExitBothSidesIfHedged = boolPtr(true)
 	}
 
 	return nil

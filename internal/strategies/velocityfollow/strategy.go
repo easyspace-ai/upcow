@@ -92,6 +92,10 @@ type Strategy struct {
 	lastEntryOrderStatus domain.OrderStatus       // Entry 订单状态
 	pendingOrders        map[string]*domain.Order // 待确认的订单（通过订单ID跟踪）
 
+	// 出场（平仓）节流：避免短时间重复下 SELL
+	lastExitAt       time.Time
+	lastExitCheckAt  time.Time
+
 	// Binance bias 状态（每周期）
 	cycleStartMs int64
 	biasReady    bool
@@ -262,6 +266,8 @@ func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, _ *domain.Market
 	s.lastHedgeOrderID = ""
 	s.lastEntryOrderStatus = ""
 	s.pendingOrders = make(map[string]*domain.Order)
+	s.lastExitAt = time.Time{}
+	s.lastExitCheckAt = time.Time{}
 
 	// 注意：不清 lastTriggerAt，避免周期切换瞬间重复触发
 }
@@ -456,6 +462,36 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if shouldLogPrice {
 		log.Debugf("📈 [%s] 价格更新: token=%s price=%.4f (%dc) market=%s",
 			ID, e.TokenType, priceDecimal, priceCents, e.Market.Slug)
+	}
+
+	// ===== 出场（平仓）逻辑：优先于开仓 =====
+	// 仅当启用 TP/SL/超时退出 且 当前 market 存在持仓时才触发（避免每个 tick 都打 orderbook）
+	if s.exitEnabled() && e.Market != nil {
+		positions := s.TradingService.GetOpenPositionsForMarket(e.Market.Slug)
+		hasPos := false
+		for _, p := range positions {
+			if p != nil && p.IsOpen() && p.Size > 0 {
+				hasPos = true
+				break
+			}
+		}
+		if hasPos {
+			// 节流：避免每条行情都尝试出场（默认 200ms）
+			nowCheck := now
+			s.mu.Lock()
+			lastCheck := s.lastExitCheckAt
+			s.mu.Unlock()
+			if lastCheck.IsZero() || nowCheck.Sub(lastCheck) >= 200*time.Millisecond {
+				s.mu.Lock()
+				s.lastExitCheckAt = nowCheck
+				s.mu.Unlock()
+				if exited := s.tryExitPositions(ctx, e.Market, nowCheck, positions); exited {
+					return nil
+				}
+			}
+			// 已有持仓时默认不再开新仓，等待出场逻辑处理完毕（避免叠加风险）
+			return nil
+		}
 	}
 
 	s.mu.Lock()
@@ -1903,4 +1939,163 @@ func candleStatsBps(k services.Kline, upTok domain.TokenType, downTok domain.Tok
 		dirTok = upTok
 	}
 	return
+}
+
+func (s *Strategy) exitEnabled() bool {
+	if s == nil {
+		return false
+	}
+	return s.TakeProfitCents > 0 || s.StopLossCents > 0 || s.MaxHoldSeconds > 0
+}
+
+// tryExitPositions 在满足止盈/止损/超时条件时下 SELL FAK 出场。
+// 返回 true 表示本次“已有持仓，因此策略将跳过后续开仓逻辑”（无论是否真的触发了出场）。
+func (s *Strategy) tryExitPositions(ctx context.Context, market *domain.Market, now time.Time, positions []*domain.Position) bool {
+	if s == nil || s.TradingService == nil || market == nil {
+		return false
+	}
+
+	// 出场冷却：避免短时间重复下 SELL
+	exitCooldown := time.Duration(s.ExitCooldownMs) * time.Millisecond
+	if exitCooldown <= 0 {
+		exitCooldown = 1500 * time.Millisecond
+	}
+	s.mu.Lock()
+	lastExit := s.lastExitAt
+	s.mu.Unlock()
+	if !lastExit.IsZero() && now.Sub(lastExit) < exitCooldown {
+		return true
+	}
+
+	// 只在确实需要评估时才拉 top-of-book（优先 WS，必要时回退 REST）
+	orderCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	yesBid, _, noBid, _, _, err := s.TradingService.GetTopOfBook(orderCtx, market)
+	if err != nil {
+		log.Warnf("⚠️ [%s] 出场检查获取盘口失败: %v", ID, err)
+		return true // 有持仓但无法评估：保守起见先不新开仓
+	}
+
+	type leg struct {
+		name    string
+		assetID string
+		token   domain.TokenType
+		price   domain.Price
+		size    float64
+		reason  string
+	}
+	legs := make([]leg, 0, 2)
+
+	// 找到是否双边持仓（用于可选“一次性全平”）
+	var upPos, downPos *domain.Position
+	for _, p := range positions {
+		if p == nil || !p.IsOpen() || p.Size <= 0 {
+			continue
+		}
+		if p.TokenType == domain.TokenTypeUp {
+			upPos = p
+		} else if p.TokenType == domain.TokenTypeDown {
+			downPos = p
+		}
+	}
+
+	shouldExitBoth := false
+	if s.ExitBothSidesIfHedged != nil && *s.ExitBothSidesIfHedged {
+		shouldExitBoth = upPos != nil && downPos != nil
+	}
+
+	evalPos := func(p *domain.Position) (doExit bool, bid domain.Price, reason string) {
+		if p == nil || !p.IsOpen() || p.Size <= 0 {
+			return false, domain.Price{}, ""
+		}
+		if p.TokenType == domain.TokenTypeUp {
+			bid = yesBid
+		} else {
+			bid = noBid
+		}
+		if bid.Pips <= 0 {
+			return false, domain.Price{}, ""
+		}
+		curC := bid.ToCents()
+		avgC := p.EntryPrice.ToCents()
+		if p.AvgPrice > 0 {
+			avgC = int(p.AvgPrice*100 + 0.5)
+		}
+		diff := curC - avgC
+
+		if s.TakeProfitCents > 0 && diff >= s.TakeProfitCents {
+			return true, bid, "take_profit"
+		}
+		if s.StopLossCents > 0 && diff <= -s.StopLossCents {
+			return true, bid, "stop_loss"
+		}
+		if s.MaxHoldSeconds > 0 && !p.EntryTime.IsZero() {
+			if now.Sub(p.EntryTime) >= time.Duration(s.MaxHoldSeconds)*time.Second {
+				return true, bid, "max_hold"
+			}
+		}
+		return false, domain.Price{}, ""
+	}
+
+	// 先判断是否触发出场
+	if shouldExitBoth {
+		// 任意一侧触发，则两侧都平（降低持仓复杂度）
+		doUp, upBid, upReason := evalPos(upPos)
+		doDown, downBid, downReason := evalPos(downPos)
+		if doUp || doDown {
+			reason := upReason
+			if reason == "" {
+				reason = downReason
+			}
+			legs = append(legs, leg{name: "exit_sell_up", assetID: market.YesAssetID, token: domain.TokenTypeUp, price: upBid, size: upPos.Size, reason: reason})
+			legs = append(legs, leg{name: "exit_sell_down", assetID: market.NoAssetID, token: domain.TokenTypeDown, price: downBid, size: downPos.Size, reason: reason})
+		}
+	} else {
+		// 单边：分别评估
+		if do, bid, reason := evalPos(upPos); do {
+			legs = append(legs, leg{name: "exit_sell_up", assetID: market.YesAssetID, token: domain.TokenTypeUp, price: bid, size: upPos.Size, reason: reason})
+		}
+		if do, bid, reason := evalPos(downPos); do {
+			legs = append(legs, leg{name: "exit_sell_down", assetID: market.NoAssetID, token: domain.TokenTypeDown, price: bid, size: downPos.Size, reason: reason})
+		}
+	}
+
+	if len(legs) == 0 {
+		return true // 有持仓但未触发：默认不再叠加开仓
+	}
+
+	// 出场前先清理本周期挂单（尤其是未成交的 hedge GTC），避免出场后反向被动成交
+	s.TradingService.CancelOrdersForMarket(orderCtx, market.Slug)
+
+	req := execution.MultiLegRequest{
+		Name:       "velocityfollow_exit",
+		MarketSlug: market.Slug,
+		Legs:       make([]execution.LegIntent, 0, len(legs)),
+		Hedge:      execution.AutoHedgeConfig{Enabled: false},
+	}
+	for _, l := range legs {
+		if l.size <= 0 || l.price.Pips <= 0 {
+			continue
+		}
+		req.Legs = append(req.Legs, execution.LegIntent{
+			Name:      l.name,
+			AssetID:   l.assetID,
+			TokenType: l.token,
+			Side:      types.SideSell,
+			Price:     l.price,
+			Size:      l.size,
+			OrderType: types.OrderTypeFAK,
+		})
+		log.Infof("📤 [%s] 出场: reason=%s token=%s bid=%dc size=%.4f market=%s",
+			ID, l.reason, l.token, l.price.ToCents(), l.size, market.Slug)
+	}
+	if len(req.Legs) == 0 {
+		return true
+	}
+
+	_, _ = s.TradingService.ExecuteMultiLeg(orderCtx, req)
+	s.mu.Lock()
+	s.lastExitAt = now
+	s.mu.Unlock()
+	return true
 }
