@@ -808,13 +808,11 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 	entryOrderResult, execErr := s.TradingService.PlaceOrder(orderCtx, entryOrder)
 	if execErr != nil {
 		log.Warnf("⚠️ [%s] 主单下单失败: err=%v side=%s market=%s", ID, execErr, winner, market.Slug)
-		s.mu.Unlock()
 		return nil
 	}
 	
 	if entryOrderResult == nil || entryOrderResult.OrderID == "" {
 		log.Warnf("⚠️ [%s] 主单下单失败: 订单ID为空", ID)
-		s.mu.Unlock()
 		return nil
 	}
 	
@@ -857,7 +855,6 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 						  order.Status == domain.OrderStatusCanceled {
 					log.Warnf("⚠️ [%s] 主单失败/取消（立即检查）: orderID=%s status=%s", 
 						ID, order.OrderID, order.Status)
-					s.mu.Unlock()
 					return nil
 				}
 			}
@@ -884,7 +881,6 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 								  order.Status == domain.OrderStatusCanceled {
 							log.Warnf("⚠️ [%s] 主单失败/取消（轮询检查，第%d次）: orderID=%s status=%s", 
 								ID, checkCount, order.OrderID, order.Status)
-							s.mu.Unlock()
 							return nil
 						}
 					}
