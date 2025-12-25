@@ -712,10 +712,29 @@ func (e *OrderEngine) handleProcessTrade(cmd *ProcessTradeCommand) {
 		return
 	}
 
-	// 2. 更新订单状态
+	// 2. 更新订单状态和实际成交价格
 	// 支持部分成交：累计 FilledSize，只有 FilledSize >= Size 才标记为 filled
 	if trade.Size > 0 {
 		order.FilledSize += trade.Size
+		// 更新实际成交价格（使用 Trade 的实际成交价格，而不是下单时的价格）
+		// 对于部分成交，使用加权平均价格；对于完全成交，使用最后一次成交价格
+		if order.FilledPrice == nil {
+			// 第一次成交，直接使用 Trade 价格
+			order.FilledPrice = &trade.Price
+		} else {
+			// 部分成交：计算加权平均价格
+			// 新价格 = (旧价格 * 旧数量 + 新价格 * 新数量) / 总数量
+			oldSize := order.FilledSize - trade.Size
+			if oldSize > 0 {
+				oldTotalValue := order.FilledPrice.ToDecimal() * oldSize
+				newTotalValue := trade.Price.ToDecimal() * trade.Size
+				totalValue := oldTotalValue + newTotalValue
+				avgPrice := domain.PriceFromDecimal(totalValue / order.FilledSize)
+				order.FilledPrice = &avgPrice
+			} else {
+				order.FilledPrice = &trade.Price
+			}
+		}
 		if order.FilledSize >= order.Size && order.Size > 0 {
 			order.Status = domain.OrderStatusFilled
 			now := time.Now()

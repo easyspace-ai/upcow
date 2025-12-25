@@ -21,7 +21,7 @@ proxy:
 #   - {ampm}: am/pm
 #   - {et}: 时区标识 (et)
 market:
-  symbol: "btc"
+  symbol: "eth"
   timeframe: "15m"
   kind: "updown"
   # slugTemplates: 格式模板映射（根据 timeframe 选择）
@@ -41,7 +41,7 @@ exchangeStrategies:
       #   - DOWN (82¢): 8 × 0.82 = $6.56 > $1.1 ✅ 无需调整
       # - 每次交易总成本：约 $7.76（高价时）或 $2.40（低价时）
       # - 20 美金可支持：约 2-8 次交易（取决于价格）
-      orderSize: 8             # 增加数量以减少自动调整，确保满足 minOrderSize
+      orderSize: 8            # 增加数量以减少自动调整，确保满足 minOrderSize
       hedgeOrderSize: 0          # 0=跟随 orderSize（对侧挂单 shares）
 
       # ====== “速度快”判定 ======
@@ -50,13 +50,13 @@ exchangeStrategies:
       minVelocityCentsPerSec: 0.3 # 最小速度阈值（分/秒）
 
       # ====== 风控参数 ======
-      cooldownMs: 1500           # 触发冷却时间（毫秒）
-      oncePerCycle: true         # 每周期最多触发一次（已废弃，使用 maxTradesPerCycle）
+      cooldownMs: 2000           # 触发冷却时间（毫秒），与执行层去重 TTL（2秒）对齐
+      oncePerCycle: false         # 每周期最多触发一次（已废弃，使用 maxTradesPerCycle）
       warmupMs: 800              # 周期切换后的预热窗口（毫秒）
-      maxTradesPerCycle: 3       # 每周期最多交易次数（0=不设限，测试阶段设为 1）
+      maxTradesPerCycle: 3       # 每周期最多交易次数（0=不设限）
 
       # ====== 安全参数 ======
-      hedgeOffsetCents: 4        # 对侧挂单价 = (100 - entryAskCents - offset)
+      hedgeOffsetCents: 3        # 对侧挂单价 = (100 - entryAskCents - offset)
       maxEntryPriceCents: 95     # 吃单价上限（分），避免 99/100 假盘口
       maxSpreadCents: 5          # 盘口价差上限（分），避免极差盘口误触发
 
@@ -92,6 +92,12 @@ exchangeStrategies:
       # 顺序下单模式参数（仅在 orderExecutionMode="sequential" 时生效）
       sequentialCheckIntervalMs: 50    # 检查订单状态的间隔（毫秒），默认 50ms
       sequentialMaxWaitMs: 1000        # 最大等待时间（毫秒），默认 1000ms（FAK 订单通常立即成交）
+
+      # ====== 风险控制参数 ======
+      cycleEndProtectionMinutes: 3     # 周期结束前保护时间（分钟），在周期结束前 N 分钟不开新单，降低风险
+      hedgeReorderTimeoutSeconds: 30   # 对冲单重下超时时间（秒），主单成交后，如果对冲单在指定时间内未成交，重新下单
+      inventoryThreshold: 50.0          # 库存偏斜阈值（shares），当净持仓超过此值时，降低该方向的交易频率（0=禁用）
+                                       # 建议值：根据订单大小设置，例如 orderSize=6.5，threshold=50 意味着约 7-8 个订单的净持仓
  
 # ====== 系统级配置 ======
 order_status_check_timeout: 3
@@ -106,7 +112,7 @@ log_by_cycle: true
  
 # 实盘交易开关（⚠️ 实盘前必须改为 false）
 # 建议：先用 dry_run: true 测试，确认逻辑和日志 OK 再改 false
-dry_run: true  # ⚠️ 实盘模式：已启用真实交易
+dry_run: false  # ⚠️ 实盘模式：已启用真实交易
  
 order_status_sync_interval_with_orders: 3
 order_status_sync_interval_without_orders: 30

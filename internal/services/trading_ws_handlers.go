@@ -266,6 +266,11 @@ func (s *TradingService) HandleTrade(ctx context.Context, trade *domain.Trade) {
 func (s *TradingService) handleOrderCanceled(order *domain.Order) error {
 	// 更新订单状态
 	order.Status = domain.OrderStatusCanceled
+	// 设置取消时间戳（WebSocket 先确认）
+	if order.CanceledAt == nil {
+		now := time.Now()
+		order.CanceledAt = &now
+	}
 	// 尽量补齐 market slug，避免跨周期串单
 	if order.MarketSlug == "" {
 		// 这里无法可靠拿到 market，只能保留为空

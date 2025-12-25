@@ -1,0 +1,29 @@
+{
+  "updated_at": "2025-12-25T21:18:24.415826+08:00",
+  "balance": 42.619813,
+  "open_orders": [
+    {
+      "OrderID": "order_1766668677125611000",
+      "MarketSlug": "btc-updown-15m-1766668500",
+      "AssetID": "32450259705401973788800494983214512479337071749459935457987596372290401245156",
+      "Side": "BUY",
+      "Price": {
+        "Pips": 6000
+      },
+      "Size": 8,
+      "FilledSize": 0,
+      "FilledPrice": null,
+      "GridLevel": 0,
+      "TokenType": "down",
+      "HedgeOrderID": null,
+      "CreatedAt": "2025-12-25T21:17:57.125707+08:00",
+      "FilledAt": null,
+      "CanceledAt": null,
+      "IsEntryOrder": true,
+      "PairOrderID": null,
+      "Status": "failed",
+      "OrderType": "FAK"
+    }
+  ],
+  "positions": []
+}

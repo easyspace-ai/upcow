@@ -15,11 +15,13 @@ type Order struct {
 	Price        Price           // 订单价格
 	Size         float64         // 订单原始数量（requested size）
 	FilledSize   float64         // 已成交数量（partial fill 累计）
+	FilledPrice  *Price          // 实际成交价格（从 Trade 消息获取，可选）
 	GridLevel    int             // 网格层级（分）
 	TokenType    TokenType       // Token 类型
 	HedgeOrderID *string        // 对冲订单 ID（可选）
 	CreatedAt    time.Time       // 创建时间
 	FilledAt     *time.Time      // 成交时间（可选）
+	CanceledAt   *time.Time      // 取消时间（可选）
 	IsEntryOrder bool            // 是否为入场订单
 	PairOrderID  *string         // 配对订单 ID（entry <-> hedge）
 	Status       OrderStatus     // 订单状态
@@ -61,6 +63,24 @@ func (o *Order) ExecutedSize() float64 {
 // IsOpen 检查订单是否开放中
 func (o *Order) IsOpen() bool {
 	return o.Status == OrderStatusOpen
+}
+
+// IsFinalStatus 检查订单是否为最终状态（filled/canceled/failed）
+// 最终状态不应该被中间状态（open/pending）覆盖
+func (o *Order) IsFinalStatus() bool {
+	return o.Status == OrderStatusFilled || o.Status == OrderStatusCanceled || o.Status == OrderStatusFailed
+}
+
+// HasFinalStatusTimestamp 检查订单是否有最终状态的时间戳
+// 如果有时间戳，说明已经确认了最终状态，不应该被覆盖
+func (o *Order) HasFinalStatusTimestamp() bool {
+	if o.Status == OrderStatusFilled {
+		return o.FilledAt != nil
+	}
+	if o.Status == OrderStatusCanceled {
+		return o.CanceledAt != nil
+	}
+	return false
 }
 
 // Price 价格值对象（固定精度：1e-4）

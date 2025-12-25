@@ -58,6 +58,15 @@ type Config struct {
 	// 顺序下单模式的参数（仅在 orderExecutionMode="sequential" 时生效）
 	SequentialCheckIntervalMs int `yaml:"sequentialCheckIntervalMs" json:"sequentialCheckIntervalMs"` // 检查订单状态的间隔（毫秒），默认 20ms（更频繁）
 	SequentialMaxWaitMs       int `yaml:"sequentialMaxWaitMs" json:"sequentialMaxWaitMs"`             // 最大等待时间（毫秒），默认 2000ms（FAK 订单通常立即成交，但纸交易模式可能需要更长时间）
+
+	// 周期结束保护：在周期结束前 N 分钟不开新单（降低风险）
+	CycleEndProtectionMinutes int `yaml:"cycleEndProtectionMinutes" json:"cycleEndProtectionMinutes"` // 周期结束前保护时间（分钟），默认 3 分钟
+
+	// 对冲单重下机制：主单成交后，如果对冲单在指定时间内未成交，重新下单
+	HedgeReorderTimeoutSeconds int `yaml:"hedgeReorderTimeoutSeconds" json:"hedgeReorderTimeoutSeconds"` // 对冲单重下超时时间（秒），默认 30 秒
+
+	// 库存偏斜机制：当净持仓超过阈值时，降低该方向的交易频率
+	InventoryThreshold float64 `yaml:"inventoryThreshold" json:"inventoryThreshold"` // 净持仓阈值（shares），默认 0（禁用）
 }
 
 func (c *Config) Validate() error {
@@ -155,6 +164,24 @@ func (c *Config) Validate() error {
 	}
 	if c.SequentialMaxWaitMs <= 0 {
 		c.SequentialMaxWaitMs = 2000 // 默认 2 秒（FAK 订单通常立即成交，但纸交易模式可能需要更长时间）
+	}
+
+	// 周期结束保护默认值
+	if c.CycleEndProtectionMinutes <= 0 {
+		c.CycleEndProtectionMinutes = 3 // 默认 3 分钟
+	}
+
+	// 对冲单重下机制默认值
+	if c.HedgeReorderTimeoutSeconds <= 0 {
+		c.HedgeReorderTimeoutSeconds = 30 // 默认 30 秒
+	}
+
+	// 库存偏斜机制默认值
+	// 如果未设置，默认为 0（禁用）
+	// 如果设置为 > 0，则启用库存偏斜机制
+	// 建议值：根据订单大小设置，例如 orderSize=6.5，threshold=50 意味着约 7-8 个订单的净持仓
+	if c.InventoryThreshold < 0 {
+		c.InventoryThreshold = 0
 	}
 
 	return nil

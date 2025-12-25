@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 )
 
@@ -42,4 +43,24 @@ func (s *TradingService) GetMarketQuality(ctx context.Context, market *domain.Ma
 		return nil, fmt.Errorf("orders service not initialized")
 	}
 	return s.orders.GetMarketQuality(ctx, market, opt)
+}
+
+// CheckOrderBookLiquidity 检查订单簿是否有足够的流动性来匹配订单
+// 返回: (是否有流动性, 实际可用价格, 可用数量)
+func (s *TradingService) CheckOrderBookLiquidity(ctx context.Context, assetID string, side types.Side, price float64, size float64) (bool, float64, float64) {
+	if s.orders == nil {
+		return false, 0, 0
+	}
+	return s.orders.CheckOrderBookLiquidity(ctx, assetID, side, price, size)
+}
+
+// GetSecondLevelPrice 获取订单簿的第二档价格（卖二价或买二价）
+// 对于买入订单：返回卖二价（asks[1]），如果不存在则返回卖一价（asks[0]）
+// 对于卖出订单：返回买二价（bids[1]），如果不存在则返回买一价（bids[0]）
+// 返回: (价格, 是否存在第二档)
+func (s *TradingService) GetSecondLevelPrice(ctx context.Context, assetID string, side types.Side) (float64, bool) {
+	if s.orders == nil {
+		return 0, false
+	}
+	return s.orders.GetSecondLevelPrice(ctx, assetID, side)
 }

@@ -222,16 +222,6 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 	if now >= normalEndTs {
 		schedulerLog.Infof("当前市场周期结束: %s", currentMarket.Slug)
 
-		// 关闭当前会话
-		if currentSession != nil {
-			schedulerLog.Infof("🔕 [unsubscribe] 准备关闭旧会话并退订：session=%s, market=%s", s.sessionName, currentMarket.Slug)
-			if err := currentSession.Close(); err != nil {
-				schedulerLog.Errorf("关闭当前会话失败: %v", err)
-			} else {
-				schedulerLog.Infof("✅ [unsubscribe] 旧会话退订完成：session=%s, market=%s", s.sessionName, currentMarket.Slug)
-			}
-		}
-
 		// 切换到下一个市场
 		// 计算下一个周期的时间戳
 		nextPeriodTs := s.spec.CurrentPeriodStartUnix(time.Now())
@@ -250,9 +240,9 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 			return
 		}
 
-		// 更新日志系统的市场周期时间戳（在创建新会话之前，确保新会话的连接日志写入新周期的日志文件）
+		// 更新日志系统的市场周期时间戳（在切换市场之前，确保连接日志写入新周期的日志文件）
 		logger.SetMarketInfo(nextMarket.Slug, nextMarket.Timestamp)
-		// 强制切换日志文件（在创建新会话之前）
+		// 强制切换日志文件（在切换市场之前）
 		if err := logger.CheckAndRotateLogWithForce(logger.Config{
 			LogByCycle:    true,
 			CycleDuration: s.spec.Duration(),
@@ -261,28 +251,109 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 			schedulerLog.Errorf("切换日志文件失败: %v", err)
 		}
 
-		// 创建新会话（在日志文件切换之后，确保连接日志写入新周期的日志文件）
-		nextSession, err := s.createSession(s.ctx, nextMarket)
-		if err != nil {
-			schedulerLog.Errorf("创建下一个会话失败: %v", err)
+		// 使用动态订阅切换市场（不关闭连接）
+		if currentSession != nil && currentSession.MarketDataStream != nil {
+			if ms, ok := currentSession.MarketDataStream.(*websocket.MarketStream); ok {
+				schedulerLog.Infof("🔄 [切换市场] 使用动态订阅切换: %s -> %s", currentMarket.Slug, nextMarket.Slug)
+				if err := ms.SwitchMarket(s.ctx, currentMarket, nextMarket); err != nil {
+					schedulerLog.Errorf("动态切换市场失败: %v，回退到创建新会话", err)
+					// 回退：如果动态切换失败，创建新会话
+					nextSession, err := s.createSession(s.ctx, nextMarket)
+					if err != nil {
+						schedulerLog.Errorf("创建下一个会话失败: %v", err)
+						return
+					}
+
+					s.mu.Lock()
+					s.environment.AddSession(s.sessionName, nextSession)
+					oldSession := s.currentSession
+					s.currentSession = nextSession
+					s.currentMarket = nextMarket
+					callback := s.sessionSwitchCallback
+					s.mu.Unlock()
+
+					schedulerLog.Infof("已切换到下一个市场（回退模式）: %s", nextMarket.Slug)
+
+					if callback != nil {
+						schedulerLog.Infof("触发会话切换回调，重新注册策略到新会话")
+						callback(oldSession, nextSession, nextMarket)
+					}
+					return
+				}
+				// 动态切换成功，更新会话的市场信息
+				currentSession.SetMarket(nextMarket)
+			} else {
+				schedulerLog.Warnf("⚠️ MarketDataStream 不是 MarketStream 类型，无法使用动态订阅，回退到创建新会话")
+				// 回退：创建新会话
+				nextSession, err := s.createSession(s.ctx, nextMarket)
+				if err != nil {
+					schedulerLog.Errorf("创建下一个会话失败: %v", err)
+					return
+				}
+
+				s.mu.Lock()
+				// 关闭旧会话
+				if currentSession != nil {
+					_ = currentSession.Close()
+				}
+				s.environment.AddSession(s.sessionName, nextSession)
+				oldSession := s.currentSession
+				s.currentSession = nextSession
+				s.currentMarket = nextMarket
+				callback := s.sessionSwitchCallback
+				s.mu.Unlock()
+
+				schedulerLog.Infof("已切换到下一个市场（回退模式）: %s", nextMarket.Slug)
+
+				if callback != nil {
+					schedulerLog.Infof("触发会话切换回调，重新注册策略到新会话")
+					callback(oldSession, nextSession, nextMarket)
+				}
+				return
+			}
+		} else {
+			// 会话或 MarketDataStream 不存在，创建新会话
+			schedulerLog.Infof("会话或 MarketDataStream 不存在，创建新会话")
+			nextSession, err := s.createSession(s.ctx, nextMarket)
+			if err != nil {
+				schedulerLog.Errorf("创建下一个会话失败: %v", err)
+				return
+			}
+
+			s.mu.Lock()
+			// 关闭旧会话（如果存在）
+			if currentSession != nil {
+				_ = currentSession.Close()
+			}
+			s.environment.AddSession(s.sessionName, nextSession)
+			oldSession := s.currentSession
+			s.currentSession = nextSession
+			s.currentMarket = nextMarket
+			callback := s.sessionSwitchCallback
+			s.mu.Unlock()
+
+			schedulerLog.Infof("已切换到下一个市场（新建会话）: %s", nextMarket.Slug)
+
+			if callback != nil {
+				schedulerLog.Infof("触发会话切换回调，重新注册策略到新会话")
+				callback(oldSession, nextSession, nextMarket)
+			}
 			return
 		}
 
+		// 动态切换成功，更新状态并触发回调
 		s.mu.Lock()
-		// 更新环境中的会话
-		s.environment.AddSession(s.sessionName, nextSession)
 		oldSession := s.currentSession
-		s.currentSession = nextSession
 		s.currentMarket = nextMarket
 		callback := s.sessionSwitchCallback
 		s.mu.Unlock()
 
-		schedulerLog.Infof("已切换到下一个市场: %s", nextMarket.Slug)
+		schedulerLog.Infof("✅ 已切换到下一个市场（动态订阅）: %s", nextMarket.Slug)
 
-		// 触发会话切换回调（在锁外调用，避免死锁）
+		// 触发会话切换回调（会话对象不变，只更新市场订阅）
 		if callback != nil {
-			schedulerLog.Infof("触发会话切换回调，重新注册策略到新会话")
-			callback(oldSession, nextSession, nextMarket)
+			schedulerLog.Infof("触发会话切换回调，更新策略市场信息")
+			callback(oldSession, currentSession, nextMarket)
 		}
 	}
 }

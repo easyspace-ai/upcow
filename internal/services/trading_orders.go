@@ -397,15 +397,15 @@ func (o *OrdersService) GetTopOfBook(ctx context.Context, market *domain.Market)
 	return yb, ya, nb, na, "rest.orderbook", nil
 }
 
-// checkOrderBookLiquidity 检查订单簿是否有足够的流动性来匹配订单
-// 返回: (是否有流动性, 实际可用价格)
-func (o *OrdersService) checkOrderBookLiquidity(ctx context.Context, assetID string, side types.Side, price float64, size float64) (bool, float64) {
+// CheckOrderBookLiquidity 检查订单簿是否有足够的流动性来匹配订单
+// 返回: (是否有流动性, 实际可用价格, 可用数量)
+func (o *OrdersService) CheckOrderBookLiquidity(ctx context.Context, assetID string, side types.Side, price float64, size float64) (bool, float64, float64) {
 	s := o.s
 	// 获取订单簿
 	book, err := s.clobClient.GetOrderBook(ctx, assetID, nil)
 	if err != nil {
 		log.Debugf("⚠️ [订单簿检查] 获取订单簿失败，假设有流动性: %v", err)
-		return true, price // 假设有流动性，使用原价格
+		return true, price, size // 假设有流动性，使用原价格和数量
 	}
 
 	// 根据订单方向检查对应的订单簿
@@ -420,7 +420,7 @@ func (o *OrdersService) checkOrderBookLiquidity(ctx context.Context, assetID str
 
 	if len(levels) == 0 {
 		log.Debugf("⚠️ [订单簿检查] 订单簿为空，无流动性")
-		return false, 0
+		return false, 0, 0
 	}
 
 	// 检查是否有价格匹配的订单
@@ -465,27 +465,66 @@ func (o *OrdersService) checkOrderBookLiquidity(ctx context.Context, assetID str
 	if len(matchedLevels) == 0 {
 		log.Debugf("⚠️ [订单簿检查] 无价格匹配的订单: 订单价格=%.4f, 订单簿价格范围=[%.4f, %.4f]",
 			price, getFirstPrice(levels), getLastPrice(levels))
-		return false, 0
+		return false, 0, 0
 	}
 
+	actualPrice, _ := strconv.ParseFloat(matchedLevels[0].Price, 64)
+	
 	if totalSize < size {
 		log.Debugf("⚠️ [订单簿检查] 流动性不足: 需要=%.4f, 可用=%.4f", size, totalSize)
 		// 即使流动性不足，也返回 true，让 FAK 订单尝试部分成交
-		// 但返回实际可用价格
-		if len(matchedLevels) > 0 {
-			actualPrice, _ := strconv.ParseFloat(matchedLevels[0].Price, 64)
-			return true, actualPrice
+		// 但返回实际可用价格和可用数量
+		return true, actualPrice, totalSize
+	}
+
+	// 有足够的流动性，返回最佳价格和可用数量
+	return true, actualPrice, totalSize
+}
+
+// GetSecondLevelPrice 获取订单簿的第二档价格（卖二价或买二价）
+// 对于买入订单：返回卖二价（asks[1]），如果不存在则返回卖一价（asks[0]）
+// 对于卖出订单：返回买二价（bids[1]），如果不存在则返回买一价（bids[0]）
+// 返回: (价格, 是否存在第二档)
+func (o *OrdersService) GetSecondLevelPrice(ctx context.Context, assetID string, side types.Side) (float64, bool) {
+	s := o.s
+	// 获取订单簿
+	book, err := s.clobClient.GetOrderBook(ctx, assetID, nil)
+	if err != nil {
+		log.Debugf("⚠️ [订单簿检查] 获取订单簿失败: %v", err)
+		return 0, false
+	}
+
+	// 根据订单方向检查对应的订单簿
+	var levels []types.OrderSummary
+	if side == types.SideBuy {
+		// 买入订单：检查卖单（asks）
+		levels = book.Asks
+	} else {
+		// 卖出订单：检查买单（bids）
+		levels = book.Bids
+	}
+
+	if len(levels) == 0 {
+		return 0, false
+	}
+
+	// 如果有第二档，返回第二档价格
+	if len(levels) >= 2 {
+		secondPrice, err := strconv.ParseFloat(levels[1].Price, 64)
+		if err == nil && secondPrice > 0 {
+			return secondPrice, true
 		}
-		return false, 0
 	}
 
-	// 有足够的流动性，返回最佳价格
-	if len(matchedLevels) > 0 {
-		actualPrice, _ := strconv.ParseFloat(matchedLevels[0].Price, 64)
-		return true, actualPrice
+	// 如果没有第二档，返回第一档价格
+	if len(levels) >= 1 {
+		firstPrice, err := strconv.ParseFloat(levels[0].Price, 64)
+		if err == nil && firstPrice > 0 {
+			return firstPrice, false
+		}
 	}
 
-	return true, price
+	return 0, false
 }
 
 // getFirstPrice 获取订单簿第一个价格

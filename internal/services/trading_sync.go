@@ -155,25 +155,68 @@ func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 			continue
 		}
 
-		// 风险4修复：WebSocket和API状态一致性检查
-		// 如果订单已经通过 WebSocket 更新为已成交或已取消，优先使用WebSocket状态
-		if order.Status == domain.OrderStatusFilled || order.Status == domain.OrderStatusCanceled {
-			// 检查API返回的开放订单列表中是否还有这个订单（状态不一致）
-			if openOrderIDs[orderID] {
-				log.Warnf("⚠️ [状态一致性] WebSocket和API状态不一致: orderID=%s, WebSocket状态=%s, API状态=open",
-					orderID, order.Status)
+		// 订单状态同步策略：谁先确认订单的最终状态（filled/canceled），以谁为准
+		// 最终状态（filled/canceled）不应该被中间状态（open/pending）覆盖
+		// 1. 如果订单已经是最终状态，且有时间戳（说明已经确认），不应该被覆盖
+		// 2. 如果订单不在 API 的 open 列表中，且订单状态不是最终状态，应该更新为最终状态
+		// 3. 如果订单在 API 的 open 列表中，但订单状态是最终状态，检查时间戳：
+		//    - 如果有时间戳（WebSocket 先到），保持最终状态
+		//    - 如果没有时间戳（API 先到），恢复为 open 状态
+		if order.IsFinalStatus() {
+			// 订单已经是最终状态
+			if order.HasFinalStatusTimestamp() {
+				// 有时间戳，说明已经确认了最终状态，不应该被覆盖
+				if openOrderIDs[orderID] {
+					// API 显示订单仍在 open 列表中，但订单已经有最终状态的时间戳
+					// 说明 WebSocket 先确认了最终状态，保持最终状态
+					log.Debugf("🔄 [订单状态同步] 订单已有最终状态时间戳（WebSocket先到），保持最终状态: orderID=%s status=%s",
+						orderID, order.Status)
+					s.orderStatusCache.Set(orderID, false)
+					continue
+				} else {
+					// API 确认不在 open 列表中，状态一致，保持最终状态
+					log.Debugf("🔄 [订单状态同步] 订单已确认最终状态，API确认不在开放列表中，状态一致: orderID=%s status=%s",
+						orderID, order.Status)
+					s.orderStatusCache.Set(orderID, false)
+					continue
+				}
+			} else {
+				// 没有时间戳，说明最终状态可能还未确认
+				if openOrderIDs[orderID] {
+					// API 显示订单仍在 open 列表中，恢复为 open 状态（以 API 为准）
+					log.Warnf("⚠️ [状态一致性] 订单状态为最终状态但无时间戳，API显示仍在open列表中，恢复为open状态: orderID=%s status=%s",
+						orderID, order.Status)
+					order.Status = domain.OrderStatusOpen
+					order.FilledAt = nil
+					order.CanceledAt = nil
+					updateCmd := &UpdateOrderCommand{
+						id:    fmt.Sprintf("sync_revert_%s", orderID),
+						Gen:   s.currentEngineGeneration(),
+						Order: order,
+					}
+					s.orderEngine.SubmitCommand(updateCmd)
+					s.orderStatusCache.Set(orderID, true)
+					continue
+				} else {
+					// API 确认不在 open 列表中，设置时间戳确认最终状态
+					log.Infof("🔄 [订单状态同步] 订单状态为最终状态但无时间戳，API确认不在开放列表中，设置时间戳确认: orderID=%s status=%s",
+						orderID, order.Status)
+					now := time.Now()
+					if order.Status == domain.OrderStatusFilled && order.FilledAt == nil {
+						order.FilledAt = &now
+					} else if order.Status == domain.OrderStatusCanceled && order.CanceledAt == nil {
+						order.CanceledAt = &now
+					}
+					updateCmd := &UpdateOrderCommand{
+						id:    fmt.Sprintf("sync_confirm_%s", orderID),
+						Gen:   s.currentEngineGeneration(),
+						Order: order,
+					}
+					s.orderEngine.SubmitCommand(updateCmd)
+					s.orderStatusCache.Set(orderID, false)
+					continue
+				}
 			}
-			log.Debugf("🔄 [订单状态同步] 订单已通过WebSocket更新为 %s，跳过同步: orderID=%s", order.Status, orderID)
-			// 更新缓存（标记为已关闭）
-			s.orderStatusCache.Set(orderID, false)
-			// 发送 UpdateOrderCommand 更新 OrderEngine 状态
-			updateCmd := &UpdateOrderCommand{
-				id:    fmt.Sprintf("sync_update_%s", orderID),
-				Gen:   s.currentEngineGeneration(),
-				Order: order,
-			}
-			s.orderEngine.SubmitCommand(updateCmd)
-			continue
 		}
 
 		// 检查缓存（如果缓存显示订单已关闭，直接处理）
@@ -377,20 +420,51 @@ func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 			continue
 		}
 
-		if order.Status == domain.OrderStatusFilled {
-			log.Debugf("🔄 [订单状态同步] 订单已通过WebSocket更新为已成交，API确认不在开放列表中，状态一致: orderID=%s", orderID)
-			continue
-		} else if order.Status == domain.OrderStatusOpen || order.Status == domain.OrderStatusPending {
-			log.Warnf("⚠️ [状态一致性] WebSocket和API状态不一致: orderID=%s, WebSocket状态=%s, API状态=已成交/已取消",
-				orderID, order.Status)
+		// 本地订单不在交易所 open 列表：视为成交/取消/失败
+		// 如果订单状态不是最终状态，更新为最终状态（以 API 为准）
+		// 如果订单状态已经是最终状态，但无时间戳，设置时间戳确认
+		if order.IsFinalStatus() {
+			// 订单已经是最终状态，但不在 API 的 open 列表中
+			// 如果无时间戳，设置时间戳确认（API 先确认）
+			if !order.HasFinalStatusTimestamp() {
+				log.Infof("🔄 [订单状态同步] 订单状态为最终状态但无时间戳，API确认不在开放列表中，设置时间戳确认（API先确认）: orderID=%s status=%s",
+					orderID, order.Status)
+				now := time.Now()
+				if order.Status == domain.OrderStatusFilled && order.FilledAt == nil {
+					order.FilledAt = &now
+				} else if order.Status == domain.OrderStatusCanceled && order.CanceledAt == nil {
+					order.CanceledAt = &now
+				}
+				updateCmd := &UpdateOrderCommand{
+					id:    fmt.Sprintf("sync_confirm_%s", orderID),
+					Gen:   s.currentEngineGeneration(),
+					Order: order,
+				}
+				s.orderEngine.SubmitCommand(updateCmd)
+				s.orderStatusCache.Set(orderID, false)
+				continue
+			} else {
+				// 已有时间戳，状态一致
+				log.Debugf("🔄 [订单状态同步] 订单已确认最终状态，API确认不在开放列表中，状态一致: orderID=%s status=%s",
+					orderID, order.Status)
+				s.orderStatusCache.Set(orderID, false)
+				continue
+			}
 		}
 
-		log.Infof("🔄 [订单状态同步] 订单已成交: orderID=%s, side=%s, price=%.4f, size=%.2f",
+		// 订单状态不是最终状态，但 API 显示不在 open 列表中
+		// 以 API 为准：更新订单状态为已成交（API 先确认）
+		log.Infof("🔄 [订单状态同步] 订单已成交（API先确认）: orderID=%s, side=%s, price=%.4f, size=%.2f",
 			orderID, order.Side, order.Price.ToDecimal(), order.Size)
 
-		order.Status = domain.OrderStatusFilled
+		// 设置时间戳确认最终状态（API 先确认）
 		now := time.Now()
 		order.FilledAt = &now
+		order.Status = domain.OrderStatusFilled
+		// 如果 FilledSize 为 0，设置为 Size（完全成交）
+		if order.FilledSize <= 0 {
+			order.FilledSize = order.Size
+		}
 
 		s.orderEngine.SubmitCommand(&UpdateOrderCommand{
 			id:    fmt.Sprintf("sync_filled_%s", orderID),
@@ -500,8 +574,13 @@ func (os *OrderSyncService) syncOrderStatusImpl(ctx context.Context, orderID str
 			Order: localOrder,
 		})
 	} else if order.Status == "CANCELLED" && localOrder.Status != domain.OrderStatusCanceled {
-		log.Infof("🔄 [订单状态同步] 订单已取消: orderID=%s", orderID)
+		log.Infof("🔄 [订单状态同步] 订单已取消（API先确认）: orderID=%s", orderID)
 		localOrder.Status = domain.OrderStatusCanceled
+		// 设置取消时间戳（API 先确认）
+		if localOrder.CanceledAt == nil {
+			now := time.Now()
+			localOrder.CanceledAt = &now
+		}
 
 		s.orderEngine.SubmitCommand(&UpdateOrderCommand{
 			id:    fmt.Sprintf("sync_status_%s", orderID),
