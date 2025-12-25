@@ -8,22 +8,29 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 )
 
-// parsePriceString 解析价格字符串（共享工具函数）
-func parsePriceString(priceStr string) (domain.Price, error) {
-	s := strings.TrimSpace(priceStr)
-	if s == "" {
+func parsePriceBytes(b []byte) (domain.Price, error) {
+	if len(b) == 0 {
 		return domain.Price{}, errors.New("empty price")
 	}
-
-	// 快速解析：将十进制字符串转换为 pips（1e-4）
-	// 例： "0.39" => 3900, "0.3900" => 3900, "1" => 10000
+	// trim spaces (ASCII)
 	i := 0
-	n := len(s)
+	n := len(b)
+	for i < n {
+		c := b[i]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			i++
+			continue
+		}
+		break
+	}
+	if i >= n {
+		return domain.Price{}, errors.New("empty price")
+	}
 
 	// integer part
 	intPart := 0
 	for i < n {
-		c := s[i]
+		c := b[i]
 		if c < '0' || c > '9' {
 			break
 		}
@@ -35,10 +42,10 @@ func parsePriceString(priceStr string) (domain.Price, error) {
 	fracDigits := 0
 	roundUp := false
 
-	if i < n && s[i] == '.' {
+	if i < n && b[i] == '.' {
 		i++
 		for i < n && fracDigits < 4 {
-			c := s[i]
+			c := b[i]
 			if c < '0' || c > '9' {
 				break
 			}
@@ -48,8 +55,8 @@ func parsePriceString(priceStr string) (domain.Price, error) {
 		}
 		// 第 5 位用于四舍五入
 		if i < n {
-			c := s[i]
-			if c >= '0' && c <= '9' && c >= '5' {
+			c := b[i]
+			if c >= '5' && c <= '9' {
 				roundUp = true
 			}
 		}
@@ -69,6 +76,11 @@ func parsePriceString(priceStr string) (domain.Price, error) {
 		return domain.Price{}, errors.New("invalid price")
 	}
 	return domain.Price{Pips: pips}, nil
+}
+
+// parsePriceString 解析价格字符串（共享工具函数）
+func parsePriceString(priceStr string) (domain.Price, error) {
+	return parsePriceBytes([]byte(priceStr))
 }
 
 // getProxyFromEnv 从环境变量获取代理 URL（与 MarketStream/UserWebSocket 共用）
