@@ -253,14 +253,17 @@ func (s *ExchangeSession) startPriceLoop(ctx context.Context) {
 
 					// 合并：每次只处理最新 UP/DOWN（或其他 tokenType）的事件
 					// 注意：只有在确认“有 handler 可以处理”后才 drain 缓存，避免丢失早到的第一笔行情。
+					var batch [2]priceEvent
+					n := 0
 					s.priceMu.Lock()
-					batch := make([]priceEvent, 0, len(s.latestPrices))
-					// 为确定性：固定顺序处理
+					// 为确定性：固定顺序处理（up -> down）
 					if pe, ok := s.latestPrices[domain.TokenTypeUp]; ok && pe.event != nil {
-						batch = append(batch, pe)
+						batch[n] = pe
+						n++
 					}
 					if pe, ok := s.latestPrices[domain.TokenTypeDown]; ok && pe.event != nil {
-						batch = append(batch, pe)
+						batch[n] = pe
+						n++
 					}
 					// 处理完清空（下一轮继续合并）
 					// 热路径优化：避免每次 flush 都重新分配 map（减少 GC 抖动）
@@ -269,12 +272,13 @@ func (s *ExchangeSession) startPriceLoop(ctx context.Context) {
 					}
 					s.priceMu.Unlock()
 
-					if len(batch) == 0 {
+					if n == 0 {
 						continue
 					}
 
 					// 串行分发（确定性优先）
-					for _, pe := range batch {
+					for i := 0; i < n; i++ {
+						pe := batch[i]
 						if pe.event == nil {
 							continue
 						}
