@@ -228,13 +228,17 @@ func main() {
 	tradingService.SetPersistence(persistenceService, "bot")
 
 	// 可选：启动 metrics/pprof（默认关闭，通过环境变量启用）
-	if addr := os.Getenv("METRICS_ADDR"); addr != "" {
-		go func() {
+	addr := os.Getenv("GOBET_PPROF_ADDR")
+	if addr == "" {
+		// 兼容旧变量名
+		addr = os.Getenv("METRICS_ADDR")
+	}
+	if addr != "" {
+		if _, err := metrics.StartAsync(rootCtx, addr); err != nil {
+			logrus.Errorf("metrics/pprof 启动失败: %v", err)
+		} else {
 			logrus.Infof("📊 metrics/pprof 启用: listen=%s (expvar:/debug/vars, pprof:/debug/pprof)", addr)
-			if err := metrics.Start(addr); err != nil {
-				logrus.Errorf("metrics server 启动失败: %v", err)
-			}
-		}()
+		}
 	}
 
 	// 创建 Trader
