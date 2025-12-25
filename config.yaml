@@ -21,7 +21,7 @@ proxy:
 #   - {ampm}: am/pm
 #   - {et}: 时区标识 (et)
 market:
-  symbol: "eth"
+  symbol: "btc"
   timeframe: "15m"
   kind: "updown"
   # slugTemplates: 格式模板映射（根据 timeframe 选择）
@@ -45,7 +45,7 @@ exchangeStrategies:
       hedgeOrderSize: 0          # 0=跟随 orderSize（对侧挂单 shares）
 
       # ====== “速度快”判定 ======
-      windowSeconds: 8          # 速度计算窗口（秒）
+      windowSeconds: 5          # 速度计算窗口（秒）
       minMoveCents: 3            # 窗口内最小价格变化（分）
       minVelocityCentsPerSec: 0.3 # 最小速度阈值（分/秒）
 
@@ -53,11 +53,11 @@ exchangeStrategies:
       cooldownMs: 2000           # 触发冷却时间（毫秒），与执行层去重 TTL（2秒）对齐
       oncePerCycle: false         # 每周期最多触发一次（已废弃，使用 maxTradesPerCycle）
       warmupMs: 800              # 周期切换后的预热窗口（毫秒）
-      maxTradesPerCycle: 3       # 每周期最多交易次数（0=不设限）
+      maxTradesPerCycle: 2       # 每周期最多交易次数（0=不设限）
 
       # ====== 安全参数 ======
-      hedgeOffsetCents: 3        # 对侧挂单价 = (100 - entryAskCents - offset)
-      maxEntryPriceCents: 95     # 吃单价上限（分），避免 99/100 假盘口
+      hedgeOffsetCents: 4        # 对侧挂单价 = (100 - entryAskCents - offset)
+      maxEntryPriceCents: 90     # 吃单价上限（分），避免 99/100 假盘口
       maxSpreadCents: 5          # 盘口价差上限（分），避免极差盘口误触发
 
       # ====== Binance 开盘 1m K 线阴阳 bias（已禁用）======
@@ -74,7 +74,7 @@ exchangeStrategies:
 
       # ====== Binance 1s "底层硬动确认"（已禁用）======
       useBinanceMoveConfirm: false
-      moveConfirmWindowSeconds: 60
+      moveConfirmWindowSeconds: 57
       minUnderlyingMoveBps: 20
 
       # ====== 价格优先选择（镜像订单簿优化）======

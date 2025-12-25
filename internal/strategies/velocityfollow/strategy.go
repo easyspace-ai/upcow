@@ -906,11 +906,26 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	totalCostDec := effectiveBuyEntry + effectiveBuyHedge
 	totalCostCents := int(totalCostDec*100 + 0.5)
 
+	// ⚠️ 重要：总成本检查 - 确保 Entry + Hedge <= 100c，否则无论哪边赢都会亏损
+	// 这是策略的核心保护机制：如果总成本 > 100c，说明订单簿价差过大，应该跳过下单
+	// 策略目标是"锁定利润"或"最小化亏损"，而不是"赚波动的钱"
+	maxTotalCostCents := 100 // 最大总成本（100c = $1.00）
+	if totalCostCents > maxTotalCostCents {
+		log.Debugf("⏭️ [%s] 跳过：总成本过高 (%dc > %dc)，Entry=%dc + Hedge=%dc，无论哪边赢都会亏损",
+			ID, totalCostCents, maxTotalCostCents, entryAskCents, hedgeAskCents)
+		return nil // 跳过这次下单
+	}
+
+	// 如果总成本接近100c，记录警告但仍允许下单（允许小幅价差）
+	if totalCostCents >= 99 {
+		log.Debugf("💰 [%s] 总成本接近上限: Entry=%dc + Hedge=%dc = %dc (接近100c，利润空间很小)",
+			ID, entryAskCents, hedgeAskCents, totalCostCents)
+	}
+
 	// 只检查 Entry 价格上限（Entry 是 FAK，价格固定）
-	// Hedge 是 GTC 限价单，实际成交价格可能更好，所以不检查总成本
 	// 如果 Entry 价格过高（> 95c），记录警告但仍允许下单（由 maxEntryPriceCents 控制）
 	if entryAskCents > 95 {
-		log.Debugf("💰 [%s] Entry 价格较高: %dc (hedge=%dc, 总成本=%dc, source=%s) - Hedge 是限价单，实际成交价格可能更好",
+		log.Debugf("💰 [%s] Entry 价格较高: %dc (hedge=%dc, 总成本=%dc, source=%s)",
 			ID, entryAskCents, hedgeAskCents, totalCostCents, source)
 	}
 
@@ -1073,6 +1088,17 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 		}
 	}
 
+	// ⚠️ 重要：价格调整后，需要重新进行精度调整
+	// 因为价格可能从有效价格调整为实际订单簿价格（卖一价或卖二价）
+	// 精度调整必须使用实际下单价格，确保 maker amount = size × price 是 2 位小数
+	entryPriceDec := entryPrice.ToDecimal()
+	entrySharesAdjusted := adjustSizeForMakerAmountPrecision(entryShares, entryPriceDec)
+	if entrySharesAdjusted != entryShares {
+		log.Infof("🔧 [%s] Entry size 精度调整（价格调整后）: %.4f -> %.4f (maker amount: %.2f -> %.2f, price=%.4f)",
+			ID, entryShares, entrySharesAdjusted, entryShares*entryPriceDec, entrySharesAdjusted*entryPriceDec, entryPriceDec)
+		entryShares = entrySharesAdjusted
+	}
+
 	// 检查订单簿流动性（使用 REST API 获取完整订单簿）
 	hasLiquidity, actualPrice, availableSize := s.TradingService.CheckOrderBookLiquidity(
 		orderCtx, entryAsset, types.SideBuy, entryPrice.ToDecimal(), entryShares)
@@ -1146,6 +1172,21 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 	}
 
 	// 先检查一次订单状态（可能已经成交）
+	// ⚠️ 重要：优先检查 entryOrderResult 的状态，因为它可能已经通过 WebSocket 更新
+	if !entryFilled && entryOrderResult != nil {
+		if entryOrderResult.Status == domain.OrderStatusFilled {
+			entryFilled = true
+			log.Infof("✅ [%s] 主单已成交（通过订单结果）: orderID=%s filledSize=%.4f",
+				ID, entryOrderID, entryOrderResult.FilledSize)
+		} else if entryOrderResult.Status == domain.OrderStatusFailed ||
+			entryOrderResult.Status == domain.OrderStatusCanceled {
+			log.Warnf("⚠️ [%s] 主单失败/取消（通过订单结果）: orderID=%s status=%s",
+				ID, entryOrderID, entryOrderResult.Status)
+			return nil
+		}
+	}
+
+	// 如果订单结果中没有成交信息，再检查本地订单状态
 	if !entryFilled && s.TradingService != nil {
 		activeOrders := s.TradingService.GetActiveOrders()
 		for _, order := range activeOrders {
@@ -1319,14 +1360,17 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 		// 实时计算盈亏：如果 UP/DOWN 各自 win 时的收益与亏损
 		// 使用实际成交价格（从 Trade 消息获取），而不是下单时的价格
 
-		// Entry 成本：优先使用实际成交价格，如果没有则使用下单价格
+		// Entry 成本：优先使用实际成交价格，如果没有则使用实际下单价格（不是有效价格）
+		// ⚠️ 重要：entryPrice 是实际下单价格（可能已被调整为订单簿价格），entryAskCents 是有效价格（用于成本估算）
+		// 如果 FilledPrice 为空，应该使用实际下单价格 entryPrice，而不是有效价格 entryAskCents
 		var entryActualPriceCents int
+		entryOrderPriceCents := int(entryPrice.ToDecimal()*100 + 0.5) // 实际下单价格
 		if entryOrderResult.FilledPrice != nil {
 			entryActualPriceCents = entryOrderResult.FilledPrice.ToCents()
-			log.Debugf("💰 [%s] Entry 使用实际成交价格: %dc (下单价格: %dc)", ID, entryActualPriceCents, entryAskCents)
+			log.Debugf("💰 [%s] Entry 使用实际成交价格: %dc (下单价格: %dc, 有效价格: %dc)", ID, entryActualPriceCents, entryOrderPriceCents, entryAskCents)
 		} else {
-			entryActualPriceCents = entryAskCents
-			log.Debugf("💰 [%s] Entry 使用下单价格: %dc (实际成交价格未获取)", ID, entryAskCents)
+			entryActualPriceCents = entryOrderPriceCents // 使用实际下单价格，而不是有效价格
+			log.Debugf("💰 [%s] Entry 使用实际下单价格: %dc (有效价格: %dc, 实际成交价格未获取)", ID, entryOrderPriceCents, entryAskCents)
 		}
 		entryCost := float64(entryActualPriceCents) / 100.0 * entryFilledSize
 
@@ -1364,17 +1408,21 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 					hedgeFilledSize = hedgeShares
 				}
 
-				// 优先使用实际成交价格，如果没有则使用下单价格
+				// 优先使用实际成交价格，如果没有则使用实际下单价格（不是有效价格）
+				// ⚠️ 重要：hedgePrice 是实际下单价格（有效价格），hedgeAskCents 也是有效价格
+				// 对于 GTC 订单，下单价格就是有效价格，所以可以直接使用 hedgeAskCents
+				// 但如果 FilledPrice 存在，应该优先使用实际成交价格
 				var hedgeActualPriceCents int
+				hedgeOrderPriceCents := int(hedgePrice.ToDecimal()*100 + 0.5) // 实际下单价格（对于GTC订单，这就是有效价格）
 				if hedgeOrder.FilledPrice != nil {
 					hedgeActualPriceCents = hedgeOrder.FilledPrice.ToCents()
-					log.Debugf("💰 [%s] Hedge 使用实际成交价格: %dc (下单价格: %dc)", ID, hedgeActualPriceCents, hedgeAskCents)
+					log.Debugf("💰 [%s] Hedge 使用实际成交价格: %dc (下单价格: %dc, 有效价格: %dc)", ID, hedgeActualPriceCents, hedgeOrderPriceCents, hedgeAskCents)
 				} else {
-					hedgeActualPriceCents = hedgeAskCents
+					hedgeActualPriceCents = hedgeOrderPriceCents // 使用实际下单价格（对于GTC订单，这就是有效价格）
 					if hedgeOrder.Status == domain.OrderStatusFilled {
-						log.Debugf("💰 [%s] Hedge 使用下单价格: %dc (实际成交价格未获取，但订单已成交)", ID, hedgeAskCents)
+						log.Debugf("💰 [%s] Hedge 使用下单价格: %dc (实际成交价格未获取，但订单已成交)", ID, hedgeOrderPriceCents)
 					} else {
-						log.Debugf("💰 [%s] Hedge 使用下单价格: %dc (订单未成交，使用下单价格计算成本)", ID, hedgeAskCents)
+						log.Debugf("💰 [%s] Hedge 使用下单价格: %dc (订单未成交，使用下单价格计算成本)", ID, hedgeOrderPriceCents)
 					}
 				}
 
@@ -1446,8 +1494,8 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 		}
 		totalCostDisplay := entryCost + hedgeCostDisplay
 
-		log.Infof("💰 [%s] 主单成交后实时盈亏计算: Entry=%s @ %dc(下单)/%dc(实际) size=%.4f cost=$%.2f | Hedge cost=$%.2f | Total cost=$%.2f | UP win: $%.2f | DOWN win: $%.2f",
-			ID, winner, entryAskCents, entryActualPriceCents, entryFilledSize, entryCost, hedgeCostDisplay, totalCostDisplay, upWinProfit, downWinProfit)
+		log.Infof("💰 [%s] 主单成交后实时盈亏计算: Entry=%s @ %dc(有效)/%dc(下单)/%dc(实际) size=%.4f cost=$%.2f | Hedge cost=$%.2f | Total cost=$%.2f | UP win: $%.2f | DOWN win: $%.2f",
+			ID, winner, entryAskCents, entryOrderPriceCents, entryActualPriceCents, entryFilledSize, entryCost, hedgeCostDisplay, totalCostDisplay, upWinProfit, downWinProfit)
 
 		// 启动对冲单重下监控（如果对冲单未成交）
 		if hedgeOrderID != "" && s.HedgeReorderTimeoutSeconds > 0 {
