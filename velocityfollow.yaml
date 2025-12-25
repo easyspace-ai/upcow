@@ -1,0 +1,97 @@
+# config.yaml（40 USDC 版本，velocityfollow + 质量过滤 + 分批/追踪止盈）
+proxy:
+  host: "127.0.0.1"
+  port: 15236
+ 
+market:
+  symbol: "btc"
+  timeframe: "15m"
+  kind: "updown"
+  slugTemplates:
+    "15m": "{symbol}-{kind}-{timeframe}-{timestamp}"
+    "1h": "{coinName}-up-or-down-{month}-{day}-{hour}{ampm}-et"
+    "4h": "{symbol}-{kind}-{timeframe}-{timestamp}"
+ 
+exchangeStrategies:
+  - on: polymarket
+    velocityfollow:
+    # 小单降低滑点（40u 高频更合适）
+    orderSize: 5
+    hedgeOrderSize: 0
+  
+    # 更高频触发
+    windowSeconds: 4
+    minMoveCents: 2
+    minVelocityCentsPerSec: 0.45
+    cooldownMs: 1400
+    maxTradesPerCycle: 5
+    warmupMs: 400
+  
+    # 断档/滑点保护（别放宽）
+    maxSpreadCents: 4
+    maxEntryPriceCents: 92
+    hedgeOffsetCents: 4
+  
+    # 盘口质量 gate：提高频率靠“更短 age + 仍然要求干净盘口”
+    enableMarketQualityGate: true
+    marketQualityMinScore: 70
+    marketQualityMaxSpreadCents: 4
+    marketQualityMaxBookAgeMs: 1800
+  
+    # 同速时偏向更高价一侧（胜率更稳）
+    preferHigherPrice: true
+    minPreferredPriceCents: 50
+  
+    # 顺序下单（更稳，且你们代码里会做二档价缓冲+流动性检查，能避开断档）
+    orderExecutionMode: "sequential"
+    sequentialCheckIntervalMs: 20
+    sequentialMaxWaitMs: 1200
+  
+    # 周期尾部保护
+    cycleEndProtectionMinutes: 3
+  
+    # 对冲重下更快，避免挂太久暴露
+    hedgeReorderTimeoutSeconds: 15
+  
+    # 早退风控（小波动复利）
+    takeProfitCents: 2
+    stopLossCents: 5
+    maxHoldSeconds: 75
+    exitCooldownMs: 900
+    exitBothSidesIfHedged: true
+  
+    # 分批止盈：先拿一半锁利润，再让剩余跑
+    partialTakeProfits:
+      - profitCents: 2
+        fraction: 0.5
+      - profitCents: 4
+        fraction: 0.5
+  
+    # trailing：防止利润回吐
+    enableTrailingTakeProfit: true
+    trailStartCents: 3
+    trailDistanceCents: 2
+  
+    # 底层确认（开了更稳但会降频；你要更高频先关）
+    useBinanceMoveConfirm: false
+    moveConfirmWindowSeconds: 45
+    minUnderlyingMoveBps: 20
+  
+    # 库存偏斜：先关，稳定后再开 30~50
+    inventoryThreshold: 0
+ 
+# ===== 系统级 =====
+minOrderSize: 1.1
+minShareSize: 5.0
+ 
+log_level: "info"
+log_file: "logs/bot.log"
+log_by_cycle: true
+ 
+# ⚠️ 实盘开关：实盘=true/回测或演练=true
+dry_run: false
+ 
+order_status_check_timeout: 3
+order_status_check_interval: 3
+order_status_sync_interval_with_orders: 3
+order_status_sync_interval_without_orders: 30
