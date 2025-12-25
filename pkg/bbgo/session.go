@@ -236,7 +236,10 @@ func (s *ExchangeSession) startPriceLoop(ctx context.Context) {
 						batch = append(batch, pe)
 					}
 					// 处理完清空（下一轮继续合并）
-					s.latestPrices = make(map[domain.TokenType]priceEvent)
+					// 热路径优化：避免每次 flush 都重新分配 map（减少 GC 抖动）
+					for k := range s.latestPrices {
+						delete(s.latestPrices, k)
+					}
 					s.priceMu.Unlock()
 
 					if len(batch) == 0 {
@@ -329,7 +332,10 @@ func (s *ExchangeSession) Close() error {
 		s.priceChangeHandlers.Clear()
 	}
 	s.priceMu.Lock()
-	s.latestPrices = make(map[domain.TokenType]priceEvent)
+	// 避免分配：清空即可
+	for k := range s.latestPrices {
+		delete(s.latestPrices, k)
+	}
 	s.priceMu.Unlock()
 
 	// 停止价格事件分发 loop（不关闭 channel，避免并发发送 panic）
