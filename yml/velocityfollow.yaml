@@ -38,6 +38,12 @@ exchangeStrategies:
       orderSize: 5
       hedgeOrderSize: 0          # 0=跟随 orderSize（对侧挂单 shares）
  
+      # ====== 开仓质量过滤（胜率） ======
+      enableMarketQualityGate: true
+      marketQualityMinScore: 70
+      marketQualityMaxSpreadCents: 5     # <=0 则使用 maxSpreadCents
+      marketQualityMaxBookAgeMs: 3000
+
       # ====== 出场（平仓）参数：建议开启形成闭环 ======
       # 说明：当持仓存在时，策略会优先处理出场，不再叠加开仓。
       # - 触发价使用 bestBid（SELL FAK），因此实际成交价会略受盘口影响
@@ -46,6 +52,19 @@ exchangeStrategies:
       maxHoldSeconds: 120        # 时间止损（秒）：持仓超过 120 秒强制平仓（0=禁用）
       exitCooldownMs: 1500       # 出场冷却（ms）：避免频繁重复下卖单
       exitBothSidesIfHedged: true # 若同周期同时持有 UP/DOWN，则同时卖出全平（更简单、更安全）
+
+      # ====== 分批止盈（盈亏比） ======
+      # 达到利润阈值后，卖出“当前剩余持仓”的 fraction 比例（每个 level 只触发一次）
+      partialTakeProfits:
+        - profitCents: 3
+          fraction: 0.5
+        - profitCents: 6
+          fraction: 0.5
+
+      # ====== 追踪止盈（trailing） ======
+      enableTrailingTakeProfit: true
+      trailStartCents: 4
+      trailDistanceCents: 2
 
       # ====== “速度快”判定 ======
       windowSeconds: 10

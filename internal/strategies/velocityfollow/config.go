@@ -4,6 +4,15 @@ import "fmt"
 
 const ID = "velocityfollow"
 
+// PartialTakeProfit 分批止盈配置：当利润达到 profitCents 时，卖出 fraction 比例的当前持仓。
+// 注意：
+// - fraction 范围 (0,1]，表示“当前剩余持仓”的比例（非初始持仓）。
+// - 同一 level 只会触发一次（由策略内部状态跟踪）。
+type PartialTakeProfit struct {
+	ProfitCents int     `yaml:"profitCents" json:"profitCents"`
+	Fraction    float64 `yaml:"fraction" json:"fraction"`
+}
+
 // Config：监控价格变化速度，触发“强势侧吃单 + 弱势侧挂互补限价单”。
 //
 // 例：UP 迅速拉升到 70c，触发：
@@ -68,6 +77,12 @@ type Config struct {
 	// 库存偏斜机制：当净持仓超过阈值时，降低该方向的交易频率
 	InventoryThreshold float64 `yaml:"inventoryThreshold" json:"inventoryThreshold"` // 净持仓阈值（shares），默认 0（禁用）
 
+	// ====== 市场质量过滤（提升胜率） ======
+	EnableMarketQualityGate *bool `yaml:"enableMarketQualityGate" json:"enableMarketQualityGate"` // 是否启用盘口质量 gate（默认 true）
+	MarketQualityMinScore   int  `yaml:"marketQualityMinScore" json:"marketQualityMinScore"`     // 最小质量分（0..100，默认 70）
+	MarketQualityMaxSpreadCents int `yaml:"marketQualityMaxSpreadCents" json:"marketQualityMaxSpreadCents"` // 最大一档价差（分，默认使用 maxSpreadCents；<=0 表示使用 maxSpreadCents）
+	MarketQualityMaxBookAgeMs   int `yaml:"marketQualityMaxBookAgeMs" json:"marketQualityMaxBookAgeMs"`     // WS 盘口最大年龄（毫秒，默认 3000）
+
 	// ====== 出场（平仓）参数：让策略形成“可盈利闭环” ======
 	// 说明：Entry 是买入（BUY），出场为卖出（SELL）。
 	// - takeProfitCents / stopLossCents 是“相对入场均价”的价差（分），用当前 bestBid 触发并用 SELL FAK 执行。
@@ -78,6 +93,14 @@ type Config struct {
 	MaxHoldSeconds  int  `yaml:"maxHoldSeconds" json:"maxHoldSeconds"`   // 最大持仓时间（秒，>=0；0=禁用）
 	ExitCooldownMs  int  `yaml:"exitCooldownMs" json:"exitCooldownMs"`   // 出场冷却（毫秒，默认 1500）
 	ExitBothSidesIfHedged *bool `yaml:"exitBothSidesIfHedged" json:"exitBothSidesIfHedged"` // 若同周期同时持有 UP/DOWN，则同时卖出平仓（默认 true）
+
+	// ====== 分批止盈（提升盈亏比） ======
+	PartialTakeProfits []PartialTakeProfit `yaml:"partialTakeProfits" json:"partialTakeProfits"` // 分批止盈列表（按 profitCents 递增建议）
+
+	// ====== 追踪止盈（trailing） ======
+	EnableTrailingTakeProfit bool `yaml:"enableTrailingTakeProfit" json:"enableTrailingTakeProfit"` // 是否启用追踪止盈
+	TrailStartCents          int  `yaml:"trailStartCents" json:"trailStartCents"`                   // 达到该利润后开始追踪（分，默认 4）
+	TrailDistanceCents       int  `yaml:"trailDistanceCents" json:"trailDistanceCents"`             // 回撤触发距离（分，默认 2）
 }
 
 func boolPtr(b bool) *bool { return &b }
@@ -197,6 +220,26 @@ func (c *Config) Validate() error {
 		c.InventoryThreshold = 0
 	}
 
+	// 市场质量 gate 默认值
+	if c.EnableMarketQualityGate == nil {
+		c.EnableMarketQualityGate = boolPtr(true)
+	}
+	if c.MarketQualityMinScore <= 0 {
+		c.MarketQualityMinScore = 70
+	}
+	if c.MarketQualityMinScore < 0 || c.MarketQualityMinScore > 100 {
+		return fmt.Errorf("marketQualityMinScore 必须在 0-100 之间")
+	}
+	if c.MarketQualityMaxBookAgeMs <= 0 {
+		c.MarketQualityMaxBookAgeMs = 3000
+	}
+	if c.MarketQualityMaxBookAgeMs < 0 {
+		return fmt.Errorf("marketQualityMaxBookAgeMs 不能为负数")
+	}
+	if c.MarketQualityMaxSpreadCents < 0 {
+		return fmt.Errorf("marketQualityMaxSpreadCents 不能为负数")
+	}
+
 	// 出场参数默认值与校验
 	if c.TakeProfitCents < 0 {
 		return fmt.Errorf("takeProfitCents 不能为负数")
@@ -212,6 +255,29 @@ func (c *Config) Validate() error {
 	}
 	if c.ExitBothSidesIfHedged == nil {
 		c.ExitBothSidesIfHedged = boolPtr(true)
+	}
+
+	// 分批止盈校验
+	for i, lv := range c.PartialTakeProfits {
+		if lv.ProfitCents <= 0 {
+			return fmt.Errorf("partialTakeProfits[%d].profitCents 必须 > 0", i)
+		}
+		if lv.Fraction <= 0 || lv.Fraction > 1.0 {
+			return fmt.Errorf("partialTakeProfits[%d].fraction 必须在 (0,1] 之间", i)
+		}
+	}
+
+	// trailing 默认值/校验
+	if c.EnableTrailingTakeProfit {
+		if c.TrailStartCents <= 0 {
+			c.TrailStartCents = 4
+		}
+		if c.TrailDistanceCents <= 0 {
+			c.TrailDistanceCents = 2
+		}
+		if c.TrailStartCents < 0 || c.TrailDistanceCents < 0 {
+			return fmt.Errorf("trailStartCents / trailDistanceCents 不能为负数")
+		}
 	}
 
 	return nil

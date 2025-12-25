@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -96,6 +97,12 @@ type Strategy struct {
 	lastExitAt       time.Time
 	lastExitCheckAt  time.Time
 
+	// 分批止盈状态：key=positionID，value=已触发的 level 索引集合
+	partialTPDone map[string]map[int]bool
+
+	// 追踪止盈状态：key=positionID
+	trailing map[string]*trailState
+
 	// Binance bias 状态（每周期）
 	cycleStartMs int64
 	biasReady    bool
@@ -108,6 +115,12 @@ type Strategy struct {
 	// 全局配置约束（从全局配置读取）
 	minOrderSize float64 // 最小订单金额（USDC）
 	minShareSize float64 // 限价单最小 share 数量
+}
+
+type trailState struct {
+	Armed       bool
+	HighBidCents int
+	StopCents    int
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -132,6 +145,12 @@ func (s *Strategy) Initialize() error {
 	}
 	if s.pendingOrders == nil {
 		s.pendingOrders = make(map[string]*domain.Order)
+	}
+	if s.partialTPDone == nil {
+		s.partialTPDone = make(map[string]map[int]bool)
+	}
+	if s.trailing == nil {
+		s.trailing = make(map[string]*trailState)
 	}
 
 	// 2. 读取全局 market 配置：用于过滤 slug（防止误处理非目标市场）
@@ -268,6 +287,8 @@ func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, _ *domain.Market
 	s.pendingOrders = make(map[string]*domain.Order)
 	s.lastExitAt = time.Time{}
 	s.lastExitCheckAt = time.Time{}
+	s.partialTPDone = make(map[string]map[int]bool)
+	s.trailing = make(map[string]*trailState)
 
 	// 注意：不清 lastTriggerAt，避免周期切换瞬间重复触发
 }
@@ -835,6 +856,43 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	// 如果 GetTopOfBook 超时，策略会立即返回，不阻塞后续的价格变化事件处理
 	orderCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+
+	// ===== 市场质量 gate（提升胜率）=====
+	// 在真正下单前先对盘口做一次质量评估，过滤：stale/partial/价差过大/镜像偏差等情况。
+	if s.EnableMarketQualityGate != nil && *s.EnableMarketQualityGate {
+		maxSpreadCentsGate := s.MarketQualityMaxSpreadCents
+		if maxSpreadCentsGate <= 0 {
+			maxSpreadCentsGate = maxSpread
+		}
+		if maxSpreadCentsGate <= 0 {
+			maxSpreadCentsGate = 10
+		}
+		maxAgeMs := s.MarketQualityMaxBookAgeMs
+		if maxAgeMs <= 0 {
+			maxAgeMs = 3000
+		}
+		mq, mqErr := s.TradingService.GetMarketQuality(orderCtx, market, &services.MarketQualityOptions{
+			MaxBookAge:     time.Duration(maxAgeMs) * time.Millisecond,
+			MaxSpreadPips:  maxSpreadCentsGate * 100, // 1c=100 pips
+			PreferWS:       true,
+			FallbackToREST: true,
+			AllowPartialWS: true,
+		})
+		if mqErr != nil {
+			log.Debugf("⏭️ [%s] 跳过：MarketQuality 获取失败: %v", ID, mqErr)
+			return nil
+		}
+		if mq == nil || !mq.Tradable() || mq.Score < s.MarketQualityMinScore {
+			log.Debugf("⏭️ [%s] 跳过：MarketQuality gate 未通过: score=%d(min=%d) tradable=%v problems=%v source=%s",
+				ID, func() int { if mq != nil { return mq.Score }; return -1 }(),
+				s.MarketQualityMinScore,
+				func() bool { if mq != nil { return mq.Tradable() }; return false }(),
+				func() []string { if mq != nil { return mq.Problems }; return nil }(),
+				func() string { if mq != nil { return mq.Source }; return "" }(),
+			)
+			return nil
+		}
+	}
 
 	entryAsset := market.YesAssetID
 	hedgeAsset := market.NoAssetID
@@ -2004,17 +2062,43 @@ func (s *Strategy) tryExitPositions(ctx context.Context, market *domain.Market, 
 		shouldExitBoth = upPos != nil && downPos != nil
 	}
 
-	evalPos := func(p *domain.Position) (doExit bool, bid domain.Price, reason string) {
-		if p == nil || !p.IsOpen() || p.Size <= 0 {
-			return false, domain.Price{}, ""
+	// helper：获取 positionID（用于状态 map key）
+	posKey := func(p *domain.Position) string {
+		if p == nil {
+			return ""
 		}
+		if p.ID != "" {
+			return p.ID
+		}
+		// 兜底：用 market+token 组合（理论上 Position.ID 一定存在）
+		return fmt.Sprintf("%s_%s", p.MarketSlug, p.TokenType)
+	}
+
+	type decision struct {
+		fullExit bool
+		fullReason string
+		partial []leg
+	}
+
+	evalPos := func(p *domain.Position) decision {
+		d := decision{partial: make([]leg, 0, 2)}
+		if p == nil || !p.IsOpen() || p.Size <= 0 {
+			return d
+		}
+		key := posKey(p)
 		if p.TokenType == domain.TokenTypeUp {
-			bid = yesBid
+			// ok
 		} else {
+			// ok
+		}
+		bid := yesBid
+		assetID := market.YesAssetID
+		if p.TokenType == domain.TokenTypeDown {
 			bid = noBid
+			assetID = market.NoAssetID
 		}
 		if bid.Pips <= 0 {
-			return false, domain.Price{}, ""
+			return d
 		}
 		curC := bid.ToCents()
 		avgC := p.EntryPrice.ToCents()
@@ -2023,40 +2107,144 @@ func (s *Strategy) tryExitPositions(ctx context.Context, market *domain.Market, 
 		}
 		diff := curC - avgC
 
-		if s.TakeProfitCents > 0 && diff >= s.TakeProfitCents {
-			return true, bid, "take_profit"
-		}
+		// 1) 硬止损 / 超时：优先全平
 		if s.StopLossCents > 0 && diff <= -s.StopLossCents {
-			return true, bid, "stop_loss"
+			d.fullExit = true
+			d.fullReason = "stop_loss"
+			return d
 		}
 		if s.MaxHoldSeconds > 0 && !p.EntryTime.IsZero() {
 			if now.Sub(p.EntryTime) >= time.Duration(s.MaxHoldSeconds)*time.Second {
-				return true, bid, "max_hold"
+				d.fullExit = true
+				d.fullReason = "max_hold"
+				return d
 			}
 		}
-		return false, domain.Price{}, ""
+
+		// 2) 追踪止盈（trailing）：达到 TrailStart 后开始追踪；跌破 stop 触发全平
+		if s.EnableTrailingTakeProfit && s.TrailStartCents > 0 && s.TrailDistanceCents > 0 {
+			s.mu.Lock()
+			st := s.trailing[key]
+			if st == nil {
+				st = &trailState{}
+				s.trailing[key] = st
+			}
+			// arm
+			if !st.Armed && diff >= s.TrailStartCents {
+				st.Armed = true
+				st.HighBidCents = curC
+				st.StopCents = curC - s.TrailDistanceCents
+			}
+			// update high/stop
+			if st.Armed {
+				if curC > st.HighBidCents {
+					st.HighBidCents = curC
+					st.StopCents = curC - s.TrailDistanceCents
+				}
+				if st.StopCents > 0 && curC <= st.StopCents {
+					d.fullExit = true
+					d.fullReason = "trailing_stop"
+					s.mu.Unlock()
+					return d
+				}
+			}
+			s.mu.Unlock()
+		}
+
+		// 3) 硬止盈：达到 takeProfitCents 直接全平（作为最终落袋）
+		if s.TakeProfitCents > 0 && diff >= s.TakeProfitCents {
+			d.fullExit = true
+			d.fullReason = "take_profit"
+			return d
+		}
+
+		// 4) 分批止盈：达到 level 后卖出 fraction（每个 level 只触发一次）
+		if len(s.PartialTakeProfits) > 0 && diff > 0 {
+			for i, lv := range s.PartialTakeProfits {
+				if diff < lv.ProfitCents {
+					continue
+				}
+				s.mu.Lock()
+				doneSet := s.partialTPDone[key]
+				if doneSet == nil {
+					doneSet = make(map[int]bool)
+					s.partialTPDone[key] = doneSet
+				}
+				already := doneSet[i]
+				s.mu.Unlock()
+				if already {
+					continue
+				}
+
+				// 计算卖出数量（按当前剩余持仓比例）
+				sellSize := p.Size * lv.Fraction
+				if sellSize > p.Size {
+					sellSize = p.Size
+				}
+				// 最小金额保护（SELL 不允许系统自动放大；不足则跳过该 level）
+				bidDec := bid.ToDecimal()
+				if bidDec <= 0 {
+					continue
+				}
+				minSharesByNotional := s.minOrderSize / bidDec
+				if s.minOrderSize <= 0 {
+					minSharesByNotional = 0
+				}
+				if minSharesByNotional > 0 && sellSize*bidDec < s.minOrderSize {
+					// 如果当前持仓都不足最小金额，则无法卖，留待后续（或由 maxHold/stopLoss 接管）
+					if p.Size*bidDec < s.minOrderSize {
+						continue
+					}
+					// 否则把这次卖出提升到“可卖的最小份额”，但不超过持仓
+					if minSharesByNotional <= p.Size {
+						sellSize = minSharesByNotional
+					}
+				}
+				if sellSize <= 0 {
+					continue
+				}
+
+				d.partial = append(d.partial, leg{
+					name:    fmt.Sprintf("partial_tp_%s_%d", p.TokenType, i),
+					assetID: assetID,
+					token:   p.TokenType,
+					price:   bid,
+					size:    sellSize,
+					reason:  fmt.Sprintf("partial_tp_%dc_%0.2f", lv.ProfitCents, lv.Fraction),
+				})
+			}
+		}
+
+		return d
 	}
 
-	// 先判断是否触发出场
-	if shouldExitBoth {
-		// 任意一侧触发，则两侧都平（降低持仓复杂度）
-		doUp, upBid, upReason := evalPos(upPos)
-		doDown, downBid, downReason := evalPos(downPos)
-		if doUp || doDown {
-			reason := upReason
-			if reason == "" {
-				reason = downReason
-			}
-			legs = append(legs, leg{name: "exit_sell_up", assetID: market.YesAssetID, token: domain.TokenTypeUp, price: upBid, size: upPos.Size, reason: reason})
-			legs = append(legs, leg{name: "exit_sell_down", assetID: market.NoAssetID, token: domain.TokenTypeDown, price: downBid, size: downPos.Size, reason: reason})
+	// 先评估每个仓位的决策
+	upDec := evalPos(upPos)
+	downDec := evalPos(downPos)
+
+	// exitBoth：任意一侧触发“全平”，则两侧都全平
+	if shouldExitBoth && (upDec.fullExit || downDec.fullExit) {
+		reason := upDec.fullReason
+		if reason == "" {
+			reason = downDec.fullReason
+		}
+		if upPos != nil && upPos.Size > 0 {
+			legs = append(legs, leg{name: "exit_sell_up", assetID: market.YesAssetID, token: domain.TokenTypeUp, price: yesBid, size: upPos.Size, reason: reason})
+		}
+		if downPos != nil && downPos.Size > 0 {
+			legs = append(legs, leg{name: "exit_sell_down", assetID: market.NoAssetID, token: domain.TokenTypeDown, price: noBid, size: downPos.Size, reason: reason})
 		}
 	} else {
-		// 单边：分别评估
-		if do, bid, reason := evalPos(upPos); do {
-			legs = append(legs, leg{name: "exit_sell_up", assetID: market.YesAssetID, token: domain.TokenTypeUp, price: bid, size: upPos.Size, reason: reason})
+		// 非 exitBoth：分别处理全平与分批止盈
+		if upDec.fullExit && upPos != nil && upPos.Size > 0 {
+			legs = append(legs, leg{name: "exit_sell_up", assetID: market.YesAssetID, token: domain.TokenTypeUp, price: yesBid, size: upPos.Size, reason: upDec.fullReason})
+		} else {
+			legs = append(legs, upDec.partial...)
 		}
-		if do, bid, reason := evalPos(downPos); do {
-			legs = append(legs, leg{name: "exit_sell_down", assetID: market.NoAssetID, token: domain.TokenTypeDown, price: bid, size: downPos.Size, reason: reason})
+		if downDec.fullExit && downPos != nil && downPos.Size > 0 {
+			legs = append(legs, leg{name: "exit_sell_down", assetID: market.NoAssetID, token: domain.TokenTypeDown, price: noBid, size: downPos.Size, reason: downDec.fullReason})
+		} else {
+			legs = append(legs, downDec.partial...)
 		}
 	}
 
@@ -2093,7 +2281,43 @@ func (s *Strategy) tryExitPositions(ctx context.Context, market *domain.Market, 
 		return true
 	}
 
-	_, _ = s.TradingService.ExecuteMultiLeg(orderCtx, req)
+	created, execErr := s.TradingService.ExecuteMultiLeg(orderCtx, req)
+	if execErr == nil && len(created) > 0 {
+		// 仅在执行成功后标记分批止盈 level 已触发（避免失败导致“错过 level”）
+		for _, l := range legs {
+			if !strings.HasPrefix(l.reason, "partial_tp_") {
+				continue
+			}
+			// 从 name 中解析 level idx（partial_tp_{token}_{idx}）
+			parts := strings.Split(l.name, "_")
+			if len(parts) < 4 {
+				continue
+			}
+			idxStr := parts[len(parts)-1]
+			idx, err := strconv.Atoi(idxStr)
+			if err != nil {
+				continue
+			}
+			var p *domain.Position
+			if l.token == domain.TokenTypeUp {
+				p = upPos
+			} else {
+				p = downPos
+			}
+			key := posKey(p)
+			if key == "" {
+				continue
+			}
+			s.mu.Lock()
+			doneSet := s.partialTPDone[key]
+			if doneSet == nil {
+				doneSet = make(map[int]bool)
+				s.partialTPDone[key] = doneSet
+			}
+			doneSet[idx] = true
+			s.mu.Unlock()
+		}
+	}
 	s.mu.Lock()
 	s.lastExitAt = now
 	s.mu.Unlock()
