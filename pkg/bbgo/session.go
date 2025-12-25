@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/betbot/gobet/internal/domain"
@@ -17,6 +18,25 @@ import (
 )
 
 var sessionLog = logrus.WithField("component", "session")
+
+// shouldLogEvery 是一个无锁限频器：同一调用点最多每 interval 打一次日志。
+// 用于热路径 WARN/INFO 降噪，避免日志 I/O 反过来拖慢行情/策略。
+func shouldLogEvery(lastUnixNano *int64, interval time.Duration) bool {
+	if lastUnixNano == nil {
+		return true
+	}
+	now := time.Now().UnixNano()
+	limit := interval.Nanoseconds()
+	for {
+		prev := atomic.LoadInt64(lastUnixNano)
+		if prev != 0 && now-prev < limit {
+			return false
+		}
+		if atomic.CompareAndSwapInt64(lastUnixNano, prev, now) {
+			return true
+		}
+	}
+}
 
 // ExchangeSession 交易所会话，封装市场数据流和用户数据流
 type ExchangeSession struct {
@@ -38,6 +58,9 @@ type ExchangeSession struct {
 	latestPrices map[domain.TokenType]priceEvent
 	loopOnce     sync.Once
 	loopCancel   context.CancelFunc
+
+	// 热路径降噪：handler 尚未注册时的 WARN 限频
+	lastNoHandlerWarnAt int64
 
 	// 订阅管理
 	subscriptions   []Subscription
@@ -199,6 +222,10 @@ func (s *ExchangeSession) startPriceLoop(ctx context.Context) {
 				case <-s.priceSignalC:
 					handlers := s.priceChangeHandlers.Snapshot()
 					if len(handlers) == 0 {
+						// 热路径：handler 还没注册时，priceSignalC 可能被多次触发；限频避免刷屏拖慢行情线程
+						if !shouldLogEvery(&s.lastNoHandlerWarnAt, 2*time.Second) {
+							continue
+						}
 						// 关键：不要在"尚未注册策略 handler"时把合并后的最新价格清空。
 						// 否则会出现"连接刚建立收到一次价格，但策略还没 Subscribe，于是该价格被丢弃；
 						// 若后续短时间内没有新的价格事件，策略将看起来永远收不到价格，从而无法开单"。
@@ -277,6 +304,8 @@ func (s *ExchangeSession) startPriceLoop(ctx context.Context) {
 type sessionPriceHandler struct {
 	session *ExchangeSession
 	once    sync.Once
+	// 热路径降噪：周期切换时丢弃旧事件会刷屏，做限频
+	lastDiscardWarnAt int64
 }
 
 func (h *sessionPriceHandler) OnPriceChanged(ctx context.Context, event *events.PriceChangedEvent) error {
@@ -299,13 +328,17 @@ func (h *sessionPriceHandler) OnPriceChanged(ctx context.Context, event *events.
 			// 优先用 timestamp 判定（单调递增且更稳定），其次用 slug 兜底
 			if current.Timestamp > 0 && event.Market.Timestamp > 0 {
 				if event.Market.Timestamp != current.Timestamp {
-					sessionLog.Warnf("⚠️ [sessionPriceHandler] 丢弃非当前周期价格事件: current=%s[%d] event=%s[%d] token=%s price=%.4f session=%s",
-						current.Slug, current.Timestamp, event.Market.Slug, event.Market.Timestamp, event.TokenType, event.NewPrice.ToDecimal(), h.session.Name)
+					if shouldLogEvery(&h.lastDiscardWarnAt, 2*time.Second) {
+						sessionLog.Warnf("⚠️ [sessionPriceHandler] 丢弃非当前周期价格事件: current=%s[%d] event=%s[%d] token=%s price=%.4f session=%s",
+							current.Slug, current.Timestamp, event.Market.Slug, event.Market.Timestamp, event.TokenType, event.NewPrice.ToDecimal(), h.session.Name)
+					}
 					return nil
 				}
 			} else if current.Slug != "" && event.Market.Slug != "" && event.Market.Slug != current.Slug {
-				sessionLog.Warnf("⚠️ [sessionPriceHandler] 丢弃非当前 market 价格事件: current=%s event=%s token=%s price=%.4f session=%s",
-					current.Slug, event.Market.Slug, event.TokenType, event.NewPrice.ToDecimal(), h.session.Name)
+				if shouldLogEvery(&h.lastDiscardWarnAt, 2*time.Second) {
+					sessionLog.Warnf("⚠️ [sessionPriceHandler] 丢弃非当前 market 价格事件: current=%s event=%s token=%s price=%.4f session=%s",
+						current.Slug, event.Market.Slug, event.TokenType, event.NewPrice.ToDecimal(), h.session.Name)
+				}
 				return nil
 			}
 		}
