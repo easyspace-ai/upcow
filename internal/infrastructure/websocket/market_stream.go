@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -546,46 +547,42 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 		}
 	}
 
-	var msgType struct {
-		EventType string `json:"event_type"`
-	}
-	if err := json.Unmarshal(message, &msgType); err != nil {
-		// 非 JSON 消息：只在 debug 记录，避免刷屏
-		msgPreview := message
-		if len(msgPreview) > 200 {
-			msgPreview = msgPreview[:200]
-		}
-		marketLog.Debugf("解析消息类型失败(可能是非JSON): %v, msg=%q", err, string(msgPreview))
-		return
-	}
-
-	switch msgType.EventType {
-	case "price_change":
-		// 极限热路径：避免 map[string]interface{} 反射解析，直接用强类型结构体解析
+	switch detectEventTypeCode(message) {
+	case evtPriceChange:
 		m.handlePriceChange(ctx, message)
-	case "subscribed":
+	case evtSubscribed:
 		marketLog.Infof("✅ MarketStream 收到订阅成功消息")
 		// 订阅成功但长时间没任何数据时，给出更明确的诊断提示
 		m.lastMsgMu.RLock()
 		last := m.lastMessageAt
 		m.lastMsgMu.RUnlock()
 		_ = last // 预留：后续可在此处启动定时诊断（不在这里启动 goroutine，避免重复启动）
-	case "pong":
+	case evtPong:
 		m.healthCheckMu.Lock()
 		m.lastPong = time.Now()
 		m.healthCheckMu.Unlock()
 		marketLog.Debugf("收到 PONG 响应")
-	case "book":
+	case evtBook:
 		// 兼容：某些情况下服务器只推 book（快照/增量），未推 price_change。
 		// 为了不让策略“完全看不到实时 up/down”，这里从 book 中提取 best_ask/best_bid 并发出 PriceChangedEvent。
 		m.handleBookAsPrice(ctx, message)
-	case "tick_size_change":
-		// Tick size 变化（可选处理）
+	case evtTickSizeChange:
 		marketLog.Debugf("收到 tick size 变化消息")
-	case "last_trade_price":
-		// 最后交易价格（可选处理）
+	case evtLastTradePrice:
 		marketLog.Debugf("💰 收到最后交易价格消息（价格变化应通过 price_change 事件发送）")
 	default:
+		// 未知类型：回退到 json.Unmarshal 获取 event_type 用于可观测性（非热路径）
+		var msgType struct {
+			EventType string `json:"event_type"`
+		}
+		if err := json.Unmarshal(message, &msgType); err != nil {
+			msgPreview := message
+			if len(msgPreview) > 200 {
+				msgPreview = msgPreview[:200]
+			}
+			marketLog.Debugf("解析消息类型失败(可能是非JSON): %v, msg=%q", err, string(msgPreview))
+			return
+		}
 		msgPreview := message
 		if len(msgPreview) > 200 {
 			msgPreview = msgPreview[:200]
@@ -597,6 +594,71 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 type orderLevel struct {
 	Price string `json:"price"`
 	Size  string `json:"size"`
+}
+
+type eventTypeCode uint8
+
+const (
+	evtUnknown eventTypeCode = iota
+	evtPriceChange
+	evtSubscribed
+	evtPong
+	evtBook
+	evtTickSizeChange
+	evtLastTradePrice
+)
+
+// detectEventTypeCode 尽量用低开销方式从 JSON 中提取 event_type，避免每条消息都 json.Unmarshal 一次。
+// 这是热路径优化：只服务于我们已知的几个 event_type；未知类型会回退到 json.Unmarshal 获取字符串。
+func detectEventTypeCode(message []byte) eventTypeCode {
+	// 查找 "event_type"
+	i := bytes.Index(message, []byte(`"event_type"`))
+	if i < 0 {
+		return evtUnknown
+	}
+	// 查找 ':'（允许中间存在空格）
+	j := bytes.IndexByte(message[i:], ':')
+	if j < 0 {
+		return evtUnknown
+	}
+	j = i + j + 1
+	for j < len(message) {
+		c := message[j]
+		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			j++
+			continue
+		}
+		break
+	}
+	if j >= len(message) || message[j] != '"' {
+		return evtUnknown
+	}
+	j++
+	k := j
+	for k < len(message) && message[k] != '"' {
+		k++
+	}
+	if k <= j || k >= len(message) {
+		return evtUnknown
+	}
+	et := message[j:k]
+
+	switch {
+	case bytes.Equal(et, []byte("price_change")):
+		return evtPriceChange
+	case bytes.Equal(et, []byte("subscribed")):
+		return evtSubscribed
+	case bytes.Equal(et, []byte("pong")):
+		return evtPong
+	case bytes.Equal(et, []byte("book")):
+		return evtBook
+	case bytes.Equal(et, []byte("tick_size_change")):
+		return evtTickSizeChange
+	case bytes.Equal(et, []byte("last_trade_price")):
+		return evtLastTradePrice
+	default:
+		return evtUnknown
+	}
 }
 
 // shouldProcessMarketMessage 决定是否处理某条 market-channel 消息。
