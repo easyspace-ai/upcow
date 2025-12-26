@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -41,9 +42,54 @@ func (d dropCompensator) OnDrop(kind string, meta map[string]string) {
 	d.ts.CompensateAfterUserWSDrop("user_ws_drop:" + kind)
 }
 
+func firstExistingFile(paths ...string) (string, bool) {
+	for _, p := range paths {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		if _, err := os.Stat(p); err == nil {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+func resolveStrategyConfigFile(strategyName string, strategyDir string) (string, error) {
+	name := strings.TrimSpace(strategyName)
+	if name == "" {
+		return "", fmt.Errorf("策略名为空")
+	}
+
+	// 默认策略目录：yml/strategies（可用 -strategies-dir 覆盖）
+	dir := strings.TrimSpace(strategyDir)
+	candidatesDirs := []string{}
+	if dir != "" {
+		candidatesDirs = append(candidatesDirs, dir)
+	} else {
+		// 配置集中管理：只在 yml 下查找（不再扫描根目录）
+		candidatesDirs = append(candidatesDirs, "yml/strategies", "yml")
+	}
+
+	exts := []string{".yaml", ".yml", ".json"}
+	var candidates []string
+	for _, d := range candidatesDirs {
+		for _, ext := range exts {
+			candidates = append(candidates, filepath.Join(d, name+ext))
+		}
+	}
+
+	if p, ok := firstExistingFile(candidates...); ok {
+		return p, nil
+	}
+	return "", fmt.Errorf("未找到策略配置文件：strategy=%s（已尝试：%s/{%s}.(yaml|yml|json)）", name, strings.Join(candidatesDirs, ","), name)
+}
+
 func main() {
 	// 解析命令行参数
 	configPath := flag.String("config", "", "配置文件路径（支持 .yaml, .yml, .json）")
+	strategyNames := flag.String("strategy", "", "策略名（逗号分隔）：自动从默认目录加载对应策略配置（需包含 exchangeStrategies）")
+	strategyFiles := flag.String("strategies", "", "额外的策略配置文件列表（逗号分隔，每个文件需包含 exchangeStrategies）")
+	strategyDir := flag.String("strategies-dir", "", "额外的策略配置目录（加载目录下所有 .yaml/.yml/.json，需包含 exchangeStrategies）")
 	flag.Parse()
 
 	// BBGO风格：初始化logrus（保留现有日志功能）
@@ -56,19 +102,78 @@ func main() {
 		config.SetConfigPath(*configPath)
 		logrus.Infof("使用配置文件: %s", *configPath)
 	} else {
-		defaultConfigPath := "config.yaml"
-		if _, err := os.Stat(defaultConfigPath); err == nil {
-			config.SetConfigPath(defaultConfigPath)
-			logrus.Infof("使用默认配置文件: %s", defaultConfigPath)
+		// 配置集中管理：默认只加载 yml/base.yaml，并兼容旧名 yml/config.yaml
+		if p, ok := firstExistingFile("yml/base.yaml", "yml/config.yaml"); ok {
+			config.SetConfigPath(p)
+			logrus.Infof("使用默认配置文件: %s", p)
 		} else {
-			logrus.Warnf("未指定配置文件，且默认配置文件 %s 不存在，将使用环境变量和默认值", defaultConfigPath)
+			logrus.Warnf("未指定配置文件，且默认 yml/base.yaml 不存在，将使用环境变量和默认值")
 		}
 	}
 
 	// 加载配置
-	cfg, err := config.Load()
+	allowEmptyBaseStrategies := strings.TrimSpace(*strategyNames) != "" || strings.TrimSpace(*strategyFiles) != "" || strings.TrimSpace(*strategyDir) != ""
+	cfg, err := config.LoadFromFileWithOptions(config.GetConfigPath(), config.LoadOptions{
+		AllowEmptyExchangeStrategies: allowEmptyBaseStrategies,
+	})
 	if err != nil {
 		logrus.Errorf("加载配置失败: %v", err)
+		os.Exit(1)
+	}
+
+	// 启动时追加策略配置（避免频繁改动全局配置）
+	var extraMounts []config.ExchangeStrategyMount
+
+	// 简化用法：-strategy threshold,updown
+	if strings.TrimSpace(*strategyNames) != "" {
+		for _, name := range strings.Split(*strategyNames, ",") {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			p, err := resolveStrategyConfigFile(name, *strategyDir)
+			if err != nil {
+				logrus.Errorf("解析策略配置失败: %v", err)
+				os.Exit(1)
+			}
+			mounts, err := config.LoadStrategyMountsFromFile(p)
+			if err != nil {
+				logrus.Errorf("加载策略文件失败: %v", err)
+				os.Exit(1)
+			}
+			extraMounts = append(extraMounts, mounts...)
+			logrus.Infof("已加载策略配置: strategy=%s file=%s", name, p)
+		}
+	}
+
+	if strings.TrimSpace(*strategyDir) != "" {
+		mounts, err := config.LoadStrategyMountsFromDir(strings.TrimSpace(*strategyDir))
+		if err != nil {
+			logrus.Errorf("加载策略目录失败: %v", err)
+			os.Exit(1)
+		}
+		extraMounts = append(extraMounts, mounts...)
+	}
+	if strings.TrimSpace(*strategyFiles) != "" {
+		for _, p := range strings.Split(*strategyFiles, ",") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			mounts, err := config.LoadStrategyMountsFromFile(p)
+			if err != nil {
+				logrus.Errorf("加载策略文件失败: %v", err)
+				os.Exit(1)
+			}
+			extraMounts = append(extraMounts, mounts...)
+		}
+	}
+	if len(extraMounts) > 0 {
+		cfg.ExchangeStrategies = append(cfg.ExchangeStrategies, extraMounts...)
+	}
+	// 合并完成后做一次严格校验（此时必须有 exchangeStrategies）
+	if err := cfg.Validate(); err != nil {
+		logrus.Errorf("配置验证失败: %v", err)
 		os.Exit(1)
 	}
 
