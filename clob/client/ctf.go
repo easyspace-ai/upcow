@@ -146,8 +146,9 @@ func (c *CTFClient) GetPositionId(collateralToken common.Address, collectionId c
 
 // SplitPositionParams 拆分仓位参数
 type SplitPositionParams struct {
-	ConditionId string  // conditionId (hex string)
-	Amount      float64 // 要拆分的USDC数量
+	ConditionId    string         // conditionId (hex string)
+	Amount         float64        // 要拆分的USDC数量
+	ValidateAddress *common.Address // 可选：用于验证余额的地址（如果为nil，则使用私钥地址）
 }
 
 // SplitPosition 拆分USDC为完整的仓位集合（1 YES + 1 NO）
@@ -163,7 +164,12 @@ func (c *CTFClient) SplitPosition(ctx context.Context, params SplitPositionParam
 	}
 
 	// 验证前置条件（余额和授权）
-	if err := c.ValidateSplitPosition(ctx, params.Amount); err != nil {
+	// 如果指定了验证地址，使用该地址；否则使用私钥地址
+	validateAddress := crypto.PubkeyToAddress(c.privateKey.PublicKey)
+	if params.ValidateAddress != nil {
+		validateAddress = *params.ValidateAddress
+	}
+	if err := c.ValidateSplitPositionForAddress(ctx, validateAddress, params.Amount); err != nil {
 		return nil, err
 	}
 
@@ -403,13 +409,18 @@ const ERC1155ABI = `[
 
 // GetUSDCBalance 获取USDC余额（返回USDC数量，已转换为6位小数）
 func (c *CTFClient) GetUSDCBalance(ctx context.Context) (float64, error) {
+	fromAddress := crypto.PubkeyToAddress(c.privateKey.PublicKey)
+	return c.GetUSDCBalanceForAddress(ctx, fromAddress)
+}
+
+// GetUSDCBalanceForAddress 获取指定地址的USDC余额（返回USDC数量，已转换为6位小数）
+func (c *CTFClient) GetUSDCBalanceForAddress(ctx context.Context, address common.Address) (float64, error) {
 	erc20ABI, err := abi.JSON(strings.NewReader(ERC20ABI))
 	if err != nil {
 		return 0, fmt.Errorf("解析ERC20 ABI失败: %w", err)
 	}
 
-	fromAddress := crypto.PubkeyToAddress(c.privateKey.PublicKey)
-	data, err := erc20ABI.Pack("balanceOf", fromAddress)
+	data, err := erc20ABI.Pack("balanceOf", address)
 	if err != nil {
 		return 0, fmt.Errorf("打包balanceOf参数失败: %w", err)
 	}
@@ -438,13 +449,18 @@ func (c *CTFClient) GetUSDCBalance(ctx context.Context) (float64, error) {
 
 // CheckUSDCAllowance 检查USDC授权给CTF合约的数量（返回USDC数量，已转换为6位小数）
 func (c *CTFClient) CheckUSDCAllowance(ctx context.Context) (float64, error) {
+	fromAddress := crypto.PubkeyToAddress(c.privateKey.PublicKey)
+	return c.CheckUSDCAllowanceForAddress(ctx, fromAddress)
+}
+
+// CheckUSDCAllowanceForAddress 检查指定地址的USDC授权给CTF合约的数量（返回USDC数量，已转换为6位小数）
+func (c *CTFClient) CheckUSDCAllowanceForAddress(ctx context.Context, address common.Address) (float64, error) {
 	erc20ABI, err := abi.JSON(strings.NewReader(ERC20ABI))
 	if err != nil {
 		return 0, fmt.Errorf("解析ERC20 ABI失败: %w", err)
 	}
 
-	fromAddress := crypto.PubkeyToAddress(c.privateKey.PublicKey)
-	data, err := erc20ABI.Pack("allowance", fromAddress, c.ctfAddress)
+	data, err := erc20ABI.Pack("allowance", address, c.ctfAddress)
 	if err != nil {
 		return 0, fmt.Errorf("打包allowance参数失败: %w", err)
 	}
@@ -475,13 +491,21 @@ func (c *CTFClient) CheckUSDCAllowance(ctx context.Context) (float64, error) {
 // positionId: 条件代币的positionId（uint256）
 // 返回代币数量（已转换为6位小数）
 func (c *CTFClient) GetConditionalTokenBalance(ctx context.Context, positionId *big.Int) (float64, error) {
+	fromAddress := crypto.PubkeyToAddress(c.privateKey.PublicKey)
+	return c.GetConditionalTokenBalanceForAddress(ctx, fromAddress, positionId)
+}
+
+// GetConditionalTokenBalanceForAddress 获取指定地址的条件代币余额（通过positionId）
+// address: 要查询的地址
+// positionId: 条件代币的positionId（uint256）
+// 返回代币数量（已转换为6位小数）
+func (c *CTFClient) GetConditionalTokenBalanceForAddress(ctx context.Context, address common.Address, positionId *big.Int) (float64, error) {
 	erc1155ABI, err := abi.JSON(strings.NewReader(ERC1155ABI))
 	if err != nil {
 		return 0, fmt.Errorf("解析ERC1155 ABI失败: %w", err)
 	}
 
-	fromAddress := crypto.PubkeyToAddress(c.privateKey.PublicKey)
-	data, err := erc1155ABI.Pack("balanceOf", fromAddress, positionId)
+	data, err := erc1155ABI.Pack("balanceOf", address, positionId)
 	if err != nil {
 		return 0, fmt.Errorf("打包balanceOf参数失败: %w", err)
 	}
@@ -511,8 +535,16 @@ func (c *CTFClient) GetConditionalTokenBalance(ctx context.Context, positionId *
 // ValidateSplitPosition 验证拆分操作的前置条件
 // 检查USDC余额和授权是否足够
 func (c *CTFClient) ValidateSplitPosition(ctx context.Context, amount float64) error {
+	fromAddress := crypto.PubkeyToAddress(c.privateKey.PublicKey)
+	return c.ValidateSplitPositionForAddress(ctx, fromAddress, amount)
+}
+
+// ValidateSplitPositionForAddress 验证指定地址的拆分操作前置条件
+// address: 要验证的地址
+// amount: 拆分数量
+func (c *CTFClient) ValidateSplitPositionForAddress(ctx context.Context, address common.Address, amount float64) error {
 	// 检查USDC余额
-	balance, err := c.GetUSDCBalance(ctx)
+	balance, err := c.GetUSDCBalanceForAddress(ctx, address)
 	if err != nil {
 		return fmt.Errorf("检查USDC余额失败: %w", err)
 	}
@@ -522,7 +554,7 @@ func (c *CTFClient) ValidateSplitPosition(ctx context.Context, amount float64) e
 	}
 
 	// 检查USDC授权
-	allowance, err := c.CheckUSDCAllowance(ctx)
+	allowance, err := c.CheckUSDCAllowanceForAddress(ctx, address)
 	if err != nil {
 		return fmt.Errorf("检查USDC授权失败: %w", err)
 	}

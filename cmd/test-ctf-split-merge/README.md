@@ -21,12 +21,21 @@ AMOUNT=1.0
 CHAIN_ID=137
 SKIP_SPLIT=false
 SKIP_MERGE=false
+PROXY_ADDRESS=0x代理地址  # 用于查询余额的代理地址（可选，不配置则使用私钥生成的地址）
+
+# Relayer 配置（可选，如果配置了这些，将通过 Relayer 执行交易，gasless）
+BUILDER_API_KEY=your-builder-api-key
+BUILDER_SECRET=your-builder-secret
+BUILDER_PASS_PHRASE=your-builder-passphrase
 ```
 
 2. 确保账户有足够的：
-   - USDC 余额（用于 split 操作）
-   - MATIC 余额（用于支付 gas 费用）
-   - USDC 已授权给 CTF 合约（如果需要 split）
+   - **USDC 余额**（用于 split 操作）
+     - Relayer 模式：代理地址需要有 USDC 余额
+     - 直接调用模式：交易账户地址需要有 USDC 余额
+   - **USDC 授权**：Split 操作需要先授权 USDC 给 CTF 合约
+   - **MATIC 余额**（仅直接调用模式需要）：用于支付 gas 费用
+     - ⚠️ **Relayer 模式不需要 MATIC**：gas 费用由 Polymarket 支付（gasless）
 
 ## 使用方法
 
@@ -51,6 +60,10 @@ go run main.go
 - `CHAIN_ID`: 可选，链 ID（137 = Polygon 主网，80002 = Amoy 测试网，默认 137）
 - `SKIP_SPLIT`: 可选，是否跳过拆分操作（true/false，默认 false）
 - `SKIP_MERGE`: 可选，是否跳过合并操作（true/false，默认 false）
+- `PROXY_ADDRESS`: 可选，用于查询余额的代理地址（不配置则使用私钥生成的地址）
+- `BUILDER_API_KEY`: 可选，Builder API Key（如果配置了，将通过 Relayer 执行交易，gasless）
+- `BUILDER_SECRET`: 可选，Builder API Secret（需要与 BUILDER_API_KEY 一起配置）
+- `BUILDER_PASS_PHRASE`: 可选，Builder API Passphrase（需要与 BUILDER_API_KEY 一起配置）
 
 ### 示例配置
 
@@ -86,12 +99,38 @@ RPC_URL=https://rpc-amoy.polygon.technology
    - 发送交易并等待确认
 5. **显示最终状态**: 显示操作后的余额情况
 
+## Relayer 模式 vs 直接调用模式
+
+| 特性 | 直接调用模式 | Relayer 模式 |
+|------|------------|------------|
+| Gas 费用 | ✅ 需要支付 MATIC | ❌ **不需要 MATIC**（Polymarket 支付，gasless） |
+| MATIC 余额要求 | ✅ 需要 | ❌ **不需要** |
+| USDC 余额要求 | 交易账户地址需要有余额 | 代理地址需要有余额 |
+| 配置要求 | 只需私钥 | 需要私钥 + 代理地址 + Builder API 凭证 |
+| 适用场景 | 直接使用 EOA 地址 | 使用代理钱包（Magic/Polymarket.com） |
+
+### 使用 Relayer 模式（推荐）
+
+如果配置了 `PROXY_ADDRESS` 和 Builder API 凭证，程序会自动使用 Relayer 模式：
+- ✅ **Gasless**：交易费用由 Polymarket 支付，**完全不需要 MATIC**
+- ✅ **通过代理钱包**：使用代理地址的余额执行交易
+- ✅ **更安全**：不需要在交易账户地址保留余额和 MATIC
+
+### 使用直接调用模式
+
+如果没有配置 Builder API 凭证，程序会使用直接调用 CTF 合约的方式：
+- ⚠️ **需要支付 Gas**：每次操作都需要支付 MATIC
+- ⚠️ **余额要求**：交易账户地址需要有足够的 USDC 和授权
+
 ## 注意事项
 
-1. **Gas 费用**: 每次操作都需要支付 MATIC 作为 gas 费用
+1. **Gas 费用和 MATIC 要求**: 
+   - **直接调用模式**：每次操作都需要支付 MATIC 作为 gas 费用，交易账户地址需要有 MATIC 余额
+   - **Relayer 模式**：**完全 gasless，不需要任何 MATIC**，费用由 Polymarket 支付
 2. **授权**: Split 操作需要先授权 USDC 给 CTF 合约。如果授权不足，操作会失败
 3. **余额检查**: Merge 操作需要同时拥有足够的 YES 和 NO 代币
 4. **市场可用性**: 如果当前周期的市场尚未创建，程序会报错。请稍后再试
+5. **Builder API 凭证**: 如果使用 Relayer 模式，需要从 Polymarket Builder Program 获取 API 凭证
 
 ## 示例输出
 

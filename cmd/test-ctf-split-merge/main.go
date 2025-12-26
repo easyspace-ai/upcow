@@ -1,31 +1,39 @@
 package main
 
 import (
-	"bufio"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"math/big"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/betbot/gobet/clob/client"
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/pkg/marketspec"
+	"github.com/betbot/gobet/pkg/sdk/api"
+	"github.com/betbot/gobet/pkg/sdk/relayer"
+	relayertypes "github.com/betbot/gobet/pkg/sdk/relayer/types"
+	sdktypes "github.com/betbot/gobet/pkg/sdk/types"
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/joho/godotenv"
 )
 
 // EnvConfig 从 .env 文件读取的配置
 type EnvConfig struct {
-	PrivateKey string
-	RPCURL     string
-	Amount     string
-	ChainID    string
-	SkipSplit  string
-	SkipMerge  string
+	PrivateKey        string
+	RPCURL            string
+	Amount            string
+	ChainID           string
+	SkipSplit         string
+	SkipMerge         string
+	ProxyAddress      string
+	BuilderAPIKey     string
+	BuilderSecret     string
+	BuilderPassPhrase string
 }
 
 // 测试 Demo: CTF 拆分与合并操作
@@ -51,11 +59,20 @@ func main() {
 	fmt.Println("╚══════════════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
-	// 从 .env 文件读取配置
+	// 加载 .env 文件（使用绝对路径）
+	envPath := "/pm/data/.env"
+	if err := godotenv.Load(envPath); err != nil {
+		// .env 文件不存在也没关系，使用环境变量
+		fmt.Printf("提示: 未找到 .env 文件 (%s)，将从环境变量读取配置\n", envPath)
+	} else {
+		fmt.Printf("✓ 已加载配置文件: %s\n", envPath)
+	}
+
+	// 从 .env 文件和环境变量读取配置
 	envConfig, err := loadEnvConfig()
 	if err != nil {
-		fmt.Printf("错误: 加载 .env 配置失败: %v\n", err)
-		fmt.Println("提示: 请在当前目录创建 .env 文件，包含 PRIVATE_KEY 等配置")
+		fmt.Printf("错误: 加载配置失败: %v\n", err)
+		fmt.Println("提示: 请创建 .env 文件或设置环境变量")
 		os.Exit(1)
 	}
 
@@ -98,9 +115,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 获取账户地址
+	// 获取账户地址（用于交易）
 	address := crypto.PubkeyToAddress(privateKey.PublicKey)
-	fmt.Printf("账户地址: %s\n", address.Hex())
+	fmt.Printf("交易账户地址: %s\n", address.Hex())
+
+	// 获取代理地址（用于查询余额）
+	var proxyAddress common.Address
+	if envConfig.ProxyAddress != "" {
+		proxyAddress = common.HexToAddress(envConfig.ProxyAddress)
+		fmt.Printf("代理地址（余额查询）: %s\n", proxyAddress.Hex())
+	} else {
+		// 如果没有配置代理地址，使用交易账户地址
+		proxyAddress = address
+		fmt.Printf("未配置代理地址，使用交易账户地址查询余额\n")
+	}
+	fmt.Println()
 
 	// 获取RPC URL
 	rpcURL := envConfig.RPCURL
@@ -194,18 +223,19 @@ func main() {
 	fmt.Println("步骤 4: 检查余额和授权")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-	usdcBalance, err := ctfClient.GetUSDCBalance(ctx)
+	// 使用代理地址查询余额
+	usdcBalance, err := ctfClient.GetUSDCBalanceForAddress(ctx, proxyAddress)
 	if err != nil {
 		fmt.Printf("警告: 检查USDC余额失败: %v\n", err)
 	} else {
-		fmt.Printf("USDC余额: %.6f USDC\n", usdcBalance)
+		fmt.Printf("USDC余额（地址 %s）: %.6f USDC\n", proxyAddress.Hex(), usdcBalance)
 	}
 
-	usdcAllowance, err := ctfClient.CheckUSDCAllowance(ctx)
+	usdcAllowance, err := ctfClient.CheckUSDCAllowanceForAddress(ctx, proxyAddress)
 	if err != nil {
 		fmt.Printf("警告: 检查USDC授权失败: %v\n", err)
 	} else {
-		fmt.Printf("USDC授权: %.6f USDC\n", usdcAllowance)
+		fmt.Printf("USDC授权（地址 %s）: %.6f USDC\n", proxyAddress.Hex(), usdcAllowance)
 	}
 
 	// 检查 YES 和 NO 代币余额
@@ -215,17 +245,17 @@ func main() {
 	var yesBalance, noBalance float64
 	if yesCollectionId, err := ctfClient.GetCollectionId(parentCollectionId, conditionIdHash, big.NewInt(1)); err == nil {
 		if yesPositionId, err := ctfClient.GetPositionId(ctfClient.GetCollateralToken(), yesCollectionId); err == nil {
-			if balance, err := ctfClient.GetConditionalTokenBalance(ctx, yesPositionId); err == nil {
+			if balance, err := ctfClient.GetConditionalTokenBalanceForAddress(ctx, proxyAddress, yesPositionId); err == nil {
 				yesBalance = balance
-				fmt.Printf("YES代币余额: %.6f\n", yesBalance)
+				fmt.Printf("YES代币余额（地址 %s）: %.6f\n", proxyAddress.Hex(), yesBalance)
 			}
 		}
 	}
 	if noCollectionId, err := ctfClient.GetCollectionId(parentCollectionId, conditionIdHash, big.NewInt(2)); err == nil {
 		if noPositionId, err := ctfClient.GetPositionId(ctfClient.GetCollateralToken(), noCollectionId); err == nil {
-			if balance, err := ctfClient.GetConditionalTokenBalance(ctx, noPositionId); err == nil {
+			if balance, err := ctfClient.GetConditionalTokenBalanceForAddress(ctx, proxyAddress, noPositionId); err == nil {
 				noBalance = balance
-				fmt.Printf("NO代币余额: %.6f\n", noBalance)
+				fmt.Printf("NO代币余额（地址 %s）: %.6f\n", proxyAddress.Hex(), noBalance)
 			}
 		}
 	}
@@ -239,32 +269,140 @@ func main() {
 
 		fmt.Printf("准备拆分: %.6f USDC -> %.6f YES + %.6f NO\n", amount, amount, amount)
 
-		// 创建拆分交易
-		splitParams := client.SplitPositionParams{
-			ConditionId: gammaMarket.ConditionID,
-			Amount:      amount,
+		// 检查是否使用 relayer（需要代理地址和 Builder API 凭证）
+		// Builder API 凭证从环境变量读取（和 redeem 一样）
+		builderAPIKey := envConfig.BuilderAPIKey
+		if builderAPIKey == "" {
+			builderAPIKey = os.Getenv("BUILDER_API_KEY")
+		}
+		builderSecret := envConfig.BuilderSecret
+		if builderSecret == "" {
+			builderSecret = os.Getenv("BUILDER_SECRET")
+		}
+		builderPassPhrase := envConfig.BuilderPassPhrase
+		if builderPassPhrase == "" {
+			builderPassPhrase = os.Getenv("BUILDER_PASS_PHRASE")
 		}
 
-		fmt.Println("\n创建拆分交易...")
-		splitTx, err := ctfClient.SplitPosition(ctx, splitParams)
-		if err != nil {
-			fmt.Printf("错误: 创建拆分交易失败: %v\n", err)
-			fmt.Println("提示: 请检查 USDC 余额和授权是否足够")
-			os.Exit(1)
-		}
+		useRelayer := envConfig.ProxyAddress != "" &&
+			builderAPIKey != "" &&
+			builderSecret != "" &&
+			builderPassPhrase != ""
 
-		fmt.Printf("交易已创建: %s\n", splitTx.Hash().Hex())
-		fmt.Printf("Gas Limit: %d\n", splitTx.Gas())
-		fmt.Printf("Gas Price: %s wei\n", splitTx.GasPrice().String())
+		if useRelayer {
+			// 使用 Relayer 执行交易（通过代理钱包）
+			fmt.Println("\n使用 Relayer 通过代理钱包执行拆分交易（gasless）...")
 
-		// 询问是否发送
-		fmt.Print("\n是否发送拆分交易? (y/n): ")
-		var confirm string
-		fmt.Scanln(&confirm)
-		if confirm != "y" && confirm != "Y" {
-			fmt.Println("已取消拆分操作")
+			// 转换金额为6位小数精度
+			amountBigInt := new(big.Int)
+			amountFloat := new(big.Float).SetFloat64(amount)
+			decimals := new(big.Float).SetInt64(1000000) // 10^6
+			amountFloat.Mul(amountFloat, decimals)
+			amountBigInt, _ = amountFloat.Int(nil)
+
+			// 构建 split 交易
+			conditionIdHash := common.HexToHash(gammaMarket.ConditionID)
+			apiTx, err := api.BuildSplitTransaction(conditionIdHash, amountBigInt)
+			if err != nil {
+				fmt.Printf("错误: 构建拆分交易失败: %v\n", err)
+				os.Exit(1)
+			}
+
+			// 转换为 relayer 交易格式
+			relayerTx := relayertypes.SafeTransaction{
+				To:        apiTx.To.Hex(),
+				Operation: relayertypes.OperationType(apiTx.Operation),
+				Data:      "0x" + hex.EncodeToString(apiTx.Data),
+				Value:     apiTx.Value.String(),
+			}
+
+			// 创建签名函数
+			signFn := func(signer string, digest []byte) ([]byte, error) {
+				sig, err := crypto.Sign(digest, privateKey)
+				if err != nil {
+					return nil, err
+				}
+				// Adjust v value for Ethereum (add 27)
+				if sig[64] < 27 {
+					sig[64] += 27
+				}
+				return sig, nil
+			}
+
+			// 创建 relayer 客户端
+			relayerURL := "https://relayer-v2.polymarket.com"
+			builderCreds := &sdktypes.BuilderApiKeyCreds{
+				Key:        envConfig.BuilderAPIKey,
+				Secret:     envConfig.BuilderSecret,
+				Passphrase: envConfig.BuilderPassPhrase,
+			}
+			chainIDBigInt := big.NewInt(int64(chainID))
+			relayerClient := relayer.NewClient(relayerURL, chainIDBigInt, signFn, builderCreds)
+
+			// 创建 auth option
+			authOption := &sdktypes.AuthOption{
+				SingerAddress: address.Hex(),
+				FunderAddress: proxyAddress.Hex(),
+			}
+
+			// 通过 Relayer 执行交易（默认使用，无需确认）
+			fmt.Println("\n通过 Relayer 发送交易...")
+			metadata := fmt.Sprintf("Split %.6f USDC for %s", amount, gammaMarket.Slug)
+			if len(metadata) > 500 {
+				metadata = metadata[:497] + "..."
+			}
+
+			resp, err := relayerClient.Execute([]relayertypes.SafeTransaction{relayerTx}, metadata, authOption)
+			if err != nil {
+				fmt.Printf("错误: Relayer 执行失败: %v\n", err)
+				os.Exit(1)
+			}
+
+			txHash := resp.TransactionHash
+			if txHash == "" {
+				txHash = resp.Hash
+			}
+
+			fmt.Printf("\n✓ 拆分交易已通过 Relayer 提交!\n")
+			fmt.Printf("  交易ID: %s\n", resp.TransactionID)
+			fmt.Printf("  交易哈希: %s\n", txHash)
+			fmt.Printf("  状态: %s\n", resp.State)
+			fmt.Printf("\n您现在拥有 %.6f YES 和 %.6f NO 代币（在代理地址 %s）\n", amount, amount, proxyAddress.Hex())
 		} else {
-			// 发送交易
+			// 使用直接调用 CTF 合约的方式
+			// 如果配置了代理地址但没有 Builder API 凭证，提示用户
+			if envConfig.ProxyAddress != "" {
+				fmt.Printf("\n⚠️  提示: 检测到代理地址，但未配置 Builder API 凭证\n")
+				fmt.Println("  配置 Builder API 凭证（BUILDER_API_KEY, BUILDER_SECRET, BUILDER_PASS_PHRASE）")
+				fmt.Println("  可以使用 Relayer 通过代理钱包执行交易（gasless，不需要 MATIC）")
+				fmt.Println("  当前将使用直接调用模式（需要交易账户地址有 USDC 和 MATIC）")
+				fmt.Println()
+			}
+
+			// 创建拆分交易
+			splitParams := client.SplitPositionParams{
+				ConditionId: gammaMarket.ConditionID,
+				Amount:      amount,
+			}
+			// 如果配置了代理地址，使用代理地址进行验证
+			if envConfig.ProxyAddress != "" {
+				proxyAddr := common.HexToAddress(envConfig.ProxyAddress)
+				splitParams.ValidateAddress = &proxyAddr
+			}
+
+			fmt.Println("\n创建拆分交易...")
+			splitTx, err := ctfClient.SplitPosition(ctx, splitParams)
+			if err != nil {
+				fmt.Printf("错误: 创建拆分交易失败: %v\n", err)
+				fmt.Println("提示: 请检查 USDC 余额和授权是否足够")
+				os.Exit(1)
+			}
+
+			fmt.Printf("交易已创建: %s\n", splitTx.Hash().Hex())
+			fmt.Printf("Gas Limit: %d\n", splitTx.Gas())
+			fmt.Printf("Gas Price: %s wei\n", splitTx.GasPrice().String())
+
+			// 发送交易（默认执行，无需确认）
 			fmt.Println("\n发送交易...")
 			splitTxHash, err := ctfClient.SendTransaction(ctx, splitTx)
 			if err != nil {
@@ -326,14 +464,14 @@ func main() {
 		// 重新检查 YES 和 NO 余额
 		if yesCollectionId, err := ctfClient.GetCollectionId(parentCollectionId, conditionIdHash, big.NewInt(1)); err == nil {
 			if yesPositionId, err := ctfClient.GetPositionId(ctfClient.GetCollateralToken(), yesCollectionId); err == nil {
-				if balance, err := ctfClient.GetConditionalTokenBalance(ctx, yesPositionId); err == nil {
+				if balance, err := ctfClient.GetConditionalTokenBalanceForAddress(ctx, proxyAddress, yesPositionId); err == nil {
 					yesBalance = balance
 				}
 			}
 		}
 		if noCollectionId, err := ctfClient.GetCollectionId(parentCollectionId, conditionIdHash, big.NewInt(2)); err == nil {
 			if noPositionId, err := ctfClient.GetPositionId(ctfClient.GetCollateralToken(), noCollectionId); err == nil {
-				if balance, err := ctfClient.GetConditionalTokenBalance(ctx, noPositionId); err == nil {
+				if balance, err := ctfClient.GetConditionalTokenBalanceForAddress(ctx, proxyAddress, noPositionId); err == nil {
 					noBalance = balance
 				}
 			}
@@ -359,32 +497,135 @@ func main() {
 
 		fmt.Printf("\n准备合并: %.6f YES + %.6f NO -> %.6f USDC\n", mergeAmount, mergeAmount, mergeAmount)
 
-		// 创建合并交易
-		mergeParams := client.MergePositionsParams{
-			ConditionId: gammaMarket.ConditionID,
-			Amount:      mergeAmount,
+		// 检查是否使用 relayer（需要代理地址和 Builder API 凭证）
+		// Builder API 凭证从环境变量读取（和 redeem 一样）
+		builderAPIKey := envConfig.BuilderAPIKey
+		if builderAPIKey == "" {
+			builderAPIKey = os.Getenv("BUILDER_API_KEY")
+		}
+		builderSecret := envConfig.BuilderSecret
+		if builderSecret == "" {
+			builderSecret = os.Getenv("BUILDER_SECRET")
+		}
+		builderPassPhrase := envConfig.BuilderPassPhrase
+		if builderPassPhrase == "" {
+			builderPassPhrase = os.Getenv("BUILDER_PASS_PHRASE")
 		}
 
-		fmt.Println("\n创建合并交易...")
-		mergeTx, err := ctfClient.MergePositions(ctx, mergeParams)
-		if err != nil {
-			fmt.Printf("错误: 创建合并交易失败: %v\n", err)
-			fmt.Println("提示: 请检查 YES 和 NO 代币余额是否足够")
-			os.Exit(1)
-		}
+		useRelayer := envConfig.ProxyAddress != "" &&
+			builderAPIKey != "" &&
+			builderSecret != "" &&
+			builderPassPhrase != ""
 
-		fmt.Printf("交易已创建: %s\n", mergeTx.Hash().Hex())
-		fmt.Printf("Gas Limit: %d\n", mergeTx.Gas())
-		fmt.Printf("Gas Price: %s wei\n", mergeTx.GasPrice().String())
+		if useRelayer {
+			// 使用 Relayer 执行交易（通过代理钱包）
+			fmt.Println("\n使用 Relayer 通过代理钱包执行合并交易（gasless）...")
 
-		// 询问是否发送
-		fmt.Print("\n是否发送合并交易? (y/n): ")
-		var confirm string
-		fmt.Scanln(&confirm)
-		if confirm != "y" && confirm != "Y" {
-			fmt.Println("已取消合并操作")
+			// 转换金额为6位小数精度
+			mergeAmountBigInt := new(big.Int)
+			mergeAmountFloat := new(big.Float).SetFloat64(mergeAmount)
+			decimals := new(big.Float).SetInt64(1000000) // 10^6
+			mergeAmountFloat.Mul(mergeAmountFloat, decimals)
+			mergeAmountBigInt, _ = mergeAmountFloat.Int(nil)
+
+			// 构建 merge 交易
+			conditionIdHash := common.HexToHash(gammaMarket.ConditionID)
+			apiTx, err := api.BuildMergeTransaction(conditionIdHash, mergeAmountBigInt)
+			if err != nil {
+				fmt.Printf("错误: 构建合并交易失败: %v\n", err)
+				os.Exit(1)
+			}
+
+			// 转换为 relayer 交易格式
+			relayerTx := relayertypes.SafeTransaction{
+				To:        apiTx.To.Hex(),
+				Operation: relayertypes.OperationType(apiTx.Operation),
+				Data:      "0x" + hex.EncodeToString(apiTx.Data),
+				Value:     apiTx.Value.String(),
+			}
+
+			// 创建签名函数
+			signFn := func(signer string, digest []byte) ([]byte, error) {
+				sig, err := crypto.Sign(digest, privateKey)
+				if err != nil {
+					return nil, err
+				}
+				// Adjust v value for Ethereum (add 27)
+				if sig[64] < 27 {
+					sig[64] += 27
+				}
+				return sig, nil
+			}
+
+			// 创建 relayer 客户端
+			relayerURL := "https://relayer-v2.polymarket.com"
+			builderCreds := &sdktypes.BuilderApiKeyCreds{
+				Key:        builderAPIKey,
+				Secret:     builderSecret,
+				Passphrase: builderPassPhrase,
+			}
+			chainIDBigInt := big.NewInt(int64(chainID))
+			relayerClient := relayer.NewClient(relayerURL, chainIDBigInt, signFn, builderCreds)
+
+			// 创建 auth option
+			authOption := &sdktypes.AuthOption{
+				SingerAddress: address.Hex(),
+				FunderAddress: proxyAddress.Hex(),
+			}
+
+			// 通过 Relayer 执行交易（默认使用，无需确认）
+			fmt.Println("\n通过 Relayer 发送交易...")
+			metadata := fmt.Sprintf("Merge %.6f positions for %s", mergeAmount, gammaMarket.Slug)
+			if len(metadata) > 500 {
+				metadata = metadata[:497] + "..."
+			}
+
+			resp, err := relayerClient.Execute([]relayertypes.SafeTransaction{relayerTx}, metadata, authOption)
+			if err != nil {
+				fmt.Printf("错误: Relayer 执行失败: %v\n", err)
+				os.Exit(1)
+			}
+
+			txHash := resp.TransactionHash
+			if txHash == "" {
+				txHash = resp.Hash
+			}
+
+			fmt.Printf("\n✓ 合并交易已通过 Relayer 提交!\n")
+			fmt.Printf("  交易ID: %s\n", resp.TransactionID)
+			fmt.Printf("  交易哈希: %s\n", txHash)
+			fmt.Printf("  状态: %s\n", resp.State)
+			fmt.Printf("\n您已获得 %.6f USDC（在代理地址 %s）\n", mergeAmount, proxyAddress.Hex())
 		} else {
-			// 发送交易
+			// 使用直接调用 CTF 合约的方式
+			// 如果配置了代理地址但没有 Builder API 凭证，提示用户
+			if envConfig.ProxyAddress != "" {
+				fmt.Printf("\n⚠️  提示: 检测到代理地址，但未配置 Builder API 凭证\n")
+				fmt.Println("  配置 Builder API 凭证（BUILDER_API_KEY, BUILDER_SECRET, BUILDER_PASS_PHRASE）")
+				fmt.Println("  可以使用 Relayer 通过代理钱包执行交易（gasless，不需要 MATIC）")
+				fmt.Println("  当前将使用直接调用模式（需要交易账户地址有代币和 MATIC）")
+				fmt.Println()
+			}
+
+			// 创建合并交易
+			mergeParams := client.MergePositionsParams{
+				ConditionId: gammaMarket.ConditionID,
+				Amount:      mergeAmount,
+			}
+
+			fmt.Println("\n创建合并交易...")
+			mergeTx, err := ctfClient.MergePositions(ctx, mergeParams)
+			if err != nil {
+				fmt.Printf("错误: 创建合并交易失败: %v\n", err)
+				fmt.Println("提示: 请检查 YES 和 NO 代币余额是否足够")
+				os.Exit(1)
+			}
+
+			fmt.Printf("交易已创建: %s\n", mergeTx.Hash().Hex())
+			fmt.Printf("Gas Limit: %d\n", mergeTx.Gas())
+			fmt.Printf("Gas Price: %s wei\n", mergeTx.GasPrice().String())
+
+			// 发送交易（默认执行，无需确认）
 			fmt.Println("\n发送交易...")
 			mergeTxHash, err := ctfClient.SendTransaction(ctx, mergeTx)
 			if err != nil {
@@ -442,20 +683,20 @@ func main() {
 	fmt.Println("最终状态")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-	finalUSDCBalance, _ := ctfClient.GetUSDCBalance(ctx)
-	fmt.Printf("USDC余额: %.6f USDC\n", finalUSDCBalance)
+	finalUSDCBalance, _ := ctfClient.GetUSDCBalanceForAddress(ctx, proxyAddress)
+	fmt.Printf("USDC余额（地址 %s）: %.6f USDC\n", proxyAddress.Hex(), finalUSDCBalance)
 
 	if yesCollectionId, err := ctfClient.GetCollectionId(parentCollectionId, conditionIdHash, big.NewInt(1)); err == nil {
 		if yesPositionId, err := ctfClient.GetPositionId(ctfClient.GetCollateralToken(), yesCollectionId); err == nil {
-			if balance, err := ctfClient.GetConditionalTokenBalance(ctx, yesPositionId); err == nil {
-				fmt.Printf("YES代币余额: %.6f\n", balance)
+			if balance, err := ctfClient.GetConditionalTokenBalanceForAddress(ctx, proxyAddress, yesPositionId); err == nil {
+				fmt.Printf("YES代币余额（地址 %s）: %.6f\n", proxyAddress.Hex(), balance)
 			}
 		}
 	}
 	if noCollectionId, err := ctfClient.GetCollectionId(parentCollectionId, conditionIdHash, big.NewInt(2)); err == nil {
 		if noPositionId, err := ctfClient.GetPositionId(ctfClient.GetCollateralToken(), noCollectionId); err == nil {
-			if balance, err := ctfClient.GetConditionalTokenBalance(ctx, noPositionId); err == nil {
-				fmt.Printf("NO代币余额: %.6f\n", balance)
+			if balance, err := ctfClient.GetConditionalTokenBalanceForAddress(ctx, proxyAddress, noPositionId); err == nil {
+				fmt.Printf("NO代币余额（地址 %s）: %.6f\n", proxyAddress.Hex(), balance)
 			}
 		}
 	}
@@ -463,80 +704,26 @@ func main() {
 	fmt.Println("\n✓ 测试完成!")
 }
 
-// loadEnvConfig 从当前目录的 .env 文件加载配置
+// loadEnvConfig 从 .env 文件和环境变量加载配置
+// 注意：godotenv.Load() 已经将 .env 文件加载到环境变量中，这里直接读取环境变量即可
 func loadEnvConfig() (*EnvConfig, error) {
-	// 获取当前工作目录
-	wd, err := os.Getwd()
-	if err != nil {
-		return nil, fmt.Errorf("获取当前工作目录失败: %w", err)
-	}
-
-	// 尝试从当前工作目录读取 .env 文件
-	envPath := filepath.Join(wd, ".env")
-
-	// 如果当前目录没有，尝试从可执行文件所在目录读取
-	if _, err := os.Stat(envPath); os.IsNotExist(err) {
-		if execPath, err := os.Executable(); err == nil {
-			execDir := filepath.Dir(execPath)
-			envPath = filepath.Join(execDir, ".env")
-		}
-	}
-
 	config := &EnvConfig{}
 
-	// 如果文件不存在，返回错误
-	if _, err := os.Stat(envPath); os.IsNotExist(err) {
-		return config, fmt.Errorf(".env 文件不存在: %s (请在当前目录创建 .env 文件)", envPath)
-	}
+	// 从环境变量读取（godotenv.Load() 已经加载了 .env 文件）
+	config.PrivateKey = strings.TrimSpace(os.Getenv("PRIVATE_KEY"))
+	config.RPCURL = strings.TrimSpace(os.Getenv("RPC_URL"))
+	config.Amount = strings.TrimSpace(os.Getenv("AMOUNT"))
+	config.ChainID = strings.TrimSpace(os.Getenv("CHAIN_ID"))
+	config.SkipSplit = strings.TrimSpace(os.Getenv("SKIP_SPLIT"))
+	config.SkipMerge = strings.TrimSpace(os.Getenv("SKIP_MERGE"))
+	config.ProxyAddress = strings.TrimSpace(os.Getenv("PROXY_ADDRESS"))
+	config.BuilderAPIKey = strings.TrimSpace(os.Getenv("BUILDER_API_KEY"))
+	config.BuilderSecret = strings.TrimSpace(os.Getenv("BUILDER_SECRET"))
+	config.BuilderPassPhrase = strings.TrimSpace(os.Getenv("BUILDER_PASS_PHRASE"))
 
-	file, err := os.Open(envPath)
-	if err != nil {
-		return nil, fmt.Errorf("打开 .env 文件失败: %w", err)
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-
-		// 跳过空行和注释
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		// 解析 KEY=VALUE 格式
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-
-		// 移除引号（如果存在）
-		if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') ||
-			(value[0] == '\'' && value[len(value)-1] == '\'')) {
-			value = value[1 : len(value)-1]
-		}
-
-		switch key {
-		case "PRIVATE_KEY":
-			config.PrivateKey = value
-		case "RPC_URL":
-			config.RPCURL = value
-		case "AMOUNT":
-			config.Amount = value
-		case "CHAIN_ID":
-			config.ChainID = value
-		case "SKIP_SPLIT":
-			config.SkipSplit = value
-		case "SKIP_MERGE":
-			config.SkipMerge = value
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("读取 .env 文件失败: %w", err)
+	// 如果私钥为空，返回错误
+	if config.PrivateKey == "" {
+		return config, fmt.Errorf("PRIVATE_KEY 未设置（请在 .env 文件或环境变量中设置）")
 	}
 
 	return config, nil
