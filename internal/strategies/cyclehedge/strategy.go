@@ -192,7 +192,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	}
 
 	// closeout window：临近结算撤单+停止新增
-	if s.EntryCutoffSeconds > 0 && isWithinEntryCutoff(m, s.EntryCutoffSeconds) {
+	if s.EntryCutoffSeconds > 0 && s.withinEntryCutoff(m) {
 		orderCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		s.TradingService.CancelOrdersForMarket(orderCtx, m.Slug)
 		cancel()
@@ -235,6 +235,18 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	maxShares := math.Max(upShares, downShares)
 	unhedged := maxShares - minShares
 
+	// 每周期最大单向持仓：到阈值则不再扩大规模（只允许补齐/回平）。
+	if s.MaxSingleSideShares > 0 && maxShares >= s.MaxSingleSideShares {
+		// 若没有裸露，撤掉挂单，避免继续被动成交扩大规模
+		if unhedged < s.MinUnhedgedShares {
+			cancelCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			s.TradingService.CancelOrdersForMarket(cancelCtx, m.Slug)
+			cancel()
+		}
+		s.maybeLog(now, m, fmt.Sprintf("maxSingleSideShares reached: up=%.2f down=%.2f limit=%.2f", upShares, downShares, s.MaxSingleSideShares))
+		// 仍允许下面的“超时补齐/回平”处理裸露风险
+	}
+
 	// 1) 已达到目标：撤单，持有到结算
 	s.stateMu.Lock()
 	targetShares := s.targetShares
@@ -263,7 +275,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		age := now.Sub(firstFillAt)
 
 		// 超时/临近结算：执行“补齐或回平”
-		if age >= time.Duration(s.UnhedgedTimeoutSeconds)*time.Second || isWithinEntryCutoff(m, s.EntryCutoffSeconds) {
+		if age >= time.Duration(s.UnhedgedTimeoutSeconds)*time.Second || s.withinEntryCutoff(m) {
 			// prefer: taker 补齐（只要不亏/仍有最小利润）
 			if s.AllowTakerComplete {
 				minProfit := s.MinProfitAfterCompleteCents
@@ -323,19 +335,8 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		}
 	}
 
-	// 3) 正常建仓：选择本轮 profitCents（尽量大，但要能挂成 maker 且两腿都贴近盘口）
-	// 尝试 profit 从大到小，找到可行的 maker bid 组合
-	chosenProfit := 0
-	chYesBidC, chNoBidC := 0, 0
-	for p := s.ProfitMaxCents; p >= s.ProfitMinCents; p-- {
-		yb, nb, ok := chooseMakerBids(yesBidC, yesAskC, noBidC, noAskC, p)
-		if !ok {
-			continue
-		}
-		chosenProfit = p
-		chYesBidC, chNoBidC = yb, nb
-		break
-	}
+	// 3) 正常建仓：动态选择 profitCents（收益 vs 成交概率）
+	chosenProfit, chYesBidC, chNoBidC := s.chooseDynamicProfit(yesBidC, yesAskC, noBidC, noAskC)
 	if chosenProfit == 0 {
 		// 当前盘口没法用 maker 锁 1~5c：先不做（等待更好时机）
 		return
@@ -460,13 +461,18 @@ func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Mark
 		}
 	}
 
-	// 目标 notional：min(maxNotional, max(minNotional, bal*alloc))
-	tn := math.Max(s.MinNotionalUSDC, bal*s.BalanceAllocationPct)
-	if tn > s.MaxNotionalUSDC {
-		tn = s.MaxNotionalUSDC
-	}
-	if tn < s.MinNotionalUSDC {
-		tn = s.MinNotionalUSDC
+	// 目标 notional：固定 or 按余额滚动
+	tn := 0.0
+	if s.FixedNotionalUSDC > 0 {
+		tn = s.FixedNotionalUSDC
+	} else {
+		tn = math.Max(s.MinNotionalUSDC, bal*s.BalanceAllocationPct)
+		if tn > s.MaxNotionalUSDC {
+			tn = s.MaxNotionalUSDC
+		}
+		if tn < s.MinNotionalUSDC {
+			tn = s.MinNotionalUSDC
+		}
 	}
 
 	s.stateMu.Lock()
@@ -570,12 +576,56 @@ func chooseMakerBids(yesBidC, yesAskC, noBidC, noAskC, profitCents int) (chosenY
 	return candYes, candNo, true
 }
 
-func isWithinEntryCutoff(m *domain.Market, cutoffSeconds int) bool {
-	if m == nil || cutoffSeconds <= 0 || m.Timestamp <= 0 {
+func (s *Strategy) withinEntryCutoff(m *domain.Market) bool {
+	if s == nil || m == nil || s.EntryCutoffSeconds <= 0 || m.Timestamp <= 0 {
 		return false
 	}
-	// 仅按 timeframe=15m 推断（本策略目标就是 btc 15m）
-	end := time.Unix(m.Timestamp, 0).Add(15 * time.Minute)
-	return time.Until(end) <= time.Duration(cutoffSeconds)*time.Second
+	dur := time.Duration(s.CycleDurationSeconds) * time.Second
+	if dur <= 0 {
+		dur = 15 * time.Minute
+	}
+	end := time.Unix(m.Timestamp, 0).Add(dur)
+	return time.Until(end) <= time.Duration(s.EntryCutoffSeconds)*time.Second
+}
+
+// chooseDynamicProfit 在 profit 区间内根据“收益 vs 成交概率（离盘口距离）”选最优。
+// score = profit - (distancePenaltyBps/100)*maxDistanceCents
+func (s *Strategy) chooseDynamicProfit(yesBidC, yesAskC, noBidC, noAskC int) (chosenProfit, chosenYesBidC, chosenNoBidC int) {
+	bestScore := -1e9
+	bestProfit := 0
+	bestYes, bestNo := 0, 0
+
+	penaltyPerCent := float64(s.DistancePenaltyBps) / 100.0
+	for p := s.ProfitMinCents; p <= s.ProfitMaxCents; p++ {
+		yb, nb, ok := chooseMakerBids(yesBidC, yesAskC, noBidC, noAskC, p)
+		if !ok {
+			continue
+		}
+		// 离盘口距离：越远越难成交
+		dYes := absInt(yesBidC - yb)
+		dNo := absInt(noBidC - nb)
+		maxD := dYes
+		if dNo > maxD {
+			maxD = dNo
+		}
+
+		score := float64(p)
+		if s.EnableDynamicProfit {
+			score = float64(p) - penaltyPerCent*float64(maxD)
+		}
+		if score > bestScore {
+			bestScore = score
+			bestProfit = p
+			bestYes, bestNo = yb, nb
+		}
+	}
+	return bestProfit, bestYes, bestNo
+}
+
+func absInt(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 

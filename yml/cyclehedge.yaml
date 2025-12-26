@@ -12,9 +12,15 @@
 exchangeStrategies:
   - on: polymarket
     cyclehedge:
+      # 周期长度（秒）：btc 15m = 900
+      cycleDurationSeconds: 900
+
       # 锁利区间：优先尝试 profitMaxCents，若盘口不允许则向下尝试到 profitMinCents
       profitMinCents: 1
       profitMaxCents: 5
+      # 动态 profit：在区间内按“收益 vs 距离盘口的远近”选最优
+      enableDynamicProfit: true
+      distancePenaltyBps: 30
 
       # 单腿裸露处理：
       # - allowTakerComplete=true：优先用 FAK 补齐另一腿（只要不低于 minProfitAfterCompleteCents）
@@ -26,9 +32,13 @@ exchangeStrategies:
       minUnhedgedShares: 1
 
       # 每周期投入（USDC notional）：min/max + 按余额比例滚动
+      # fixedNotionalUSDC: 3000   # 若设置>0，则每周期固定使用该资金量（不随余额滚动）
       minNotionalUSDC: 30
       maxNotionalUSDC: 3000
       balanceAllocationPct: 0.8
+
+      # 每周期最大单向持仓（shares）
+      maxSingleSideShares: 5000
 
       # 执行节奏
       requoteMs: 800

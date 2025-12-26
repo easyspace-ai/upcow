@@ -17,8 +17,16 @@ P_{YES} + P_{NO} \le 1 - \text{profit}
 - **风控可控**：最大风险是“只成交一腿”，策略用超时/临近结算的补齐或回平来处理。
 
 ### 关键参数建议（起步到 3000U）
+- **fixedNotionalUSDC / minNotionalUSDC / maxNotionalUSDC / balanceAllocationPct**
+  - `fixedNotionalUSDC>0`：每周期固定投入（更稳定、更好回测/审计）。
+  - 否则使用 `balanceAllocationPct` 按余额滚动放大，并受 `maxNotionalUSDC` 上限约束。
+- **maxSingleSideShares**
+  - 每周期最大单向持仓（shares）。用于限制“只成交一腿/偏斜”导致的风险累积。
 - **profitMinCents / profitMaxCents**
   - 起步建议 `1~3c`，资金大后仍建议把上限控制在 `<=5c`（越大越难成交，可能错过周期）。
+- **enableDynamicProfit / distancePenaltyBps**
+  - 开启后策略会在 1–5c 内动态选 profit：profit 越大越好，但挂单离盘口越远越难成交。
+  - `distancePenaltyBps` 越大越倾向“更贴盘口、更容易成交”的小 profit。
 - **minNotionalUSDC / maxNotionalUSDC / balanceAllocationPct**
   - `maxNotionalUSDC: 3000`：你的资金目标上限。
   - `balanceAllocationPct: 0.8`：让策略自动滚动放大，同时留出缓冲。
