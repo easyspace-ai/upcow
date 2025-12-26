@@ -314,6 +314,10 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 				minProfit := s.MinProfitAfterCompleteCents
 				if yesAskC+noAskC <= 100-minProfit {
 					need := unhedged
+					need = s.clampOrderSize(need)
+					if need < s.MinUnhedgedShares {
+						return
+					}
 					missingTok := domain.TokenTypeUp
 					missingAsset := m.YesAssetID
 					missingAsk := yesAsk
@@ -354,6 +358,10 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 					excessAsset = m.NoAssetID
 					excessBid = noBid
 				}
+				size := s.clampOrderSize(unhedged)
+				if size < s.MinUnhedgedShares {
+					return
+				}
 				flattenCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 				_, _ = s.TradingService.PlaceOrder(flattenCtx, &domain.Order{
 					MarketSlug: m.Slug,
@@ -361,7 +369,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 					TokenType:  excessTok,
 					Side:       types.SideSell,
 					Price:      excessBid,
-					Size:       unhedged,
+					Size:       size,
 					OrderType:  types.OrderTypeFAK,
 				})
 				cancel()
@@ -437,6 +445,10 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 
 	// 下 YES
 	if needUp >= s.MinUnhedgedShares {
+		needUp = s.clampOrderSize(needUp)
+		if needUp < s.MinUnhedgedShares {
+			return
+		}
 		placeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		ord, err := s.TradingService.PlaceOrder(placeCtx, &domain.Order{
 			MarketSlug: m.Slug,
@@ -457,6 +469,10 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	}
 	// 下 NO
 	if needDown >= s.MinUnhedgedShares {
+		needDown = s.clampOrderSize(needDown)
+		if needDown < s.MinUnhedgedShares {
+			return
+		}
 		placeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		ord, err := s.TradingService.PlaceOrder(placeCtx, &domain.Order{
 			MarketSlug: m.Slug,
@@ -483,6 +499,17 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		s.maybeLog(now, m, fmt.Sprintf("quote: profit=%dc cost=%dc tn=%.2f shares=%.2f need(up=%.2f down=%.2f) bids(yes=%dc no=%dc) book(yes %d/%d no %d/%d) src=%s",
 			chosenProfit, costCents, tn, shares, needUp, needDown, chYesBidC, chNoBidC, yesBidC, yesAskC, noBidC, noAskC, source))
 	}
+}
+
+func (s *Strategy) clampOrderSize(size float64) float64 {
+	if s == nil {
+		return size
+	}
+	limit := s.MaxOrderSizeShares
+	if limit > 0 && size > limit {
+		return limit
+	}
+	return size
 }
 
 func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Market) {

@@ -39,6 +39,9 @@ exchangeStrategies:
 
       # 每周期最大单向持仓（shares）：40U 情况下正常在几十 shares 级别，这里给一个保守上限
       maxSingleSideShares: 50
+      
+      # 单笔最大下单数量（shares）：硬风控，避免单笔失控
+      maxOrderSizeShares: 20
 
       # 报价刷新
       requoteMs: 1000
