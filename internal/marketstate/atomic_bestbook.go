@@ -48,6 +48,20 @@ func NewAtomicBestBook() *AtomicBestBook {
 	return b
 }
 
+// Reset 清空所有缓存的 top-of-book 数据。
+//
+// 重要：必须“原地重置”，不能通过替换 *AtomicBestBook 指针来 reset。
+// 因为上层（Session/策略）通常会缓存 BestBook 指针，替换指针会导致它们继续读到旧对象里的旧数据。
+func (b *AtomicBestBook) Reset() {
+	if b == nil {
+		return
+	}
+	b.pricesPacked.Store(0)
+	b.bidSizesPacked.Store(0)
+	b.askSizesPacked.Store(0)
+	b.updatedAtUnixMs.Store(0)
+}
+
 func (b *AtomicBestBook) Load() BestBookSnapshot {
 	p := b.pricesPacked.Load()
 	bids := b.bidSizesPacked.Load()
@@ -180,4 +194,3 @@ func packPrices(yesBid, yesAsk, noBid, noAsk uint16) uint64 {
 func packSizes(yes, no uint32) uint64 {
 	return (uint64(yes) << 32) | uint64(no)
 }
-

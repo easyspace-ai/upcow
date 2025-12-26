@@ -214,8 +214,11 @@ func (m *MarketStream) SwitchMarket(ctx context.Context, oldMarket, newMarket *d
 		marketLog.Infof("✅ [切换市场] 已订阅新市场(UP-only): %s", newMarket.Slug)
 
 		// 重置 bestBook（新市场需要重新构建订单簿）
-		// 创建新的 AtomicBestBook 实例来重置状态
+		// 注意：不能替换 bestBook 指针，否则 Session/策略若缓存了旧指针，会继续读到旧盘口（数据污染）。
+		// 必须原地 Reset。
 		if m.bestBook != nil {
+			m.bestBook.Reset()
+		} else {
 			m.bestBook = marketstate.NewAtomicBestBook()
 		}
 
