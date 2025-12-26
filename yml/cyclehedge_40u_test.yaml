@@ -45,3 +45,9 @@ exchangeStrategies:
       marketQualityMaxSpreadCents: 5
       marketQualityMaxBookAgeMs: 3000
 
+      # 周期报表：写入 data/reports/cyclehedge/
+      enableReport: true
+      reportDir: "data/reports/cyclehedge"
+      reportWriteJSONL: true
+      reportWritePerCycle: true
+

@@ -69,6 +69,12 @@ type Config struct {
 	// （maxDistanceCents 指 yes/no 两腿中离 bestBid 更远的一腿）
 	EnableDynamicProfit bool `yaml:"enableDynamicProfit" json:"enableDynamicProfit"`
 	DistancePenaltyBps  int  `yaml:"distancePenaltyBps" json:"distancePenaltyBps"` // 默认 30（=0.30c penalty per 1c distance）
+
+	// ===== 周期报表（写文件）=====
+	EnableReport      *bool  `yaml:"enableReport" json:"enableReport"`           // 默认 true
+	ReportDir         string `yaml:"reportDir" json:"reportDir"`                 // 默认 data/reports/cyclehedge
+	ReportWriteJSONL  *bool  `yaml:"reportWriteJSONL" json:"reportWriteJSONL"`   // 默认 true：追加到 report.jsonl
+	ReportWritePerCycle *bool `yaml:"reportWritePerCycle" json:"reportWritePerCycle"` // 默认 true：每周期单独一个 JSON
 }
 
 func boolPtr(b bool) *bool { return &b }
@@ -164,6 +170,19 @@ func (c *Config) Validate() error {
 	}
 	if c.DistancePenaltyBps < 0 || c.DistancePenaltyBps > 500 {
 		return fmt.Errorf("distancePenaltyBps 建议在 [1,500] 范围内")
+	}
+
+	if c.EnableReport == nil {
+		c.EnableReport = boolPtr(true)
+	}
+	if c.ReportDir == "" {
+		c.ReportDir = "data/reports/cyclehedge"
+	}
+	if c.ReportWriteJSONL == nil {
+		c.ReportWriteJSONL = boolPtr(true)
+	}
+	if c.ReportWritePerCycle == nil {
+		c.ReportWritePerCycle = boolPtr(true)
 	}
 
 	// 默认开启补齐/回平：这是“确定性锁利”最关键的风险控制

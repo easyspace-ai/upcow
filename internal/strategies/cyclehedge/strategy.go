@@ -53,6 +53,31 @@ type Strategy struct {
 
 	firstFillAt time.Time
 	lastLogAt   time.Time
+
+	// cycle stats (for reporting)
+	stats cycleStats
+}
+
+type cycleStats struct {
+	MarketSlug string
+	CycleStartUnix int64
+	CycleEndUnix   int64
+
+	TargetNotionalUSDC float64
+	TargetShares       float64
+
+	Quotes int64
+	OrdersPlacedYes int64
+	OrdersPlacedNo  int64
+	Cancels         int64
+
+	TakerCompletes  int64
+	Flattens        int64
+	CloseoutCancels int64
+	MaxSingleSideStops int64
+
+	ProfitChoice map[int]int64 // profitCents -> count
+	LastChosenProfit int
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -69,6 +94,9 @@ func (s *Strategy) Initialize() error {
 	}
 	if s.latest == nil {
 		s.latest = make(map[domain.TokenType]*events.PriceChangedEvent)
+	}
+	if s.stats.ProfitChoice == nil {
+		s.stats.ProfitChoice = make(map[int]int64)
 	}
 
 	// 只处理当前 market 前缀，避免误交易
@@ -104,9 +132,13 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.Exchan
 	return ctx.Err()
 }
 
-func (s *Strategy) OnCycle(ctx context.Context, _ *domain.Market, newMarket *domain.Market) {
+func (s *Strategy) OnCycle(ctx context.Context, oldMarket *domain.Market, newMarket *domain.Market) {
 	if newMarket == nil {
 		return
+	}
+	// 周期结束：先落盘旧周期报表
+	if oldMarket != nil {
+		s.finalizeAndReport(ctx, oldMarket)
 	}
 	// 用周期回调快速重置
 	now := time.Now()
@@ -196,6 +228,9 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		orderCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		s.TradingService.CancelOrdersForMarket(orderCtx, m.Slug)
 		cancel()
+		s.stateMu.Lock()
+		s.stats.CloseoutCancels++
+		s.stateMu.Unlock()
 		s.maybeLog(now, m, "closeout: cancel & pause entries")
 		return
 	}
@@ -242,7 +277,13 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			cancelCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			s.TradingService.CancelOrdersForMarket(cancelCtx, m.Slug)
 			cancel()
+			s.stateMu.Lock()
+			s.stats.Cancels++
+			s.stateMu.Unlock()
 		}
+		s.stateMu.Lock()
+		s.stats.MaxSingleSideStops++
+		s.stateMu.Unlock()
 		s.maybeLog(now, m, fmt.Sprintf("maxSingleSideShares reached: up=%.2f down=%.2f limit=%.2f", upShares, downShares, s.MaxSingleSideShares))
 		// 若没有裸露风险：直接停止本周期新增挂单/加仓（只持有到结算）
 		if unhedged < s.MinUnhedgedShares {
@@ -305,6 +346,9 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 						OrderType:  types.OrderTypeFAK,
 					})
 					cancel()
+					s.stateMu.Lock()
+					s.stats.TakerCompletes++
+					s.stateMu.Unlock()
 					s.maybeLog(now, m, fmt.Sprintf("unhedged->taker_complete: need=%.2f missing=%s ask=%dc minProfit=%dc", need, missingTok, missingAsk.ToCents(), minProfit))
 					return
 				}
@@ -333,6 +377,9 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 					OrderType:  types.OrderTypeFAK,
 				})
 				cancel()
+				s.stateMu.Lock()
+				s.stats.Flattens++
+				s.stateMu.Unlock()
 				s.maybeLog(now, m, fmt.Sprintf("unhedged->flatten: sell=%.2f token=%s bid=%dc", unhedged, excessTok, excessBid.ToCents()))
 				return
 			}
@@ -385,6 +432,12 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	s.stateMu.Lock()
 	s.targetShares = shares
 	s.targetProfitCents = chosenProfit
+	s.stats.LastChosenProfit = chosenProfit
+	if s.stats.ProfitChoice == nil {
+		s.stats.ProfitChoice = make(map[int]int64)
+	}
+	s.stats.ProfitChoice[chosenProfit]++
+	s.stats.TargetShares = shares
 	s.stateMu.Unlock()
 
 	// 如果本次将要下单，先撤掉旧的挂单（避免多单堆叠）
@@ -393,6 +446,9 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		cancelCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		s.TradingService.CancelOrdersForMarket(cancelCtx, m.Slug)
 		cancel()
+		s.stateMu.Lock()
+		s.stats.Cancels++
+		s.stateMu.Unlock()
 		s.yesOrderID, s.noOrderID = "", ""
 	}
 
@@ -411,6 +467,9 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		cancel()
 		if err == nil && ord != nil {
 			s.yesOrderID = ord.OrderID
+			s.stateMu.Lock()
+			s.stats.OrdersPlacedYes++
+			s.stateMu.Unlock()
 		}
 	}
 	// 下 NO
@@ -428,10 +487,16 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		cancel()
 		if err == nil && ord != nil {
 			s.noOrderID = ord.OrderID
+			s.stateMu.Lock()
+			s.stats.OrdersPlacedNo++
+			s.stateMu.Unlock()
 		}
 	}
 
 	if needUp >= s.MinUnhedgedShares || needDown >= s.MinUnhedgedShares {
+		s.stateMu.Lock()
+		s.stats.Quotes++
+		s.stateMu.Unlock()
 		s.maybeLog(now, m, fmt.Sprintf("quote: profit=%dc cost=%dc tn=%.2f shares=%.2f need(up=%.2f down=%.2f) bids(yes=%dc no=%dc) book(yes %d/%d no %d/%d) src=%s",
 			chosenProfit, costCents, tn, shares, needUp, needDown, chYesBidC, chNoBidC, yesBidC, yesAskC, noBidC, noAskC, source))
 	}
@@ -447,6 +512,15 @@ func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Mark
 	s.yesOrderID, s.noOrderID = "", ""
 	s.firstFillAt = time.Time{}
 	s.lastLogAt = time.Time{}
+
+	// reset stats for new cycle
+	s.stats = cycleStats{
+		MarketSlug: m.Slug,
+		CycleStartUnix: m.Timestamp,
+		TargetNotionalUSDC: 0,
+		TargetShares: 0,
+		ProfitChoice: make(map[int]int64),
+	}
 	s.stateMu.Unlock()
 
 	// 周期切换先撤掉本周期旧挂单（保险）
@@ -481,6 +555,7 @@ func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Mark
 
 	s.stateMu.Lock()
 	s.targetNotional = tn
+	s.stats.TargetNotionalUSDC = tn
 	s.stateMu.Unlock()
 
 	log.Infof("🔄 [%s] 周期重置: market=%s start=%d balance=%.2f targetNotional=%.2f profitRange=[%d,%d]c",

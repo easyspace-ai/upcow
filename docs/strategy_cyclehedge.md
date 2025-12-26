@@ -40,3 +40,13 @@ P_{YES} + P_{NO} \le 1 - \text{profit}
 - 参考 `yml/cyclehedge.yaml` 把策略挂到 `exchangeStrategies`。
 - 建议先 `dry_run: true` 跑 1-2 天观察日志：是否能稳定完成两腿、是否频繁触发补齐/回平。
 
+### 周期报表（保存到文件）
+策略会在**周期切换**（OnCycle）时输出并写盘上一周期的报表（JSON / JSONL），默认目录：
+- `data/reports/cyclehedge/`
+
+配置项：
+- `enableReport`: 是否启用（默认 true）
+- `reportDir`: 输出目录（默认 `data/reports/cyclehedge`）
+- `reportWritePerCycle`: 每周期一个 JSON（默认 true）
+- `reportWriteJSONL`: 追加写入 `report.jsonl`（默认 true）
+
