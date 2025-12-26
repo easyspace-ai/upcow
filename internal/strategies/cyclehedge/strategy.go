@@ -410,7 +410,10 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	needUp := math.Max(0, shares-upShares)
 	needDown := math.Max(0, shares-downShares)
 
-	// 如果已经部分成交，避免继续加仓到更高目标导致裸露扩大：以 min(up,down)+delta 为上限
+	// ⚠️ 关键修复：确保同时下两腿，避免只下一腿导致裸露风险
+	// 核心原则：cyclehedge 策略必须同时下两腿，确保两腿同时成交，避免裸露风险
+	// 
+	// 如果已经部分成交且有裸露，只允许补齐到对侧，不再扩大总规模
 	if unhedged >= s.MinUnhedgedShares {
 		// 当已有裸露时，只允许补齐到对侧，不再扩大总规模
 		if upShares > downShares {
@@ -418,6 +421,27 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		} else if downShares > upShares {
 			needDown = 0
 		}
+	} else {
+		// ⚠️ 关键修复：如果没有裸露，必须确保同时下两腿
+		// 即使一腿已经达到目标（need == 0），也应该同时下两腿，确保两腿同时成交
+		// 这样可以避免只下一腿导致裸露风险
+		// 
+		// 修复逻辑：如果只有一腿需要下单（need > 0），但另一腿已经达到目标（need == 0），
+		// 应该强制另一腿也下单（即使 need == 0），确保两腿同时成交
+		if needUp > 0 && needDown == 0 {
+			// UP 需要下单，DOWN 已经达到目标（downShares >= shares）
+			// ⚠️ 修复：强制 DOWN 也下单，确保两腿同时成交
+			// 即使 DOWN 已经达到目标，也应该同时下两腿，避免只下 UP 导致裸露
+			// 设置一个最小单量，确保两腿同时成交
+			needDown = math.Max(s.MinUnhedgedShares, shares*0.1) // 至少下目标 shares 的 10% 或最小单量
+		} else if needDown > 0 && needUp == 0 {
+			// DOWN 需要下单，UP 已经达到目标（upShares >= shares）
+			// ⚠️ 修复：强制 UP 也下单，确保两腿同时成交
+			// 即使 UP 已经达到目标，也应该同时下两腿，避免只下 DOWN 导致裸露
+			// 设置一个最小单量，确保两腿同时成交
+			needUp = math.Max(s.MinUnhedgedShares, shares*0.1) // 至少下目标 shares 的 10% 或最小单量
+		}
+		// 如果两腿都需要下单（needUp > 0 && needDown > 0），这是正常的，同时下两腿
 	}
 
 	// 6) 下两腿 GTC（maker）：价格用 cents 构造

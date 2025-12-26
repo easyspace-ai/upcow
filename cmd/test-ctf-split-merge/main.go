@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"math/big"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/betbot/gobet/clob/client"
@@ -16,10 +18,14 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-// UserJSON 用户配置文件结构
-type UserJSON struct {
-	PrivateKey string `json:"private_key"`
-	RPCURL     string `json:"rpc_url"`
+// EnvConfig 从 .env 文件读取的配置
+type EnvConfig struct {
+	PrivateKey string
+	RPCURL     string
+	Amount     string
+	ChainID    string
+	SkipSplit  string
+	SkipMerge  string
 }
 
 // 测试 Demo: CTF 拆分与合并操作
@@ -30,14 +36,14 @@ type UserJSON struct {
 //   4. 执行 merge 操作（YES + NO -> USDC）
 //
 // 使用方法：
-//   1. 创建 data/user.json 文件，包含 private_key 和 rpc_url
-//   2. 设置环境变量（可选）：
-//      export AMOUNT="1.0"         # 要拆分/合并的USDC数量（默认 1.0）
-//      export CHAIN_ID=137          # Polygon主网（默认 137）
-//      export RPC_URL="https://polygon-rpc.com"  # RPC节点URL（可选，会从user.json读取）
-//      export SKIP_SPLIT=false     # 是否跳过拆分操作（默认 false）
-//      export SKIP_MERGE=false     # 是否跳过合并操作（默认 false）
-//   3. 运行：go run cmd/test-ctf-split-merge/main.go
+//   1. 在当前目录（cmd/test-ctf-split-merge/）创建 .env 文件，包含以下配置：
+//      PRIVATE_KEY=0x...           # 私钥（必需）
+//      RPC_URL=https://polygon-rpc.com  # RPC节点URL（可选，默认根据链ID自动选择）
+//      AMOUNT=1.0                   # 要拆分/合并的USDC数量（默认 1.0）
+//      CHAIN_ID=137                 # Polygon主网（默认 137）
+//      SKIP_SPLIT=false             # 是否跳过拆分操作（默认 false）
+//      SKIP_MERGE=false             # 是否跳过合并操作（默认 false）
+//   2. 运行：go run cmd/test-ctf-split-merge/main.go
 
 func main() {
 	fmt.Println("╔══════════════════════════════════════════════════════════════════════════╗")
@@ -45,8 +51,16 @@ func main() {
 	fmt.Println("╚══════════════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
-	// 从环境变量获取参数
-	amountStr := os.Getenv("AMOUNT")
+	// 从 .env 文件读取配置
+	envConfig, err := loadEnvConfig()
+	if err != nil {
+		fmt.Printf("错误: 加载 .env 配置失败: %v\n", err)
+		fmt.Println("提示: 请在当前目录创建 .env 文件，包含 PRIVATE_KEY 等配置")
+		os.Exit(1)
+	}
+
+	// 解析金额
+	amountStr := envConfig.Amount
 	if amountStr == "" {
 		amountStr = "1.0"
 	}
@@ -56,7 +70,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	chainIDStr := os.Getenv("CHAIN_ID")
+	// 解析链ID
+	chainIDStr := envConfig.ChainID
 	if chainIDStr == "" {
 		chainIDStr = "137" // 默认Polygon主网
 	}
@@ -67,19 +82,17 @@ func main() {
 	}
 	chainID := types.Chain(chainIDInt)
 
-	skipSplit := os.Getenv("SKIP_SPLIT") == "true"
-	skipMerge := os.Getenv("SKIP_MERGE") == "true"
+	skipSplit := envConfig.SkipSplit == "true"
+	skipMerge := envConfig.SkipMerge == "true"
 
-	// 读取用户配置
-	userJSON, err := loadUserConfig()
-	if err != nil {
-		fmt.Printf("错误: 加载用户配置失败: %v\n", err)
-		fmt.Println("提示: 请创建 data/user.json 文件，包含 private_key 和 rpc_url")
+	// 检查私钥
+	if envConfig.PrivateKey == "" {
+		fmt.Println("错误: .env 文件中缺少 PRIVATE_KEY")
 		os.Exit(1)
 	}
 
 	// 解析私钥
-	privateKey, err := crypto.HexToECDSA(userJSON.PrivateKey)
+	privateKey, err := crypto.HexToECDSA(envConfig.PrivateKey)
 	if err != nil {
 		fmt.Printf("错误: 解析私钥失败: %v\n", err)
 		os.Exit(1)
@@ -89,11 +102,8 @@ func main() {
 	address := crypto.PubkeyToAddress(privateKey.PublicKey)
 	fmt.Printf("账户地址: %s\n", address.Hex())
 
-	// 获取RPC URL（优先使用环境变量）
-	rpcURL := os.Getenv("RPC_URL")
-	if rpcURL == "" {
-		rpcURL = userJSON.RPCURL
-	}
+	// 获取RPC URL
+	rpcURL := envConfig.RPCURL
 	if rpcURL == "" {
 		// 默认RPC节点
 		if chainID == types.ChainPolygon {
@@ -111,9 +121,9 @@ func main() {
 
 	ctx := context.Background()
 
-	// ===== 步骤 1: 获取当前 BTC 15 分钟市场 =====
+	// ===== 步骤 1: 获取下一个 BTC 15 分钟市场 =====
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Println("步骤 1: 获取当前 BTC 15 分钟市场")
+	fmt.Println("步骤 1: 获取下一个 BTC 15 分钟市场")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	// 创建市场规格（BTC 15分钟）
@@ -128,13 +138,15 @@ func main() {
 		"15m": "{symbol}-{kind}-{timeframe}-{timestamp}",
 	}
 
-	// 获取当前周期的开始时间戳
+	// 获取当前周期的开始时间戳，然后计算下一个周期
 	now := time.Now()
-	periodStartUnix := marketSpec.CurrentPeriodStartUnix(now)
-	slug := marketSpec.Slug(periodStartUnix)
+	currentPeriodStartUnix := marketSpec.CurrentPeriodStartUnix(now)
+	nextPeriodStartUnix := marketSpec.NextPeriodStartUnix(currentPeriodStartUnix)
+	slug := marketSpec.Slug(nextPeriodStartUnix)
 
 	fmt.Printf("当前时间: %s\n", now.Format(time.RFC3339))
-	fmt.Printf("周期开始时间戳: %d\n", periodStartUnix)
+	fmt.Printf("当前周期开始时间戳: %d\n", currentPeriodStartUnix)
+	fmt.Printf("下一个周期开始时间戳: %d\n", nextPeriodStartUnix)
 	fmt.Printf("市场 Slug: %s\n", slug)
 	fmt.Println()
 
@@ -451,26 +463,81 @@ func main() {
 	fmt.Println("\n✓ 测试完成!")
 }
 
-// loadUserConfig 加载用户配置
-func loadUserConfig() (*UserJSON, error) {
-	configPath := "/pm/data/user.json"
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("配置文件不存在: %s", configPath)
-	}
-
-	data, err := os.ReadFile(configPath)
+// loadEnvConfig 从当前目录的 .env 文件加载配置
+func loadEnvConfig() (*EnvConfig, error) {
+	// 获取当前工作目录
+	wd, err := os.Getwd()
 	if err != nil {
-		return nil, fmt.Errorf("读取配置文件失败: %w", err)
+		return nil, fmt.Errorf("获取当前工作目录失败: %w", err)
 	}
 
-	var config UserJSON
-	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("解析配置文件失败: %w", err)
+	// 尝试从当前工作目录读取 .env 文件
+	envPath := filepath.Join(wd, ".env")
+
+	// 如果当前目录没有，尝试从可执行文件所在目录读取
+	if _, err := os.Stat(envPath); os.IsNotExist(err) {
+		if execPath, err := os.Executable(); err == nil {
+			execDir := filepath.Dir(execPath)
+			envPath = filepath.Join(execDir, ".env")
+		}
 	}
 
-	if config.PrivateKey == "" {
-		return nil, fmt.Errorf("配置文件缺少 private_key")
+	config := &EnvConfig{}
+
+	// 如果文件不存在，返回错误
+	if _, err := os.Stat(envPath); os.IsNotExist(err) {
+		return config, fmt.Errorf(".env 文件不存在: %s (请在当前目录创建 .env 文件)", envPath)
 	}
 
-	return &config, nil
+	file, err := os.Open(envPath)
+	if err != nil {
+		return nil, fmt.Errorf("打开 .env 文件失败: %w", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		// 跳过空行和注释
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// 解析 KEY=VALUE 格式
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+
+		// 移除引号（如果存在）
+		if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') ||
+			(value[0] == '\'' && value[len(value)-1] == '\'')) {
+			value = value[1 : len(value)-1]
+		}
+
+		switch key {
+		case "PRIVATE_KEY":
+			config.PrivateKey = value
+		case "RPC_URL":
+			config.RPCURL = value
+		case "AMOUNT":
+			config.Amount = value
+		case "CHAIN_ID":
+			config.ChainID = value
+		case "SKIP_SPLIT":
+			config.SkipSplit = value
+		case "SKIP_MERGE":
+			config.SkipMerge = value
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("读取 .env 文件失败: %w", err)
+	}
+
+	return config, nil
 }

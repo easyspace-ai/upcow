@@ -80,15 +80,15 @@ type MarketStream struct {
 // NewMarketStream 创建新的市场数据流
 func NewMarketStream() *MarketStream {
 	return &MarketStream{
-		reconnectC:      make(chan struct{}, 1),
-		closeC:          make(chan struct{}),
-		handlers:        stream.NewHandlerList(),
-		sg:              syncgroup.NewSyncGroup(), // 长期运行的 goroutine
-		connSg:          syncgroup.NewSyncGroup(), // 连接相关的 goroutine
-		lastPong:        time.Now(),
-		lastMessageAt:   time.Now(),
-		bestBook:        marketstate.NewAtomicBestBook(),
-		spreadWarnAt:    make(map[string]time.Time),
+		reconnectC:       make(chan struct{}, 1),
+		closeC:           make(chan struct{}),
+		handlers:         stream.NewHandlerList(),
+		sg:               syncgroup.NewSyncGroup(), // 长期运行的 goroutine
+		connSg:           syncgroup.NewSyncGroup(), // 连接相关的 goroutine
+		lastPong:         time.Now(),
+		lastMessageAt:    time.Now(),
+		bestBook:         marketstate.NewAtomicBestBook(),
+		spreadWarnAt:     make(map[string]time.Time),
 		subscribedAssets: make(map[string]bool),
 	}
 }
@@ -180,6 +180,12 @@ func (m *MarketStream) SwitchMarket(ctx context.Context, oldMarket, newMarket *d
 		return nil
 	}
 
+	// 【关键修复】先更新市场信息，确保后续消息过滤使用正确的市场信息
+	if newMarket != nil {
+		m.market = newMarket
+		marketLog.Infof("🔄 [切换市场] 已更新市场信息: %s", newMarket.Slug)
+	}
+
 	// 退订旧市场
 	if oldMarket != nil {
 		oldAssetIDs := []string{oldMarket.YesAssetID, oldMarket.NoAssetID}
@@ -189,6 +195,8 @@ func (m *MarketStream) SwitchMarket(ctx context.Context, oldMarket, newMarket *d
 		} else {
 			marketLog.Infof("✅ [切换市场] 已退订旧市场: %s", oldMarket.Slug)
 		}
+		// 【关键修复】等待一小段时间，确保退订消息已发送，避免旧消息被误处理
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	// 订阅新市场
@@ -199,14 +207,59 @@ func (m *MarketStream) SwitchMarket(ctx context.Context, oldMarket, newMarket *d
 		}
 		marketLog.Infof("✅ [切换市场] 已订阅新市场: %s", newMarket.Slug)
 
-		// 更新市场信息
-		m.market = newMarket
-
 		// 重置 bestBook（新市场需要重新构建订单簿）
 		// 创建新的 AtomicBestBook 实例来重置状态
 		if m.bestBook != nil {
 			m.bestBook = marketstate.NewAtomicBestBook()
 		}
+
+		// 【修复】验证订阅状态
+		m.subscribedAssetsMu.RLock()
+		subscribedCount := len(m.subscribedAssets)
+		subscribedList := make([]string, 0, len(m.subscribedAssets))
+		for assetID := range m.subscribedAssets {
+			subscribedList = append(subscribedList, assetID)
+		}
+		m.subscribedAssetsMu.RUnlock()
+		marketLog.Infof("📊 [切换市场] 订阅状态验证: 已订阅资产数量=%d, 期望资产=[%s, %s]",
+			subscribedCount, newMarket.YesAssetID[:12]+"...", newMarket.NoAssetID[:12]+"...")
+
+		if subscribedCount == 0 {
+			marketLog.Warnf("⚠️ [切换市场] 订阅状态异常：没有已订阅的资产！")
+		}
+
+		// 【修复】记录切换前的最后消息时间，用于后续超时检测
+		m.lastMsgMu.RLock()
+		switchStartTime := m.lastMessageAt
+		m.lastMsgMu.RUnlock()
+
+		// 【修复】启动价格数据超时检测（30秒后检查是否收到价格数据）
+		go func() {
+			time.Sleep(30 * time.Second)
+			m.lastMsgMu.RLock()
+			lastMsg := m.lastMessageAt
+			m.lastMsgMu.RUnlock()
+
+			// 如果切换后30秒内没有收到任何消息，记录警告
+			if lastMsg.IsZero() || lastMsg.Equal(switchStartTime) || time.Since(lastMsg) > 30*time.Second {
+				handlerCount := m.handlers.Count()
+				marketLog.Warnf("⚠️ [切换市场] 周期切换后30秒内未收到价格数据: market=%s lastMsg=%v handlers=%d",
+					newMarket.Slug, lastMsg, handlerCount)
+
+				// 如果 handlers 已注册但没有数据，尝试重新订阅
+				if handlerCount > 0 {
+					marketLog.Warnf("🔄 [切换市场] 尝试重新订阅: market=%s", newMarket.Slug)
+					if err := m.subscribe(newAssetIDs, "subscribe"); err != nil {
+						marketLog.Errorf("❌ [切换市场] 重新订阅失败: %v", err)
+					} else {
+						marketLog.Infof("✅ [切换市场] 重新订阅成功: market=%s", newMarket.Slug)
+					}
+				}
+			} else {
+				marketLog.Debugf("✅ [切换市场] 周期切换后已收到价格数据: market=%s lastMsg=%v",
+					newMarket.Slug, lastMsg)
+			}
+		}()
 	}
 
 	return nil
@@ -470,19 +523,36 @@ func (m *MarketStream) reconnector(ctx context.Context) {
 
 				if len(subscribedAssetIDs) > 0 {
 					marketLog.Infof("🔄 [重连恢复] 恢复 %d 个资产的订阅", len(subscribedAssetIDs))
-					if err := m.subscribe(subscribedAssetIDs, "subscribe"); err != nil {
+					// 记录重连恢复订阅前的时间，用于后续超时检测
+					resubscribeStartTime := time.Now()
+					
+					// 使用强制重新订阅，确保订阅消息发送到服务器
+					if err := m.subscribe(subscribedAssetIDs, "subscribe", true); err != nil {
 						marketLog.Warnf("⚠️ [重连恢复] 恢复订阅失败: %v", err)
 					} else {
-						marketLog.Infof("✅ [重连恢复] 订阅已恢复: assets=%d handlers=%d", len(subscribedAssetIDs), handlerCount)
-						// 启动监控：如果重连后 30 秒内没有收到任何消息，记录警告
+						marketLog.Infof("✅ [重连恢复] 订阅消息已发送: assets=%d handlers=%d (强制重新订阅)", len(subscribedAssetIDs), handlerCount)
+						// 启动监控：如果重连后 30 秒内没有收到任何消息，自动重新订阅
 						go func() {
 							time.Sleep(30 * time.Second)
 							m.lastMsgMu.RLock()
 							lastMsg := m.lastMessageAt
 							m.lastMsgMu.RUnlock()
-							if time.Since(lastMsg) > 30*time.Second {
-								marketLog.Warnf("⚠️ [重连监控] 重连后 30 秒内未收到任何消息: market=%s lastMsg=%v",
-									marketSlug, lastMsg)
+							
+							// 检查是否在重连恢复订阅后收到了新消息
+							// 如果 lastMsg 没有更新（仍然是重连前的消息），或者距离重连恢复订阅时间超过30秒，说明没有收到消息
+							if lastMsg.Before(resubscribeStartTime) || time.Since(lastMsg) > 30*time.Second {
+								marketLog.Warnf("⚠️ [重连监控] 重连后 30 秒内未收到任何消息: market=%s lastMsg=%v resubscribeStartTime=%v",
+									marketSlug, lastMsg, resubscribeStartTime)
+								
+								// 自动重新订阅
+								if handlerCount > 0 {
+									marketLog.Warnf("🔄 [重连监控] 尝试自动重新订阅: market=%s assets=%d", marketSlug, len(subscribedAssetIDs))
+									if err := m.subscribe(subscribedAssetIDs, "subscribe", true); err != nil {
+										marketLog.Errorf("❌ [重连监控] 自动重新订阅失败: %v", err)
+									} else {
+										marketLog.Infof("✅ [重连监控] 自动重新订阅成功: market=%s assets=%d", marketSlug, len(subscribedAssetIDs))
+									}
+								}
 							} else {
 								marketLog.Debugf("✅ [重连监控] 重连后已收到消息: market=%s lastMsg=%v",
 									marketSlug, lastMsg)
@@ -608,13 +678,13 @@ func (m *MarketStream) Read(ctx context.Context, conn *websocket.Conn, cancel co
 
 		// 处理消息
 		m.markMessageReceived()
-		marketLog.Debugf("📥 [消息接收] 收到 WebSocket 消息: len=%d market=%s", 
-			len(message), func() string {
-				if m.market != nil {
-					return m.market.Slug
-				}
-				return "nil"
-			}())
+		marketSlug := "nil"
+		if m.market != nil {
+			marketSlug = m.market.Slug
+		}
+		handlerCount := m.handlers.Count()
+		marketLog.Debugf("📥 [消息接收] 收到 WebSocket 消息: len=%d market=%s handlers=%d",
+			len(message), marketSlug, handlerCount)
 		m.handleMessage(ctx, message)
 	}
 }
@@ -645,7 +715,8 @@ func (m *MarketStream) ping(ctx context.Context, conn *websocket.Conn, cancel co
 // subscribe 订阅市场资产（支持动态订阅和批量订阅）
 // assetIDs: 要订阅的资产 ID 列表
 // operation: "subscribe" 或空字符串（默认为 "subscribe"）
-func (m *MarketStream) subscribe(assetIDs []string, operation string) error {
+// forceResubscribe: 如果为 true，即使资产已标记为已订阅，也强制重新发送订阅消息（用于重连后恢复订阅）
+func (m *MarketStream) subscribe(assetIDs []string, operation string, forceResubscribe ...bool) error {
 	if len(assetIDs) == 0 {
 		return fmt.Errorf("资产 ID 列表为空")
 	}
@@ -654,11 +725,17 @@ func (m *MarketStream) subscribe(assetIDs []string, operation string) error {
 		operation = "subscribe"
 	}
 
+	force := false
+	if len(forceResubscribe) > 0 && forceResubscribe[0] {
+		force = true
+	}
+
 	// 过滤出未订阅的资产（避免重复订阅）
+	// 如果 forceResubscribe 为 true，则强制重新订阅所有资产
 	m.subscribedAssetsMu.Lock()
 	newAssetIDs := make([]string, 0, len(assetIDs))
 	for _, assetID := range assetIDs {
-		if !m.subscribedAssets[assetID] {
+		if force || !m.subscribedAssets[assetID] {
 			newAssetIDs = append(newAssetIDs, assetID)
 			m.subscribedAssets[assetID] = true
 		}
@@ -666,7 +743,11 @@ func (m *MarketStream) subscribe(assetIDs []string, operation string) error {
 	m.subscribedAssetsMu.Unlock()
 
 	if len(newAssetIDs) == 0 {
-		marketLog.Debugf("所有资产已订阅，跳过: %v", assetIDs)
+		if force {
+			marketLog.Debugf("强制重新订阅但所有资产已在订阅列表中: %v", assetIDs)
+		} else {
+			marketLog.Debugf("所有资产已订阅，跳过: %v", assetIDs)
+		}
 		return nil
 	}
 
@@ -678,7 +759,17 @@ func (m *MarketStream) subscribe(assetIDs []string, operation string) error {
 		subscribeMsg["operation"] = operation
 	}
 
-	marketLog.Infof("📡 订阅市场资产 (operation=%s): %d 个资产", operation, len(newAssetIDs))
+	// 添加诊断日志：记录订阅详情
+	forceStr := ""
+	if force {
+		forceStr = " (强制重新订阅)"
+	}
+	marketSlug := ""
+	if m.market != nil {
+		marketSlug = m.market.Slug
+	}
+	marketLog.Infof("📡 [订阅发送] 订阅市场资产%s (operation=%s): market=%s assets=%d force=%v",
+		forceStr, operation, marketSlug, len(newAssetIDs), force)
 
 	m.connMu.Lock()
 	conn := m.conn
@@ -691,7 +782,13 @@ func (m *MarketStream) subscribe(assetIDs []string, operation string) error {
 			delete(m.subscribedAssets, assetID)
 		}
 		m.subscribedAssetsMu.Unlock()
+		marketLog.Errorf("❌ [订阅发送] 连接未建立，无法发送订阅消息: market=%s assets=%d", marketSlug, len(newAssetIDs))
 		return fmt.Errorf("连接未建立")
+	}
+
+	// 记录订阅消息内容（用于调试）
+	if msgBytes, err := json.Marshal(subscribeMsg); err == nil {
+		marketLog.Debugf("📤 [订阅发送] 订阅消息内容: %s", string(msgBytes))
 	}
 
 	if err := conn.WriteJSON(subscribeMsg); err != nil {
@@ -701,9 +798,10 @@ func (m *MarketStream) subscribe(assetIDs []string, operation string) error {
 			delete(m.subscribedAssets, assetID)
 		}
 		m.subscribedAssetsMu.Unlock()
+		marketLog.Errorf("❌ [订阅发送] 发送订阅消息失败: market=%s assets=%d error=%v", marketSlug, len(newAssetIDs), err)
 		return fmt.Errorf("发送订阅消息失败: %w", err)
 	}
-	marketLog.Infof("✅ 订阅消息已发送: %d 个资产", len(newAssetIDs))
+	marketLog.Infof("✅ [订阅发送] 订阅消息已发送到服务器: market=%s assets=%d%s", marketSlug, len(newAssetIDs), forceStr)
 	return nil
 }
 
@@ -806,34 +904,70 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 	}
 
 	eventType := detectEventTypeCode(message)
+	marketSlug := "nil"
+	if m.market != nil {
+		marketSlug = m.market.Slug
+	}
+	handlerCount := m.handlers.Count()
+
 	switch eventType {
 	case evtPriceChange:
-		marketLog.Debugf("📨 [消息处理] 收到 price_change 消息: market=%s", func() string {
-			if m.market != nil {
-				return m.market.Slug
-			}
-			return "nil"
-		}())
+		//marketLog.Infof("📨 [消息处理] 收到 price_change 消息: market=%s handlers=%d", marketSlug, handlerCount)
 		m.handlePriceChange(ctx, message)
 	case evtSubscribed:
-		marketLog.Infof("✅ MarketStream 收到订阅成功消息")
-		// 订阅成功但长时间没任何数据时，给出更明确的诊断提示
-		m.lastMsgMu.RLock()
-		last := m.lastMessageAt
-		m.lastMsgMu.RUnlock()
-		_ = last // 预留：后续可在此处启动定时诊断（不在这里启动 goroutine，避免重复启动）
+		marketLog.Infof("✅ [订阅确认] MarketStream 收到订阅成功消息: market=%s handlers=%d", marketSlug, handlerCount)
+		// 记录订阅确认的时间
+		subscribeConfirmTime := time.Now()
+
+		// 【修复】验证订阅状态
+		m.subscribedAssetsMu.RLock()
+		subscribedCount := len(m.subscribedAssets)
+		subscribedAssetIDs := make([]string, 0, len(m.subscribedAssets))
+		for assetID := range m.subscribedAssets {
+			subscribedAssetIDs = append(subscribedAssetIDs, assetID)
+		}
+		m.subscribedAssetsMu.RUnlock()
+		marketLog.Infof("📊 [订阅确认] 订阅成功: market=%s 已订阅资产数量=%d handlers=%d assets=%v",
+			marketSlug, subscribedCount, handlerCount, func() []string {
+				// 只显示前2个资产ID的前12个字符，避免日志过长
+				if len(subscribedAssetIDs) <= 2 {
+					result := make([]string, len(subscribedAssetIDs))
+					for i, id := range subscribedAssetIDs {
+						if len(id) > 12 {
+							result[i] = id[:12] + "..."
+						} else {
+							result[i] = id
+						}
+					}
+					return result
+				}
+				return []string{fmt.Sprintf("%d个资产", len(subscribedAssetIDs))}
+			}())
+
+		// 启动监控：如果订阅确认后 30 秒内没有收到任何价格数据，记录警告
+		// 注意：这里不自动重新订阅，因为可能是市场本身没有数据更新
+		go func() {
+			time.Sleep(30 * time.Second)
+			m.lastMsgMu.RLock()
+			lastMsg := m.lastMessageAt
+			m.lastMsgMu.RUnlock()
+
+			// 检查是否在订阅确认后收到了新消息
+			if lastMsg.Before(subscribeConfirmTime) || time.Since(lastMsg) > 30*time.Second {
+				marketLog.Warnf("⚠️ [订阅监控] 订阅确认后 30 秒内未收到任何价格数据: market=%s lastMsg=%v confirmTime=%v handlers=%d",
+					marketSlug, lastMsg, subscribeConfirmTime, handlerCount)
+			} else {
+				marketLog.Debugf("✅ [订阅监控] 订阅确认后已收到价格数据: market=%s lastMsg=%v",
+					marketSlug, lastMsg)
+			}
+		}()
 	case evtPong:
 		m.healthCheckMu.Lock()
 		m.lastPong = time.Now()
 		m.healthCheckMu.Unlock()
 		marketLog.Debugf("收到 PONG 响应")
 	case evtBook:
-		marketLog.Debugf("📨 [消息处理] 收到 book 消息: market=%s", func() string {
-			if m.market != nil {
-				return m.market.Slug
-			}
-			return "nil"
-		}())
+		marketLog.Debugf("📨 [消息处理] 收到 book 消息: market=%s handlers=%d", marketSlug, handlerCount)
 		// 兼容：某些情况下服务器只推 book（快照/增量），未推 price_change。
 		// 为了不让策略"完全看不到实时 up/down"，这里从 book 中提取 best_ask/best_bid 并发出 PriceChangedEvent。
 		m.handleBookAsPrice(ctx, message)
@@ -858,7 +992,7 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 		if len(msgPreview) > 200 {
 			msgPreview = msgPreview[:200]
 		}
-		marketLog.Debugf("📨 [消息处理] 收到未知消息类型: %s (消息内容: %s) market=%s", 
+		marketLog.Debugf("📨 [消息处理] 收到未知消息类型: %s (消息内容: %s) market=%s",
 			msgType.EventType, string(msgPreview), func() string {
 				if m.market != nil {
 					return m.market.Slug
@@ -1056,9 +1190,34 @@ func scanJSONObjectEnd(msg []byte, start int) (int, bool) {
 }
 
 // shouldProcessMarketMessage 决定是否处理某条 market-channel 消息。
-// 优先基于 asset_id 过滤（更准确），回退到 market conditionID 过滤。
+// 【关键修复】优先检查 market conditionID，确保只处理当前市场的消息，避免旧市场的消息被误处理。
 func (m *MarketStream) shouldProcessMarketMessage(msgMarket string, msgAssetID string) bool {
-	// 优先检查 asset_id：如果消息的 asset_id 在订阅列表中，则处理
+	// 【关键修复】优先检查 market conditionID，如果 market 不匹配，直接丢弃（避免旧市场消息被误处理）
+	msgMarket = strings.TrimSpace(msgMarket)
+	if msgMarket != "" {
+		expected := ""
+		currentSlug := ""
+		if m.market != nil {
+			expected = strings.TrimSpace(m.market.ConditionID)
+			currentSlug = m.market.Slug
+		}
+		// 如果当前周期 market id 已就绪，必须匹配才处理
+		if expected != "" {
+			if !strings.EqualFold(expected, msgMarket) {
+				// market 不匹配，直接丢弃（即使 asset_id 在订阅列表中）
+				// 添加诊断日志，记录被过滤的消息（限频，避免刷屏）
+				assetIDPreview := msgAssetID
+				if len(assetIDPreview) > 12 {
+					assetIDPreview = assetIDPreview[:12] + "..."
+				}
+				marketLog.Debugf("🚫 [消息过滤] 丢弃旧市场消息: msg.market=%s msg.assetID=%s expected=%s current=%s",
+					msgMarket, assetIDPreview, expected, currentSlug)
+				return false
+			}
+		}
+	}
+
+	// market 匹配（或为空），再检查 asset_id 是否在订阅列表中
 	if msgAssetID != "" {
 		m.subscribedAssetsMu.RLock()
 		isSubscribed := m.subscribedAssets[msgAssetID]
@@ -1066,25 +1225,17 @@ func (m *MarketStream) shouldProcessMarketMessage(msgMarket string, msgAssetID s
 		if isSubscribed {
 			return true
 		}
-		// asset_id 不在订阅列表中，但可能是旧消息（订阅状态已更新但消息延迟到达）
-		// 这种情况下，如果当前 market 匹配，也允许处理（兼容性）
 	}
 
-	// 回退到 market conditionID 过滤（向后兼容）
-	msgMarket = strings.TrimSpace(msgMarket)
-	// 部分消息可能不携带 market 字段；此时无法校验，默认放行
+	// 如果 market 为空且 asset_id 不在订阅列表中，回退到兼容模式
+	// 部分消息可能不携带 market 字段；此时如果 asset_id 也不在订阅列表中，默认不放行
 	if msgMarket == "" {
-		return true
+		// 如果没有 market 字段，且 asset_id 也不在订阅列表中，默认不放行（避免误处理）
+		return false
 	}
-	expected := ""
-	if m.market != nil {
-		expected = strings.TrimSpace(m.market.ConditionID)
-	}
-	// 如果当前周期 market id 未就绪，避免把所有消息黑洞掉
-	if expected == "" {
-		return true
-	}
-	return strings.EqualFold(expected, msgMarket)
+
+	// market 匹配但 asset_id 不在订阅列表中，可能是订阅状态还没更新，允许处理（兼容性）
+	return true
 }
 
 // handleBookAsPrice 从 book 消息提取价格并触发 PriceChangedEvent（用于兼容“没有 price_change 但有 book”的情况）

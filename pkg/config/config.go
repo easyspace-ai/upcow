@@ -545,13 +545,33 @@ func LoadFromFileWithOptions(filePath string, opts LoadOptions) (*Config, error)
 	return config, nil
 }
 
-// StrategyFile 用于只加载 exchangeStrategies 的文件结构
+// StrategyFile 用于加载策略配置文件的结构（支持 market、dry_run 和 exchangeStrategies）
 type StrategyFile struct {
+	Market             struct {
+		Symbol        string                 `yaml:"symbol" json:"symbol"`
+		Timeframe     string                 `yaml:"timeframe" json:"timeframe"`
+		Kind          string                 `yaml:"kind" json:"kind"`
+		SlugStyle     string                 `yaml:"slugStyle" json:"slugStyle"`
+		SlugPrefix    string                 `yaml:"slugPrefix" json:"slugPrefix"`
+		SlugTemplates map[string]string      `yaml:"slugTemplates" json:"slugTemplates"`
+		Precision     *MarketPrecisionConfig `yaml:"precision" json:"precision"`
+	} `yaml:"market" json:"market"`
+	DryRun             *bool                   `yaml:"dry_run" json:"dry_run"` // 使用指针以区分未设置和 false
 	ExchangeStrategies []ExchangeStrategyMount `yaml:"exchangeStrategies" json:"exchangeStrategies"`
 }
 
 // LoadStrategyMountsFromFile 从文件加载 exchangeStrategies（YAML/JSON）
+// 保持向后兼容，只返回 ExchangeStrategies
 func LoadStrategyMountsFromFile(filePath string) ([]ExchangeStrategyMount, error) {
+	sf, err := LoadStrategyFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+	return sf.ExchangeStrategies, nil
+}
+
+// LoadStrategyFile 从文件加载完整的策略配置（包括 market、dry_run 和 exchangeStrategies）
+func LoadStrategyFile(filePath string) (*StrategyFile, error) {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("读取策略配置文件失败: %w", err)
@@ -575,7 +595,7 @@ func LoadStrategyMountsFromFile(filePath string) ([]ExchangeStrategyMount, error
 	if len(sf.ExchangeStrategies) == 0 {
 		return nil, fmt.Errorf("策略配置文件未包含 exchangeStrategies: %s", filePath)
 	}
-	return sf.ExchangeStrategies, nil
+	return &sf, nil
 }
 
 // LoadStrategyMountsFromDir 从目录加载所有策略配置文件（按文件名排序）

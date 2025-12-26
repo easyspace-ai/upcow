@@ -255,6 +255,27 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 		if currentSession != nil && currentSession.MarketDataStream != nil {
 			if ms, ok := currentSession.MarketDataStream.(*websocket.MarketStream); ok {
 				schedulerLog.Infof("🔄 [切换市场] 使用动态订阅切换: %s -> %s", currentMarket.Slug, nextMarket.Slug)
+				
+				// 【修复】先更新会话的市场信息，确保策略能获取到正确的市场信息
+				currentSession.SetMarket(nextMarket)
+				
+				// 【修复】先触发回调注册价格处理器，然后再订阅市场（避免价格数据丢失）
+				// 注意：这里先更新状态，让回调中的策略能获取到正确的市场信息
+				s.mu.Lock()
+				oldSession := s.currentSession
+				s.currentMarket = nextMarket
+				callback := s.sessionSwitchCallback
+				s.mu.Unlock()
+				
+				// 先触发回调，让策略注册价格处理器
+				if callback != nil {
+					schedulerLog.Infof("🔄 [切换市场] 先注册价格处理器，然后再订阅市场")
+					callback(oldSession, currentSession, nextMarket)
+					// 等待一小段时间，确保价格处理器已注册
+					time.Sleep(100 * time.Millisecond)
+				}
+				
+				// 现在订阅新市场（价格处理器已注册）
 				if err := ms.SwitchMarket(s.ctx, currentMarket, nextMarket); err != nil {
 					schedulerLog.Errorf("动态切换市场失败: %v，回退到创建新会话", err)
 					// 回退：如果动态切换失败，创建新会话
@@ -280,8 +301,9 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 					}
 					return
 				}
-				// 动态切换成功，更新会话的市场信息
-				currentSession.SetMarket(nextMarket)
+				// 动态切换成功，市场信息已在上面更新
+				schedulerLog.Infof("✅ 已切换到下一个市场（动态订阅）: %s", nextMarket.Slug)
+				return
 			} else {
 				schedulerLog.Warnf("⚠️ MarketDataStream 不是 MarketStream 类型，无法使用动态订阅，回退到创建新会话")
 				// 回退：创建新会话
@@ -341,14 +363,14 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 			return
 		}
 
-		// 动态切换成功，更新状态并触发回调
+		// 这段代码不应该执行到（上面已经 return），但保留作为安全网
 		s.mu.Lock()
 		oldSession := s.currentSession
 		s.currentMarket = nextMarket
 		callback := s.sessionSwitchCallback
 		s.mu.Unlock()
 
-		schedulerLog.Infof("✅ 已切换到下一个市场（动态订阅）: %s", nextMarket.Slug)
+		schedulerLog.Warnf("⚠️ [切换市场] 执行到不应该到达的代码路径，市场=%s", nextMarket.Slug)
 
 		// 触发会话切换回调（会话对象不变，只更新市场订阅）
 		if callback != nil {

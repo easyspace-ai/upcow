@@ -10,12 +10,17 @@
 
 ## 前置要求
 
-1. 创建 `data/user.json` 配置文件，包含以下内容：
-```json
-{
-  "private_key": "你的私钥（不带0x前缀）",
-  "rpc_url": "Polygon RPC 节点 URL（可选）"
-}
+1. 在当前目录（`cmd/test-ctf-split-merge/`）创建 `.env` 配置文件，包含以下内容：
+```bash
+# 必需配置
+PRIVATE_KEY=0x你的私钥
+
+# 可选配置（有默认值）
+RPC_URL=https://polygon-rpc.com
+AMOUNT=1.0
+CHAIN_ID=137
+SKIP_SPLIT=false
+SKIP_MERGE=false
 ```
 
 2. 确保账户有足够的：
@@ -28,30 +33,40 @@
 ### 基本用法
 
 ```bash
-# 使用默认参数（拆分/合并 1.0 USDC）
-go run cmd/test-ctf-split-merge/main.go
+# 进入目录
+cd cmd/test-ctf-split-merge
+
+# 创建 .env 文件（参考上面的格式）
+# 然后运行（使用默认参数，拆分/合并 1.0 USDC）
+go run main.go
 ```
 
-### 自定义参数
+### 配置说明
+
+在 `.env` 文件中可以配置以下参数：
+
+- `PRIVATE_KEY`: **必需**，你的钱包私钥（带或不带 0x 前缀都可以）
+- `RPC_URL`: 可选，Polygon RPC 节点 URL（默认根据链ID自动选择）
+- `AMOUNT`: 可选，要拆分/合并的 USDC 数量（默认 1.0）
+- `CHAIN_ID`: 可选，链 ID（137 = Polygon 主网，80002 = Amoy 测试网，默认 137）
+- `SKIP_SPLIT`: 可选，是否跳过拆分操作（true/false，默认 false）
+- `SKIP_MERGE`: 可选，是否跳过合并操作（true/false，默认 false）
+
+### 示例配置
 
 ```bash
-# 设置拆分/合并数量
-export AMOUNT="5.0"
+# 只执行 split，不执行 merge
+PRIVATE_KEY=0x你的私钥
+SKIP_MERGE=true
 
-# 设置链 ID（137 = Polygon 主网，80002 = Amoy 测试网）
-export CHAIN_ID=137
+# 拆分/合并 5.0 USDC
+PRIVATE_KEY=0x你的私钥
+AMOUNT=5.0
 
-# 设置 RPC URL（可选，会从 user.json 读取）
-export RPC_URL="https://polygon-rpc.com"
-
-# 只执行 split，跳过 merge
-export SKIP_MERGE=true
-
-# 只执行 merge，跳过 split
-export SKIP_SPLIT=true
-
-# 运行
-go run cmd/test-ctf-split-merge/main.go
+# 使用测试网
+PRIVATE_KEY=0x你的私钥
+CHAIN_ID=80002
+RPC_URL=https://rpc-amoy.polygon.technology
 ```
 
 ## 操作流程

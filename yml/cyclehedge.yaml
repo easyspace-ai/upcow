@@ -5,14 +5,15 @@
 # - 距离结算 3 分钟（180s）停止开新仓并撤单（entryCutoffSeconds）
 #
 
+# 市场配置（可从策略配置文件读取，会覆盖主配置文件中的设置）
 market:
   symbol: "btc"
   timeframe: "15m"
   kind: "updown"
 
-# 实盘交易开关（⚠️ 实盘前必须改为 false）
-# 建议：先用 dry_run: true 测试，确认逻辑和日志 OK 再改 false
-dry_run: true  # ⚠️ 实盘模式：已启用真实交易
+# 纸交易模式（可从策略配置文件读取，会覆盖主配置文件中的设置）
+# true = 仅模拟交易，false = 真实交易
+dry_run: true
 
 
 exchangeStrategies:
@@ -41,7 +42,7 @@ exchangeStrategies:
       maxSingleSideShares: 50
       
       # 单笔最大下单数量（shares）：硬风控，避免单笔失控
-      maxOrderSizeShares: 20
+      maxOrderSizeShares: 8
       
       # 方向偏好：两腿都要下单时，优先下盘口价格更高且 >= 阈值的一腿（例如 60c）
       # 用于减少“只成交一腿时拿错方向”的概率。0 表示关闭。

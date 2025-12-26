@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 
 	"github.com/betbot/gobet/clob/signing"
 	"github.com/betbot/gobet/clob/types"
@@ -129,15 +131,38 @@ func (c *Client) CancelOrder(ctx context.Context, orderID string) (*types.OrderR
 		"POLY_PASSPHRASE": headers.PolyPassphrase,
 	}
 
+	// 【修复】添加详细的日志记录
+	if httpDebug {
+		fmt.Printf("[HTTP DEBUG] CancelOrder: orderID=%s endpoint=%s\n", orderID, EndpointCancelOrder)
+	}
+
 	// 发送请求
 	resp, err := c.httpClient.delete(EndpointCancelOrder, headerMap, params)
 	if err != nil {
 		return nil, fmt.Errorf("取消订单失败: %w", err)
 	}
 
+	// 【修复】检查响应状态码
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		// 读取响应体以获取详细错误信息
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		bodyStr := string(bodyBytes)
+		
+		// 如果响应是 JSON，尝试解析错误信息
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return nil, fmt.Errorf("HTTP 错误 %d: %s (orderID=%s)", resp.StatusCode, errResp.Error, orderID)
+		}
+		
+		return nil, fmt.Errorf("HTTP 错误 %d: %s (orderID=%s)", resp.StatusCode, bodyStr, orderID)
+	}
+
 	var orderResp types.OrderResponse
 	if err := parseResponse(resp, &orderResp); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("解析订单响应失败: %w (orderID=%s)", err, orderID)
 	}
 
 	return &orderResp, nil

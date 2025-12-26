@@ -26,5 +26,9 @@ minShareSize: 5.0
 order_status_sync_interval_with_orders: 3
 order_status_sync_interval_without_orders: 30
 
+# 纸交易模式（dry run）
+# 如果设置为 true，不会进行真实交易，只在日志中打印订单信息，方便测试策略
+dry_run: true  # ⚠️ 模拟模式：true = 仅模拟交易，false = 真实交易
+
 
 

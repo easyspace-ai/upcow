@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -123,6 +124,7 @@ func main() {
 
 	// 启动时追加策略配置（避免频繁改动全局配置）
 	var extraMounts []config.ExchangeStrategyMount
+	var strategyFilesLoaded []string // 记录已加载的策略文件路径
 
 	// 简化用法：-strategy threshold,updown
 	if strings.TrimSpace(*strategyNames) != "" {
@@ -136,23 +138,43 @@ func main() {
 				logrus.Errorf("解析策略配置失败: %v", err)
 				os.Exit(1)
 			}
-			mounts, err := config.LoadStrategyMountsFromFile(p)
+			sf, err := config.LoadStrategyFile(p)
 			if err != nil {
 				logrus.Errorf("加载策略文件失败: %v", err)
 				os.Exit(1)
 			}
-			extraMounts = append(extraMounts, mounts...)
+			extraMounts = append(extraMounts, sf.ExchangeStrategies...)
+			strategyFilesLoaded = append(strategyFilesLoaded, p)
 			logrus.Infof("已加载策略配置: strategy=%s file=%s", name, p)
 		}
 	}
 
 	if strings.TrimSpace(*strategyDir) != "" {
-		mounts, err := config.LoadStrategyMountsFromDir(strings.TrimSpace(*strategyDir))
+		entries, err := os.ReadDir(strings.TrimSpace(*strategyDir))
 		if err != nil {
-			logrus.Errorf("加载策略目录失败: %v", err)
+			logrus.Errorf("读取策略配置目录失败: %v", err)
 			os.Exit(1)
 		}
-		extraMounts = append(extraMounts, mounts...)
+		var files []string
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			ext := strings.ToLower(filepath.Ext(e.Name()))
+			if ext == ".yaml" || ext == ".yml" || ext == ".json" {
+				files = append(files, filepath.Join(strings.TrimSpace(*strategyDir), e.Name()))
+			}
+		}
+		sort.Strings(files)
+		for _, p := range files {
+			sf, err := config.LoadStrategyFile(p)
+			if err != nil {
+				logrus.Errorf("加载策略文件失败: %v", err)
+				os.Exit(1)
+			}
+			extraMounts = append(extraMounts, sf.ExchangeStrategies...)
+			strategyFilesLoaded = append(strategyFilesLoaded, p)
+		}
 	}
 	if strings.TrimSpace(*strategyFiles) != "" {
 		for _, p := range strings.Split(*strategyFiles, ",") {
@@ -160,14 +182,51 @@ func main() {
 			if p == "" {
 				continue
 			}
-			mounts, err := config.LoadStrategyMountsFromFile(p)
+			sf, err := config.LoadStrategyFile(p)
 			if err != nil {
 				logrus.Errorf("加载策略文件失败: %v", err)
 				os.Exit(1)
 			}
-			extraMounts = append(extraMounts, mounts...)
+			extraMounts = append(extraMounts, sf.ExchangeStrategies...)
+			strategyFilesLoaded = append(strategyFilesLoaded, p)
 		}
 	}
+
+	// 从策略配置文件中提取并覆盖全局配置（market 和 dry_run）
+	// 如果多个策略文件都设置了这些配置，最后一个文件的配置会生效
+	for _, filePath := range strategyFilesLoaded {
+		sf, err := config.LoadStrategyFile(filePath)
+		if err != nil {
+			continue // 跳过加载失败的文件
+		}
+
+		// 覆盖 market 配置（如果策略文件中设置了）
+		if strings.TrimSpace(sf.Market.Symbol) != "" {
+			cfg.Market.Symbol = sf.Market.Symbol
+		}
+		if strings.TrimSpace(sf.Market.Timeframe) != "" {
+			cfg.Market.Timeframe = sf.Market.Timeframe
+		}
+		if strings.TrimSpace(sf.Market.Kind) != "" {
+			cfg.Market.Kind = sf.Market.Kind
+		}
+		if strings.TrimSpace(sf.Market.SlugPrefix) != "" {
+			cfg.Market.SlugPrefix = sf.Market.SlugPrefix
+		}
+		if sf.Market.SlugTemplates != nil && len(sf.Market.SlugTemplates) > 0 {
+			cfg.Market.SlugTemplates = sf.Market.SlugTemplates
+		}
+		if sf.Market.Precision != nil {
+			cfg.Market.Precision = sf.Market.Precision
+		}
+
+		// 覆盖 dry_run 配置（如果策略文件中设置了）
+		if sf.DryRun != nil {
+			cfg.DryRun = *sf.DryRun
+			logrus.Infof("策略配置文件覆盖 dry_run: %v (来源: %s)", *sf.DryRun, filePath)
+		}
+	}
+
 	if len(extraMounts) > 0 {
 		cfg.ExchangeStrategies = append(cfg.ExchangeStrategies, extraMounts...)
 	}
@@ -307,13 +366,14 @@ func main() {
 	environ.SetMarketDataService(marketDataService)
 	environ.SetTradingService(tradingService)
 
-	// Binance Futures Klines（1s/1m）：供策略读取秒级与 1 分钟 K 线（尤其是“开盘 1 分钟”）
-	binanceProxyURL := ""
-	if cfg.Proxy != nil {
-		binanceProxyURL = fmt.Sprintf("http://%s:%d", cfg.Proxy.Host, cfg.Proxy.Port)
-	}
-	binanceSymbol := strings.ToLower(strings.TrimSpace(cfg.Market.Symbol)) + "usdt"
-	environ.SetBinanceFuturesKlines(services.NewBinanceFuturesKlines(binanceSymbol, binanceProxyURL))
+	// Binance Futures Klines（1s/1m）：供策略读取秒级与 1 分钟 K 线（尤其是"开盘 1 分钟"）
+	// 【已禁用】暂时不使用 Binance WebSocket，避免不必要的网络连接和超时错误
+	// binanceProxyURL := ""
+	// if cfg.Proxy != nil {
+	// 	binanceProxyURL = fmt.Sprintf("http://%s:%d", cfg.Proxy.Host, cfg.Proxy.Port)
+	// }
+	// binanceSymbol := strings.ToLower(strings.TrimSpace(cfg.Market.Symbol)) + "usdt"
+	// environ.SetBinanceFuturesKlines(services.NewBinanceFuturesKlines(binanceSymbol, binanceProxyURL))
 
 	// 创建并注入全局命令执行器（串行执行交易/网络 IO，策略 loop 不直接阻塞在网络调用上）
 	environ.SetExecutor(bbgo.NewSerialCommandExecutor(2048))

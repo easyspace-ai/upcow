@@ -86,6 +86,10 @@ type Strategy struct {
 	lastPriceLogAt         time.Time
 	lastPriceLogPriceCents int
 	priceLogThrottleMs     int64 // 价格日志限流时间（毫秒），默认 1 秒
+	
+	// 订单簿价格日志：实时打印 UP/DOWN 的 bid/ask
+	lastOrderBookLogAt     time.Time
+	orderBookLogThrottleMs int64 // 订单簿价格日志限流时间（毫秒），默认 2 秒
 
 	// 订单跟踪：利用本地订单状态管理（新架构特性）
 	lastEntryOrderID     string                   // 最后下单的 Entry 订单ID
@@ -205,6 +209,12 @@ func (s *Strategy) Initialize() error {
 	s.lastPriceLogToken = ""
 	s.lastPriceLogAt = time.Time{}
 	s.lastPriceLogPriceCents = 0
+
+	// 7.5 初始化订单簿价格日志限流（避免频繁调用 API）
+	if s.orderBookLogThrottleMs <= 0 {
+		s.orderBookLogThrottleMs = 2000 // 默认 2 秒
+	}
+	s.lastOrderBookLogAt = time.Time{}
 
 	// 8. 从配置读取市场精度信息（系统级配置）
 	if gc.Market.Precision != nil {
@@ -553,6 +563,18 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		return nil
 	}
 
+	// 1.5. 【重要】验证事件中的市场是否与 TradingService 中的当前市场匹配
+	// 周期切换后，价格更新事件中的 Market 可能还是旧周期的数据
+	// 如果市场不匹配，说明这是旧周期的价格更新，应该忽略
+	if s.TradingService != nil {
+		currentMarketSlug := s.TradingService.GetCurrentMarket()
+		if currentMarketSlug != "" && currentMarketSlug != e.Market.Slug {
+			log.Debugf("🔄 [%s] 跳过旧周期价格更新: eventMarket=%s currentMarket=%s",
+				ID, e.Market.Slug, currentMarketSlug)
+			return nil
+		}
+	}
+
 	now := e.Timestamp
 	if now.IsZero() {
 		now = time.Now()
@@ -603,6 +625,47 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if shouldLogPrice {
 		log.Debugf("📈 [%s] 价格更新: token=%s price=%.4f (%dc) market=%s",
 			ID, e.TokenType, priceDecimal, priceCents, e.Market.Slug)
+	}
+
+	// ===== 实时订单簿价格日志 =====
+	// 打印 UP/DOWN 的 bid/ask 价格（带限流，避免频繁调用 API）
+	s.mu.Lock()
+	shouldLogOrderBook := false
+	if s.lastOrderBookLogAt.IsZero() {
+		shouldLogOrderBook = true
+	} else {
+		logThrottle := time.Duration(s.orderBookLogThrottleMs) * time.Millisecond
+		if logThrottle <= 0 {
+			logThrottle = 2 * time.Second // 默认 2 秒
+		}
+		if now.Sub(s.lastOrderBookLogAt) >= logThrottle {
+			shouldLogOrderBook = true
+		}
+	}
+	if shouldLogOrderBook {
+		s.lastOrderBookLogAt = now
+	}
+	s.mu.Unlock()
+
+	// 在锁外获取订单簿价格并打印（避免长时间持锁）
+	// 注意：此时 e.Market 已经通过上面的市场匹配验证，确保是新周期的市场
+	if shouldLogOrderBook && e.Market != nil {
+		// 使用背景上下文，避免阻塞策略主流程
+		bookCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		
+		yesBid, yesAsk, noBid, noAsk, source, err := s.TradingService.GetTopOfBook(bookCtx, e.Market)
+		if err != nil {
+			// 静默失败，不影响策略运行
+			log.Debugf("⚠️ [%s] 获取订单簿价格失败（实时日志）: %v", ID, err)
+		} else {
+			yesBidDec := yesBid.ToDecimal()
+			yesAskDec := yesAsk.ToDecimal()
+			noBidDec := noBid.ToDecimal()
+			noAskDec := noAsk.ToDecimal()
+			log.Infof("💰 [%s] 实时订单簿: UP bid=%.4f ask=%.4f, DOWN bid=%.4f ask=%.4f (source=%s market=%s)",
+				ID, yesBidDec, yesAskDec, noBidDec, noAskDec, source, e.Market.Slug)
+		}
 	}
 
 	// ===== 出场（平仓）逻辑：优先于开仓 =====

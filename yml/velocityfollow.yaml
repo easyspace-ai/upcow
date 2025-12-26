@@ -1,0 +1,83 @@
+# cyclehedge：40U 测试版（BTC 15m）
+#
+# 说明：
+# - 每周期固定投入 40 USDC（fixedNotionalUSDC）
+# - 距离结算 3 分钟（180s）停止开新仓并撤单（entryCutoffSeconds）
+#
+
+# 市场配置（可从策略配置文件读取，会覆盖主配置文件中的设置）
+market:
+  symbol: "btc"
+  timeframe: "15m"
+  kind: "updown"
+
+# 纸交易模式（可从策略配置文件读取，会覆盖主配置文件中的设置）
+# true = 仅模拟交易，false = 真实交易
+dry_run: true
+
+
+exchangeStrategies:
+  - on: polymarket
+    velocityfollow:
+      # ====== 下单参数 ======
+      orderSize: 5
+      hedgeOrderSize: 0          # 0=跟随 orderSize（对侧挂单 shares）
+
+      # ====== 开仓质量过滤（胜率） ======
+      enableMarketQualityGate: false
+      marketQualityMinScore: 70
+      marketQualityMaxSpreadCents: 5     # <=0 则使用 maxSpreadCents
+      marketQualityMaxBookAgeMs: 3000
+
+      # ====== 出场（平仓）参数：建议开启形成闭环 ======
+      # 说明：当持仓存在时，策略会优先处理出场，不再叠加开仓。
+      # - 触发价使用 bestBid（SELL FAK），因此实际成交价会略受盘口影响
+      takeProfitCents: 0         # 止盈（分）：当前 bid - 入场均价 >= 3c 则卖出平仓（0=禁用）
+      stopLossCents: 6           # 止损（分）：入场均价 - 当前 bid >= 6c 则卖出平仓（0=禁用）
+      maxHoldSeconds: 120        # 时间止损（秒）：持仓超过 120 秒强制平仓（0=禁用）
+      exitCooldownMs: 1500       # 出场冷却（ms）：避免频繁重复下卖单
+      exitBothSidesIfHedged: true # 若同周期同时持有 UP/DOWN，则同时卖出全平（更简单、更安全）
+
+      # ====== 分批止盈（盈亏比） ======
+      # 达到利润阈值后，卖出“当前剩余持仓”的 fraction 比例（每个 level 只触发一次）
+      partialTakeProfits:
+        - profitCents: 3
+          fraction: 0.5
+        - profitCents: 6
+          fraction: 0.5
+
+      # ====== 追踪止盈（trailing） ======
+      enableTrailingTakeProfit: true
+      trailStartCents: 4
+      trailDistanceCents: 2
+
+      # ====== “速度快”判定 ======
+      windowSeconds: 10
+      minMoveCents: 3
+      minVelocityCentsPerSec: 0.3
+
+      cooldownMs: 1500
+      maxTradesPerCycle: 1      # 每周期最多交易次数（0=不设限，1=每周期只交易一次）
+      warmupMs: 800
+
+      # ====== 安全参数 ======
+      hedgeOffsetCents: 3        # 对侧挂单价 = (100 - entryAskCents - offset)
+      maxEntryPriceCents: 92
+      maxSpreadCents: 5
+
+      # ====== Binance 开盘 1m K 线阴阳 bias（已禁用用于测试）======
+      useBinanceOpen1mBias: false
+      biasMode: "hard"           # hard=只顺势；soft=逆势门槛更高
+      open1mMaxWaitSeconds: 120
+      open1mMinBodyBps: 3
+      open1mMaxWickBps: 25
+      requireBiasReady: false    # 禁用 bias 等待
+
+      # soft 模式下才需要（hard 模式也可以留着不生效）
+      oppositeBiasVelocityMultiplier: 1.5
+      oppositeBiasMinMoveExtraCents: 2
+
+      # ====== Binance 1s "底层硬动确认"（已禁用用于测试）======
+      useBinanceMoveConfirm: false
+      moveConfirmWindowSeconds: 60
+      minUnderlyingMoveBps: 20
