@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -545,16 +546,18 @@ func (e *OrderEngine) handleCancelOrder(cmd *CancelOrderCommand) {
 	}
 
 	// 更新状态：标记为取消中
-	order.Status = domain.OrderStatusCanceled
+	order.Status = domain.OrderStatusCanceling
 	e.orderStore[order.OrderID] = order
 	e.emitOrderUpdate(order)
 
 	// 异步执行 IO 操作（结果回流到状态循环）
 	go e.ioExecutor.CancelOrderAsync(cmd.Context, cmd.OrderID, func(err error) {
+		// 只回流“取消结果”（不要把 engine 内部指针直接跨 goroutine 传回）
+		// 具体状态落地由 handleUpdateOrder 根据 err/当前订单状态单调合并后决定。
 		updateCmd := &UpdateOrderCommand{
 			id:    fmt.Sprintf("cancel_result_%s", cmd.OrderID),
 			Gen:   cmd.Gen,
-			Order: order,
+			Order: &domain.Order{OrderID: cmd.OrderID, Status: domain.OrderStatusCanceling},
 			Error: err,
 		}
 		e.SubmitCommand(updateCmd)
@@ -573,6 +576,155 @@ func (e *OrderEngine) handleCancelOrder(cmd *CancelOrderCommand) {
 	})
 }
 
+func isNonCancelableCancelError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Polymarket CLOB 常见：HTTP 400 {"error":"Invalid order payload"}（订单不可撤/已终态/参数不匹配）
+	// 此类错误在撤单语义上更接近“幂等完成”，不应把本地状态回滚为 open。
+	msg := err.Error()
+	return strings.Contains(msg, "Invalid order payload") ||
+		strings.Contains(msg, "HTTP 错误 400") ||
+		strings.Contains(strings.ToLower(msg), "invalid order payload")
+}
+
+func cloneOrder(o *domain.Order) *domain.Order {
+	if o == nil {
+		return nil
+	}
+	cp := *o
+	// 注意：FilledPrice 等指针字段需要深拷贝（避免被上游复用/修改）
+	if o.FilledPrice != nil {
+		fp := *o.FilledPrice
+		cp.FilledPrice = &fp
+	}
+	if o.FilledAt != nil {
+		t := *o.FilledAt
+		cp.FilledAt = &t
+	}
+	if o.CanceledAt != nil {
+		t := *o.CanceledAt
+		cp.CanceledAt = &t
+	}
+	if o.HedgeOrderID != nil {
+		id := *o.HedgeOrderID
+		cp.HedgeOrderID = &id
+	}
+	if o.PairOrderID != nil {
+		id := *o.PairOrderID
+		cp.PairOrderID = &id
+	}
+	if o.NegRisk != nil {
+		b := *o.NegRisk
+		cp.NegRisk = &b
+	}
+	return &cp
+}
+
+func mergeOrderInPlace(dst *domain.Order, src *domain.Order) {
+	if dst == nil || src == nil {
+		return
+	}
+
+	// 不允许终态被中间态覆盖
+	if dst.IsFinalStatus() && !src.IsFinalStatus() {
+		// 但允许补齐 FilledSize/FilledAt（如果 src 提供了更“终态化”的信息）
+		if src.FilledSize > dst.FilledSize {
+			dst.FilledSize = src.FilledSize
+		}
+		if src.FilledAt != nil && dst.FilledAt == nil {
+			t := *src.FilledAt
+			dst.FilledAt = &t
+		}
+		return
+	}
+
+	// 基础字段补齐/合并
+	if dst.MarketSlug == "" && src.MarketSlug != "" {
+		dst.MarketSlug = src.MarketSlug
+	}
+	if dst.AssetID == "" && src.AssetID != "" {
+		dst.AssetID = src.AssetID
+	}
+	if dst.TokenType == "" && src.TokenType != "" {
+		dst.TokenType = src.TokenType
+	}
+	if dst.Side == "" && src.Side != "" {
+		dst.Side = src.Side
+	}
+	if dst.Price.Pips == 0 && src.Price.Pips != 0 {
+		dst.Price = src.Price
+	}
+	if src.Size > dst.Size {
+		dst.Size = src.Size
+	}
+	// FilledSize 单调递增
+	if src.FilledSize > dst.FilledSize {
+		dst.FilledSize = src.FilledSize
+	}
+	// 价格/时间戳补齐
+	if src.FilledPrice != nil {
+		fp := *src.FilledPrice
+		dst.FilledPrice = &fp
+	}
+	if src.FilledAt != nil && dst.FilledAt == nil {
+		t := *src.FilledAt
+		dst.FilledAt = &t
+	}
+	if src.CanceledAt != nil && dst.CanceledAt == nil {
+		t := *src.CanceledAt
+		dst.CanceledAt = &t
+	}
+
+	// 状态收敛（按“成交事实”优先）
+	// 1) 若已完全成交 => filled
+	if dst.Size > 0 && dst.FilledSize >= dst.Size {
+		dst.Status = domain.OrderStatusFilled
+		if dst.FilledAt == nil {
+			now := time.Now()
+			dst.FilledAt = &now
+		}
+		dst.FilledSize = dst.Size
+		return
+	}
+	// 2) 若有部分成交 => partial（除非已 failed/filled）
+	if dst.FilledSize > 0 {
+		if dst.Status != domain.OrderStatusFailed && dst.Status != domain.OrderStatusFilled {
+			dst.Status = domain.OrderStatusPartial
+		}
+		return
+	}
+	// 3) 无成交：按优先级选更“强”的状态
+	// filled 已在上面处理；failed/canceled 其次；canceling 再次；open/pending 最弱
+	cur := dst.Status
+	in := src.Status
+	if cur == domain.OrderStatusFilled || in == domain.OrderStatusFilled {
+		dst.Status = domain.OrderStatusFilled
+		return
+	}
+	if cur == domain.OrderStatusFailed || in == domain.OrderStatusFailed {
+		dst.Status = domain.OrderStatusFailed
+		return
+	}
+	if cur == domain.OrderStatusCanceled || in == domain.OrderStatusCanceled {
+		dst.Status = domain.OrderStatusCanceled
+		if dst.CanceledAt == nil {
+			now := time.Now()
+			dst.CanceledAt = &now
+		}
+		return
+	}
+	if cur == domain.OrderStatusCanceling || in == domain.OrderStatusCanceling {
+		dst.Status = domain.OrderStatusCanceling
+		return
+	}
+	if cur == domain.OrderStatusOpen || in == domain.OrderStatusOpen || in == domain.OrderStatusPartial {
+		dst.Status = domain.OrderStatusOpen
+		return
+	}
+	dst.Status = domain.OrderStatusPending
+}
+
 // handleUpdateOrder 处理更新订单命令（IO 操作完成后调用）
 func (e *OrderEngine) handleUpdateOrder(cmd *UpdateOrderCommand) {
 	// 关键防护：丢弃旧周期的 UpdateOrderCommand（包括旧 IO 回流、旧同步回流）
@@ -585,13 +737,25 @@ func (e *OrderEngine) handleUpdateOrder(cmd *UpdateOrderCommand) {
 			cmd.Gen, e.generation, orderID)
 		return
 	}
-	// CancelOrderAsync 也复用 UpdateOrderCommand 回流：这里区分“取消失败”与“下单失败”
-	if cmd.Error != nil && cmd.Order != nil && cmd.Order.Status == domain.OrderStatusCanceled {
-		// 取消失败：恢复为 open，并保留在 openOrders
-		if existing, ok := e.openOrders[cmd.Order.OrderID]; ok {
-			existing.Status = domain.OrderStatusOpen
-			e.orderStore[existing.OrderID] = existing
-			e.emitOrderUpdate(existing)
+	// CancelOrderAsync 也复用 UpdateOrderCommand 回流：撤单失败/不可撤需要特殊处理（幂等 + 单调）
+	if cmd.Error != nil && cmd.Order != nil && cmd.Order.Status == domain.OrderStatusCanceling {
+		oid := cmd.Order.OrderID
+		// 若已不存在于 openOrders，可能已经被 WS 标为 filled/canceled，不做回滚
+		if existing, ok := e.openOrders[oid]; ok && existing != nil {
+			// “不可撤”类错误：更接近幂等完成（不回滚为 open），先落为 canceled，等待后续 WS/sync 把它推进到 filled（若实际成交）
+			if isNonCancelableCancelError(cmd.Error) {
+				now := time.Now()
+				existing.Status = domain.OrderStatusCanceled
+				existing.CanceledAt = &now
+				e.orderStore[existing.OrderID] = existing
+				delete(e.openOrders, existing.OrderID)
+				e.emitOrderUpdate(existing)
+			} else if existing.Status == domain.OrderStatusCanceling {
+				// 真正撤单失败：回滚到 open
+				existing.Status = domain.OrderStatusOpen
+				e.orderStore[existing.OrderID] = existing
+				e.emitOrderUpdate(existing)
+			}
 		}
 		e.stats.Errors++
 		return
@@ -630,33 +794,30 @@ func (e *OrderEngine) handleUpdateOrder(cmd *UpdateOrderCommand) {
 	}
 
 	// IO 操作成功，更新订单状态
-	order := cmd.Order
+	order := cloneOrder(cmd.Order)
+	if order == nil {
+		return
+	}
+	// 撤单成功：cancel_result 回流时把 canceling 落为 canceled（避免“永远 canceling”卡死）
+	if order.Status == domain.OrderStatusCanceling && strings.HasPrefix(cmd.ID(), "cancel_result_") {
+		now := time.Now()
+		order.Status = domain.OrderStatusCanceled
+		order.CanceledAt = &now
+	}
 	// 关键：server orderID 回写时，把 openOrders/orderStore 从“本地 ID”迁移到“server ID”
 	if order != nil && cmd.OriginalOrderID != "" && cmd.OriginalOrderID != order.OrderID {
 		if existingOrder, ok := e.openOrders[cmd.OriginalOrderID]; ok {
 			delete(e.openOrders, cmd.OriginalOrderID)
 			delete(e.orderStore, cmd.OriginalOrderID)
 			existingOrder.OrderID = order.OrderID
-			existingOrder.Status = order.Status
-			if order.FilledSize > 0 {
-				existingOrder.FilledSize = order.FilledSize
-			}
-			if order.FilledAt != nil {
-				existingOrder.FilledAt = order.FilledAt
-			}
+			mergeOrderInPlace(existingOrder, order)
 			order = existingOrder
 		}
 	}
 	if existingOrder, exists := e.openOrders[order.OrderID]; exists {
 		// 更新现有订单
-		existingOrder.Status = order.Status
 		existingOrder.OrderID = order.OrderID
-		if order.FilledSize > 0 {
-			existingOrder.FilledSize = order.FilledSize
-		}
-		if order.FilledAt != nil {
-			existingOrder.FilledAt = order.FilledAt
-		}
+		mergeOrderInPlace(existingOrder, order)
 		order = existingOrder
 	} else {
 		// 新订单，添加到存储
@@ -745,15 +906,15 @@ func (e *OrderEngine) handleProcessTrade(cmd *ProcessTradeCommand) {
 	// 1. 检查订单是否存在
 	order, exists := e.orderStore[trade.OrderID]
 	if !exists {
-		// 订单不存在，说明这个订单不是通过我们的系统下的（可能是手动下单）
-		// 但是，trade事件中的orderID可能是对手方的订单ID，而不是用户自己的订单ID
-		// 为了避免为对手方的订单创建订单对象，我们只处理已经在OrderEngine中注册过的订单
-		// 如果订单不存在，说明这个订单不是用户自己的，应该跳过
-		orderEngineLog.Debugf("⚠️ [OrderEngine] trade事件中的订单不存在于OrderEngine: orderID=%s tradeID=%s，可能是对手方的订单，跳过创建",
-			trade.OrderID, trade.ID)
-		// 保存trade到pendingTrades，等待订单更新事件（如果真的是用户自己的订单，订单更新事件会到达）
-		e.pendingTrades[trade.ID] = trade
-		return
+		// 重要：不能因为 orderID 不匹配就丢弃成交，否则仓位/报表会变成 0（你的日志里正是这种情况）
+		// Polymarket 的 trade 消息里 orderID 可能是 taker/maker 的不同 ID，甚至会出现“对手方 ID”。
+		// 我们的目标是：只要这是一笔“属于本账户”的成交（User WS 已保证），就必须按 assetID/market 更新仓位。
+		order = e.bestEffortMatchOrderForTrade(trade)
+		if order == nil {
+			order = e.syntheticOrderFromTrade(trade)
+		}
+		// 把 synthetic/matched order 放进 store，保证同一 trade 之后的累积处理一致
+		e.orderStore[order.OrderID] = order
 	}
 
 	// 2. 更新订单状态和实际成交价格
@@ -815,6 +976,81 @@ func (e *OrderEngine) handleProcessTrade(cmd *ProcessTradeCommand) {
 	}
 	orderEngineLog.Infof("✅ 交易已处理: tradeID=%s, orderID=%s, side=%s price=%.4f size=%.4f%s",
 		trade.ID, trade.OrderID, trade.Side, trade.Price.ToDecimal(), trade.Size, feeStr)
+}
+
+// bestEffortMatchOrderForTrade 尝试把成交匹配到“我们已知的订单”。
+// 目标：尽量关联到真实 orderID（便于订单状态/成交均价/日志），但不允许因为匹配失败而丢仓位更新。
+func (e *OrderEngine) bestEffortMatchOrderForTrade(trade *domain.Trade) *domain.Order {
+	if e == nil || trade == nil {
+		return nil
+	}
+	if trade.AssetID == "" {
+		return nil
+	}
+	// 优先在 openOrders 里找：同 assetID 的订单一般最多 1 个（cyclehedge 的常见模式）
+	var candidate *domain.Order
+	for _, o := range e.openOrders {
+		if o == nil {
+			continue
+		}
+		if o.AssetID != trade.AssetID {
+			continue
+		}
+		// 如果 side 也一致，更可靠
+		if trade.Side != "" && o.Side != "" && trade.Side != o.Side {
+			continue
+		}
+		if candidate != nil {
+			// 不唯一：放弃，避免误关联
+			return nil
+		}
+		candidate = o
+	}
+	return candidate
+}
+
+// syntheticOrderFromTrade 为“无法关联到已知订单”的成交创建一个最小订单对象，
+// 以便 position/报表能够准确反映真实成交。
+func (e *OrderEngine) syntheticOrderFromTrade(trade *domain.Trade) *domain.Order {
+	if trade == nil {
+		return nil
+	}
+	oid := strings.TrimSpace(trade.OrderID)
+	if oid == "" {
+		oid = fmt.Sprintf("ws_trade:%s", trade.ID)
+	}
+	// 如果该 key 已存在，返回现有（避免重复创建）
+	if existing, ok := e.orderStore[oid]; ok && existing != nil {
+		return existing
+	}
+
+	marketSlug := ""
+	if trade.Market != nil {
+		marketSlug = trade.Market.Slug
+	}
+	tokenType := trade.TokenType
+	if tokenType == "" && trade.Market != nil && trade.AssetID != "" {
+		if trade.AssetID == trade.Market.YesAssetID {
+			tokenType = domain.TokenTypeUp
+		} else if trade.AssetID == trade.Market.NoAssetID {
+			tokenType = domain.TokenTypeDown
+		}
+	}
+
+	// synthetic 订单只用于仓位/报表与成交均价累积：Size 未必等于最终订单 size。
+	// 这里把 Size 设为 trade.Size（至少保证 FilledSize 不会被 clamp 掉）。
+	return &domain.Order{
+		OrderID:    oid,
+		MarketSlug: marketSlug,
+		AssetID:    trade.AssetID,
+		Side:       trade.Side,
+		Price:      trade.Price,
+		Size:       trade.Size,
+		FilledSize: 0,
+		TokenType:  tokenType,
+		Status:     domain.OrderStatusOpen,
+		CreatedAt:  trade.Time,
+	}
 }
 
 // updatePositionFromTrade 从交易更新仓位

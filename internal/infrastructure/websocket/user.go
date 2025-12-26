@@ -800,11 +800,13 @@ func (u *UserWebSocket) handleMessages(ctx context.Context) {
 
 		eventType, _ := msg["event_type"].(string)
 		// 记录原始消息的关键字段，便于调试
-		orderID, _ := msg["id"].(string)
+		// 注意：msg["id"] 对于 event_type=order 是 orderID；对 event_type=trade 是 tradeID。
+		id, _ := msg["id"].(string)
 		assetID, _ := msg["asset_id"].(string)
 		side, _ := msg["side"].(string)
-		userLog.Infof("📨 [UserWebSocket] 收到 WebSocket 消息: event_type=%s orderID=%s assetID=%s side=%s rawKeys=%v",
-			eventType, orderID, assetID, side, func() []string {
+		marketSlug, _ := msg["market"].(string)
+		userLog.Infof("📨 [UserWebSocket] 收到 WebSocket 消息: event_type=%s id=%s assetID=%s side=%s market=%s rawKeys=%v",
+			eventType, id, assetID, side, marketSlug, func() []string {
 				keys := make([]string, 0, len(msg))
 				for k := range msg {
 					keys = append(keys, k)
@@ -814,19 +816,20 @@ func (u *UserWebSocket) handleMessages(ctx context.Context) {
 
 		switch eventType {
 		case "order":
-			userLog.Infof("📨 [UserWebSocket] 开始处理订单消息: orderID=%s", orderID)
+			userLog.Infof("📨 [UserWebSocket] 开始处理订单消息: orderID=%s", id)
 			u.handleOrderMessage(ctx, msg)
 		case "trade":
-			userLog.Infof("📨 [UserWebSocket] 处理交易消息: orderID=%s assetID=%s", orderID, assetID)
+			// trade 的 msg["id"] 是 tradeID，不要误导为 orderID
+			userLog.Infof("📨 [UserWebSocket] 开始处理成交消息: tradeID=%s assetID=%s market=%s", id, assetID, marketSlug)
 			u.handleTradeMessage(ctx, msg)
 		case "":
 			// event_type 为空，可能是其他类型的消息，尝试检查是否有订单相关字段
-			if orderID != "" || assetID != "" {
+			if id != "" || assetID != "" {
 				userLog.Warnf("⚠️ [UserWebSocket] event_type 为空但包含订单字段: orderID=%s assetID=%s side=%s raw=%s",
-					orderID, assetID, side, rawMessage)
+					id, assetID, side, rawMessage)
 				// 尝试作为订单消息处理
-				if orderID != "" {
-					userLog.Infof("🔄 [UserWebSocket] 尝试将空 event_type 消息作为订单处理: orderID=%s", orderID)
+				if id != "" {
+					userLog.Infof("🔄 [UserWebSocket] 尝试将空 event_type 消息作为订单处理: orderID=%s", id)
 					u.handleOrderMessage(ctx, msg)
 				}
 			} else {
@@ -834,9 +837,62 @@ func (u *UserWebSocket) handleMessages(ctx context.Context) {
 			}
 		default:
 			userLog.Warnf("⚠️ [UserWebSocket] 未知事件类型: event_type=%s orderID=%s assetID=%s raw=%s",
-				eventType, orderID, assetID, rawMessage)
+				eventType, id, assetID, rawMessage)
 		}
 	}
+}
+
+func parseTimeAny(v any) (time.Time, bool) {
+	if v == nil {
+		return time.Time{}, false
+	}
+	switch x := v.(type) {
+	case time.Time:
+		if x.IsZero() {
+			return time.Time{}, false
+		}
+		return x, true
+	case float64:
+		sec := x
+		// 13 位以上通常是 ms
+		if sec > 1e12 {
+			return time.UnixMilli(int64(sec)), true
+		}
+		return time.Unix(int64(sec), 0), true
+	case json.Number:
+		if i, err := x.Int64(); err == nil {
+			if i > 1e12 {
+				return time.UnixMilli(i), true
+			}
+			return time.Unix(i, 0), true
+		}
+		if f, err := x.Float64(); err == nil {
+			if f > 1e12 {
+				return time.UnixMilli(int64(f)), true
+			}
+			return time.Unix(int64(f), 0), true
+		}
+	case string:
+		s := strings.TrimSpace(x)
+		if s == "" {
+			return time.Time{}, false
+		}
+		// RFC3339 / RFC3339Nano
+		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			return t, true
+		}
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			return t, true
+		}
+		// 纯数字：unix 秒或 ms
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			if f > 1e12 {
+				return time.UnixMilli(int64(f)), true
+			}
+			return time.Unix(int64(f), 0), true
+		}
+	}
+	return time.Time{}, false
 }
 
 // handleOrderMessage 处理订单消息
@@ -849,6 +905,7 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 	originalSizeStr, _ := msg["original_size"].(string)
 	sizeMatchedStr, _ := msg["size_matched"].(string)
 	orderTypeStr, _ := msg["type"].(string) // PLACEMENT, UPDATE, CANCELLATION
+	marketSlug, _ := msg["market"].(string)
 
 	// 检查必要字段是否存在
 	if orderID == "" {
@@ -888,6 +945,8 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 	case "UPDATE":
 		if sizeMatched >= originalSize {
 			status = domain.OrderStatusFilled
+		} else if sizeMatched > 0 {
+			status = domain.OrderStatusPartial
 		} else {
 			status = domain.OrderStatusOpen
 		}
@@ -897,16 +956,26 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 		status = domain.OrderStatusPending
 	}
 
+	createdAt := time.Now()
+	if t, ok := parseTimeAny(msg["created_at"]); ok {
+		createdAt = t
+	} else if t, ok := parseTimeAny(msg["timestamp"]); ok {
+		createdAt = t
+	} else if t, ok := parseTimeAny(msg["last_update"]); ok {
+		createdAt = t
+	}
+
 	// 构建订单领域对象
 	order := &domain.Order{
 		OrderID:    orderID,
+		MarketSlug: marketSlug,
 		AssetID:    assetID,
 		Side:       side,
 		Price:      price,
 		Size:       originalSize, // 使用原始大小，而不是已成交大小
 		FilledSize: sizeMatched,  // 已成交大小
 		Status:     status,
-		CreatedAt:  time.Now(),
+		CreatedAt:  createdAt,
 	}
 
 	// BBGO风格：直接触发回调，不使用事件总线
@@ -914,9 +983,21 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 	if orderTypeStr == "UPDATE" && sizeMatched >= originalSize {
 		// 订单已成交
 		filledAt := time.Now()
+		if t, ok := parseTimeAny(msg["timestamp"]); ok {
+			filledAt = t
+		} else if t, ok := parseTimeAny(msg["last_update"]); ok {
+			filledAt = t
+		}
 		order.FilledAt = &filledAt
 		order.Status = domain.OrderStatusFilled
 	} else if orderTypeStr == "CANCELLATION" {
+		canceledAt := time.Now()
+		if t, ok := parseTimeAny(msg["timestamp"]); ok {
+			canceledAt = t
+		} else if t, ok := parseTimeAny(msg["last_update"]); ok {
+			canceledAt = t
+		}
+		order.CanceledAt = &canceledAt
 		order.Status = domain.OrderStatusCanceled
 	} else if orderTypeStr == "PLACEMENT" {
 		order.Status = domain.OrderStatusOpen
@@ -999,6 +1080,14 @@ func (u *UserWebSocket) handleTradeMessage(ctx context.Context, msg map[string]i
 	}
 
 	// 构建交易领域对象
+	tradeTime := time.Now()
+	if t, ok := parseTimeAny(msg["match_time"]); ok {
+		tradeTime = t
+	} else if t, ok := parseTimeAny(msg["timestamp"]); ok {
+		tradeTime = t
+	} else if t, ok := parseTimeAny(msg["last_update"]); ok {
+		tradeTime = t
+	}
 	trade := &domain.Trade{
 		ID:      tradeID,
 		OrderID: orderID,
@@ -1006,7 +1095,7 @@ func (u *UserWebSocket) handleTradeMessage(ctx context.Context, msg map[string]i
 		Side:    side,
 		Price:   price,
 		Size:    size,
-		Time:    time.Now(),
+		Time:    tradeTime,
 	}
 
 	// 解析 fee_rate_bps（如果存在），并计算手续费（USDC）

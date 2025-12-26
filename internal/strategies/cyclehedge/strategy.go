@@ -53,6 +53,7 @@ type Strategy struct {
 
 	firstFillAt time.Time
 	lastLogAt   time.Time
+	lastCancelAt time.Time // 撤单节流：避免高频重复撤单导致状态乱序/刷爆 API
 
 	// cycle stats (for reporting)
 	stats cycleStats
@@ -225,13 +226,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 
 	// closeout window：临近结算撤单+停止新增
 	if s.EntryCutoffSeconds > 0 && s.withinEntryCutoff(m) {
-		orderCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		s.TradingService.CancelOrdersForMarket(orderCtx, m.Slug)
-		cancel()
-		s.stateMu.Lock()
-		s.stats.CloseoutCancels++
-		s.stateMu.Unlock()
-		s.maybeLog(now, m, "closeout: cancel & pause entries")
+		s.cancelMarketOrdersThrottled(ctx, now, m, true)
 		return
 	}
 
@@ -274,12 +269,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	if s.MaxSingleSideShares > 0 && maxShares >= s.MaxSingleSideShares {
 		// 若没有裸露，撤掉挂单，避免继续被动成交扩大规模
 		if unhedged < s.MinUnhedgedShares {
-			cancelCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			s.TradingService.CancelOrdersForMarket(cancelCtx, m.Slug)
-			cancel()
-			s.stateMu.Lock()
-			s.stats.Cancels++
-			s.stateMu.Unlock()
+			s.cancelMarketOrdersThrottled(ctx, now, m, false)
 		}
 		s.stateMu.Lock()
 		s.stats.MaxSingleSideStops++
@@ -300,9 +290,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	s.stateMu.Unlock()
 
 	if targetShares > 0 && minShares >= targetShares {
-		orderCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		s.TradingService.CancelOrdersForMarket(orderCtx, m.Slug)
-		cancel()
+		s.cancelMarketOrdersThrottled(ctx, now, m, false)
 		s.maybeLog(now, m, fmt.Sprintf("locked: profit=%dc targetShares=%.2f got(up=%.2f down=%.2f) src=%s", profitTarget, targetShares, upShares, downShares, source))
 		return
 	}
@@ -443,12 +431,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	// 如果本次将要下单，先撤掉旧的挂单（避免多单堆叠）
 	// 注：TradingService 层有 in-flight 去重，且 CancelOrdersForMarket 会撤掉本周期挂单（含对侧）。
 	if (needUp >= s.MinUnhedgedShares || needDown >= s.MinUnhedgedShares) && (s.yesOrderID != "" || s.noOrderID != "") {
-		cancelCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		s.TradingService.CancelOrdersForMarket(cancelCtx, m.Slug)
-		cancel()
-		s.stateMu.Lock()
-		s.stats.Cancels++
-		s.stateMu.Unlock()
+		s.cancelMarketOrdersThrottled(ctx, now, m, false)
 		s.yesOrderID, s.noOrderID = "", ""
 	}
 
@@ -512,6 +495,7 @@ func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Mark
 	s.yesOrderID, s.noOrderID = "", ""
 	s.firstFillAt = time.Time{}
 	s.lastLogAt = time.Time{}
+	s.lastCancelAt = time.Time{}
 
 	// reset stats for new cycle
 	s.stats = cycleStats{
@@ -524,9 +508,7 @@ func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Mark
 	s.stateMu.Unlock()
 
 	// 周期切换先撤掉本周期旧挂单（保险）
-	cancelCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	s.TradingService.CancelOrdersForMarket(cancelCtx, m.Slug)
-	cancel()
+	s.cancelMarketOrdersThrottled(ctx, now, m, false)
 
 	// 刷新余额（用短超时；失败则回退到本地余额）
 	bal := 0.0
@@ -543,6 +525,17 @@ func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Mark
 	tn := 0.0
 	if s.FixedNotionalUSDC > 0 {
 		tn = s.FixedNotionalUSDC
+		// 安全护栏：固定 notional 不应超过可用余额（否则必然单边成交/资金锁死）
+		alloc := s.BalanceAllocationPct
+		if alloc <= 0 || alloc > 1 {
+			alloc = 1
+		}
+		if bal > 0 {
+			cap := bal * alloc
+			if cap > 0 && tn > cap {
+				tn = cap
+			}
+		}
 	} else {
 		tn = math.Max(s.MinNotionalUSDC, bal*s.BalanceAllocationPct)
 		if tn > s.MaxNotionalUSDC {
@@ -560,6 +553,50 @@ func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Mark
 
 	log.Infof("🔄 [%s] 周期重置: market=%s start=%d balance=%.2f targetNotional=%.2f profitRange=[%d,%d]c",
 		ID, m.Slug, m.Timestamp, bal, tn, s.ProfitMinCents, s.ProfitMaxCents)
+}
+
+// cancelMarketOrdersThrottled 撤单节流：避免在 closeout/锁定阶段每个 tick 都撤一次，造成 API 风暴与状态回退。
+func (s *Strategy) cancelMarketOrdersThrottled(ctx context.Context, now time.Time, m *domain.Market, isCloseout bool) {
+	if s == nil || s.TradingService == nil || m == nil || m.Slug == "" {
+		return
+	}
+	const minInterval = 2 * time.Second
+	s.stateMu.Lock()
+	last := s.lastCancelAt
+	if !last.IsZero() && now.Sub(last) < minInterval {
+		s.stateMu.Unlock()
+		return
+	}
+	s.lastCancelAt = now
+	s.stateMu.Unlock()
+
+	// 只有确实存在本 market 的活跃单才撤（避免无意义 cancel + 400）
+	hasActive := false
+	for _, o := range s.TradingService.GetActiveOrders() {
+		if o != nil && o.MarketSlug == m.Slug {
+			hasActive = true
+			break
+		}
+	}
+	if !hasActive {
+		return
+	}
+
+	cancelCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	s.TradingService.CancelOrdersForMarket(cancelCtx, m.Slug)
+	cancel()
+
+	s.stateMu.Lock()
+	if isCloseout {
+		s.stats.CloseoutCancels++
+	} else {
+		s.stats.Cancels++
+	}
+	s.stateMu.Unlock()
+
+	if isCloseout {
+		s.maybeLog(now, m, "closeout: cancel & pause entries")
+	}
 }
 
 func (s *Strategy) drainOrders() {
