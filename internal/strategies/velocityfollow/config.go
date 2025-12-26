@@ -1,6 +1,10 @@
 package velocityfollow
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/sirupsen/logrus"
+)
 
 const ID = "velocityfollow"
 
@@ -28,14 +32,16 @@ type Config struct {
 	MinMoveCents            int     `yaml:"minMoveCents" json:"minMoveCents"`                       // 窗口内最小上行位移（分）
 	MinVelocityCentsPerSec  float64 `yaml:"minVelocityCentsPerSec" json:"minVelocityCentsPerSec"`   // 最小速度（分/秒）
 	CooldownMs              int     `yaml:"cooldownMs" json:"cooldownMs"`                           // 触发冷却（毫秒）
-	OncePerCycle            bool    `yaml:"oncePerCycle" json:"oncePerCycle"`                       // 每周期最多触发一次（已废弃，使用 maxTradesPerCycle）
+	OncePerCycle            bool    `yaml:"oncePerCycle" json:"oncePerCycle"`                       // [已废弃] 每周期最多触发一次，请使用 maxTradesPerCycle
 	WarmupMs                int     `yaml:"warmupMs" json:"warmupMs"`                               // 启动/换周期后的预热窗口（毫秒）
 	MaxTradesPerCycle       int     `yaml:"maxTradesPerCycle" json:"maxTradesPerCycle"`             // 每周期最多交易次数（0=不设限）
 
 	// 下单安全参数
 	HedgeOffsetCents int `yaml:"hedgeOffsetCents" json:"hedgeOffsetCents"` // 对侧挂单 = (100 - entryAskCents - offset)
-	MaxEntryPriceCents int `yaml:"maxEntryPriceCents" json:"maxEntryPriceCents"` // 吃单价上限（分），避免 99/100 假盘口
+	MinEntryPriceCents int `yaml:"minEntryPriceCents" json:"minEntryPriceCents"` // 吃单价下限（分），避免低价时 size 被放大（静态配置，动态调整启用时会被覆盖）
+	MaxEntryPriceCents int `yaml:"maxEntryPriceCents" json:"maxEntryPriceCents"` // 吃单价上限（分），避免 99/100 假盘口（静态配置，动态调整启用时会被覆盖）
 	MaxSpreadCents     int `yaml:"maxSpreadCents" json:"maxSpreadCents"`         // 盘口价差上限（分），避免极差盘口误触发
+
 
 	// Binance K线融合（可选）：用“本周期开盘第 1 根 1m K 线阴阳”作为 bias/过滤器
 	UseBinanceOpen1mBias bool   `yaml:"useBinanceOpen1mBias" json:"useBinanceOpen1mBias"`
@@ -126,15 +132,20 @@ func (c *Config) Validate() error {
 		c.WarmupMs = 0
 	}
 	// maxTradesPerCycle: 0 表示不设限，>0 表示限制次数
-	// 如果未设置且 oncePerCycle=true，则默认为 1（向后兼容）
+	// [向后兼容] 如果 oncePerCycle=true 且 maxTradesPerCycle=0，则自动设置为 1
 	if c.MaxTradesPerCycle < 0 {
 		c.MaxTradesPerCycle = 0
 	}
 	if c.OncePerCycle && c.MaxTradesPerCycle == 0 {
 		c.MaxTradesPerCycle = 1
+		logrus.Warnf("[velocityfollow] oncePerCycle 已废弃，已自动设置 maxTradesPerCycle=1，建议直接使用 maxTradesPerCycle")
 	}
 	if c.HedgeOffsetCents <= 0 {
 		c.HedgeOffsetCents = 3
+	}
+	// minEntryPriceCents: 0 表示不设下限
+	if c.MinEntryPriceCents < 0 {
+		c.MinEntryPriceCents = 0
 	}
 	if c.MaxEntryPriceCents <= 0 {
 		c.MaxEntryPriceCents = 95
@@ -145,6 +156,7 @@ func (c *Config) Validate() error {
 	if c.HedgeOrderSize < 0 {
 		c.HedgeOrderSize = 0
 	}
+
 
 	// Binance bias defaults
 	if c.BiasMode == "" {

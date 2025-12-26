@@ -34,6 +34,8 @@ type LegIntent struct {
 	Price     domain.Price
 	Size      float64
 	OrderType types.OrderType
+	TickSize  types.TickSize // 价格精度（可选）
+	NegRisk   *bool          // 是否为负风险市场（可选）
 }
 
 type AutoHedgeConfig struct {
@@ -232,6 +234,8 @@ func (e *ExecutionEngine) placeAllLegs(ctx context.Context, req MultiLegRequest)
 				Status:       domain.OrderStatusPending,
 				CreatedAt:    time.Now(),
 				OrderType:    leg.OrderType,
+				TickSize:     leg.TickSize, // 使用 LegIntent 中的精度信息
+				NegRisk:      leg.NegRisk,   // 使用 LegIntent 中的 neg_risk 信息
 			}
 			o, err := e.ops.PlaceOrder(ctx, order)
 			if err != nil {

@@ -100,10 +100,20 @@ func (e *IOExecutor) placeOrderSync(ctx context.Context, order *domain.Order) (*
 		orderType = types.OrderTypeGTC
 	}
 
-	// 创建订单选项
+	// 创建订单选项（优先使用订单中指定的精度信息）
 	options := &types.CreateOrderOptions{
-		TickSize: types.TickSize0001,
-		NegRisk:  boolPtr(false),
+		TickSize: types.TickSize0001, // 默认值
+		NegRisk:  boolPtr(false),     // 默认值
+	}
+	
+	// 如果订单中指定了 TickSize，使用订单的值
+	if order.TickSize != "" {
+		options.TickSize = order.TickSize
+	}
+	
+	// 如果订单中指定了 NegRisk，使用订单的值
+	if order.NegRisk != nil {
+		options.NegRisk = order.NegRisk
 	}
 
 	// 构建用户订单

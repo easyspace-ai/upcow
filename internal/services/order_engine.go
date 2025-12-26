@@ -666,6 +666,47 @@ func (e *OrderEngine) handleUpdateOrder(cmd *UpdateOrderCommand) {
 	// 更新订单存储
 	e.orderStore[order.OrderID] = order
 
+	// ✅ 修复：在纸交易模式下，当订单成交时创建 Trade 对象，以便正确创建持仓
+	// 这样止盈/止损逻辑才能正常工作
+	if order.Status == domain.OrderStatusFilled && e.dryRun {
+		// 检查是否已经有对应的 Trade（避免重复创建）
+		// 通过检查订单的 FilledSize 是否大于 0 来判断是否需要创建 Trade
+		if order.FilledSize > 0 {
+			// 检查是否已经处理过这个订单的 Trade
+			tradeID := fmt.Sprintf("dry_run_trade_%s", order.OrderID)
+			if _, exists := e.seenTrades[tradeID]; !exists {
+				// 创建 Trade 对象
+				filledAt := time.Now()
+				if order.FilledAt != nil {
+					filledAt = *order.FilledAt
+				}
+				trade := &domain.Trade{
+					ID:        tradeID,
+					OrderID:   order.OrderID,
+					AssetID:   order.AssetID,
+					Side:      order.Side,
+					Price:     order.Price,
+					Size:      order.FilledSize,
+					TokenType: order.TokenType,
+					Market:    nil, // 纸交易模式下 Market 可以为 nil，持仓通过 Order.MarketSlug 标识
+					Time:      filledAt,
+					Fee:       0, // 纸交易模式下费用为 0
+				}
+				
+				// 发送 ProcessTradeCommand 到 OrderEngine
+				tradeCmd := &ProcessTradeCommand{
+					id:    fmt.Sprintf("dry_run_trade_cmd_%d", time.Now().UnixNano()),
+					Gen:   cmd.Gen,
+					Trade: trade,
+				}
+				e.SubmitCommand(tradeCmd)
+				
+				orderEngineLog.Infof("✅ [纸交易] 已创建 Trade 对象: tradeID=%s orderID=%s size=%.4f price=%.4f",
+					tradeID, order.OrderID, trade.Size, trade.Price.ToDecimal())
+			}
+		}
+	}
+
 	// 如果订单已成交/已取消，从活跃订单中移除
 	if order.Status == domain.OrderStatusFilled || order.Status == domain.OrderStatusCanceled {
 		delete(e.openOrders, order.OrderID)

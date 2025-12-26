@@ -26,6 +26,8 @@ type Order struct {
 	PairOrderID  *string         // 配对订单 ID（entry <-> hedge）
 	Status       OrderStatus     // 订单状态
 	OrderType    types.OrderType // 订单类型（GTC/FAK/FOK，默认GTC）
+	TickSize     types.TickSize  // 价格精度（可选，如果未设置则使用默认值）
+	NegRisk      *bool           // 是否为负风险市场（可选）
 }
 
 // OrderStatus 订单状态

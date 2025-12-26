@@ -1,0 +1,23 @@
+[36mINFO[0m[25-12-26 16:16:48] 日志按周期命名已启用，周期时长: 15m0s                       
+[36mINFO[0m[25-12-26 16:16:48] 🚀 启动交易机器人（BBGO 架构）...                        
+[36mINFO[0m[25-12-26 16:16:48] 已设置 HTTP 代理环境变量: http://127.0.0.1:15236（Gamma API 将使用此代理） 
+[36mINFO[0m[25-12-26 16:16:48] 推导 API 凭证...                                 
+[36mINFO[0m[25-12-26 16:16:50] API 凭证已获取: key=86d0e4ec-ce7...               
+[33mWARN[0m[25-12-26 16:16:50] 📝 纸交易模式已启用：不会进行真实交易，订单信息仅记录在日志中               [33mcomponent[0m=trading_service
+[33mWARN[0m[25-12-26 16:16:50] 📝 纸交易模式已启用：不会进行真实交易，订单信息仅记录在日志中              
+[36mINFO[0m[25-12-26 16:16:50] 后台预加载: 发现 2 个缺失的周期数据（需要预加载: [btc-updown-15m-1766736900 btc-updown-15m-1766737800]，缓存大小: 0） 
+[36mINFO[0m[25-12-26 16:16:50] 已配置代理钱包: funderAddress=0x89F684AB45206177E966b66a8722c9C8e3D9147a 
+[36mINFO[0m[25-12-26 16:16:50] 订单状态同步配置已更新: 有活跃订单时=3秒, 无活跃订单时=30秒            [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-26 16:16:50] 订单状态同步配置: 有活跃订单时=3秒, 无活跃订单时=30秒（官方API限流：150请求/10秒，理论上可支持1秒，但建议3秒以上） 
+[36mINFO[0m[25-12-26 16:16:50] ✅ 已设置最小订单金额: 1.10 USDC                        [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-26 16:16:50] ✅ 已设置限价单最小 share 数量: 5.00（仅限价单 GTC 时应用）       [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-26 16:16:50] 系统级配置: 防抖间隔=100ms（BBGO风格：直接回调模式）             
+[36mINFO[0m[25-12-26 16:16:50] ✅ 策略 velocityfollow 已加载（on=[polymarket]）     
+[37mDEBU[0m[25-12-26 16:16:50] failed to inject MarketDataService into velocityfollow: field MarketDataService not found  [37mcomponent[0m=trader
+[37mDEBU[0m[25-12-26 16:16:50] failed to inject directModeDebounce into velocityfollow: field directModeDebounce not found  [37mcomponent[0m=trader
+[37mDEBU[0m[25-12-26 16:16:50] failed to inject Executor into velocityfollow: field Executor not found  [37mcomponent[0m=trader
+[36mINFO[0m[25-12-26 16:16:50] ✅ [velocityfollow] 从配置加载市场精度信息: tick_size=0.001 min_order_size=5 neg_risk=false  [36mstrategy[0m=velocityfollow
+[36mINFO[0m[25-12-26 16:16:50] ✅ [velocityfollow] 已注册订单更新回调（利用本地订单状态管理）      [36mstrategy[0m=velocityfollow
+[36mINFO[0m[25-12-26 16:16:50] 启动市场调度器...                                    [36mcomponent[0m=market_scheduler
+[37mDEBU[0m[25-12-26 16:16:50] 缓存未命中，从 API 获取市场信息: btc-updown-15m-1766736900 
+[36mINFO[0m[25-12-26 16:16:50] 从 API 获取市场信息成功: btc-updown-15m-1766736900 (YES: 702092710011..., NO: 812219622958...) 

@@ -305,13 +305,27 @@ func (m *MarketStream) DialAndConnect(ctx context.Context) error {
 		conn.Close()
 		return fmt.Errorf("market not set")
 	}
+
+	// 健康检查：验证重连后的状态
+	handlerCount := m.handlers.Count()
+	if handlerCount == 0 {
+		marketLog.Warnf("⚠️ [重连健康检查] Handlers 为空，但继续连接: market=%s", m.market.Slug)
+	} else {
+		marketLog.Infof("✅ [重连健康检查] Handlers 数量=%d: market=%s", handlerCount, m.market.Slug)
+	}
+
+	if m.market.YesAssetID == "" || m.market.NoAssetID == "" {
+		conn.Close()
+		return fmt.Errorf("market asset IDs not set: YesAssetID=%s NoAssetID=%s", m.market.YesAssetID, m.market.NoAssetID)
+	}
+
 	// 使用新的 subscribe 方法（支持动态订阅）
 	if err := m.subscribe([]string{m.market.YesAssetID, m.market.NoAssetID}, "subscribe"); err != nil {
 		conn.Close()
 		return err
 	}
 
-	marketLog.Infof("市场价格 WebSocket 已连接: %s", m.market.Slug)
+	marketLog.Infof("市场价格 WebSocket 已连接: %s (handlers=%d)", m.market.Slug, handlerCount)
 	return nil
 }
 
@@ -421,6 +435,29 @@ func (m *MarketStream) reconnector(ctx context.Context) {
 				marketLog.Warnf("重连失败: %v，将再次尝试...", err)
 				m.Reconnect() // 重新发送信号
 			} else {
+				// 重连成功后的状态验证
+				handlerCount := m.handlers.Count()
+				marketSlug := ""
+				marketConditionID := ""
+				if m.market != nil {
+					marketSlug = m.market.Slug
+					marketConditionID = m.market.ConditionID
+				}
+
+				marketLog.Infof("✅ [重连成功] 连接已恢复: market=%s conditionID=%s handlers=%d",
+					marketSlug, marketConditionID, handlerCount)
+
+				if m.market == nil {
+					marketLog.Errorf("❌ [重连验证] Market 未设置！")
+				} else if m.market.YesAssetID == "" || m.market.NoAssetID == "" {
+					marketLog.Errorf("❌ [重连验证] Market Asset IDs 未设置: YesAssetID=%s NoAssetID=%s",
+						m.market.YesAssetID, m.market.NoAssetID)
+				}
+
+				if handlerCount == 0 {
+					marketLog.Errorf("❌ [重连验证] Handlers 为空！价格事件将无法触发策略！")
+				}
+
 				// 重连成功后，恢复所有订阅
 				m.subscribedAssetsMu.RLock()
 				subscribedAssetIDs := make([]string, 0, len(m.subscribedAssets))
@@ -436,8 +473,24 @@ func (m *MarketStream) reconnector(ctx context.Context) {
 					if err := m.subscribe(subscribedAssetIDs, "subscribe"); err != nil {
 						marketLog.Warnf("⚠️ [重连恢复] 恢复订阅失败: %v", err)
 					} else {
-						marketLog.Infof("✅ [重连恢复] 订阅已恢复")
+						marketLog.Infof("✅ [重连恢复] 订阅已恢复: assets=%d handlers=%d", len(subscribedAssetIDs), handlerCount)
+						// 启动监控：如果重连后 30 秒内没有收到任何消息，记录警告
+						go func() {
+							time.Sleep(30 * time.Second)
+							m.lastMsgMu.RLock()
+							lastMsg := m.lastMessageAt
+							m.lastMsgMu.RUnlock()
+							if time.Since(lastMsg) > 30*time.Second {
+								marketLog.Warnf("⚠️ [重连监控] 重连后 30 秒内未收到任何消息: market=%s lastMsg=%v",
+									marketSlug, lastMsg)
+							} else {
+								marketLog.Debugf("✅ [重连监控] 重连后已收到消息: market=%s lastMsg=%v",
+									marketSlug, lastMsg)
+							}
+						}()
 					}
+				} else {
+					marketLog.Warnf("⚠️ [重连恢复] 没有需要恢复的订阅")
 				}
 			}
 		}
@@ -555,6 +608,13 @@ func (m *MarketStream) Read(ctx context.Context, conn *websocket.Conn, cancel co
 
 		// 处理消息
 		m.markMessageReceived()
+		marketLog.Debugf("📥 [消息接收] 收到 WebSocket 消息: len=%d market=%s", 
+			len(message), func() string {
+				if m.market != nil {
+					return m.market.Slug
+				}
+				return "nil"
+			}())
 		m.handleMessage(ctx, message)
 	}
 }
@@ -745,8 +805,15 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 		}
 	}
 
-	switch detectEventTypeCode(message) {
+	eventType := detectEventTypeCode(message)
+	switch eventType {
 	case evtPriceChange:
+		marketLog.Debugf("📨 [消息处理] 收到 price_change 消息: market=%s", func() string {
+			if m.market != nil {
+				return m.market.Slug
+			}
+			return "nil"
+		}())
 		m.handlePriceChange(ctx, message)
 	case evtSubscribed:
 		marketLog.Infof("✅ MarketStream 收到订阅成功消息")
@@ -761,8 +828,14 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 		m.healthCheckMu.Unlock()
 		marketLog.Debugf("收到 PONG 响应")
 	case evtBook:
+		marketLog.Debugf("📨 [消息处理] 收到 book 消息: market=%s", func() string {
+			if m.market != nil {
+				return m.market.Slug
+			}
+			return "nil"
+		}())
 		// 兼容：某些情况下服务器只推 book（快照/增量），未推 price_change。
-		// 为了不让策略“完全看不到实时 up/down”，这里从 book 中提取 best_ask/best_bid 并发出 PriceChangedEvent。
+		// 为了不让策略"完全看不到实时 up/down"，这里从 book 中提取 best_ask/best_bid 并发出 PriceChangedEvent。
 		m.handleBookAsPrice(ctx, message)
 	case evtTickSizeChange:
 		marketLog.Debugf("收到 tick size 变化消息")
@@ -785,7 +858,13 @@ func (m *MarketStream) handleMessage(ctx context.Context, message []byte) {
 		if len(msgPreview) > 200 {
 			msgPreview = msgPreview[:200]
 		}
-		marketLog.Infof("收到未知消息类型: %s (消息内容: %s)", msgType.EventType, string(msgPreview))
+		marketLog.Debugf("📨 [消息处理] 收到未知消息类型: %s (消息内容: %s) market=%s", 
+			msgType.EventType, string(msgPreview), func() string {
+				if m.market != nil {
+					return m.market.Slug
+				}
+				return "nil"
+			}())
 	}
 }
 
@@ -1162,9 +1241,25 @@ func (m *MarketStream) handlePriceChange(ctx context.Context, message []byte) {
 	default:
 	}
 
+	// 诊断日志：检查 market 状态
 	if m.market == nil || m.market.Slug == "" {
+		marketLog.Warnf("⚠️ [价格处理] Market 未设置，忽略价格变化消息: market=%v slug=%s",
+			m.market != nil, func() string {
+				if m.market != nil {
+					return m.market.Slug
+				}
+				return ""
+			}())
 		return
 	}
+
+	// 诊断日志：检查 handlers 状态
+	handlerCount := m.handlers.Count()
+	if handlerCount == 0 {
+		marketLog.Warnf("⚠️ [价格处理] Handlers 为空，无法处理价格变化消息: market=%s", m.market.Slug)
+		return
+	}
+	marketLog.Debugf("📥 [价格处理] 收到价格变化消息: market=%s handlers=%d", m.market.Slug, handlerCount)
 
 	// 极限热路径：手写解析 market + price_changes（失败则回退到 json.Unmarshal 的慢路径）
 	if m.handlePriceChangeFast(ctx, message) {
@@ -1188,11 +1283,15 @@ func (m *MarketStream) handlePriceChangeFast(ctx context.Context, message []byte
 		// 为了性能，先做 market 过滤，如果匹配则继续处理
 		// 如果不匹配，需要检查 asset_id（但需要解析 JSON，性能较差）
 		// 为了简化，这里先做 market 过滤，后续在解析时再做 asset_id 过滤
+		marketLog.Debugf("🚫 [价格处理] Market 不匹配，跳过: msg.market=%s expected=%s slug=%s",
+			string(marketBytes), m.market.ConditionID, m.market.Slug)
 		return true // 已知是别的 market，直接丢弃（不算失败）
 	}
 
 	// handlers 为空直接丢弃（避免无意义计算）
-	if m.handlers.Count() == 0 {
+	handlerCount := m.handlers.Count()
+	if handlerCount == 0 {
+		marketLog.Warnf("⚠️ [价格处理] Handlers 为空，跳过价格处理: market=%s", m.market.Slug)
 		return true
 	}
 
@@ -1348,6 +1447,20 @@ func (m *MarketStream) handlePriceChangeSlow(ctx context.Context, message []byte
 		return
 	}
 
+	// 诊断日志：记录收到的价格消息
+	marketLog.Debugf("📥 [价格处理] 解析 price_change 消息: msg.market=%s priceChanges=%d expected=%s slug=%s",
+		pm.Market, len(pm.PriceChanges), func() string {
+			if m.market != nil {
+				return m.market.ConditionID
+			}
+			return "nil"
+		}(), func() string {
+			if m.market != nil {
+				return m.market.Slug
+			}
+			return "nil"
+		}())
+
 	// 关键过滤：只允许当前周期 market conditionId 的消息进入策略
 	// 注意：price_change 消息可能包含多个 asset_id，需要逐个检查
 	hasValidAsset := false
@@ -1364,7 +1477,9 @@ func (m *MarketStream) handlePriceChangeSlow(ctx context.Context, message []byte
 	}
 
 	// handlers 为空直接丢弃（避免无意义计算）
-	if m.handlers.Count() == 0 {
+	handlerCount := m.handlers.Count()
+	if handlerCount == 0 {
+		marketLog.Warnf("⚠️ [价格处理] Handlers 为空，跳过价格处理: market=%s", m.market.Slug)
 		return
 	}
 
@@ -1468,12 +1583,17 @@ func (m *MarketStream) emitPriceChanged(ctx context.Context, tokenType domain.To
 	// 再次检查是否已关闭（双重保险）
 	select {
 	case <-m.closeC:
+		marketLog.Debugf("⚠️ [价格触发] MarketStream 已关闭，忽略价格事件: token=%s price=%.4f market=%s",
+			tokenType, price.ToDecimal(), marketSlug)
 		return
 	default:
 	}
 
 	// 在发送事件前，检查 handlers 是否为空（关闭过程中会被清空）
-	if m.handlers.Count() == 0 {
+	handlerCount := m.handlers.Count()
+	if handlerCount == 0 {
+		marketLog.Warnf("⚠️ [价格触发] Handlers 为空，无法触发价格事件: token=%s price=%.4f market=%s",
+			tokenType, price.ToDecimal(), marketSlug)
 		return
 	}
 
@@ -1484,6 +1604,8 @@ func (m *MarketStream) emitPriceChanged(ctx context.Context, tokenType domain.To
 		NewPrice:  price,
 		Timestamp: time.Now(),
 	}
+	marketLog.Debugf("📤 [价格触发] 触发价格变化事件: token=%s price=%.4f market=%s handlers=%d",
+		tokenType, price.ToDecimal(), marketSlug, handlerCount)
 	m.handlers.Emit(ctx, event)
 }
 

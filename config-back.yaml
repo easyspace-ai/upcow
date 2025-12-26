@@ -1,0 +1,122 @@
+# Gobet 交易机器人配置文件（示例）
+# 注意：钱包相关（private_key, funder_address）通常从 data/user.json 加载，不要写在这里
+ 
+# 代理（可选；不需要就删掉这一段）
+proxy:
+  host: "127.0.0.1"
+  port: 15236
+ 
+# 市场选择：通过这里切换币种/周期
+# timeframe: "15m" / "1h" / "4h"
+# slugTemplates: 格式模板，程序根据时间替换变量
+# 支持的变量：
+#   - {symbol}: 币种符号 (btc, eth)
+#   - {coinName}: 币种全名 (bitcoin, ethereum) - 自动映射
+#   - {kind}: 市场类型 (updown)
+#   - {timeframe}: 周期 (15m, 1h)
+#   - {timestamp}: Unix 时间戳
+#   - {month}: 月份全名小写 (december)
+#   - {day}: 日期 (24)
+#   - {hour}: 12小时制小时 (11)
+#   - {ampm}: am/pm
+#   - {et}: 时区标识 (et)
+market:
+  symbol: "btc"
+  timeframe: "15m"
+  kind: "updown"
+  # slugTemplates: 格式模板映射（根据 timeframe 选择）
+  slugTemplates:
+    "15m": "{symbol}-{kind}-{timeframe}-{timestamp}"
+    "1h": "{coinName}-up-or-down-{month}-{day}-{hour}{ampm}-et"
+    "4h": "{symbol}-{kind}-{timeframe}-{timestamp}"  # 默认使用 timestamp 格式
+ 
+# 策略挂载（bbgo main 风格）
+exchangeStrategies:
+  - on: polymarket
+    velocityfollow:
+      # ====== 下单参数（20美金实盘配置）======
+      # 成本分析：增加 orderSize 以减少自动调整
+      # - 如果 orderSize = 8:
+      #   - UP (15¢): 8 × 0.15 = $1.20 > $1.1 ✅ 无需调整
+      #   - DOWN (82¢): 8 × 0.82 = $6.56 > $1.1 ✅ 无需调整
+      # - 每次交易总成本：约 $7.76（高价时）或 $2.40（低价时）
+      # - 20 美金可支持：约 2-8 次交易（取决于价格）
+      orderSize: 8            # 增加数量以减少自动调整，确保满足 minOrderSize
+      hedgeOrderSize: 0          # 0=跟随 orderSize（对侧挂单 shares）
+
+      # ====== “速度快”判定 ======
+      windowSeconds: 5          # 速度计算窗口（秒）
+      minMoveCents: 3            # 窗口内最小价格变化（分）
+      minVelocityCentsPerSec: 0.3 # 最小速度阈值（分/秒）
+
+      # ====== 风控参数 ======
+      cooldownMs: 2000           # 触发冷却时间（毫秒），与执行层去重 TTL（2秒）对齐
+      oncePerCycle: false         # 每周期最多触发一次（已废弃，使用 maxTradesPerCycle）
+      warmupMs: 800              # 周期切换后的预热窗口（毫秒）
+      maxTradesPerCycle: 2       # 每周期最多交易次数（0=不设限）
+
+      # ====== 安全参数 ======
+      hedgeOffsetCents: 4        # 对侧挂单价 = (100 - entryAskCents - offset)
+      maxEntryPriceCents: 90     # 吃单价上限（分），避免 99/100 假盘口
+      maxSpreadCents: 5          # 盘口价差上限（分），避免极差盘口误触发
+
+      # ====== Binance 开盘 1m K 线阴阳 bias（已禁用）======
+      useBinanceOpen1mBias: false
+      biasMode: "hard"           # hard=只顺势；soft=逆势门槛更高
+      open1mMaxWaitSeconds: 120
+      open1mMinBodyBps: 3
+      open1mMaxWickBps: 25
+      requireBiasReady: false    # 禁用 bias 等待
+
+      # soft 模式下才需要（hard 模式也可以留着不生效）
+      oppositeBiasVelocityMultiplier: 1.5
+      oppositeBiasMinMoveExtraCents: 2
+
+      # ====== Binance 1s "底层硬动确认"（已禁用）======
+      useBinanceMoveConfirm: false
+      moveConfirmWindowSeconds: 57
+      minUnderlyingMoveBps: 20
+
+      # ====== 价格优先选择（镜像订单簿优化）======
+      # 当 UP/DOWN 都满足速度条件时，优先选择价格更高的一边
+      # 因为订单簿是镜像的，速度通常相同，价格更高的胜率更大
+      preferHigherPrice: true          # 启用价格优先选择
+      minPreferredPriceCents: 60       # 优先价格阈值（整数分），例如 50 表示 50c，60 表示 60c
+                                       # 注意：如果配置 60，表示价格 >= 60c 才触发；如果配置 50，表示价格 >= 50c 才触发
+
+      # ====== 订单执行模式 ======
+      # sequential: 顺序下单（先下 Entry，成交后再下 Hedge）- 风险低，速度慢（~200-500ms）
+      # parallel: 并发下单（同时提交 Entry 和 Hedge）- 速度快（~100-200ms），风险高
+      orderExecutionMode: "sequential"  # "sequential" 或 "parallel"，默认 "sequential"
+      
+      # 顺序下单模式参数（仅在 orderExecutionMode="sequential" 时生效）
+      sequentialCheckIntervalMs: 50    # 检查订单状态的间隔（毫秒），默认 50ms
+      sequentialMaxWaitMs: 1000        # 最大等待时间（毫秒），默认 1000ms（FAK 订单通常立即成交）
+
+      # ====== 风险控制参数 ======
+      cycleEndProtectionMinutes: 3     # 周期结束前保护时间（分钟），在周期结束前 N 分钟不开新单，降低风险
+      hedgeReorderTimeoutSeconds: 30   # 对冲单重下超时时间（秒），主单成交后，如果对冲单在指定时间内未成交，重新下单
+      inventoryThreshold: 50.0          # 库存偏斜阈值（shares），当净持仓超过此值时，降低该方向的交易频率（0=禁用）
+                                       # 建议值：根据订单大小设置，例如 orderSize=6.5，threshold=50 意味着约 7-8 个订单的净持仓
+ 
+# ====== 系统级配置 ======
+order_status_check_timeout: 3
+order_status_check_interval: 3
+ 
+minOrderSize: 1.1
+minShareSize: 5.0
+ 
+log_level: "info"
+log_file: "logs/bot.log"
+log_by_cycle: true
+ 
+# 实盘交易开关（⚠️ 实盘前必须改为 false）
+# 建议：先用 dry_run: true 测试，确认逻辑和日志 OK 再改 false
+dry_run: false  # ⚠️ 实盘模式：已启用真实交易
+ 
+order_status_sync_interval_with_orders: 3
+order_status_sync_interval_without_orders: 30
+ 
+GRID_HEALTH_LOG_INTERVAL_SECONDS: 15
+GRID_STRONG_HEDGE_DEBOUNCE_SECONDS: 2
+GRID_ENABLE_ADHOC_STRONG_HEDGE: true

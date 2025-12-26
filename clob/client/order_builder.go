@@ -248,13 +248,23 @@ func getOrderRawAmounts(
 		}
 	} else {
 		// 卖出：maker 获得 tokens，taker 支付 USDC
-		rawMakerAmt = roundDown(size, roundConfig.Size)
+		// ⚠️ 重要：卖出订单的精度要求与买入不同
+		// - maker amount (tokens): 最多 2 位小数
+		// - taker amount (USDC): 最多 4 位小数
+		rawMakerAmt = roundDown(size, roundConfig.Size) // tokens，2位小数
 
-		rawTakerAmt = rawMakerAmt * rawPrice
-		if decimalPlaces(rawTakerAmt) > roundConfig.Amount {
-			rawTakerAmt = roundUp(rawTakerAmt, roundConfig.Amount+4)
-			if decimalPlaces(rawTakerAmt) > roundConfig.Amount {
-				rawTakerAmt = roundDown(rawTakerAmt, roundConfig.Amount)
+		rawTakerAmt = rawMakerAmt * rawPrice // USDC，需要4位小数
+		// 确保 taker amount 不超过 4 位小数
+		if decimalPlaces(rawTakerAmt) > 4 {
+			rawTakerAmt = roundDown(rawTakerAmt, 4)
+		}
+		// 确保 maker amount 不超过 2 位小数（再次检查，因为 roundConfig.Size 可能不是2）
+		if decimalPlaces(rawMakerAmt) > 2 {
+			rawMakerAmt = roundDown(rawMakerAmt, 2)
+			// 重新计算 taker amount
+			rawTakerAmt = rawMakerAmt * rawPrice
+			if decimalPlaces(rawTakerAmt) > 4 {
+				rawTakerAmt = roundDown(rawTakerAmt, 4)
 			}
 		}
 	}

@@ -37,7 +37,7 @@ type MarketQualityOptions struct {
 
 func (o MarketQualityOptions) normalized() MarketQualityOptions {
 	if o.MaxBookAge <= 0 {
-		o.MaxBookAge = 3 * time.Second
+		o.MaxBookAge = 60 * time.Second  // 放宽默认值：从 3 秒增加到 60 秒，优先使用 WebSocket 数据
 	}
 	if o.MaxSpreadPips <= 0 {
 		o.MaxSpreadPips = 1000 // 10c

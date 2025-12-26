@@ -147,6 +147,13 @@ type Config struct {
 	DryRun                               bool                    // 纸交易模式（dry run），如果为 true，不进行真实交易，只在日志中打印订单信息
 }
 
+// MarketPrecisionConfig 市场精度配置
+type MarketPrecisionConfig struct {
+	TickSize     string `yaml:"tick_size" json:"tick_size"`      // 价格精度（如 "0.01", "0.001"）
+	MinOrderSize string `yaml:"min_order_size" json:"min_order_size"` // 最小订单大小（如 "0.1", "5"）
+	NegRisk      bool   `yaml:"neg_risk" json:"neg_risk"`        // 是否为负风险市场
+}
+
 // MarketConfig 选择要交易/订阅的 polymarket 市场规格。
 // slugTemplates: 格式模板，程序根据时间替换变量
 // 支持的变量：{symbol}, {coinName}, {kind}, {timeframe}, {timestamp}, {month}, {day}, {hour}, {ampm}, {et}
@@ -157,6 +164,7 @@ type MarketConfig struct {
 	SlugStyle     string            // 已废弃：不再使用，格式根据 timeframe 自动选择
 	SlugPrefix    string            // 可选：显式指定 market slug 前缀（例如 btc-updown-15m- 或 bitcoin-up-or-down-）
 	SlugTemplates map[string]string // 格式模板映射：timeframe -> template
+	Precision     *MarketPrecisionConfig // 市场精度配置（可选，如果未设置则使用默认值）
 }
 
 func (m MarketConfig) Spec() (marketspec.MarketSpec, error) {
@@ -226,12 +234,13 @@ type ConfigFile struct {
 	} `yaml:"proxy" json:"proxy"`
 	ExchangeStrategies                   []ExchangeStrategyMount `yaml:"exchangeStrategies" json:"exchangeStrategies"`
 	Market                               struct {
-		Symbol        string            `yaml:"symbol" json:"symbol"`
-		Timeframe     string            `yaml:"timeframe" json:"timeframe"`
-		Kind          string            `yaml:"kind" json:"kind"`
-		SlugStyle     string            `yaml:"slugStyle" json:"slugStyle"`
-		SlugPrefix    string            `yaml:"slugPrefix" json:"slugPrefix"`
-		SlugTemplates map[string]string `yaml:"slugTemplates" json:"slugTemplates"`
+		Symbol        string                     `yaml:"symbol" json:"symbol"`
+		Timeframe     string                     `yaml:"timeframe" json:"timeframe"`
+		Kind          string                     `yaml:"kind" json:"kind"`
+		SlugStyle     string                     `yaml:"slugStyle" json:"slugStyle"`
+		SlugPrefix    string                     `yaml:"slugPrefix" json:"slugPrefix"`
+		SlugTemplates map[string]string          `yaml:"slugTemplates" json:"slugTemplates"`
+		Precision     *MarketPrecisionConfig     `yaml:"precision" json:"precision"`
 	} `yaml:"market" json:"market"`
 	LogLevel                             string                  `yaml:"log_level" json:"log_level"`
 	LogFile                              string                  `yaml:"log_file" json:"log_file"`
@@ -353,6 +362,12 @@ func LoadFromFile(filePath string) (*Config, error) {
 				slugTemplates = defaultTemplates
 			}
 
+			// 读取市场精度配置
+			var precision *MarketPrecisionConfig
+			if configFile != nil && configFile.Market.Precision != nil {
+				precision = configFile.Market.Precision
+			}
+
 			return MarketConfig{
 				Symbol:        symbol,
 				Timeframe:     timeframe,
@@ -360,6 +375,7 @@ func LoadFromFile(filePath string) (*Config, error) {
 				SlugStyle:     "",
 				SlugPrefix:    slugPrefix,
 				SlugTemplates: slugTemplates,
+				Precision:     precision,
 			}
 		}(),
 		LogLevel: func() string {

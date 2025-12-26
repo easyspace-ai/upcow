@@ -72,7 +72,7 @@ exchangeStrategies:
       minVelocityCentsPerSec: 0.3
  
       cooldownMs: 1500
-      oncePerCycle: true
+      maxTradesPerCycle: 1      # 每周期最多交易次数（0=不设限，1=每周期只交易一次）
       warmupMs: 800
  
       # ====== 安全参数 ======

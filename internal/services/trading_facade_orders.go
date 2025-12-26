@@ -54,6 +54,14 @@ func (s *TradingService) CheckOrderBookLiquidity(ctx context.Context, assetID st
 	return s.orders.CheckOrderBookLiquidity(ctx, assetID, side, price, size)
 }
 
+// GetOrderBook 获取订单簿完整信息（包括 tick_size 和 min_order_size）
+func (s *TradingService) GetOrderBook(ctx context.Context, assetID string) (*types.OrderBookSummary, error) {
+	if s.clobClient == nil {
+		return nil, fmt.Errorf("clob client not initialized")
+	}
+	return s.clobClient.GetOrderBook(ctx, assetID, nil)
+}
+
 // GetSecondLevelPrice 获取订单簿的第二档价格（卖二价或买二价）
 // 对于买入订单：返回卖二价（asks[1]），如果不存在则返回卖一价（asks[0]）
 // 对于卖出订单：返回买二价（bids[1]），如果不存在则返回买一价（bids[0]）

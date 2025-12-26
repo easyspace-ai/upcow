@@ -229,11 +229,21 @@ func (o *OrdersService) GetBestPrice(ctx context.Context, assetID string) (bestB
 	s := o.s
 
 	// 快路径：优先读取 WS 推送的 AtomicBestBook（避免每次都打 REST orderbook）
-	// - 仅当 bestBook 注入且新鲜（<=3s）且能映射到 YES/NO assetId 时使用
+	// - 放宽新鲜度要求：从 3 秒增加到 30 秒，优先使用 WebSocket 数据
+	// - 放宽价差检查：从 10 分增加到 30 分，减少回退到 REST API
+	wsFallbackReason := ""
 	if s != nil {
 		book := s.getBestBook()
 		market := s.getCurrentMarketInfo()
-		if book != nil && market != nil && book.IsFresh(3*time.Second) {
+		if book == nil {
+			wsFallbackReason = "WebSocket book为nil"
+		} else if market == nil {
+			wsFallbackReason = "市场信息为nil"
+		} else if !book.IsFresh(30 * time.Second) {
+			snap := book.Load()
+			age := time.Since(snap.UpdatedAt)
+			wsFallbackReason = fmt.Sprintf("数据过期: age=%.1fs (要求<30s)", age.Seconds())
+		} else {
 			snap := book.Load()
 			if assetID == market.YesAssetID {
 				if snap.YesBidPips > 0 {
@@ -243,15 +253,19 @@ func (o *OrdersService) GetBestPrice(ctx context.Context, assetID string) (bestB
 					bestAsk = float64(snap.YesAskPips) / 10000.0
 				}
 				// 架构层数据质量 gate：必须双边价格都存在，避免 ask-only=0.99 误触发策略
-				if bestBid > 0 && bestAsk > 0 {
+				if bestBid <= 0 || bestAsk <= 0 {
+					wsFallbackReason = fmt.Sprintf("YES数据不完整: bid=%.4f ask=%.4f", bestBid, bestAsk)
+				} else {
 					spreadCents := int(snap.YesAskPips/100) - int(snap.YesBidPips/100)
 					if spreadCents < 0 {
 						spreadCents = -spreadCents
 					}
-					if spreadCents <= 10 {
+					// 放宽价差检查：从 10 分增加到 30 分，优先使用 WebSocket 数据
+					if spreadCents > 30 {
+						wsFallbackReason = fmt.Sprintf("YES价差过大: %dc (要求<=30c)", spreadCents)
+					} else {
 						return bestBid, bestAsk, nil
 					}
-					// spread 过大：回退 REST 再确认（避免 WS 脏快照）
 				}
 			} else if assetID == market.NoAssetID {
 				if snap.NoBidPips > 0 {
@@ -260,17 +274,31 @@ func (o *OrdersService) GetBestPrice(ctx context.Context, assetID string) (bestB
 				if snap.NoAskPips > 0 {
 					bestAsk = float64(snap.NoAskPips) / 10000.0
 				}
-				if bestBid > 0 && bestAsk > 0 {
+				if bestBid <= 0 || bestAsk <= 0 {
+					wsFallbackReason = fmt.Sprintf("NO数据不完整: bid=%.4f ask=%.4f", bestBid, bestAsk)
+				} else {
 					spreadCents := int(snap.NoAskPips/100) - int(snap.NoBidPips/100)
 					if spreadCents < 0 {
 						spreadCents = -spreadCents
 					}
-					if spreadCents <= 10 {
+					// 放宽价差检查：从 10 分增加到 30 分，优先使用 WebSocket 数据
+					if spreadCents > 30 {
+						wsFallbackReason = fmt.Sprintf("NO价差过大: %dc (要求<=30c)", spreadCents)
+					} else {
 						return bestBid, bestAsk, nil
 					}
 				}
+			} else {
+				wsFallbackReason = fmt.Sprintf("assetID不匹配: assetID=%s YES=%s NO=%s", assetID, market.YesAssetID, market.NoAssetID)
 			}
 		}
+	} else {
+		wsFallbackReason = "Session为nil"
+	}
+
+	// 记录回退原因，方便排查
+	if wsFallbackReason != "" {
+		log.Debugf("⚠️ [GetBestPrice] 回退到REST API: assetID=%s reason=%s", assetID, wsFallbackReason)
 	}
 
 	// 获取订单簿（REST）
@@ -319,14 +347,32 @@ func (o *OrdersService) GetTopOfBook(ctx context.Context, market *domain.Market)
 		return domain.Price{}, domain.Price{}, domain.Price{}, domain.Price{}, "", fmt.Errorf("market invalid")
 	}
 
-	// 1) WS 快路径：当前 market 且 bestBook 新鲜（放宽新鲜度要求，从 3 秒增加到 10 秒）
-	// 这样可以减少 REST API 调用，降低超时风险
+	// 1) WS 快路径：当前 market 且 bestBook 新鲜（放宽新鲜度要求，从 10 秒增加到 60 秒）
+	// 这样可以减少 REST API 调用，降低超时风险，优先使用 WebSocket 数据
+	wsFallbackReason := ""
 	if s != nil {
 		book := s.getBestBook()
 		cur := s.getCurrentMarketInfo()
-		if book != nil && cur != nil && cur.Slug == market.Slug && book.IsFresh(10*time.Second) {
+		if book == nil {
+			wsFallbackReason = "WebSocket book为nil"
+		} else if cur == nil {
+			wsFallbackReason = "当前市场信息为nil"
+		} else if cur.Slug != market.Slug {
+			wsFallbackReason = fmt.Sprintf("市场不匹配: cur=%s expected=%s", cur.Slug, market.Slug)
+		} else if !book.IsFresh(60 * time.Second) {
 			snap := book.Load()
-			if snap.YesBidPips > 0 && snap.YesAskPips > 0 && snap.NoBidPips > 0 && snap.NoAskPips > 0 {
+			age := time.Since(snap.UpdatedAt)
+			wsFallbackReason = fmt.Sprintf("数据过期: age=%.1fs (要求<60s)", age.Seconds())
+		} else {
+			snap := book.Load()
+			// 放宽数据完整性要求：允许部分数据（只要有一边有bid和ask即可）
+			hasYesData := snap.YesBidPips > 0 && snap.YesAskPips > 0
+			hasNoData := snap.NoBidPips > 0 && snap.NoAskPips > 0
+			if !hasYesData {
+				wsFallbackReason = fmt.Sprintf("YES数据不完整: bid=%d ask=%d", snap.YesBidPips, snap.YesAskPips)
+			} else if !hasNoData {
+				wsFallbackReason = fmt.Sprintf("NO数据不完整: bid=%d ask=%d", snap.NoBidPips, snap.NoAskPips)
+			} else {
 				return domain.Price{Pips: int(snap.YesBidPips)},
 					domain.Price{Pips: int(snap.YesAskPips)},
 					domain.Price{Pips: int(snap.NoBidPips)},
@@ -335,13 +381,19 @@ func (o *OrdersService) GetTopOfBook(ctx context.Context, market *domain.Market)
 					nil
 			}
 		}
+	} else {
+		wsFallbackReason = "Session为nil"
 	}
 
 	// 2) REST 回退：分别拉 YES/NO 的 orderbook 一档（添加重试机制）
+	// 记录回退原因，方便排查
+	if wsFallbackReason != "" {
+		log.Debugf("⚠️ [GetTopOfBook] 回退到REST API: market=%s reason=%s", market.Slug, wsFallbackReason)
+	}
 	maxRetries := 2
 	var yesBook, noBook *types.OrderBookSummary
 	var restErr error
-	
+
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
 			// 重试前等待一小段时间
@@ -351,7 +403,7 @@ func (o *OrdersService) GetTopOfBook(ctx context.Context, market *domain.Market)
 			case <-time.After(100 * time.Millisecond):
 			}
 		}
-		
+
 		yesBook, restErr = s.clobClient.GetOrderBook(ctx, market.YesAssetID, nil)
 		if restErr != nil {
 			if attempt < maxRetries-1 {
@@ -359,7 +411,7 @@ func (o *OrdersService) GetTopOfBook(ctx context.Context, market *domain.Market)
 			}
 			return domain.Price{}, domain.Price{}, domain.Price{}, domain.Price{}, "", fmt.Errorf("get yes orderbook (after %d attempts): %w", maxRetries, restErr)
 		}
-		
+
 		noBook, restErr = s.clobClient.GetOrderBook(ctx, market.NoAssetID, nil)
 		if restErr != nil {
 			if attempt < maxRetries-1 {
@@ -367,7 +419,7 @@ func (o *OrdersService) GetTopOfBook(ctx context.Context, market *domain.Market)
 			}
 			return domain.Price{}, domain.Price{}, domain.Price{}, domain.Price{}, "", fmt.Errorf("get no orderbook (after %d attempts): %w", maxRetries, restErr)
 		}
-		
+
 		// 成功获取两个订单簿
 		break
 	}
@@ -469,7 +521,7 @@ func (o *OrdersService) CheckOrderBookLiquidity(ctx context.Context, assetID str
 	}
 
 	actualPrice, _ := strconv.ParseFloat(matchedLevels[0].Price, 64)
-	
+
 	if totalSize < size {
 		log.Debugf("⚠️ [订单簿检查] 流动性不足: 需要=%.4f, 可用=%.4f", size, totalSize)
 		// 即使流动性不足，也返回 true，让 FAK 订单尝试部分成交
