@@ -34,6 +34,11 @@ type MarketScheduler struct {
 	currentMarket  *domain.Market
 	sessionName    string
 
+	// fail-safe：当无法获取/校验下一周期市场时，进入暂停模式，确保“不交易”
+	paused       bool
+	pendingSlug  string
+	pendingSince time.Time
+
 	// 会话切换回调
 	sessionSwitchCallback SessionSwitchCallback
 
@@ -72,6 +77,43 @@ func (s *MarketScheduler) OnSessionSwitch(callback SessionSwitchCallback) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessionSwitchCallback = callback
+}
+
+// pauseTradingAndCloseSession 进入“暂停交易”模式（fail-safe），确保不会继续交易旧周期。
+// - 尽最大努力撤单（CancelOrdersNotInMarket("") => cancel all）
+// - TradingService 进入 PauseTrading（PlaceOrder 直接拒绝）
+// - 关闭当前 session（断开 WS，停止行情输入）
+// - 记录 pendingSlug，后续周期调度会持续重试直到恢复
+func (s *MarketScheduler) pauseTradingAndCloseSession(pendingSlug string, reason string, err error) {
+	if s == nil {
+		return
+	}
+	if reason == "" {
+		reason = "unknown"
+	}
+	// 1) 先撤单 + 暂停 TradingService（保证“不交易”）
+	if s.environment != nil && s.environment.TradingService != nil {
+		cancelCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		s.environment.TradingService.CancelOrdersNotInMarket(cancelCtx, "")
+		cancel()
+		s.environment.TradingService.PauseTrading(reason)
+	}
+
+	// 2) 关闭当前 session（停止 WS 输入）
+	s.mu.Lock()
+	oldSession := s.currentSession
+	s.currentSession = nil
+	s.currentMarket = nil
+	s.paused = true
+	s.pendingSlug = pendingSlug
+	s.pendingSince = time.Now()
+	s.mu.Unlock()
+
+	if oldSession != nil {
+		_ = oldSession.Close()
+	}
+
+	schedulerLog.Errorf("🛑 [暂停交易] 已进入 fail-safe：pendingSlug=%s reason=%s err=%v", pendingSlug, reason, err)
 }
 
 // Start 启动市场调度器
@@ -207,7 +249,39 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 	s.mu.RLock()
 	currentMarket := s.currentMarket
 	currentSession := s.currentSession
+	paused := s.paused
+	pendingSlug := s.pendingSlug
 	s.mu.RUnlock()
+
+	// 0) 暂停模式：持续重试获取 pendingSlug，成功后恢复交易
+	if paused && pendingSlug != "" && (currentMarket == nil || currentSession == nil) {
+		nextMarket, err := s.marketDataService.FetchMarketInfo(s.ctx, pendingSlug)
+		if err != nil {
+			schedulerLog.Errorf("⏳ [暂停交易] 仍无法获取下一周期市场，继续暂停：slug=%s err=%v", pendingSlug, err)
+			return
+		}
+		nextSession, err := s.createSession(s.ctx, nextMarket)
+		if err != nil {
+			schedulerLog.Errorf("⏳ [暂停交易] 创建恢复会话失败，继续暂停：slug=%s err=%v", pendingSlug, err)
+			return
+		}
+
+		s.mu.Lock()
+		s.environment.AddSession(s.sessionName, nextSession)
+		callback := s.sessionSwitchCallback
+		s.currentSession = nextSession
+		s.currentMarket = nextMarket
+		s.paused = false
+		s.pendingSlug = ""
+		s.pendingSince = time.Time{}
+		s.mu.Unlock()
+
+		schedulerLog.Warnf("✅ [恢复交易] 已恢复到新周期：market=%s", nextMarket.Slug)
+		if callback != nil {
+			callback(nil, nextSession, nextMarket)
+		}
+		return
+	}
 
 	if currentMarket == nil {
 		return
@@ -236,7 +310,8 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 			nextSlug, currentMarket.Timestamp, nextPeriodTs)
 		nextMarket, err := s.marketDataService.FetchMarketInfo(s.ctx, nextSlug)
 		if err != nil {
-			schedulerLog.Errorf("获取下一个市场失败: %v", err)
+			// fail-safe：拿不到下一周期 market，必须立刻停止交易（避免继续交易旧周期）
+			s.pauseTradingAndCloseSession(nextSlug, "fetch_next_market_failed", err)
 			return
 		}
 
@@ -290,7 +365,7 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 					// 回退：如果动态切换失败，创建新会话
 					nextSession, err := s.createSession(s.ctx, nextMarket)
 					if err != nil {
-						schedulerLog.Errorf("创建下一个会话失败: %v", err)
+						s.pauseTradingAndCloseSession(nextMarket.Slug, "create_session_failed_after_switch_fail", err)
 						return
 					}
 
@@ -322,7 +397,7 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 				// 回退：创建新会话
 				nextSession, err := s.createSession(s.ctx, nextMarket)
 				if err != nil {
-					schedulerLog.Errorf("创建下一个会话失败: %v", err)
+					s.pauseTradingAndCloseSession(nextMarket.Slug, "create_session_failed_fallback_not_marketstream", err)
 					return
 				}
 
@@ -351,7 +426,7 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 			schedulerLog.Infof("会话或 MarketDataStream 不存在，创建新会话")
 			nextSession, err := s.createSession(s.ctx, nextMarket)
 			if err != nil {
-				schedulerLog.Errorf("创建下一个会话失败: %v", err)
+				s.pauseTradingAndCloseSession(nextMarket.Slug, "create_session_failed_no_session_or_stream", err)
 				return
 			}
 

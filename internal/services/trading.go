@@ -3,11 +3,11 @@ package services
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"strconv"
-	"strings"
 
 	"github.com/sirupsen/logrus"
 
@@ -88,6 +88,10 @@ type TradingService struct {
 	// 原子行情快照（来自 WS MarketStream）
 	bestBook   *marketstate.AtomicBestBook
 	bestBookMu sync.RWMutex
+
+	// 系统级熔断：暂停交易（用于周期切换失败/市场信息不完整等致命场景）
+	// 注意：PauseTrading 后仍允许 CancelOrder 等“风控动作”，但禁止 PlaceOrder/ExecuteMultiLeg。
+	tradingPaused atomic.Bool
 }
 
 // NewTradingService 创建新的交易服务（使用 OrderEngine）
@@ -155,6 +159,13 @@ func (s *TradingService) currentEngineGeneration() int64 {
 	return s.engineGeneration.Load()
 }
 
+func (s *TradingService) isTradingPaused() bool {
+	if s == nil {
+		return true
+	}
+	return s.tradingPaused.Load()
+}
+
 // deriveCycleTokenFromMarketSlug 尝试从 marketSlug 提取周期 token（通常为末尾时间戳）。
 // 例如：btc-updown-15m-1766322000 -> 1766322000
 func deriveCycleTokenFromMarketSlug(marketSlug string) (int64, bool) {
@@ -215,6 +226,47 @@ func (s *TradingService) SetCurrentMarket(marketSlug string) {
 	}
 }
 
+// PauseTrading 进入“不可交易”状态（fail-safe）。
+// 用于：周期切换失败、MarketData 不完整、关键依赖不可用等场景。
+//
+// 行为：
+// - 置 tradingPaused=true，使 PlaceOrder/ExecuteMultiLeg 直接拒绝
+// - 清空 currentMarketSlug/currentMarket（避免任何“误认为仍在某周期”的交易）
+// - bump generation + ResetForNewCycle("PAUSED")，防止旧命令回流污染状态
+// - 清空 cache/inflight（避免恢复后误去重）
+func (s *TradingService) PauseTrading(reason string) {
+	if s == nil {
+		return
+	}
+	if reason == "" {
+		reason = "unknown"
+	}
+
+	s.tradingPaused.Store(true)
+
+	// 清空当前市场（让下单必须失败）
+	s.currentMarketMu.Lock()
+	prev := s.currentMarketSlug
+	s.currentMarketSlug = ""
+	s.currentMarket = nil
+	s.currentMarketMu.Unlock()
+
+	// bump generation + reset（不依赖 marketSlug）
+	prevGen := s.engineGeneration.Load()
+	newGen := prevGen + 1
+	s.engineGeneration.Store(newGen)
+	if s.orderEngine != nil {
+		s.orderEngine.ResetForNewCycle("PAUSED", "PauseTrading:"+reason, newGen)
+	}
+	if s.orderStatusCache != nil {
+		s.orderStatusCache.Clear()
+	}
+	if s.inFlightDeduper != nil {
+		s.inFlightDeduper.Clear()
+	}
+	log.Errorf("🛑 [交易暂停] TradingService 已进入暂停模式：reason=%s prevMarket=%s gen=%d", reason, prev, newGen)
+}
+
 // SetCurrentMarketInfo 设置当前市场完整信息（推荐：替代只传 slug 的 SetCurrentMarket）。
 // - 会同步调用 SetCurrentMarket(market.Slug) 做周期隔离
 // - 并存储 YES/NO assetId 等信息，供 BestBook/执行层使用
@@ -225,6 +277,8 @@ func (s *TradingService) SetCurrentMarketInfo(market *domain.Market) {
 	if market == nil {
 		return
 	}
+	// 一旦拿到完整 market 信息，视为“恢复可交易”（由上层确保 market 已通过严格校验）
+	s.tradingPaused.Store(false)
 	s.SetCurrentMarket(market.Slug)
 	s.currentMarketMu.Lock()
 	// 复制一份，避免外部复用指针导致竞态
@@ -417,10 +471,10 @@ func (s *TradingService) WaitOrderResult(ctx context.Context, orderID string, ti
 	// 通过 OrderEngine 查询订单状态
 	reply := make(chan *StateSnapshot, 1)
 	cmd := &QueryStateCommand{
-		id:    fmt.Sprintf("query_order_%s", orderID),
-		Query: QueryOrder,
+		id:      fmt.Sprintf("query_order_%s", orderID),
+		Query:   QueryOrder,
 		OrderID: orderID,
-		Reply: reply,
+		Reply:   reply,
 	}
 
 	s.orderEngine.SubmitCommand(cmd)
