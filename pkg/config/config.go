@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -149,21 +150,21 @@ type Config struct {
 
 // MarketPrecisionConfig 市场精度配置
 type MarketPrecisionConfig struct {
-	TickSize     string `yaml:"tick_size" json:"tick_size"`      // 价格精度（如 "0.01", "0.001"）
+	TickSize     string `yaml:"tick_size" json:"tick_size"`           // 价格精度（如 "0.01", "0.001"）
 	MinOrderSize string `yaml:"min_order_size" json:"min_order_size"` // 最小订单大小（如 "0.1", "5"）
-	NegRisk      bool   `yaml:"neg_risk" json:"neg_risk"`        // 是否为负风险市场
+	NegRisk      bool   `yaml:"neg_risk" json:"neg_risk"`             // 是否为负风险市场
 }
 
 // MarketConfig 选择要交易/订阅的 polymarket 市场规格。
 // slugTemplates: 格式模板，程序根据时间替换变量
 // 支持的变量：{symbol}, {coinName}, {kind}, {timeframe}, {timestamp}, {month}, {day}, {hour}, {ampm}, {et}
 type MarketConfig struct {
-	Symbol        string            // btc/eth/sol/xrp...
-	Timeframe     string            // 15m/1h/4h
-	Kind          string            // 默认 updown
-	SlugStyle     string            // 已废弃：不再使用，格式根据 timeframe 自动选择
-	SlugPrefix    string            // 可选：显式指定 market slug 前缀（例如 btc-updown-15m- 或 bitcoin-up-or-down-）
-	SlugTemplates map[string]string // 格式模板映射：timeframe -> template
+	Symbol        string                 // btc/eth/sol/xrp...
+	Timeframe     string                 // 15m/1h/4h
+	Kind          string                 // 默认 updown
+	SlugStyle     string                 // 已废弃：不再使用，格式根据 timeframe 自动选择
+	SlugPrefix    string                 // 可选：显式指定 market slug 前缀（例如 btc-updown-15m- 或 bitcoin-up-or-down-）
+	SlugTemplates map[string]string      // 格式模板映射：timeframe -> template
 	Precision     *MarketPrecisionConfig // 市场精度配置（可选，如果未设置则使用默认值）
 }
 
@@ -172,10 +173,10 @@ func (m MarketConfig) Spec() (marketspec.MarketSpec, error) {
 	if err != nil {
 		return marketspec.MarketSpec{}, err
 	}
-	
+
 	// 使用模板系统：根据 timeframe 选择模板
 	sp.SlugTemplates = m.SlugTemplates
-	
+
 	// 兼容旧逻辑：如果没有模板，根据 timeframe 自动选择格式
 	if len(sp.SlugTemplates) == 0 {
 		var slugStyle string
@@ -199,7 +200,7 @@ func (m MarketConfig) Spec() (marketspec.MarketSpec, error) {
 			sp.SlugStyle = marketspec.SlugStyleTimestamp
 		}
 	}
-	
+
 	// 兼容：如果用户选择 hourly_et 但未填 kind，则默认使用 up-or-down
 	if sp.SlugStyle == marketspec.SlugStylePolymarketHourlyET {
 		if strings.TrimSpace(m.Kind) == "" {
@@ -211,6 +212,14 @@ func (m MarketConfig) Spec() (marketspec.MarketSpec, error) {
 
 var globalConfig *Config
 var configFilePath string
+var loadedOptions LoadOptions
+
+// LoadOptions 控制加载行为（用于启动时灵活组合配置）
+type LoadOptions struct {
+	// AllowEmptyExchangeStrategies 允许 base 配置中不包含 exchangeStrategies。
+	// 常用于：全局配置固定，策略配置由启动参数单独指定并在后续合并。
+	AllowEmptyExchangeStrategies bool
+}
 
 // SetConfigPath 设置配置文件路径
 func SetConfigPath(path string) {
@@ -232,39 +241,44 @@ type ConfigFile struct {
 		Host string `yaml:"host" json:"host"`
 		Port int    `yaml:"port" json:"port"`
 	} `yaml:"proxy" json:"proxy"`
-	ExchangeStrategies                   []ExchangeStrategyMount `yaml:"exchangeStrategies" json:"exchangeStrategies"`
-	Market                               struct {
-		Symbol        string                     `yaml:"symbol" json:"symbol"`
-		Timeframe     string                     `yaml:"timeframe" json:"timeframe"`
-		Kind          string                     `yaml:"kind" json:"kind"`
-		SlugStyle     string                     `yaml:"slugStyle" json:"slugStyle"`
-		SlugPrefix    string                     `yaml:"slugPrefix" json:"slugPrefix"`
-		SlugTemplates map[string]string          `yaml:"slugTemplates" json:"slugTemplates"`
-		Precision     *MarketPrecisionConfig     `yaml:"precision" json:"precision"`
+	ExchangeStrategies []ExchangeStrategyMount `yaml:"exchangeStrategies" json:"exchangeStrategies"`
+	Market             struct {
+		Symbol        string                 `yaml:"symbol" json:"symbol"`
+		Timeframe     string                 `yaml:"timeframe" json:"timeframe"`
+		Kind          string                 `yaml:"kind" json:"kind"`
+		SlugStyle     string                 `yaml:"slugStyle" json:"slugStyle"`
+		SlugPrefix    string                 `yaml:"slugPrefix" json:"slugPrefix"`
+		SlugTemplates map[string]string      `yaml:"slugTemplates" json:"slugTemplates"`
+		Precision     *MarketPrecisionConfig `yaml:"precision" json:"precision"`
 	} `yaml:"market" json:"market"`
-	LogLevel                             string                  `yaml:"log_level" json:"log_level"`
-	LogFile                              string                  `yaml:"log_file" json:"log_file"`
-	LogByCycle                           bool                    `yaml:"log_by_cycle" json:"log_by_cycle"`
-	DirectModeDebounce                   int                     `yaml:"direct_mode_debounce" json:"direct_mode_debounce"` // 直接回调模式的防抖间隔（毫秒），默认100ms（BBGO风格：只支持直接模式）
-	MinOrderSize                         float64                 `yaml:"minOrderSize" json:"minOrderSize"`
-	MinShareSize                         float64                 `yaml:"minShareSize" json:"minShareSize"`                                                           // 限价单最小 share 数量（仅限价单 GTC 时应用）
-	OrderStatusCheckTimeout              int                     `yaml:"order_status_check_timeout" json:"order_status_check_timeout"`                               // WebSocket超时时间（秒），默认3秒
-	OrderStatusCheckInterval             int                     `yaml:"order_status_check_interval" json:"order_status_check_interval"`                             // API轮询间隔（秒），默认3秒
-	OrderStatusSyncIntervalWithOrders    int                     `yaml:"order_status_sync_interval_with_orders" json:"order_status_sync_interval_with_orders"`       // 有活跃订单时的同步间隔（秒），默认3秒
-	OrderStatusSyncIntervalWithoutOrders int                     `yaml:"order_status_sync_interval_without_orders" json:"order_status_sync_interval_without_orders"` // 无活跃订单时的同步间隔（秒），默认30秒
-	CancelOpenOrdersOnCycleStart         bool                    `yaml:"cancel_open_orders_on_cycle_start" json:"cancel_open_orders_on_cycle_start"`                 // 新周期开始时清空本周期残留 open orders（默认false）
-	ConcurrentExecutorWorkers            int                     `yaml:"concurrent_executor_workers" json:"concurrent_executor_workers"`                             // 并发命令执行器 worker 数（套利等），默认8
-	DryRun                               bool                    `yaml:"dry_run" json:"dry_run"`                                                                     // 纸交易模式（dry run），如果为 true，不进行真实交易，只在日志中打印订单信息
+	LogLevel                             string  `yaml:"log_level" json:"log_level"`
+	LogFile                              string  `yaml:"log_file" json:"log_file"`
+	LogByCycle                           bool    `yaml:"log_by_cycle" json:"log_by_cycle"`
+	DirectModeDebounce                   int     `yaml:"direct_mode_debounce" json:"direct_mode_debounce"` // 直接回调模式的防抖间隔（毫秒），默认100ms（BBGO风格：只支持直接模式）
+	MinOrderSize                         float64 `yaml:"minOrderSize" json:"minOrderSize"`
+	MinShareSize                         float64 `yaml:"minShareSize" json:"minShareSize"`                                                           // 限价单最小 share 数量（仅限价单 GTC 时应用）
+	OrderStatusCheckTimeout              int     `yaml:"order_status_check_timeout" json:"order_status_check_timeout"`                               // WebSocket超时时间（秒），默认3秒
+	OrderStatusCheckInterval             int     `yaml:"order_status_check_interval" json:"order_status_check_interval"`                             // API轮询间隔（秒），默认3秒
+	OrderStatusSyncIntervalWithOrders    int     `yaml:"order_status_sync_interval_with_orders" json:"order_status_sync_interval_with_orders"`       // 有活跃订单时的同步间隔（秒），默认3秒
+	OrderStatusSyncIntervalWithoutOrders int     `yaml:"order_status_sync_interval_without_orders" json:"order_status_sync_interval_without_orders"` // 无活跃订单时的同步间隔（秒），默认30秒
+	CancelOpenOrdersOnCycleStart         bool    `yaml:"cancel_open_orders_on_cycle_start" json:"cancel_open_orders_on_cycle_start"`                 // 新周期开始时清空本周期残留 open orders（默认false）
+	ConcurrentExecutorWorkers            int     `yaml:"concurrent_executor_workers" json:"concurrent_executor_workers"`                             // 并发命令执行器 worker 数（套利等），默认8
+	DryRun                               bool    `yaml:"dry_run" json:"dry_run"`                                                                     // 纸交易模式（dry run），如果为 true，不进行真实交易，只在日志中打印订单信息
 }
 
 // Load 加载配置
 func Load() (*Config, error) {
-	return LoadFromFile(configFilePath)
+	return LoadFromFileWithOptions(configFilePath, LoadOptions{})
 }
 
 // LoadFromFile 从指定文件加载配置
 func LoadFromFile(filePath string) (*Config, error) {
-	if globalConfig != nil && configFilePath == filePath {
+	return LoadFromFileWithOptions(filePath, LoadOptions{})
+}
+
+// LoadFromFileWithOptions 从指定文件加载配置（可选允许 base 配置不含策略）
+func LoadFromFileWithOptions(filePath string, opts LoadOptions) (*Config, error) {
+	if globalConfig != nil && configFilePath == filePath && loadedOptions == opts {
 		return globalConfig, nil
 	}
 
@@ -512,7 +526,7 @@ func LoadFromFile(filePath string) (*Config, error) {
 	}
 
 	// 验证配置
-	if err := config.Validate(); err != nil {
+	if err := config.ValidateWithOptions(opts); err != nil {
 		return nil, fmt.Errorf("配置验证失败: %w", err)
 	}
 
@@ -527,7 +541,79 @@ func LoadFromFile(filePath string) (*Config, error) {
 
 	globalConfig = config
 	configFilePath = filePath
+	loadedOptions = opts
 	return config, nil
+}
+
+// StrategyFile 用于只加载 exchangeStrategies 的文件结构
+type StrategyFile struct {
+	ExchangeStrategies []ExchangeStrategyMount `yaml:"exchangeStrategies" json:"exchangeStrategies"`
+}
+
+// LoadStrategyMountsFromFile 从文件加载 exchangeStrategies（YAML/JSON）
+func LoadStrategyMountsFromFile(filePath string) ([]ExchangeStrategyMount, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("读取策略配置文件失败: %w", err)
+	}
+
+	var sf StrategyFile
+	ext := strings.ToLower(filepath.Ext(filePath))
+	switch ext {
+	case ".yaml", ".yml":
+		if err := yaml.Unmarshal(data, &sf); err != nil {
+			return nil, fmt.Errorf("解析 YAML 策略配置文件失败: %w", err)
+		}
+	case ".json":
+		if err := json.Unmarshal(data, &sf); err != nil {
+			return nil, fmt.Errorf("解析 JSON 策略配置文件失败: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("不支持的策略配置文件格式: %s (支持 .yaml, .yml, .json)", ext)
+	}
+
+	if len(sf.ExchangeStrategies) == 0 {
+		return nil, fmt.Errorf("策略配置文件未包含 exchangeStrategies: %s", filePath)
+	}
+	return sf.ExchangeStrategies, nil
+}
+
+// LoadStrategyMountsFromDir 从目录加载所有策略配置文件（按文件名排序）
+func LoadStrategyMountsFromDir(dir string) ([]ExchangeStrategyMount, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("读取策略配置目录失败: %w", err)
+	}
+
+	var files []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		switch ext {
+		case ".yaml", ".yml", ".json":
+			files = append(files, filepath.Join(dir, e.Name()))
+		default:
+			continue
+		}
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("策略配置目录下没有找到 .yaml/.yml/.json 文件: %s", dir)
+	}
+
+	// 按文件名稳定排序，保证合并顺序可预测
+	sort.Strings(files)
+
+	var out []ExchangeStrategyMount
+	for _, f := range files {
+		mounts, err := LoadStrategyMountsFromFile(f)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, mounts...)
+	}
+	return out, nil
 }
 
 // loadConfigFile 加载配置文件（支持 YAML 和 JSON）
@@ -650,6 +736,11 @@ func Get() *Config {
 
 // Validate 验证配置
 func (c *Config) Validate() error {
+	return c.ValidateWithOptions(LoadOptions{})
+}
+
+// ValidateWithOptions 验证配置（允许按 opts 放宽部分约束）
+func (c *Config) ValidateWithOptions(opts LoadOptions) error {
 	if c.Wallet.PrivateKey == "" {
 		return fmt.Errorf("WALLET_PRIVATE_KEY 未配置")
 	}
@@ -659,7 +750,7 @@ func (c *Config) Validate() error {
 	if _, err := c.Market.Spec(); err != nil {
 		return fmt.Errorf("market 配置无效: %w", err)
 	}
-	if len(c.ExchangeStrategies) == 0 {
+	if !opts.AllowEmptyExchangeStrategies && len(c.ExchangeStrategies) == 0 {
 		return fmt.Errorf("exchangeStrategies 不能为空（请按 bbgo main 风格配置策略）")
 	}
 	if c.MinOrderSize > 0 && c.MinOrderSize < 1.0 {
