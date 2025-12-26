@@ -1,0 +1,581 @@
+package cyclehedge
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/betbot/gobet/clob/types"
+	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/events"
+	"github.com/betbot/gobet/internal/strategies/common"
+	"github.com/betbot/gobet/internal/services"
+	"github.com/betbot/gobet/pkg/bbgo"
+	"github.com/betbot/gobet/pkg/config"
+	"github.com/sirupsen/logrus"
+)
+
+const ID = "cyclehedge"
+
+var log = logrus.WithField("strategy", ID)
+
+func init() { bbgo.RegisterStrategy(ID, &Strategy{}) }
+
+// Strategy：每个周期（15m market）里锁定 1~5c 的 complete-set 收益，并按余额滚动放大。
+type Strategy struct {
+	TradingService *services.TradingService
+	Config         `yaml:",inline" json:",inline"`
+
+	// loop
+	loopOnce  sync.Once
+	loopCancel context.CancelFunc
+	signalC   chan struct{}
+	orderC    chan *domain.Order
+
+	priceMu sync.Mutex
+	latest  map[domain.TokenType]*events.PriceChangedEvent
+
+	stateMu sync.Mutex
+	marketSlugPrefix string
+
+	// per-cycle state
+	currentMarketSlug string
+	cycleStartUnix    int64
+	targetNotional    float64
+	targetProfitCents int
+	targetShares      float64
+
+	yesOrderID string
+	noOrderID  string
+
+	firstFillAt time.Time
+	lastLogAt   time.Time
+}
+
+func (s *Strategy) ID() string   { return ID }
+func (s *Strategy) Name() string { return ID }
+func (s *Strategy) Defaults() error { return nil }
+func (s *Strategy) Validate() error { return s.Config.Validate() }
+
+func (s *Strategy) Initialize() error {
+	if s.signalC == nil {
+		s.signalC = make(chan struct{}, 1)
+	}
+	if s.orderC == nil {
+		s.orderC = make(chan *domain.Order, 256)
+	}
+	if s.latest == nil {
+		s.latest = make(map[domain.TokenType]*events.PriceChangedEvent)
+	}
+
+	// 只处理当前 market 前缀，避免误交易
+	gc := config.Get()
+	if gc == nil {
+		return fmt.Errorf("[%s] 全局配置未加载：拒绝启动（避免误交易）", ID)
+	}
+	sp, err := gc.Market.Spec()
+	if err != nil {
+		return fmt.Errorf("[%s] 读取 market 配置失败：%w（拒绝启动，避免误交易）", ID, err)
+	}
+	prefix := strings.TrimSpace(gc.Market.SlugPrefix)
+	if prefix == "" {
+		prefix = sp.SlugPrefix()
+	}
+	s.marketSlugPrefix = strings.ToLower(strings.TrimSpace(prefix))
+	if s.marketSlugPrefix == "" {
+		return fmt.Errorf("[%s] marketSlugPrefix 为空：拒绝启动（避免误交易）", ID)
+	}
+	return nil
+}
+
+func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
+	session.OnPriceChanged(s)
+	session.OnOrderUpdate(s)
+	log.Infof("✅ [%s] 已订阅 price/order 事件 (session=%s)", ID, session.Name)
+}
+
+func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.ExchangeSession) error {
+	tick := time.Duration(s.RequoteMs) * time.Millisecond
+	common.StartLoopOnce(ctx, &s.loopOnce, func(cancel context.CancelFunc) { s.loopCancel = cancel }, tick, s.loop)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (s *Strategy) OnCycle(ctx context.Context, _ *domain.Market, newMarket *domain.Market) {
+	if newMarket == nil {
+		return
+	}
+	// 用周期回调快速重置
+	now := time.Now()
+	s.resetCycle(ctx, now, newMarket)
+}
+
+func (s *Strategy) OnPriceChanged(_ context.Context, e *events.PriceChangedEvent) error {
+	if e == nil || e.Market == nil {
+		return nil
+	}
+	// fast path：只合并事件
+	s.priceMu.Lock()
+	s.latest[e.TokenType] = e
+	s.priceMu.Unlock()
+	common.TrySignal(s.signalC)
+	return nil
+}
+
+func (s *Strategy) OnOrderUpdate(_ context.Context, order *domain.Order) error {
+	if order == nil {
+		return nil
+	}
+	select {
+	case s.orderC <- order:
+	default:
+	}
+	common.TrySignal(s.signalC)
+	return nil
+}
+
+func (s *Strategy) loop(loopCtx context.Context, tickC <-chan time.Time) {
+	for {
+		select {
+		case <-loopCtx.Done():
+			return
+		case <-s.signalC:
+			s.step(loopCtx, time.Now())
+		case <-tickC:
+			s.step(loopCtx, time.Now())
+		}
+	}
+}
+
+func (s *Strategy) step(ctx context.Context, now time.Time) {
+	if s.TradingService == nil {
+		return
+	}
+
+	// 合并行情事件（取最新的 market）
+	s.priceMu.Lock()
+	evUp := s.latest[domain.TokenTypeUp]
+	evDown := s.latest[domain.TokenTypeDown]
+	s.latest = make(map[domain.TokenType]*events.PriceChangedEvent)
+	s.priceMu.Unlock()
+
+	var m *domain.Market
+	if evUp != nil && evUp.Market != nil {
+		m = evUp.Market
+	}
+	if m == nil && evDown != nil && evDown.Market != nil {
+		m = evDown.Market
+	}
+	if m == nil {
+		// 仍然消费订单更新，避免堆积
+		s.drainOrders()
+		return
+	}
+
+	// 市场过滤
+	if !strings.HasPrefix(strings.ToLower(m.Slug), s.marketSlugPrefix) {
+		s.drainOrders()
+		return
+	}
+
+	// 周期检测：优先使用 market.Timestamp（从 slug 解析的 period start）
+	if m.Timestamp > 0 {
+		s.stateMu.Lock()
+		needReset := s.cycleStartUnix == 0 || s.cycleStartUnix != m.Timestamp || s.currentMarketSlug != m.Slug
+		s.stateMu.Unlock()
+		if needReset {
+			s.resetCycle(ctx, now, m)
+		}
+	}
+
+	// closeout window：临近结算撤单+停止新增
+	if s.EntryCutoffSeconds > 0 && isWithinEntryCutoff(m, s.EntryCutoffSeconds) {
+		orderCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		s.TradingService.CancelOrdersForMarket(orderCtx, m.Slug)
+		cancel()
+		s.maybeLog(now, m, "closeout: cancel & pause entries")
+		return
+	}
+
+	// 盘口质量 gate（避免 stale/wide spread）
+	if s.EnableMarketQualityGate != nil && *s.EnableMarketQualityGate {
+		orderCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		mq, err := s.TradingService.GetMarketQuality(orderCtx, m, &services.MarketQualityOptions{
+			MaxBookAge:     time.Duration(s.MarketQualityMaxBookAgeMs) * time.Millisecond,
+			MaxSpreadPips:  s.MarketQualityMaxSpreadCents * 100,
+			PreferWS:       true,
+			FallbackToREST: true,
+			AllowPartialWS: true,
+		})
+		cancel()
+		if err != nil || mq == nil || mq.Score < s.MarketQualityMinScore {
+			return
+		}
+	}
+
+	// 读取 top-of-book
+	orderCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	yesBid, yesAsk, noBid, noAsk, source, err := s.TradingService.GetTopOfBook(orderCtx, m)
+	cancel()
+	if err != nil {
+		return
+	}
+	yesBidC, yesAskC := yesBid.ToCents(), yesAsk.ToCents()
+	noBidC, noAskC := noBid.ToCents(), noAsk.ToCents()
+	if yesBidC <= 0 || yesAskC <= 0 || noBidC <= 0 || noAskC <= 0 {
+		return
+	}
+
+	// 读取当前持仓（shares）
+	upShares, downShares := s.currentShares(m.Slug)
+	minShares := math.Min(upShares, downShares)
+	maxShares := math.Max(upShares, downShares)
+	unhedged := maxShares - minShares
+
+	// 1) 已达到目标：撤单，持有到结算
+	s.stateMu.Lock()
+	targetShares := s.targetShares
+	profitTarget := s.targetProfitCents
+	firstFillAt := s.firstFillAt
+	s.stateMu.Unlock()
+
+	if targetShares > 0 && minShares >= targetShares {
+		orderCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		s.TradingService.CancelOrdersForMarket(orderCtx, m.Slug)
+		cancel()
+		s.maybeLog(now, m, fmt.Sprintf("locked: profit=%dc targetShares=%.2f got(up=%.2f down=%.2f) src=%s", profitTarget, targetShares, upShares, downShares, source))
+		return
+	}
+
+	// 2) 单腿裸露：先尝试 maker 补齐；超时则 taker 补齐或回平
+	if unhedged >= s.MinUnhedgedShares {
+		if firstFillAt.IsZero() {
+			s.stateMu.Lock()
+			if s.firstFillAt.IsZero() {
+				s.firstFillAt = now
+			}
+			firstFillAt = s.firstFillAt
+			s.stateMu.Unlock()
+		}
+		age := now.Sub(firstFillAt)
+
+		// 超时/临近结算：执行“补齐或回平”
+		if age >= time.Duration(s.UnhedgedTimeoutSeconds)*time.Second || isWithinEntryCutoff(m, s.EntryCutoffSeconds) {
+			// prefer: taker 补齐（只要不亏/仍有最小利润）
+			if s.AllowTakerComplete {
+				minProfit := s.MinProfitAfterCompleteCents
+				if yesAskC+noAskC <= 100-minProfit {
+					need := unhedged
+					missingTok := domain.TokenTypeUp
+					missingAsset := m.YesAssetID
+					missingAsk := yesAsk
+					if upShares > downShares {
+						// need buy NO
+						missingTok = domain.TokenTypeDown
+						missingAsset = m.NoAssetID
+						missingAsk = noAsk
+					}
+					takerCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+					_, _ = s.TradingService.PlaceOrder(takerCtx, &domain.Order{
+						MarketSlug: m.Slug,
+						AssetID:    missingAsset,
+						TokenType:  missingTok,
+						Side:       types.SideBuy,
+						Price:      missingAsk,
+						Size:       need,
+						OrderType:  types.OrderTypeFAK,
+					})
+					cancel()
+					s.maybeLog(now, m, fmt.Sprintf("unhedged->taker_complete: need=%.2f missing=%s ask=%dc minProfit=%dc", need, missingTok, missingAsk.ToCents(), minProfit))
+					return
+				}
+			}
+
+			// fallback: 回平裸露（卖出多出来的一腿）
+			if s.AllowFlatten {
+				excessTok := domain.TokenTypeUp
+				excessAsset := m.YesAssetID
+				excessBid := yesBid
+				if upShares > downShares {
+					// excess is UP, ok
+				} else {
+					excessTok = domain.TokenTypeDown
+					excessAsset = m.NoAssetID
+					excessBid = noBid
+				}
+				flattenCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+				_, _ = s.TradingService.PlaceOrder(flattenCtx, &domain.Order{
+					MarketSlug: m.Slug,
+					AssetID:    excessAsset,
+					TokenType:  excessTok,
+					Side:       types.SideSell,
+					Price:      excessBid,
+					Size:       unhedged,
+					OrderType:  types.OrderTypeFAK,
+				})
+				cancel()
+				s.maybeLog(now, m, fmt.Sprintf("unhedged->flatten: sell=%.2f token=%s bid=%dc", unhedged, excessTok, excessBid.ToCents()))
+				return
+			}
+		}
+	}
+
+	// 3) 正常建仓：选择本轮 profitCents（尽量大，但要能挂成 maker 且两腿都贴近盘口）
+	// 尝试 profit 从大到小，找到可行的 maker bid 组合
+	chosenProfit := 0
+	chYesBidC, chNoBidC := 0, 0
+	for p := s.ProfitMaxCents; p >= s.ProfitMinCents; p-- {
+		yb, nb, ok := chooseMakerBids(yesBidC, yesAskC, noBidC, noAskC, p)
+		if !ok {
+			continue
+		}
+		chosenProfit = p
+		chYesBidC, chNoBidC = yb, nb
+		break
+	}
+	if chosenProfit == 0 {
+		// 当前盘口没法用 maker 锁 1~5c：先不做（等待更好时机）
+		return
+	}
+
+	// 4) 计算目标 shares：notional / (1 - profit)
+	// 成本 = 100 - profit (cents) => costPerShare = (100-profit)/100
+	s.stateMu.Lock()
+	tn := s.targetNotional
+	s.stateMu.Unlock()
+	if tn <= 0 {
+		return
+	}
+	costCents := 100 - chosenProfit
+	if costCents <= 0 {
+		return
+	}
+	shares := tn * 100.0 / float64(costCents)
+	if shares <= 0 || math.IsInf(shares, 0) || math.IsNaN(shares) {
+		return
+	}
+
+	// 5) 计算剩余需要挂的 shares
+	needUp := math.Max(0, shares-upShares)
+	needDown := math.Max(0, shares-downShares)
+
+	// 如果已经部分成交，避免继续加仓到更高目标导致裸露扩大：以 min(up,down)+delta 为上限
+	if unhedged >= s.MinUnhedgedShares {
+		// 当已有裸露时，只允许补齐到对侧，不再扩大总规模
+		if upShares > downShares {
+			needUp = 0
+		} else if downShares > upShares {
+			needDown = 0
+		}
+	}
+
+	// 6) 下两腿 GTC（maker）：价格用 cents 构造
+	yesPrice := domain.Price{Pips: chYesBidC * 100}
+	noPrice := domain.Price{Pips: chNoBidC * 100}
+
+	// 记录本轮目标（用于日志/持仓达到后停止）
+	s.stateMu.Lock()
+	s.targetShares = shares
+	s.targetProfitCents = chosenProfit
+	s.stateMu.Unlock()
+
+	// 如果本次将要下单，先撤掉旧的挂单（避免多单堆叠）
+	// 注：TradingService 层有 in-flight 去重，且 CancelOrdersForMarket 会撤掉本周期挂单（含对侧）。
+	if (needUp >= s.MinUnhedgedShares || needDown >= s.MinUnhedgedShares) && (s.yesOrderID != "" || s.noOrderID != "") {
+		cancelCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		s.TradingService.CancelOrdersForMarket(cancelCtx, m.Slug)
+		cancel()
+		s.yesOrderID, s.noOrderID = "", ""
+	}
+
+	// 下 YES
+	if needUp >= s.MinUnhedgedShares {
+		placeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		ord, err := s.TradingService.PlaceOrder(placeCtx, &domain.Order{
+			MarketSlug: m.Slug,
+			AssetID:    m.YesAssetID,
+			TokenType:  domain.TokenTypeUp,
+			Side:       types.SideBuy,
+			Price:      yesPrice,
+			Size:       needUp,
+			OrderType:  types.OrderTypeGTC,
+		})
+		cancel()
+		if err == nil && ord != nil {
+			s.yesOrderID = ord.OrderID
+		}
+	}
+	// 下 NO
+	if needDown >= s.MinUnhedgedShares {
+		placeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		ord, err := s.TradingService.PlaceOrder(placeCtx, &domain.Order{
+			MarketSlug: m.Slug,
+			AssetID:    m.NoAssetID,
+			TokenType:  domain.TokenTypeDown,
+			Side:       types.SideBuy,
+			Price:      noPrice,
+			Size:       needDown,
+			OrderType:  types.OrderTypeGTC,
+		})
+		cancel()
+		if err == nil && ord != nil {
+			s.noOrderID = ord.OrderID
+		}
+	}
+
+	if needUp >= s.MinUnhedgedShares || needDown >= s.MinUnhedgedShares {
+		s.maybeLog(now, m, fmt.Sprintf("quote: profit=%dc cost=%dc tn=%.2f shares=%.2f need(up=%.2f down=%.2f) bids(yes=%dc no=%dc) book(yes %d/%d no %d/%d) src=%s",
+			chosenProfit, costCents, tn, shares, needUp, needDown, chYesBidC, chNoBidC, yesBidC, yesAskC, noBidC, noAskC, source))
+	}
+}
+
+func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Market) {
+	s.stateMu.Lock()
+	s.currentMarketSlug = m.Slug
+	s.cycleStartUnix = m.Timestamp
+	s.targetNotional = 0
+	s.targetProfitCents = 0
+	s.targetShares = 0
+	s.yesOrderID, s.noOrderID = "", ""
+	s.firstFillAt = time.Time{}
+	s.lastLogAt = time.Time{}
+	s.stateMu.Unlock()
+
+	// 周期切换先撤掉本周期旧挂单（保险）
+	cancelCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	s.TradingService.CancelOrdersForMarket(cancelCtx, m.Slug)
+	cancel()
+
+	// 刷新余额（用短超时；失败则回退到本地余额）
+	bal := 0.0
+	{
+		refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		_ = s.TradingService.RefreshBalance(refreshCtx)
+		cancel()
+		if b, ok := s.TradingService.GetBalanceUSDC(); ok {
+			bal = b
+		}
+	}
+
+	// 目标 notional：min(maxNotional, max(minNotional, bal*alloc))
+	tn := math.Max(s.MinNotionalUSDC, bal*s.BalanceAllocationPct)
+	if tn > s.MaxNotionalUSDC {
+		tn = s.MaxNotionalUSDC
+	}
+	if tn < s.MinNotionalUSDC {
+		tn = s.MinNotionalUSDC
+	}
+
+	s.stateMu.Lock()
+	s.targetNotional = tn
+	s.stateMu.Unlock()
+
+	log.Infof("🔄 [%s] 周期重置: market=%s start=%d balance=%.2f targetNotional=%.2f profitRange=[%d,%d]c",
+		ID, m.Slug, m.Timestamp, bal, tn, s.ProfitMinCents, s.ProfitMaxCents)
+}
+
+func (s *Strategy) drainOrders() {
+	for {
+		select {
+		case <-s.orderC:
+			// no-op: 目前主要依赖 positions/active orders 的本地状态
+		default:
+			return
+		}
+	}
+}
+
+func (s *Strategy) currentShares(marketSlug string) (up float64, down float64) {
+	positions := s.TradingService.GetOpenPositionsForMarket(marketSlug)
+	for _, p := range positions {
+		if p == nil || !p.IsOpen() || p.Size <= 0 {
+			continue
+		}
+		switch p.TokenType {
+		case domain.TokenTypeUp:
+			up += p.Size
+		case domain.TokenTypeDown:
+			down += p.Size
+		}
+	}
+	return up, down
+}
+
+func (s *Strategy) maybeLog(now time.Time, m *domain.Market, msg string) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.lastLogAt.IsZero() || now.Sub(s.lastLogAt) >= 2*time.Second {
+		s.lastLogAt = now
+		log.Infof("📌 [%s] %s | market=%s", ID, msg, m.Slug)
+	}
+}
+
+// chooseMakerBids 选择一组 maker 买价（cents），使得：
+// - yesBid <= yesAsk-1
+// - noBid  <= noAsk-1
+// - yesBid + noBid == 100 - profitCents
+// 同时尽量贴近 bestBid（提高成交概率）。
+func chooseMakerBids(yesBidC, yesAskC, noBidC, noAskC, profitCents int) (chosenYesBidC, chosenNoBidC int, ok bool) {
+	if profitCents <= 0 || profitCents >= 50 {
+		return 0, 0, false
+	}
+	targetSum := 100 - profitCents
+
+	// yesBid 的可行区间：
+	// 1) maker: yesBid <= yesAsk-1
+	// 2) maker: noBid = targetSum - yesBid <= noAsk-1  => yesBid >= targetSum-(noAsk-1)
+	// 3) 正价: yesBid >= 1 且 noBid >= 1 => yesBid <= targetSum-1
+	lb := 1
+	if v := targetSum - (noAskC - 1); v > lb {
+		lb = v
+	}
+	ub := yesAskC - 1
+	if ub > targetSum-1 {
+		ub = targetSum - 1
+	}
+	// 贴近盘口：至少不低于 bestBid（否则太远几乎不成交）
+	if yesBidC > lb {
+		lb = yesBidC
+	}
+	if lb > ub {
+		return 0, 0, false
+	}
+
+	// 首选：yes 贴着 bestBid（或上浮 0），让 no 自动互补
+	candYes := lb
+	candNo := targetSum - candYes
+	if candNo < 1 {
+		return 0, 0, false
+	}
+	// no 也要“别太离谱”：至少不低于 bestBid
+	if candNo < noBidC {
+		// 为提高 noBid，需要降低 yesBid
+		needYes := targetSum - noBidC
+		if needYes < lb {
+			needYes = lb
+		}
+		if needYes > ub {
+			return 0, 0, false
+		}
+		candYes = needYes
+		candNo = targetSum - candYes
+	}
+	// maker 校验
+	if candYes >= yesAskC || candNo >= noAskC {
+		return 0, 0, false
+	}
+	return candYes, candNo, true
+}
+
+func isWithinEntryCutoff(m *domain.Market, cutoffSeconds int) bool {
+	if m == nil || cutoffSeconds <= 0 || m.Timestamp <= 0 {
+		return false
+	}
+	// 仅按 timeframe=15m 推断（本策略目标就是 btc 15m）
+	end := time.Unix(m.Timestamp, 0).Add(15 * time.Minute)
+	return time.Until(end) <= time.Duration(cutoffSeconds)*time.Second
+}
+

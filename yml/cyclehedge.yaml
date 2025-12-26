@@ -1,0 +1,42 @@
+# cyclehedge：BTC 15m 周期“对冲锁利”策略示例
+#
+# 目标：
+# - 每个 15m 周期里，用 complete-set（同时持有 YES+NO）锁定 1~5c 的确定收益
+# - 以 maker(GTC) 挂单为主，成交后持有到结算
+# - 余额每周期刷新，按余额比例自动放大投入（上限 maxNotionalUSDC）
+#
+# 风险提示：
+# - 最大风险来自“单腿成交而另一腿未成交”，本策略会在超时/临近结算前自动补齐或回平
+# - maker 成交速度取决于流动性，profit 目标越大越难成交
+#
+exchangeStrategies:
+  - on: polymarket
+    cyclehedge:
+      # 锁利区间：优先尝试 profitMaxCents，若盘口不允许则向下尝试到 profitMinCents
+      profitMinCents: 1
+      profitMaxCents: 5
+
+      # 单腿裸露处理：
+      # - allowTakerComplete=true：优先用 FAK 补齐另一腿（只要不低于 minProfitAfterCompleteCents）
+      # - allowFlatten=true：若无法补齐则卖出多出来的一腿回平
+      minProfitAfterCompleteCents: 0
+      unhedgedTimeoutSeconds: 10
+      allowTakerComplete: true
+      allowFlatten: true
+      minUnhedgedShares: 1
+
+      # 每周期投入（USDC notional）：min/max + 按余额比例滚动
+      minNotionalUSDC: 30
+      maxNotionalUSDC: 3000
+      balanceAllocationPct: 0.8
+
+      # 执行节奏
+      requoteMs: 800
+      entryCutoffSeconds: 25
+
+      # 盘口质量 gate（建议开启）
+      enableMarketQualityGate: true
+      marketQualityMinScore: 70
+      marketQualityMaxSpreadCents: 5
+      marketQualityMaxBookAgeMs: 3000
+
