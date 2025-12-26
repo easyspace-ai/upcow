@@ -77,6 +77,23 @@ type MarketStream struct {
 	subscribedAssetsMu sync.RWMutex    // 保护订阅列表
 }
 
+func validateMarketForStream(market *domain.Market) error {
+	if market == nil {
+		return fmt.Errorf("market 为 nil")
+	}
+	if market.Slug == "" {
+		return fmt.Errorf("market slug 为空")
+	}
+	if market.YesAssetID == "" || market.NoAssetID == "" {
+		return fmt.Errorf("market asset IDs not set: YesAssetID=%s NoAssetID=%s", market.YesAssetID, market.NoAssetID)
+	}
+	// 【系统级硬约束】ConditionID 必须存在，否则无法可靠做 market 过滤（会导致跨周期污染进入策略）
+	if strings.TrimSpace(market.ConditionID) == "" {
+		return fmt.Errorf("market ConditionID 为空（拒绝连接/切换，避免跨周期数据污染）: market=%s", market.Slug)
+	}
+	return nil
+}
+
 // NewMarketStream 创建新的市场数据流
 func NewMarketStream() *MarketStream {
 	return &MarketStream{
@@ -163,6 +180,11 @@ func (m *MarketStream) HandlerCount() int {
 // oldMarket: 旧市场（如果为 nil，则只订阅新市场）
 // newMarket: 新市场（如果为 nil，则只退订旧市场）
 func (m *MarketStream) SwitchMarket(ctx context.Context, oldMarket, newMarket *domain.Market) error {
+	if newMarket != nil {
+		if err := validateMarketForStream(newMarket); err != nil {
+			return err
+		}
+	}
 	// 检查连接状态
 	m.connMu.Lock()
 	conn := m.conn
@@ -278,8 +300,8 @@ func (m *MarketStream) SwitchMarket(ctx context.Context, oldMarket, newMarket *d
 // Connect 连接到市场数据流（支持连接复用）
 // 如果连接已建立，只订阅新市场；如果连接未建立，建立连接并订阅
 func (m *MarketStream) Connect(ctx context.Context, market *domain.Market) error {
-	if market == nil {
-		return fmt.Errorf("market 为 nil")
+	if err := validateMarketForStream(market); err != nil {
+		return err
 	}
 
 	m.connMu.Lock()
@@ -372,6 +394,10 @@ func (m *MarketStream) DialAndConnect(ctx context.Context) error {
 		conn.Close()
 		return fmt.Errorf("market not set")
 	}
+	if err := validateMarketForStream(m.market); err != nil {
+		conn.Close()
+		return err
+	}
 
 	// 健康检查：验证重连后的状态
 	handlerCount := m.handlers.Count()
@@ -379,11 +405,6 @@ func (m *MarketStream) DialAndConnect(ctx context.Context) error {
 		marketLog.Warnf("⚠️ [重连健康检查] Handlers 为空，但继续连接: market=%s", m.market.Slug)
 	} else {
 		marketLog.Infof("✅ [重连健康检查] Handlers 数量=%d: market=%s", handlerCount, m.market.Slug)
-	}
-
-	if m.market.YesAssetID == "" || m.market.NoAssetID == "" {
-		conn.Close()
-		return fmt.Errorf("market asset IDs not set: YesAssetID=%s NoAssetID=%s", m.market.YesAssetID, m.market.NoAssetID)
 	}
 
 	// 订阅当前市场（wire: UP-only；logical: YES+NO）
@@ -857,8 +878,8 @@ func (m *MarketStream) subscribe(assetIDs []string, operation string, forceResub
 
 // subscribeMarket 订阅市场（兼容旧接口，内部调用新的 subscribe 方法）
 func (m *MarketStream) subscribeMarket(market *domain.Market) error {
-	if market == nil {
-		return fmt.Errorf("market 为 nil")
+	if err := validateMarketForStream(market); err != nil {
+		return err
 	}
 	m.market = market
 	m.resetLogicalSubscriptionsForMarket(market)
