@@ -62,6 +62,8 @@ type Strategy struct {
 	unhedgedEntries map[string]*domain.Order
 
 	mu sync.Mutex // 保护共享状态
+	// 避免在周期切换/重复 Subscribe 时重复注册 handler（OrderEngine handler 列表不去重）
+	orderUpdateOnce sync.Once
 
 	// 价格样本：用于计算速度
 	samples map[domain.TokenType][]sample
@@ -82,11 +84,11 @@ type Strategy struct {
 	cooldownLogThrottleMs int64 // 日志限流时间（毫秒），默认 5 秒
 
 	// 价格日志限流：避免价格更新太频繁导致日志刷屏
-	lastPriceLogToken     domain.TokenType
+	lastPriceLogToken      domain.TokenType
 	lastPriceLogAt         time.Time
 	lastPriceLogPriceCents int
 	priceLogThrottleMs     int64 // 价格日志限流时间（毫秒），默认 1 秒
-	
+
 	// 订单簿价格日志：实时打印 UP/DOWN 的 bid/ask
 	lastOrderBookLogAt     time.Time
 	orderBookLogThrottleMs int64 // 订单簿价格日志限流时间（毫秒），默认 2 秒
@@ -98,8 +100,8 @@ type Strategy struct {
 	pendingOrders        map[string]*domain.Order // 待确认的订单（通过订单ID跟踪）
 
 	// 出场（平仓）节流：避免短时间重复下 SELL
-	lastExitAt       time.Time
-	lastExitCheckAt  time.Time
+	lastExitAt      time.Time
+	lastExitCheckAt time.Time
 
 	// 分批止盈状态：key=positionID，value=已触发的 level 索引集合
 	partialTPDone map[string]map[int]bool
@@ -125,7 +127,7 @@ type Strategy struct {
 }
 
 type trailState struct {
-	Armed       bool
+	Armed        bool
 	HighBidCents int
 	StopCents    int
 }
@@ -229,13 +231,14 @@ func (s *Strategy) Initialize() error {
 		log.Warnf("⚠️ [%s] 配置中未设置市场精度信息，将使用默认值", ID)
 	}
 
-
 	// 6. 注册订单更新回调（新架构特性：利用本地订单状态管理）
 	// 当订单状态更新时（通过 WebSocket 或 API 同步），立即更新本地状态
 	if s.TradingService != nil {
-		handler := services.OrderUpdateHandlerFunc(s.OnOrderUpdate)
-		s.TradingService.OnOrderUpdate(handler)
-		log.Infof("✅ [%s] 已注册订单更新回调（利用本地订单状态管理）", ID)
+		s.orderUpdateOnce.Do(func() {
+			handler := services.OrderUpdateHandlerFunc(s.OnOrderUpdate)
+			s.TradingService.OnOrderUpdate(handler)
+			log.Infof("✅ [%s] 已注册订单更新回调（利用本地订单状态管理）", ID)
+		})
 
 		// 初始化库存计算器（用于库存偏斜机制）
 		s.inventoryCalculator = common.NewInventoryCalculator(s.TradingService)
@@ -254,12 +257,25 @@ func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
 	// 在 Subscribe 时也注册订单更新回调（兜底方案，确保回调已注册）
 	// 因为此时 TradingService 肯定已经注入，且周期切换时会重新调用 Subscribe
 	if s.TradingService != nil {
-		handler := services.OrderUpdateHandlerFunc(s.OnOrderUpdate)
-		s.TradingService.OnOrderUpdate(handler)
-		log.Infof("✅ [%s] 已注册订单更新回调（在 Subscribe 中注册，利用本地订单状态管理）", ID)
+		s.orderUpdateOnce.Do(func() {
+			handler := services.OrderUpdateHandlerFunc(s.OnOrderUpdate)
+			s.TradingService.OnOrderUpdate(handler)
+			log.Infof("✅ [%s] 已注册订单更新回调（Subscribe 兜底）", ID)
+		})
 	} else {
 		log.Warnf("⚠️ [%s] TradingService 为 nil，无法注册订单更新回调", ID)
 	}
+}
+
+func isFailSafeRefusal(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	// 这些错误都是系统级 gate 的“预期拒绝”，不能当作策略失败或污染状态
+	return strings.Contains(s, "trading paused") ||
+		strings.Contains(s, "market mismatch") ||
+		strings.Contains(s, "refuse to trade")
 }
 
 func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.ExchangeSession) error {
@@ -280,7 +296,7 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.Exchan
 // 4. Binance bias 状态（cycleStartMs, biasReady, biasToken, biasReason）
 // 5. 订单跟踪（lastEntryOrderID, lastHedgeOrderID, pendingOrders）
 //
-	// 注意：不清 lastTriggerAt，避免周期切换瞬间重复触发
+// 注意：不清 lastTriggerAt，避免周期切换瞬间重复触发
 func (s *Strategy) OnCycle(ctx context.Context, oldMarket *domain.Market, newMarket *domain.Market) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -316,7 +332,6 @@ func (s *Strategy) OnCycle(ctx context.Context, oldMarket *domain.Market, newMar
 	s.lastExitCheckAt = time.Time{}
 	s.partialTPDone = make(map[string]map[int]bool)
 	s.trailing = make(map[string]*trailState)
-
 
 	// 市场精度信息从配置文件加载，无需在运行时获取
 
@@ -383,7 +398,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 		if order.Status == domain.OrderStatusFilled {
 			log.Infof("✅ [%s] Hedge 订单已成交（通过订单更新回调）: orderID=%s filledSize=%.4f",
 				ID, order.OrderID, order.FilledSize)
-			
+
 			// 如果 Hedge 订单成交，检查是否有对应的未对冲 Entry 订单，如果有则移除
 			if s.unhedgedEntries != nil {
 				for entryOrderID, entryOrder := range s.unhedgedEntries {
@@ -394,7 +409,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 					}
 				}
 			}
-			
+
 			// ✅ 优化：检查Entry单是否已平仓，如果已平仓则立即平掉Hedge单持仓
 			if order.HedgeOrderID != nil && *order.HedgeOrderID != "" {
 				entryOrderID := *order.HedgeOrderID
@@ -405,19 +420,19 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 						// 检查Entry单对应的持仓是否还存在
 						entryTokenType := entryOrder.TokenType
 						marketSlug := entryOrder.MarketSlug
-						
+
 						// 异步检查，避免阻塞回调
 						go func() {
 							checkCtx, checkCancel := context.WithTimeout(context.Background(), 3*time.Second)
 							defer checkCancel()
-							
+
 							// 等待一小段时间，让持仓状态更新
 							time.Sleep(200 * time.Millisecond)
-							
+
 							positions := s.TradingService.GetOpenPositionsForMarket(marketSlug)
 							hasEntryPos := false
 							var hedgePos *domain.Position
-							
+
 							for _, p := range positions {
 								if p == nil || !p.IsOpen() || p.Size <= 0 {
 									continue
@@ -429,47 +444,47 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 									hedgePos = p
 								}
 							}
-							
+
 							// 如果Entry单已平仓，但Hedge单还有持仓，立即平掉Hedge单
 							if !hasEntryPos && hedgePos != nil {
 								log.Warnf("🚨 [%s] 【风险检测】Hedge单成交但Entry单已平仓，立即平掉Hedge单持仓: hedgeOrderID=%s entryOrderID=%s",
 									ID, order.OrderID, entryOrderID)
-								
-							// 获取market对象（从持仓中获取）
-							if hedgePos.Market == nil {
-								log.Warnf("⚠️ [%s] Hedge持仓缺少Market信息，无法平仓", ID)
-								return
-							}
-							
-							// 获取订单簿价格
-							var exitPrice domain.Price
-							var exitAssetID string
-							if hedgePos.TokenType == domain.TokenTypeUp {
-								yesBid, _, _, _, _, err := s.TradingService.GetTopOfBook(checkCtx, hedgePos.Market)
-								if err != nil {
-									log.Warnf("⚠️ [%s] 获取订单簿价格失败: %v", ID, err)
+
+								// 获取market对象（从持仓中获取）
+								if hedgePos.Market == nil {
+									log.Warnf("⚠️ [%s] Hedge持仓缺少Market信息，无法平仓", ID)
 									return
 								}
-								exitPrice = yesBid
-								exitAssetID = hedgePos.Market.YesAssetID
-							} else {
-								_, _, noBid, _, _, err := s.TradingService.GetTopOfBook(checkCtx, hedgePos.Market)
-								if err != nil {
-									log.Warnf("⚠️ [%s] 获取订单簿价格失败: %v", ID, err)
-									return
+
+								// 获取订单簿价格
+								var exitPrice domain.Price
+								var exitAssetID string
+								if hedgePos.TokenType == domain.TokenTypeUp {
+									yesBid, _, _, _, _, err := s.TradingService.GetTopOfBook(checkCtx, hedgePos.Market)
+									if err != nil {
+										log.Warnf("⚠️ [%s] 获取订单簿价格失败: %v", ID, err)
+										return
+									}
+									exitPrice = yesBid
+									exitAssetID = hedgePos.Market.YesAssetID
+								} else {
+									_, _, noBid, _, _, err := s.TradingService.GetTopOfBook(checkCtx, hedgePos.Market)
+									if err != nil {
+										log.Warnf("⚠️ [%s] 获取订单簿价格失败: %v", ID, err)
+										return
+									}
+									exitPrice = noBid
+									exitAssetID = hedgePos.Market.NoAssetID
 								}
-								exitPrice = noBid
-								exitAssetID = hedgePos.Market.NoAssetID
-							}
-								
+
 								if exitPrice.Pips <= 0 {
 									log.Warnf("⚠️ [%s] 订单簿价格无效，无法平掉Hedge单持仓", ID)
 									return
 								}
-								
+
 								log.Infof("🔧 [%s] 平掉Hedge单持仓: token=%s size=%.4f price=%dc reason=entry_exited_before_hedge",
 									ID, hedgePos.TokenType, hedgePos.Size, exitPrice.ToCents())
-								
+
 								// 创建平仓订单
 								exitOrder := &domain.Order{
 									MarketSlug: marketSlug,
@@ -482,7 +497,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 									Status:     domain.OrderStatusPending,
 									CreatedAt:  time.Now(),
 								}
-								
+
 								// 提交平仓订单
 								if _, err := s.TradingService.PlaceOrder(checkCtx, exitOrder); err != nil {
 									log.Errorf("❌ [%s] 平掉Hedge单持仓失败: token=%s err=%v", ID, hedgePos.TokenType, err)
@@ -495,7 +510,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 				}
 			}
 		}
-		
+
 		// Hedge 订单失败时，检查对应的 Entry 订单是否已成交
 		if order.Status == domain.OrderStatusFailed || order.Status == domain.OrderStatusCanceled {
 			log.Warnf("⚠️ [%s] Hedge 订单失败/取消: orderID=%s status=%s",
@@ -583,13 +598,13 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	// 显示 WebSocket 实时价格（用于调试，带限流避免刷屏）
 	priceDecimal := e.NewPrice.ToDecimal()
 	priceCents := e.NewPrice.ToCents()
-	
+
 	// 价格日志限流：同一 token 的价格更新，如果价格变化不大且时间间隔短，则限流
 	// 注意：这里需要在加锁前检查，避免死锁
 	shouldLogPrice := false
 	var timeSinceLastLog time.Duration
 	var priceChange int
-	
+
 	s.mu.Lock()
 	// 在锁内检查限流条件
 	if s.lastPriceLogToken != e.TokenType || s.lastPriceLogAt.IsZero() {
@@ -606,13 +621,13 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		if priceChange < 0 {
 			priceChange = -priceChange
 		}
-		
+
 		// 如果时间间隔超过限流时间，或者价格变化超过 1 分，则打印
 		if timeSinceLastLog >= logThrottle || priceChange >= 1 {
 			shouldLogPrice = true
 		}
 	}
-	
+
 	// 如果需要打印，更新限流状态
 	if shouldLogPrice {
 		s.lastPriceLogToken = e.TokenType
@@ -620,7 +635,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		s.lastPriceLogPriceCents = priceCents
 	}
 	s.mu.Unlock()
-	
+
 	// 在锁外打印日志（避免长时间持锁）
 	if shouldLogPrice {
 		log.Debugf("📈 [%s] 价格更新: token=%s price=%.4f (%dc) market=%s",
@@ -653,7 +668,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		// 使用背景上下文，避免阻塞策略主流程
 		bookCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()
-		
+
 		yesBid, yesAsk, noBid, noAsk, source, err := s.TradingService.GetTopOfBook(bookCtx, e.Market)
 		if err != nil {
 			// 静默失败，不影响策略运行
@@ -946,7 +961,6 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	s.lastTriggerSide = winner
 	s.lastTriggerSideAt = now
 
-
 	// 5.5 库存偏斜检查：如果净持仓超过阈值，降低该方向的交易频率
 	if s.Config.InventoryThreshold > 0 && s.inventoryCalculator != nil && e.Market != nil {
 		shouldSkip := s.inventoryCalculator.CheckInventorySkew(e.Market.Slug, s.Config.InventoryThreshold, winner)
@@ -1094,11 +1108,31 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 				}
 			}
 			log.Debugf("⏭️ [%s] 跳过：MarketQuality gate 未通过: score=%d(min=%d) tradable=%v problems=%v source=%s%s",
-				ID, func() int { if mq != nil { return mq.Score }; return -1 }(),
+				ID, func() int {
+					if mq != nil {
+						return mq.Score
+					}
+					return -1
+				}(),
 				s.MarketQualityMinScore,
-				func() bool { if mq != nil { return mq.Tradable() }; return false }(),
-				func() []string { if mq != nil { return mq.Problems }; return nil }(),
-				func() string { if mq != nil { return mq.Source }; return "" }(),
+				func() bool {
+					if mq != nil {
+						return mq.Tradable()
+					}
+					return false
+				}(),
+				func() []string {
+					if mq != nil {
+						return mq.Problems
+					}
+					return nil
+				}(),
+				func() string {
+					if mq != nil {
+						return mq.Source
+					}
+					return ""
+				}(),
 				scoreBreakdown,
 			)
 			return nil
@@ -1161,11 +1195,10 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	// 约束：
 	// - Entry 是 FAK：必须使用订单簿实际 ask（taker）
 	// - Hedge 是 GTC：应使用“互补挂单价格”在买一侧做 maker（由 hedgeOffsetCents 提供保护边际）
-	entryAskCents := int(entryAskDec*100 + 0.5)       // FAK 实际下单 ask（cents）
+	entryAskCents := int(entryAskDec*100 + 0.5) // FAK 实际下单 ask（cents）
 	entryBidCents := int(entryBidDec*100 + 0.5)
 	hedgeBidCents := int(hedgeBidDec*100 + 0.5)
 	hedgeAskCentsDirect := int(hedgeAskDec*100 + 0.5) // 对侧当前 ask（仅用于防止挂单穿价）
-
 
 	// 基础验证
 	if entryAskCents <= 0 || entryAskCents >= 100 || hedgeAskCentsDirect <= 0 || hedgeAskCentsDirect >= 100 {
@@ -1253,8 +1286,8 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	}
 
 	// 最终下单价格
-	entryPriceForFAK := domain.Price{Pips: entryAskCents * 100}   // FAK：使用实际 ask
-	hedgePrice := domain.Price{Pips: hedgeLimitCents * 100}       // GTC：互补挂单价（maker）
+	entryPriceForFAK := domain.Price{Pips: entryAskCents * 100} // FAK：使用实际 ask
+	hedgePrice := domain.Price{Pips: hedgeLimitCents * 100}     // GTC：互补挂单价（maker）
 	entryPriceDec := entryPriceForFAK.ToDecimal()
 	hedgeDec := hedgePrice.ToDecimal()
 
@@ -1356,14 +1389,14 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 	// - 使用卖二价下单，即使卖一价被吃掉，仍然可以匹配到卖二价
 	secondLevelPrice, hasSecondLevel := s.TradingService.GetSecondLevelPrice(orderCtx, entryAsset, types.SideBuy)
 	_, actualAsk, err := s.TradingService.GetBestPrice(orderCtx, entryAsset)
-	
+
 	if err != nil {
 		log.Warnf("⚠️ [%s] 下单前获取订单簿价格失败，使用原价格: err=%v", ID, err)
 	} else if actualAsk > 0 {
 		// 优先使用卖二价（如果存在且合理）
 		targetPrice := actualAsk
 		targetPriceName := "卖一价"
-		
+
 		if hasSecondLevel && secondLevelPrice > 0 && secondLevelPrice <= actualAsk*1.02 {
 			// 卖二价存在且不超过卖一价的 2%，使用卖二价
 			targetPrice = secondLevelPrice
@@ -1371,12 +1404,12 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 			log.Infof("💰 [%s] 使用卖二价作为缓冲: 卖一价=%.4f, 卖二价=%.4f (价格缓冲=%.2f%%)",
 				ID, actualAsk, secondLevelPrice, (secondLevelPrice-actualAsk)/actualAsk*100)
 		}
-		
+
 		// 对于买入订单，需要检查 ask 价格
 		targetPriceCents := int(targetPrice*100 + 0.5)
 		entryPriceCents := int(entryPrice.ToDecimal()*100 + 0.5)
 		priceDiffCents := targetPriceCents - entryPriceCents
-		
+
 		if priceDiffCents > 0 {
 			// 订单簿的 ask 价格高于我们的价格
 			// 如果价格偏差 <= 5c，调整价格为订单簿的 ask 价格
@@ -1419,7 +1452,7 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 			ID, int(entryPrice.ToDecimal()*100+0.5), entryShares)
 		return nil // 跳过这次下单
 	}
-	
+
 	// 如果可用数量不足，记录警告但仍尝试下单（FAK 允许部分成交）
 	if availableSize < entryShares {
 		log.Warnf("⚠️ [%s] 订单簿流动性不足：需要=%.4f, 可用=%.4f, 实际价格=%.4f，FAK订单将尝试部分成交",
@@ -1456,11 +1489,15 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 		Status:       domain.OrderStatusPending,
 		CreatedAt:    time.Now(),
 		TickSize:     tickSize, // 使用缓存的精度信息
-		NegRisk:      negRisk,   // 使用缓存的 neg_risk 信息
+		NegRisk:      negRisk,  // 使用缓存的 neg_risk 信息
 	}
 
 	entryOrderResult, execErr := s.TradingService.PlaceOrder(orderCtx, entryOrder)
 	if execErr != nil {
+		if isFailSafeRefusal(execErr) {
+			log.Warnf("⏸️ [%s] 系统拒绝下单（fail-safe，预期行为）：entry err=%v market=%s", ID, execErr, market.Slug)
+			return nil
+		}
 		log.Warnf("⚠️ [%s] 主单下单失败: err=%v side=%s market=%s", ID, execErr, winner, market.Slug)
 		return nil
 	}
@@ -1611,16 +1648,21 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 		HedgeOrderID: &entryOrderID, // 关联主单ID
 		Status:       domain.OrderStatusPending,
 		TickSize:     tickSize, // 使用缓存的精度信息
-		NegRisk:      negRisk,   // 使用缓存的 neg_risk 信息
+		NegRisk:      negRisk,  // 使用缓存的 neg_risk 信息
 		CreatedAt:    time.Now(),
 	}
 
 	hedgeOrderResult, hedgeErr := s.TradingService.PlaceOrder(orderCtx, hedgeOrder)
 	hedgeOrderID := ""
 	if hedgeErr != nil {
+		// 系统级 fail-safe：如果主单未成交且系统拒绝对冲腿下单，则视为“预期跳过”，不进入风险逻辑
+		if isFailSafeRefusal(hedgeErr) && !entryFilled {
+			log.Warnf("⏸️ [%s] 系统拒绝对冲单（fail-safe，预期行为）：hedge err=%v market=%s", ID, hedgeErr, market.Slug)
+			return nil
+		}
 		log.Errorf("❌ [%s] 对冲单下单失败: err=%v (主单已成交，需要处理)",
 			ID, hedgeErr)
-		
+
 		// ⚠️ 重要：如果 Entry 订单已成交，但 Hedge 订单失败，这是一个高风险情况
 		// 选项1：如果 Entry 订单还未完全成交，尝试取消 Entry 订单
 		// 选项2：记录未对冲的 Entry 订单，提醒手动处理
@@ -1632,7 +1674,7 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 				ID, winner, entryAskCents, entryShares, entryShares)
 			log.Errorf("🚨 [%s] 建议：立即手动下 Hedge 订单对冲风险，或取消 Entry 订单（如果可能）",
 				ID)
-			
+
 			// 记录未对冲的 Entry 订单到策略状态中，方便后续查询
 			s.mu.Lock()
 			if s.unhedgedEntries == nil {
@@ -1656,7 +1698,7 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 				}
 			}(entryOrderID)
 		}
-		
+
 		// 主单已成交，对冲单失败，这是一个风险情况
 		execErr = hedgeErr
 		return nil // 返回错误，不再继续执行
@@ -1978,6 +2020,10 @@ func (s *Strategy) executeParallel(ctx context.Context, market *domain.Market, w
 			}
 		}
 	} else {
+		if isFailSafeRefusal(execErr) {
+			log.Warnf("⏸️ [%s] 系统拒绝下单（fail-safe，预期行为）：err=%v market=%s", ID, execErr, market.Slug)
+			return nil
+		}
 		log.Warnf("⚠️ [%s] 下单失败: err=%v side=%s market=%s", ID, execErr, winner, market.Slug)
 	}
 	return nil
@@ -2081,7 +2127,7 @@ func (s *Strategy) monitorAndReorderHedge(ctx context.Context, market *domain.Ma
 					}
 					newNegRisk = boolPtr(s.currentPrecision.NegRisk)
 				}
-				
+
 				newHedgeOrder := &domain.Order{
 					MarketSlug:   market.Slug,
 					AssetID:      hedgeAsset,
@@ -2094,7 +2140,7 @@ func (s *Strategy) monitorAndReorderHedge(ctx context.Context, market *domain.Ma
 					HedgeOrderID: &entryOrderID,
 					Status:       domain.OrderStatusPending,
 					TickSize:     newTickSize, // 使用缓存的精度信息
-					NegRisk:      newNegRisk,   // 使用缓存的 neg_risk 信息
+					NegRisk:      newNegRisk,  // 使用缓存的 neg_risk 信息
 					CreatedAt:    time.Now(),
 				}
 
@@ -2192,7 +2238,6 @@ func opposite(t domain.TokenType) domain.TokenType {
 	return domain.TokenTypeUp
 }
 
-
 func ensureMinOrderSize(desiredShares float64, price float64, minUSDC float64) float64 {
 	if desiredShares <= 0 || price <= 0 {
 		return desiredShares
@@ -2215,29 +2260,29 @@ func adjustSizeForMakerAmountPrecision(size float64, price float64) float64 {
 	if size <= 0 || price <= 0 {
 		return size
 	}
-	
+
 	// 计算 maker amount = size × price
 	makerAmount := size * price
-	
+
 	// 将 maker amount 向下舍入到 2 位小数
 	makerAmountRounded := math.Floor(makerAmount*100) / 100
-	
+
 	// 如果舍入后为 0，使用最小有效值（0.01）
 	if makerAmountRounded <= 0 {
 		makerAmountRounded = 0.01
 	}
-	
+
 	// 重新计算 size = maker amount / price
 	newSize := makerAmountRounded / price
-	
+
 	// 将 size 向下舍入到 4 位小数（taker amount 要求）
 	newSize = math.Floor(newSize*10000) / 10000
-	
+
 	// 确保 size 不为 0
 	if newSize <= 0 {
 		return size // 如果调整后为 0，返回原始值
 	}
-	
+
 	return newSize
 }
 
@@ -2343,9 +2388,9 @@ func (s *Strategy) tryExitPositions(ctx context.Context, market *domain.Market, 
 	}
 
 	type decision struct {
-		fullExit bool
+		fullExit   bool
 		fullReason string
-		partial []leg
+		partial    []leg
 	}
 
 	evalPos := func(p *domain.Position) decision {
@@ -2551,7 +2596,7 @@ func (s *Strategy) tryExitPositions(ctx context.Context, market *domain.Market, 
 			Size:      l.size,
 			OrderType: types.OrderTypeFAK,
 			TickSize:  exitTickSize, // 使用缓存的精度信息
-			NegRisk:   exitNegRisk,   // 使用缓存的 neg_risk 信息
+			NegRisk:   exitNegRisk,  // 使用缓存的 neg_risk 信息
 		})
 		log.Infof("📤 [%s] 出场: reason=%s token=%s bid=%dc size=%.4f market=%s",
 			ID, l.reason, l.token, l.price.ToCents(), l.size, market.Slug)
@@ -2561,6 +2606,10 @@ func (s *Strategy) tryExitPositions(ctx context.Context, market *domain.Market, 
 	}
 
 	created, execErr := s.TradingService.ExecuteMultiLeg(orderCtx, req)
+	if isFailSafeRefusal(execErr) {
+		log.Warnf("⏸️ [%s] 系统拒绝出场（fail-safe，预期行为）：err=%v market=%s", ID, execErr, market.Slug)
+		return true // 有持仓，但系统暂停交易：明确不再继续开仓
+	}
 	if execErr == nil && len(created) > 0 {
 		// 仅在执行成功后标记分批止盈 level 已触发（避免失败导致"错过 level"）
 		for _, l := range legs {
@@ -2601,16 +2650,16 @@ func (s *Strategy) tryExitPositions(ctx context.Context, market *domain.Market, 
 		go func() {
 			// 等待一小段时间，让订单状态更新
 			time.Sleep(500 * time.Millisecond)
-			
+
 			// 再次检查持仓
 			checkCtx, checkCancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer checkCancel()
-			
+
 			remainingPositions := s.TradingService.GetOpenPositionsForMarket(market.Slug)
 			if len(remainingPositions) == 0 {
 				return // 没有剩余持仓，安全
 			}
-			
+
 			// 检查是否有单边持仓（只有Hedge单，没有Entry单）
 			var hedgeOnlyPositions []*domain.Position
 			for _, p := range remainingPositions {
@@ -2637,31 +2686,31 @@ func (s *Strategy) tryExitPositions(ctx context.Context, market *domain.Market, 
 					}
 				}
 			}
-			
+
 			// 如果发现单边持仓，立即平掉
 			if len(hedgeOnlyPositions) > 0 {
 				log.Warnf("🚨 [%s] 【风险检测】平仓后发现单边持仓（可能是Hedge单在平仓过程中成交），立即平掉: count=%d",
 					ID, len(hedgeOnlyPositions))
-				
+
 				// 获取订单簿价格（需要完整的market对象）
 				if market == nil || market.YesAssetID == "" || market.NoAssetID == "" {
 					log.Warnf("⚠️ [%s] Market信息不完整，无法平掉单边持仓", ID)
 					return
 				}
-				
+
 				yesBid, _, noBid, _, _, err := s.TradingService.GetTopOfBook(checkCtx, market)
 				if err != nil {
 					log.Warnf("⚠️ [%s] 获取订单簿价格失败，无法平掉单边持仓: %v", ID, err)
 					return
 				}
-				
+
 				// 平掉所有单边持仓
 				for _, p := range hedgeOnlyPositions {
 					if p.Market == nil {
 						log.Warnf("⚠️ [%s] 持仓缺少Market信息，跳过: token=%s", ID, p.TokenType)
 						continue
 					}
-					
+
 					var exitPrice domain.Price
 					var exitAssetID string
 					if p.TokenType == domain.TokenTypeUp {
@@ -2671,15 +2720,15 @@ func (s *Strategy) tryExitPositions(ctx context.Context, market *domain.Market, 
 						exitPrice = noBid
 						exitAssetID = p.Market.NoAssetID
 					}
-					
+
 					if exitPrice.Pips <= 0 {
 						log.Warnf("⚠️ [%s] 订单簿价格无效，无法平掉单边持仓: token=%s", ID, p.TokenType)
 						continue
 					}
-					
+
 					log.Infof("🔧 [%s] 平掉单边持仓: token=%s size=%.4f price=%dc reason=hedge_only_after_exit",
 						ID, p.TokenType, p.Size, exitPrice.ToCents())
-					
+
 					// 创建平仓订单
 					exitOrder := &domain.Order{
 						MarketSlug: market.Slug,
@@ -2692,7 +2741,7 @@ func (s *Strategy) tryExitPositions(ctx context.Context, market *domain.Market, 
 						Status:     domain.OrderStatusPending,
 						CreatedAt:  time.Now(),
 					}
-					
+
 					// 提交平仓订单
 					if _, err := s.TradingService.PlaceOrder(checkCtx, exitOrder); err != nil {
 						log.Errorf("❌ [%s] 平掉单边持仓失败: token=%s err=%v", ID, p.TokenType, err)
@@ -2708,4 +2757,3 @@ func (s *Strategy) tryExitPositions(ctx context.Context, market *domain.Market, 
 	s.mu.Unlock()
 	return true
 }
-
