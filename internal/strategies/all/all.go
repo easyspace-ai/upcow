@@ -16,4 +16,5 @@ import (
 	_ "github.com/betbot/gobet/internal/strategies/unifiedarb"
 	_ "github.com/betbot/gobet/internal/strategies/updown"
 	_ "github.com/betbot/gobet/internal/strategies/velocityfollow"
+	_ "github.com/betbot/gobet/internal/strategies/volmm"
 )

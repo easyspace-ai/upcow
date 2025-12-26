@@ -240,3 +240,12 @@ skew = k_{\Delta}\cdot \mathrm{clip}\!\left(\frac{\Delta_{inv}}{\text{deltaMaxSh
 
 这样你们可以快速回看“为什么被扫/为什么没成交/尾盘是否按规则降风险”。
 
+---
+
+## 10. 配置示例
+
+- 示例策略配置文件：`yml/volmm.yaml`
+- 启动方式（示例）：
+  - 使用默认 base 配置 + 策略文件：`go run ./cmd/bot -strategy volmm`
+  - 或显式指定策略文件：`go run ./cmd/bot -strategies yml/volmm.yaml`
+
