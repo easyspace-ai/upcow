@@ -37,6 +37,7 @@ const (
 	OrderStatusPending   OrderStatus = "pending"   // 待处理
 	OrderStatusOpen      OrderStatus = "open"     // 开放中
 	OrderStatusPartial   OrderStatus = "partial"  // 部分成交
+	OrderStatusCanceling OrderStatus = "canceling" // 取消中（已发起撤单请求，等待确认）
 	OrderStatusFilled    OrderStatus = "filled"   // 已成交
 	OrderStatusCanceled  OrderStatus = "canceled" // 已取消
 	OrderStatusFailed    OrderStatus = "failed"   // 失败
