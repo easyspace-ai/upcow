@@ -2,6 +2,7 @@ package template
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -9,8 +10,8 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/execution"
-	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/internal/services"
+	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
 )
@@ -36,17 +37,19 @@ type Strategy struct {
 	Config         `yaml:",inline" json:",inline"`
 
 	mu sync.Mutex
+	// 避免在周期切换/重复 Subscribe 时重复注册 handler（OrderEngine handler 列表不去重）
+	orderUpdateOnce sync.Once
 
 	// 周期状态
 	fired bool
 
 	// 订单跟踪（可选）：利用本地订单状态管理
-	lastOrderID     string
-	pendingOrders   map[string]*domain.Order // 待确认的订单
+	lastOrderID   string
+	pendingOrders map[string]*domain.Order // 待确认的订单
 }
 
-func (s *Strategy) ID() string   { return ID }
-func (s *Strategy) Name() string { return ID }
+func (s *Strategy) ID() string      { return ID }
+func (s *Strategy) Name() string    { return ID }
 func (s *Strategy) Defaults() error { return nil }
 func (s *Strategy) Validate() error { return s.Config.Validate() }
 
@@ -64,10 +67,12 @@ func (s *Strategy) Initialize() error {
 	// 注册订单更新回调（推荐）：利用本地订单状态管理
 	// 当订单状态更新时（通过 WebSocket 或 API 同步），立即更新本地状态
 	if s.TradingService != nil {
-		// 使用 OrderUpdateHandlerFunc 包装方法
-		handler := services.OrderUpdateHandlerFunc(s.OnOrderUpdate)
-		s.TradingService.OnOrderUpdate(handler)
-		log.Infof("✅ [%s] 已注册订单更新回调（利用本地订单状态管理）", ID)
+		s.orderUpdateOnce.Do(func() {
+			// 使用 OrderUpdateHandlerFunc 包装方法
+			handler := services.OrderUpdateHandlerFunc(s.OnOrderUpdate)
+			s.TradingService.OnOrderUpdate(handler)
+			log.Infof("✅ [%s] 已注册订单更新回调（利用本地订单状态管理）", ID)
+		})
 	}
 
 	return nil
@@ -76,6 +81,16 @@ func (s *Strategy) Initialize() error {
 func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
 	session.OnPriceChanged(s)
 	log.Infof("✅ [%s] 策略已订阅价格变化事件 (session=%s)", ID, session.Name)
+
+	// 兜底：有些部署/注入顺序下 Initialize 时 TradingService 可能尚未注入；
+	// 这里用 once 保证最多注册一次，且不会因为周期切换重复注册。
+	if s.TradingService != nil {
+		s.orderUpdateOnce.Do(func() {
+			handler := services.OrderUpdateHandlerFunc(s.OnOrderUpdate)
+			s.TradingService.OnOrderUpdate(handler)
+			log.Infof("✅ [%s] 已注册订单更新回调（Subscribe 兜底）", ID)
+		})
+	}
 }
 
 func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.ExchangeSession) error {
@@ -137,6 +152,12 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if e == nil || e.Market == nil || s.TradingService == nil {
 		return nil
 	}
+	// 系统级安全兜底：仅处理当前周期 market 的事件（即使框架层已有过滤，这里仍做防御）
+	cur := s.TradingService.GetCurrentMarket()
+	if cur != "" && cur != e.Market.Slug {
+		log.Debugf("🔄 [%s] 跳过非当前周期价格事件: eventMarket=%s currentMarket=%s", ID, e.Market.Slug, cur)
+		return nil
+	}
 
 	s.mu.Lock()
 	// 示例：简单的去重逻辑（每周期只触发一次）
@@ -176,6 +197,12 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	// 执行多腿订单（支持并发或顺序执行）
 	createdOrders, err := s.TradingService.ExecuteMultiLeg(orderCtx, req)
 	if err != nil {
+		// fail-safe：系统暂停/市场不一致时属于“预期拒绝”，不应污染策略状态
+		estr := strings.ToLower(err.Error())
+		if strings.Contains(estr, "trading paused") || strings.Contains(estr, "market mismatch") {
+			log.Warnf("⏸️ [%s] 系统拒绝下单（fail-safe，预期行为）: %v", ID, err)
+			return nil
+		}
 		log.Warnf("⚠️ [%s] 下单失败: %v", ID, err)
 		return nil
 	}
@@ -250,4 +277,3 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 // 	log.Infof("✅ [%s] 多腿订单已提交: orders=%d", ID, len(createdOrders))
 // 	return nil
 // }
-
