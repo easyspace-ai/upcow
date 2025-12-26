@@ -575,51 +575,13 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 
 	// 2. 周期检测：检测周期切换，更新 cycleStartMs
 	// 尽量用 market.Timestamp 作为本周期起点（框架会从 slug 解析）
-	if e.Market.Timestamp > 0 {
-		st := e.Market.Timestamp * 1000
-		if s.cycleStartMs == 0 || s.cycleStartMs != st {
-			s.cycleStartMs = st
-			s.biasReady = false
-			s.biasToken = ""
-			s.biasReason = ""
-		}
-	}
+	s.updateCycleStartLocked(e.Market)
 
 	// 3. Binance bias：检查开盘 1m K 线 bias（如果启用）
 	// 可选：用"开盘第 1 根 1m K线阴阳"做 bias（hard/soft）
-	if s.UseBinanceOpen1mBias {
-		// 如果等太久还没有拿到那根 1m，就降级为“无 bias”继续跑
-		if !s.biasReady && s.cycleStartMs > 0 && s.Open1mMaxWaitSeconds > 0 {
-			if now.UnixMilli()-s.cycleStartMs > int64(s.Open1mMaxWaitSeconds)*1000 {
-				s.biasReady = true
-				s.biasToken = ""
-				s.biasReason = "open1m_timeout"
-			}
-		}
-
-		if !s.biasReady && s.BinanceFuturesKlines != nil && s.cycleStartMs > 0 {
-			if k, ok := s.BinanceFuturesKlines.Get("1m", s.cycleStartMs); ok && k.IsClosed && k.Open > 0 {
-				bodyBps, wickBps, dirTok := candleStatsBps(k, domain.TokenTypeUp, domain.TokenTypeDown)
-				if bodyBps < s.Open1mMinBodyBps {
-					s.biasReady = true
-					s.biasToken = ""
-					s.biasReason = "open1m_body_too_small"
-				} else if wickBps > s.Open1mMaxWickBps {
-					s.biasReady = true
-					s.biasToken = ""
-					s.biasReason = "open1m_wick_too_large"
-				} else {
-					s.biasReady = true
-					s.biasToken = dirTok
-					s.biasReason = "open1m_ok"
-				}
-			}
-		}
-
-		if s.RequireBiasReady && !s.biasReady {
-			s.mu.Unlock()
-			return nil
-		}
+	if s.shouldSkipUntilBiasReadyLocked(now) {
+		s.mu.Unlock()
+		return nil
 	}
 
 	// 4. 预热检查：检查是否在预热窗口内
@@ -1377,4 +1339,63 @@ func (s *Strategy) maybeHandleExit(ctx context.Context, market *domain.Market, n
 
 	// 已有持仓时默认不再开新仓，等待出场逻辑处理完毕（避免叠加风险）
 	return true
+}
+
+func (s *Strategy) updateCycleStartLocked(market *domain.Market) {
+	if s == nil || market == nil {
+		return
+	}
+	if market.Timestamp <= 0 {
+		return
+	}
+
+	st := market.Timestamp * 1000
+	if s.cycleStartMs == 0 || s.cycleStartMs != st {
+		s.cycleStartMs = st
+		s.biasReady = false
+		s.biasToken = ""
+		s.biasReason = ""
+	}
+}
+
+// shouldSkipUntilBiasReadyLocked computes open1m bias state (when enabled) and returns true
+// when RequireBiasReady is enabled and bias is still not ready.
+// Callers must hold s.mu.
+func (s *Strategy) shouldSkipUntilBiasReadyLocked(now time.Time) bool {
+	if s == nil {
+		return false
+	}
+	if !s.UseBinanceOpen1mBias {
+		return false
+	}
+
+	// 如果等太久还没有拿到那根 1m，就降级为“无 bias”继续跑
+	if !s.biasReady && s.cycleStartMs > 0 && s.Open1mMaxWaitSeconds > 0 {
+		if now.UnixMilli()-s.cycleStartMs > int64(s.Open1mMaxWaitSeconds)*1000 {
+			s.biasReady = true
+			s.biasToken = ""
+			s.biasReason = "open1m_timeout"
+		}
+	}
+
+	if !s.biasReady && s.BinanceFuturesKlines != nil && s.cycleStartMs > 0 {
+		if k, ok := s.BinanceFuturesKlines.Get("1m", s.cycleStartMs); ok && k.IsClosed && k.Open > 0 {
+			bodyBps, wickBps, dirTok := candleStatsBps(k, domain.TokenTypeUp, domain.TokenTypeDown)
+			if bodyBps < s.Open1mMinBodyBps {
+				s.biasReady = true
+				s.biasToken = ""
+				s.biasReason = "open1m_body_too_small"
+			} else if wickBps > s.Open1mMaxWickBps {
+				s.biasReady = true
+				s.biasToken = ""
+				s.biasReason = "open1m_wick_too_large"
+			} else {
+				s.biasReady = true
+				s.biasToken = dirTok
+				s.biasReason = "open1m_ok"
+			}
+		}
+	}
+
+	return s.RequireBiasReady && !s.biasReady
 }
