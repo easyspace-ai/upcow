@@ -66,7 +66,8 @@ func resolveStrategyConfigFile(strategyName string, strategyDir string) (string,
 	if dir != "" {
 		candidatesDirs = append(candidatesDirs, dir)
 	} else {
-		candidatesDirs = append(candidatesDirs, "yml/strategies", "yml", ".")
+		// 配置集中管理：只在 yml 下查找（不再扫描根目录）
+		candidatesDirs = append(candidatesDirs, "yml/strategies", "yml")
 	}
 
 	exts := []string{".yaml", ".yml", ".json"}
@@ -101,12 +102,12 @@ func main() {
 		config.SetConfigPath(*configPath)
 		logrus.Infof("使用配置文件: %s", *configPath)
 	} else {
-		// 默认只加载 base.yaml（全局配置固定），并兼容历史 config.yaml
-		if p, ok := firstExistingFile("base.yaml", "yml/base.yaml", "config.yaml"); ok {
+		// 配置集中管理：默认只加载 yml/base.yaml，并兼容旧名 yml/config.yaml
+		if p, ok := firstExistingFile("yml/base.yaml", "yml/config.yaml"); ok {
 			config.SetConfigPath(p)
 			logrus.Infof("使用默认配置文件: %s", p)
 		} else {
-			logrus.Warnf("未指定配置文件，且默认 base.yaml/config.yaml 都不存在，将使用环境变量和默认值")
+			logrus.Warnf("未指定配置文件，且默认 yml/base.yaml 不存在，将使用环境变量和默认值")
 		}
 	}
 
