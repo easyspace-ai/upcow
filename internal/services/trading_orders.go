@@ -27,11 +27,22 @@ func (o *OrdersService) PlaceOrder(ctx context.Context, order *domain.Order) (cr
 		metrics.PlaceOrderBlockedInvalidInput.Add(1)
 		return nil, fmt.Errorf("order 不能为空")
 	}
+	// 系统级硬防线：暂停模式下禁止任何下单（fail-safe）
+	if s == nil || s.isTradingPaused() {
+		metrics.PlaceOrderBlockedInvalidInput.Add(1)
+		return nil, fmt.Errorf("trading paused: refusing to place order")
+	}
 	// 只管理本周期：强制要求所有策略下单都带 MarketSlug
 	// 否则订单更新无法可靠过滤，容易跨周期串单
 	if order.MarketSlug == "" {
 		metrics.PlaceOrderBlockedInvalidInput.Add(1)
 		return nil, fmt.Errorf("order.MarketSlug 不能为空（只管理本周期）")
+	}
+	// 系统级硬防线：只允许对“当前市场”下单。否则一律拒绝，避免跨周期串单。
+	cur := s.GetCurrentMarket()
+	if cur == "" || cur != order.MarketSlug {
+		metrics.PlaceOrderBlockedInvalidInput.Add(1)
+		return nil, fmt.Errorf("order market mismatch (refuse to trade): current=%s order=%s", cur, order.MarketSlug)
 	}
 
 	// 执行层风控：断路器快路径

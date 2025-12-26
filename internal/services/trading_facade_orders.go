@@ -14,6 +14,21 @@ func (s *TradingService) PlaceOrder(ctx context.Context, order *domain.Order) (*
 	if s.orders == nil {
 		return nil, fmt.Errorf("orders service not initialized")
 	}
+	// 防御性校验：即使绕过 OrdersService 直接调用 TradingService.PlaceOrder，
+	// 也必须遵守系统级 fail-safe（暂停模式 + 当前 market 一致性）。
+	// 注意：OrdersService.PlaceOrder 内部也会做同样校验；这里是“更早失败 + 更清晰错误”。
+	if s.isTradingPaused() {
+		return nil, fmt.Errorf("trading paused: refusing to place order")
+	}
+	cur := s.GetCurrentMarket()
+	if order == nil || order.MarketSlug == "" || cur == "" || order.MarketSlug != cur {
+		return nil, fmt.Errorf("order market mismatch (refuse to trade): current=%s order=%v", cur, func() string {
+			if order == nil {
+				return "<nil>"
+			}
+			return order.MarketSlug
+		}())
+	}
 	return s.orders.PlaceOrder(ctx, order)
 }
 

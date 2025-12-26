@@ -6,14 +6,36 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/betbot/gobet/clob/client"
 	"github.com/betbot/gobet/internal/domain"
-	"github.com/betbot/gobet/pkg/marketspec"
 	"github.com/betbot/gobet/pkg/logger"
+	"github.com/betbot/gobet/pkg/marketspec"
 )
+
+// validateMarketInfo 做系统级硬校验：任何进入交易/WS 系统的 market 必须具备完整隔离键与资产信息。
+// 目的：从源头阻断“ConditionID 为空导致 market 过滤失效 -> 跨周期数据污染”的风险。
+func validateMarketInfo(m *domain.Market) error {
+	if m == nil {
+		return fmt.Errorf("market 为 nil")
+	}
+	if strings.TrimSpace(m.Slug) == "" {
+		return fmt.Errorf("market slug 为空")
+	}
+	if strings.TrimSpace(m.YesAssetID) == "" || strings.TrimSpace(m.NoAssetID) == "" {
+		return fmt.Errorf("market assetIDs 缺失: yes=%q no=%q", m.YesAssetID, m.NoAssetID)
+	}
+	if strings.TrimSpace(m.ConditionID) == "" {
+		return fmt.Errorf("market ConditionID 为空（无法做 market 过滤）: slug=%s", m.Slug)
+	}
+	if m.Timestamp <= 0 {
+		return fmt.Errorf("market timestamp 无效: %d", m.Timestamp)
+	}
+	return nil
+}
 
 // MarketDataService 市场数据服务
 type MarketDataService struct {
@@ -253,8 +275,16 @@ func (s *MarketDataService) FetchMarketInfo(ctx context.Context, slug string) (*
 	s.cache.mu.RLock()
 	if market, exists := s.cache.markets[slug]; exists {
 		s.cache.mu.RUnlock()
-		logger.Debugf("从缓存获取市场信息: %s", slug)
-		return market, nil
+		// 系统级硬校验：缓存里若存在不完整 market，必须视为缓存损坏并剔除
+		if err := validateMarketInfo(market); err != nil {
+			logger.Errorf("❌ 市场缓存数据不完整，已剔除并回源 API: slug=%s err=%v", slug, err)
+			s.cache.mu.Lock()
+			delete(s.cache.markets, slug)
+			s.cache.mu.Unlock()
+		} else {
+			logger.Debugf("从缓存获取市场信息: %s", slug)
+			return market, nil
+		}
 	}
 	s.cache.mu.RUnlock()
 
@@ -263,6 +293,10 @@ func (s *MarketDataService) FetchMarketInfo(ctx context.Context, slug string) (*
 	market, err := s.fetchFromAPI(ctx, slug)
 	if err != nil {
 		return nil, err
+	}
+	// 双重保险：fetchFromAPI 内部已校验；这里再校验一次，避免未来改动回归
+	if err := validateMarketInfo(market); err != nil {
+		return nil, fmt.Errorf("市场数据不完整（拒绝缓存/使用）: slug=%s err=%w", slug, err)
 	}
 
 	// 3. 异步更新缓存（不阻塞当前请求）
@@ -327,6 +361,10 @@ func (s *MarketDataService) fetchFromAPI(ctx context.Context, slug string) (*dom
 		ConditionID: gammaMarket.ConditionID,
 		Question:    gammaMarket.Question,
 		Timestamp:   timestamp,
+	}
+	if err := validateMarketInfo(market); err != nil {
+		// 这是系统级致命错误：不允许进入交易/WS 层
+		return nil, fmt.Errorf("Gamma 市场数据不完整（拒绝使用）: slug=%s err=%w conditionID=%q", slug, err, gammaMarket.ConditionID)
 	}
 
 	logger.Infof("从 API 获取市场信息成功: %s (YES: %s..., NO: %s...)",

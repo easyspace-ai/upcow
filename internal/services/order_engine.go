@@ -69,10 +69,10 @@ func (c *CancelOrderCommand) ID() string                    { return c.id }
 
 // UpdateOrderCommand 更新订单命令
 type UpdateOrderCommand struct {
-	id    string
-	Gen   int64 // 周期代号（必须与引擎当前一致，否则丢弃）
-	Order *domain.Order
-	Error error
+	id              string
+	Gen             int64 // 周期代号（必须与引擎当前一致，否则丢弃）
+	Order           *domain.Order
+	Error           error
 	OriginalOrderID string // 本地 orderID（用于 server orderID 回写时重键）
 }
 
@@ -142,7 +142,7 @@ type QueryStateCommand struct {
 	// 可选参数：用于 QueryOrder / QueryPosition 等需要 ID 的查询
 	OrderID    string
 	PositionID string
-	Reply chan *StateSnapshot
+	Reply      chan *StateSnapshot
 }
 
 func (c *QueryStateCommand) CommandType() OrderCommandType { return CmdQueryState }
@@ -205,14 +205,14 @@ type OrderEngine struct {
 	openOrders    map[string]*domain.Order    // 未完成订单
 	orderStore    map[string]*domain.Order    // 所有订单（包括已成交的）
 	pendingTrades map[string]*domain.Trade    // 待处理的交易（订单还未创建时）
-	seenTrades    map[string]struct{}        // 已处理/已接收 tradeID 去重（周期内有效，reset 时清空）
+	seenTrades    map[string]struct{}         // 已处理/已接收 tradeID 去重（周期内有效，reset 时清空）
 
 	// 配置
 	MinOrderSize float64 // 导出以便 TradingService 访问
 	dryRun       bool
 
 	// 外部依赖（IO 操作，异步执行）
-	ioExecutor *IOExecutor
+	ioExecutor *ioExecutor
 
 	// 回调
 	orderHandlers []ports.OrderUpdateHandler
@@ -229,7 +229,7 @@ type OrderEngine struct {
 }
 
 // NewOrderEngine 创建新的订单引擎
-func NewOrderEngine(ioExecutor *IOExecutor, minOrderSize float64, dryRun bool) *OrderEngine {
+func NewOrderEngine(ioExecutor *ioExecutor, minOrderSize float64, dryRun bool) *OrderEngine {
 	return &OrderEngine{
 		cmdChan:       make(chan OrderCommand, 1000), // 缓冲1000避免阻塞
 		balance:       0,
@@ -853,7 +853,7 @@ func (e *OrderEngine) handleUpdateOrder(cmd *UpdateOrderCommand) {
 					Time:      filledAt,
 					Fee:       0, // 纸交易模式下费用为 0
 				}
-				
+
 				// 发送 ProcessTradeCommand 到 OrderEngine
 				tradeCmd := &ProcessTradeCommand{
 					id:    fmt.Sprintf("dry_run_trade_cmd_%d", time.Now().UnixNano()),
@@ -861,7 +861,7 @@ func (e *OrderEngine) handleUpdateOrder(cmd *UpdateOrderCommand) {
 					Trade: trade,
 				}
 				e.SubmitCommand(tradeCmd)
-				
+
 				orderEngineLog.Infof("✅ [纸交易] 已创建 Trade 对象: tradeID=%s orderID=%s size=%.4f price=%.4f",
 					tradeID, order.OrderID, trade.Size, trade.Price.ToDecimal())
 			}
@@ -1064,17 +1064,17 @@ func (e *OrderEngine) updatePositionFromTrade(trade *domain.Trade, order *domain
 	} else {
 		// 创建新仓位
 		position = &domain.Position{
-			ID:         positionID,
-			MarketSlug: order.MarketSlug,
-			Market:     trade.Market,
-			EntryOrder: order,
-			EntryPrice: trade.Price,
-			EntryTime:  trade.Time,
-			Size:       0,
-			TokenType:  trade.TokenType,
-			Status:     domain.PositionStatusOpen,
-			CostBasis:  0,
-			AvgPrice:   0,
+			ID:              positionID,
+			MarketSlug:      order.MarketSlug,
+			Market:          trade.Market,
+			EntryOrder:      order,
+			EntryPrice:      trade.Price,
+			EntryTime:       trade.Time,
+			Size:            0,
+			TokenType:       trade.TokenType,
+			Status:          domain.PositionStatusOpen,
+			CostBasis:       0,
+			AvgPrice:        0,
 			TotalFilledSize: 0,
 		}
 		e.positions[positionID] = position

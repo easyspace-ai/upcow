@@ -28,20 +28,19 @@ type Config struct {
 	HedgeOrderSize float64 `yaml:"hedgeOrderSize" json:"hedgeOrderSize"` // 对侧挂单 shares（0 表示跟随 orderSize）
 
 	// “速度快”判定参数（建议从保守开始）
-	WindowSeconds           int     `yaml:"windowSeconds" json:"windowSeconds"`                     // 速度计算窗口（秒）
-	MinMoveCents            int     `yaml:"minMoveCents" json:"minMoveCents"`                       // 窗口内最小上行位移（分）
-	MinVelocityCentsPerSec  float64 `yaml:"minVelocityCentsPerSec" json:"minVelocityCentsPerSec"`   // 最小速度（分/秒）
-	CooldownMs              int     `yaml:"cooldownMs" json:"cooldownMs"`                           // 触发冷却（毫秒）
-	OncePerCycle            bool    `yaml:"oncePerCycle" json:"oncePerCycle"`                       // [已废弃] 每周期最多触发一次，请使用 maxTradesPerCycle
-	WarmupMs                int     `yaml:"warmupMs" json:"warmupMs"`                               // 启动/换周期后的预热窗口（毫秒）
-	MaxTradesPerCycle       int     `yaml:"maxTradesPerCycle" json:"maxTradesPerCycle"`             // 每周期最多交易次数（0=不设限）
+	WindowSeconds          int     `yaml:"windowSeconds" json:"windowSeconds"`                   // 速度计算窗口（秒）
+	MinMoveCents           int     `yaml:"minMoveCents" json:"minMoveCents"`                     // 窗口内最小上行位移（分）
+	MinVelocityCentsPerSec float64 `yaml:"minVelocityCentsPerSec" json:"minVelocityCentsPerSec"` // 最小速度（分/秒）
+	CooldownMs             int     `yaml:"cooldownMs" json:"cooldownMs"`                         // 触发冷却（毫秒）
+	OncePerCycle           bool    `yaml:"oncePerCycle" json:"oncePerCycle"`                     // [已废弃] 每周期最多触发一次，请使用 maxTradesPerCycle
+	WarmupMs               int     `yaml:"warmupMs" json:"warmupMs"`                             // 启动/换周期后的预热窗口（毫秒）
+	MaxTradesPerCycle      int     `yaml:"maxTradesPerCycle" json:"maxTradesPerCycle"`           // 每周期最多交易次数（0=不设限）
 
 	// 下单安全参数
-	HedgeOffsetCents int `yaml:"hedgeOffsetCents" json:"hedgeOffsetCents"` // 对侧挂单 = (100 - entryAskCents - offset)
+	HedgeOffsetCents   int `yaml:"hedgeOffsetCents" json:"hedgeOffsetCents"`     // 对侧挂单 = (100 - entryAskCents - offset)
 	MinEntryPriceCents int `yaml:"minEntryPriceCents" json:"minEntryPriceCents"` // 吃单价下限（分），避免低价时 size 被放大（静态配置，动态调整启用时会被覆盖）
 	MaxEntryPriceCents int `yaml:"maxEntryPriceCents" json:"maxEntryPriceCents"` // 吃单价上限（分），避免 99/100 假盘口（静态配置，动态调整启用时会被覆盖）
 	MaxSpreadCents     int `yaml:"maxSpreadCents" json:"maxSpreadCents"`         // 盘口价差上限（分），避免极差盘口误触发
-
 
 	// Binance K线融合（可选）：用“本周期开盘第 1 根 1m K 线阴阳”作为 bias/过滤器
 	UseBinanceOpen1mBias bool   `yaml:"useBinanceOpen1mBias" json:"useBinanceOpen1mBias"`
@@ -56,20 +55,20 @@ type Config struct {
 	OppositeBiasMinMoveExtraCents  int     `yaml:"oppositeBiasMinMoveExtraCents" json:"oppositeBiasMinMoveExtraCents"`
 
 	// 可选：用 Binance 1s 方向做确认（借鉴 momentum bot 的"底层硬动"过滤）
-	UseBinanceMoveConfirm     bool `yaml:"useBinanceMoveConfirm" json:"useBinanceMoveConfirm"`
-	MoveConfirmWindowSeconds  int  `yaml:"moveConfirmWindowSeconds" json:"moveConfirmWindowSeconds"`   // lookback 秒数
-	MinUnderlyingMoveBps      int  `yaml:"minUnderlyingMoveBps" json:"minUnderlyingMoveBps"`         // 最小底层波动（bps）
+	UseBinanceMoveConfirm    bool `yaml:"useBinanceMoveConfirm" json:"useBinanceMoveConfirm"`
+	MoveConfirmWindowSeconds int  `yaml:"moveConfirmWindowSeconds" json:"moveConfirmWindowSeconds"` // lookback 秒数
+	MinUnderlyingMoveBps     int  `yaml:"minUnderlyingMoveBps" json:"minUnderlyingMoveBps"`         // 最小底层波动（bps）
 
 	// 价格优先选择：当 UP/DOWN 都满足速度条件时，优先选择价格更高的一边
 	// 因为订单簿是镜像的，速度通常相同，价格更高的胜率更大
-	PreferHigherPrice        bool `yaml:"preferHigherPrice" json:"preferHigherPrice"`               // 是否启用价格优先选择
-	MinPreferredPriceCents  int  `yaml:"minPreferredPriceCents" json:"minPreferredPriceCents"`     // 优先价格阈值（分），例如 50 或 60.60（转换为 6060）
+	PreferHigherPrice      bool `yaml:"preferHigherPrice" json:"preferHigherPrice"`           // 是否启用价格优先选择
+	MinPreferredPriceCents int  `yaml:"minPreferredPriceCents" json:"minPreferredPriceCents"` // 优先价格阈值（分），例如 50 或 60.60（转换为 6060）
 
 	// 订单执行模式：sequential（顺序）或 parallel（并发）
 	// sequential: 先下 Entry 订单，等待成交后再下 Hedge 订单（风险低，速度慢）
 	// parallel: 同时提交 Entry 和 Hedge 订单（速度快，风险高）
 	OrderExecutionMode string `yaml:"orderExecutionMode" json:"orderExecutionMode"` // "sequential" | "parallel"，默认 "sequential"
-	
+
 	// 顺序下单模式的参数（仅在 orderExecutionMode="sequential" 时生效）
 	SequentialCheckIntervalMs int `yaml:"sequentialCheckIntervalMs" json:"sequentialCheckIntervalMs"` // 检查订单状态的间隔（毫秒），默认 20ms（更频繁）
 	SequentialMaxWaitMs       int `yaml:"sequentialMaxWaitMs" json:"sequentialMaxWaitMs"`             // 最大等待时间（毫秒），默认 2000ms（FAK 订单通常立即成交，但纸交易模式可能需要更长时间）
@@ -84,20 +83,20 @@ type Config struct {
 	InventoryThreshold float64 `yaml:"inventoryThreshold" json:"inventoryThreshold"` // 净持仓阈值（shares），默认 0（禁用）
 
 	// ====== 市场质量过滤（提升胜率） ======
-	EnableMarketQualityGate *bool `yaml:"enableMarketQualityGate" json:"enableMarketQualityGate"` // 是否启用盘口质量 gate（默认 true）
-	MarketQualityMinScore   int  `yaml:"marketQualityMinScore" json:"marketQualityMinScore"`     // 最小质量分（0..100，默认 70）
-	MarketQualityMaxSpreadCents int `yaml:"marketQualityMaxSpreadCents" json:"marketQualityMaxSpreadCents"` // 最大一档价差（分，默认使用 maxSpreadCents；<=0 表示使用 maxSpreadCents）
-	MarketQualityMaxBookAgeMs   int `yaml:"marketQualityMaxBookAgeMs" json:"marketQualityMaxBookAgeMs"`     // WS 盘口最大年龄（毫秒，默认 3000）
+	EnableMarketQualityGate     *bool `yaml:"enableMarketQualityGate" json:"enableMarketQualityGate"`         // 是否启用盘口质量 gate（默认 true）
+	MarketQualityMinScore       int   `yaml:"marketQualityMinScore" json:"marketQualityMinScore"`             // 最小质量分（0..100，默认 70）
+	MarketQualityMaxSpreadCents int   `yaml:"marketQualityMaxSpreadCents" json:"marketQualityMaxSpreadCents"` // 最大一档价差（分，默认使用 maxSpreadCents；<=0 表示使用 maxSpreadCents）
+	MarketQualityMaxBookAgeMs   int   `yaml:"marketQualityMaxBookAgeMs" json:"marketQualityMaxBookAgeMs"`     // WS 盘口最大年龄（毫秒，默认 3000）
 
 	// ====== 出场（平仓）参数：让策略形成“可盈利闭环” ======
 	// 说明：Entry 是买入（BUY），出场为卖出（SELL）。
 	// - takeProfitCents / stopLossCents 是“相对入场均价”的价差（分），用当前 bestBid 触发并用 SELL FAK 执行。
 	// - maxHoldSeconds 是时间止损：超过该时间仍未触发 TP/SL，则强制平仓。
 	// - exitCooldownMs 防止频繁重复下卖单（与执行层去重共同作用）。
-	TakeProfitCents int  `yaml:"takeProfitCents" json:"takeProfitCents"` // 止盈阈值（分，>=0；0=禁用）
-	StopLossCents   int  `yaml:"stopLossCents" json:"stopLossCents"`     // 止损阈值（分，>=0；0=禁用）
-	MaxHoldSeconds  int  `yaml:"maxHoldSeconds" json:"maxHoldSeconds"`   // 最大持仓时间（秒，>=0；0=禁用）
-	ExitCooldownMs  int  `yaml:"exitCooldownMs" json:"exitCooldownMs"`   // 出场冷却（毫秒，默认 1500）
+	TakeProfitCents       int   `yaml:"takeProfitCents" json:"takeProfitCents"`             // 止盈阈值（分，>=0；0=禁用）
+	StopLossCents         int   `yaml:"stopLossCents" json:"stopLossCents"`                 // 止损阈值（分，>=0；0=禁用）
+	MaxHoldSeconds        int   `yaml:"maxHoldSeconds" json:"maxHoldSeconds"`               // 最大持仓时间（秒，>=0；0=禁用）
+	ExitCooldownMs        int   `yaml:"exitCooldownMs" json:"exitCooldownMs"`               // 出场冷却（毫秒，默认 1500）
 	ExitBothSidesIfHedged *bool `yaml:"exitBothSidesIfHedged" json:"exitBothSidesIfHedged"` // 若同周期同时持有 UP/DOWN，则同时卖出平仓（默认 true）
 
 	// ====== 分批止盈（提升盈亏比） ======
@@ -156,7 +155,6 @@ func (c *Config) Validate() error {
 	if c.HedgeOrderSize < 0 {
 		c.HedgeOrderSize = 0
 	}
-
 
 	// Binance bias defaults
 	if c.BiasMode == "" {
@@ -294,4 +292,3 @@ func (c *Config) Validate() error {
 
 	return nil
 }
-

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -12,7 +11,6 @@ import (
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
-	"github.com/betbot/gobet/internal/execution"
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/pkg/bbgo"
@@ -23,18 +21,6 @@ import (
 var log = logrus.WithField("strategy", ID)
 
 func init() { bbgo.RegisterStrategy(ID, &Strategy{}) }
-
-type sample struct {
-	ts         time.Time
-	priceCents int
-}
-
-type metrics struct {
-	ok       bool
-	delta    int
-	seconds  float64
-	velocity float64 // cents/sec
-}
 
 // Strategy: 速度跟随策略（Velocity Follow）
 //
@@ -62,6 +48,8 @@ type Strategy struct {
 	unhedgedEntries map[string]*domain.Order
 
 	mu sync.Mutex // 保护共享状态
+	// 避免在周期切换/重复 Subscribe 时重复注册 handler（OrderEngine handler 列表不去重）
+	orderUpdateOnce sync.Once
 
 	// 价格样本：用于计算速度
 	samples map[domain.TokenType][]sample
@@ -82,11 +70,11 @@ type Strategy struct {
 	cooldownLogThrottleMs int64 // 日志限流时间（毫秒），默认 5 秒
 
 	// 价格日志限流：避免价格更新太频繁导致日志刷屏
-	lastPriceLogToken     domain.TokenType
+	lastPriceLogToken      domain.TokenType
 	lastPriceLogAt         time.Time
 	lastPriceLogPriceCents int
 	priceLogThrottleMs     int64 // 价格日志限流时间（毫秒），默认 1 秒
-	
+
 	// 订单簿价格日志：实时打印 UP/DOWN 的 bid/ask
 	lastOrderBookLogAt     time.Time
 	orderBookLogThrottleMs int64 // 订单簿价格日志限流时间（毫秒），默认 2 秒
@@ -98,8 +86,8 @@ type Strategy struct {
 	pendingOrders        map[string]*domain.Order // 待确认的订单（通过订单ID跟踪）
 
 	// 出场（平仓）节流：避免短时间重复下 SELL
-	lastExitAt       time.Time
-	lastExitCheckAt  time.Time
+	lastExitAt      time.Time
+	lastExitCheckAt time.Time
 
 	// 分批止盈状态：key=positionID，value=已触发的 level 索引集合
 	partialTPDone map[string]map[int]bool
@@ -122,12 +110,6 @@ type Strategy struct {
 
 	// 市场精度信息（从配置文件加载）
 	currentPrecision *MarketPrecisionInfo
-}
-
-type trailState struct {
-	Armed       bool
-	HighBidCents int
-	StopCents    int
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -229,13 +211,14 @@ func (s *Strategy) Initialize() error {
 		log.Warnf("⚠️ [%s] 配置中未设置市场精度信息，将使用默认值", ID)
 	}
 
-
 	// 6. 注册订单更新回调（新架构特性：利用本地订单状态管理）
 	// 当订单状态更新时（通过 WebSocket 或 API 同步），立即更新本地状态
 	if s.TradingService != nil {
-		handler := services.OrderUpdateHandlerFunc(s.OnOrderUpdate)
-		s.TradingService.OnOrderUpdate(handler)
-		log.Infof("✅ [%s] 已注册订单更新回调（利用本地订单状态管理）", ID)
+		s.orderUpdateOnce.Do(func() {
+			handler := services.OrderUpdateHandlerFunc(s.OnOrderUpdate)
+			s.TradingService.OnOrderUpdate(handler)
+			log.Infof("✅ [%s] 已注册订单更新回调（利用本地订单状态管理）", ID)
+		})
 
 		// 初始化库存计算器（用于库存偏斜机制）
 		s.inventoryCalculator = common.NewInventoryCalculator(s.TradingService)
@@ -254,9 +237,11 @@ func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
 	// 在 Subscribe 时也注册订单更新回调（兜底方案，确保回调已注册）
 	// 因为此时 TradingService 肯定已经注入，且周期切换时会重新调用 Subscribe
 	if s.TradingService != nil {
-		handler := services.OrderUpdateHandlerFunc(s.OnOrderUpdate)
-		s.TradingService.OnOrderUpdate(handler)
-		log.Infof("✅ [%s] 已注册订单更新回调（在 Subscribe 中注册，利用本地订单状态管理）", ID)
+		s.orderUpdateOnce.Do(func() {
+			handler := services.OrderUpdateHandlerFunc(s.OnOrderUpdate)
+			s.TradingService.OnOrderUpdate(handler)
+			log.Infof("✅ [%s] 已注册订单更新回调（Subscribe 兜底）", ID)
+		})
 	} else {
 		log.Warnf("⚠️ [%s] TradingService 为 nil，无法注册订单更新回调", ID)
 	}
@@ -280,7 +265,7 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.Exchan
 // 4. Binance bias 状态（cycleStartMs, biasReady, biasToken, biasReason）
 // 5. 订单跟踪（lastEntryOrderID, lastHedgeOrderID, pendingOrders）
 //
-	// 注意：不清 lastTriggerAt，避免周期切换瞬间重复触发
+// 注意：不清 lastTriggerAt，避免周期切换瞬间重复触发
 func (s *Strategy) OnCycle(ctx context.Context, oldMarket *domain.Market, newMarket *domain.Market) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -316,7 +301,6 @@ func (s *Strategy) OnCycle(ctx context.Context, oldMarket *domain.Market, newMar
 	s.lastExitCheckAt = time.Time{}
 	s.partialTPDone = make(map[string]map[int]bool)
 	s.trailing = make(map[string]*trailState)
-
 
 	// 市场精度信息从配置文件加载，无需在运行时获取
 
@@ -383,7 +367,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 		if order.Status == domain.OrderStatusFilled {
 			log.Infof("✅ [%s] Hedge 订单已成交（通过订单更新回调）: orderID=%s filledSize=%.4f",
 				ID, order.OrderID, order.FilledSize)
-			
+
 			// 如果 Hedge 订单成交，检查是否有对应的未对冲 Entry 订单，如果有则移除
 			if s.unhedgedEntries != nil {
 				for entryOrderID, entryOrder := range s.unhedgedEntries {
@@ -394,7 +378,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 					}
 				}
 			}
-			
+
 			// ✅ 优化：检查Entry单是否已平仓，如果已平仓则立即平掉Hedge单持仓
 			if order.HedgeOrderID != nil && *order.HedgeOrderID != "" {
 				entryOrderID := *order.HedgeOrderID
@@ -405,19 +389,19 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 						// 检查Entry单对应的持仓是否还存在
 						entryTokenType := entryOrder.TokenType
 						marketSlug := entryOrder.MarketSlug
-						
+
 						// 异步检查，避免阻塞回调
 						go func() {
 							checkCtx, checkCancel := context.WithTimeout(context.Background(), 3*time.Second)
 							defer checkCancel()
-							
+
 							// 等待一小段时间，让持仓状态更新
 							time.Sleep(200 * time.Millisecond)
-							
+
 							positions := s.TradingService.GetOpenPositionsForMarket(marketSlug)
 							hasEntryPos := false
 							var hedgePos *domain.Position
-							
+
 							for _, p := range positions {
 								if p == nil || !p.IsOpen() || p.Size <= 0 {
 									continue
@@ -429,47 +413,47 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 									hedgePos = p
 								}
 							}
-							
+
 							// 如果Entry单已平仓，但Hedge单还有持仓，立即平掉Hedge单
 							if !hasEntryPos && hedgePos != nil {
 								log.Warnf("🚨 [%s] 【风险检测】Hedge单成交但Entry单已平仓，立即平掉Hedge单持仓: hedgeOrderID=%s entryOrderID=%s",
 									ID, order.OrderID, entryOrderID)
-								
-							// 获取market对象（从持仓中获取）
-							if hedgePos.Market == nil {
-								log.Warnf("⚠️ [%s] Hedge持仓缺少Market信息，无法平仓", ID)
-								return
-							}
-							
-							// 获取订单簿价格
-							var exitPrice domain.Price
-							var exitAssetID string
-							if hedgePos.TokenType == domain.TokenTypeUp {
-								yesBid, _, _, _, _, err := s.TradingService.GetTopOfBook(checkCtx, hedgePos.Market)
-								if err != nil {
-									log.Warnf("⚠️ [%s] 获取订单簿价格失败: %v", ID, err)
+
+								// 获取market对象（从持仓中获取）
+								if hedgePos.Market == nil {
+									log.Warnf("⚠️ [%s] Hedge持仓缺少Market信息，无法平仓", ID)
 									return
 								}
-								exitPrice = yesBid
-								exitAssetID = hedgePos.Market.YesAssetID
-							} else {
-								_, _, noBid, _, _, err := s.TradingService.GetTopOfBook(checkCtx, hedgePos.Market)
-								if err != nil {
-									log.Warnf("⚠️ [%s] 获取订单簿价格失败: %v", ID, err)
-									return
+
+								// 获取订单簿价格
+								var exitPrice domain.Price
+								var exitAssetID string
+								if hedgePos.TokenType == domain.TokenTypeUp {
+									yesBid, _, _, _, _, err := s.TradingService.GetTopOfBook(checkCtx, hedgePos.Market)
+									if err != nil {
+										log.Warnf("⚠️ [%s] 获取订单簿价格失败: %v", ID, err)
+										return
+									}
+									exitPrice = yesBid
+									exitAssetID = hedgePos.Market.YesAssetID
+								} else {
+									_, _, noBid, _, _, err := s.TradingService.GetTopOfBook(checkCtx, hedgePos.Market)
+									if err != nil {
+										log.Warnf("⚠️ [%s] 获取订单簿价格失败: %v", ID, err)
+										return
+									}
+									exitPrice = noBid
+									exitAssetID = hedgePos.Market.NoAssetID
 								}
-								exitPrice = noBid
-								exitAssetID = hedgePos.Market.NoAssetID
-							}
-								
+
 								if exitPrice.Pips <= 0 {
 									log.Warnf("⚠️ [%s] 订单簿价格无效，无法平掉Hedge单持仓", ID)
 									return
 								}
-								
+
 								log.Infof("🔧 [%s] 平掉Hedge单持仓: token=%s size=%.4f price=%dc reason=entry_exited_before_hedge",
 									ID, hedgePos.TokenType, hedgePos.Size, exitPrice.ToCents())
-								
+
 								// 创建平仓订单
 								exitOrder := &domain.Order{
 									MarketSlug: marketSlug,
@@ -482,7 +466,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 									Status:     domain.OrderStatusPending,
 									CreatedAt:  time.Now(),
 								}
-								
+
 								// 提交平仓订单
 								if _, err := s.TradingService.PlaceOrder(checkCtx, exitOrder); err != nil {
 									log.Errorf("❌ [%s] 平掉Hedge单持仓失败: token=%s err=%v", ID, hedgePos.TokenType, err)
@@ -495,7 +479,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 				}
 			}
 		}
-		
+
 		// Hedge 订单失败时，检查对应的 Entry 订单是否已成交
 		if order.Status == domain.OrderStatusFailed || order.Status == domain.OrderStatusCanceled {
 			log.Warnf("⚠️ [%s] Hedge 订单失败/取消: orderID=%s status=%s",
@@ -558,21 +542,9 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		return nil
 	}
 
-	// 1. 市场过滤：只处理目标市场（通过 prefix 匹配）
-	if !strings.HasPrefix(strings.ToLower(e.Market.Slug), s.marketSlugPrefix) {
+	// 1. 市场过滤：只处理目标 market + 当前周期 market
+	if !s.shouldHandleMarketEvent(e.Market) {
 		return nil
-	}
-
-	// 1.5. 【重要】验证事件中的市场是否与 TradingService 中的当前市场匹配
-	// 周期切换后，价格更新事件中的 Market 可能还是旧周期的数据
-	// 如果市场不匹配，说明这是旧周期的价格更新，应该忽略
-	if s.TradingService != nil {
-		currentMarketSlug := s.TradingService.GetCurrentMarket()
-		if currentMarketSlug != "" && currentMarketSlug != e.Market.Slug {
-			log.Debugf("🔄 [%s] 跳过旧周期价格更新: eventMarket=%s currentMarket=%s",
-				ID, e.Market.Slug, currentMarketSlug)
-			return nil
-		}
 	}
 
 	now := e.Timestamp
@@ -580,122 +552,19 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		now = time.Now()
 	}
 
-	// 显示 WebSocket 实时价格（用于调试，带限流避免刷屏）
-	priceDecimal := e.NewPrice.ToDecimal()
 	priceCents := e.NewPrice.ToCents()
-	
-	// 价格日志限流：同一 token 的价格更新，如果价格变化不大且时间间隔短，则限流
-	// 注意：这里需要在加锁前检查，避免死锁
-	shouldLogPrice := false
-	var timeSinceLastLog time.Duration
-	var priceChange int
-	
-	s.mu.Lock()
-	// 在锁内检查限流条件
-	if s.lastPriceLogToken != e.TokenType || s.lastPriceLogAt.IsZero() {
-		// 不同 token 或首次，直接打印
-		shouldLogPrice = true
-	} else {
-		// 相同 token，检查时间间隔和价格变化
-		logThrottle := time.Duration(s.priceLogThrottleMs) * time.Millisecond
-		if logThrottle <= 0 {
-			logThrottle = 1 * time.Second // 默认 1 秒
-		}
-		timeSinceLastLog = now.Sub(s.lastPriceLogAt)
-		priceChange = priceCents - s.lastPriceLogPriceCents
-		if priceChange < 0 {
-			priceChange = -priceChange
-		}
-		
-		// 如果时间间隔超过限流时间，或者价格变化超过 1 分，则打印
-		if timeSinceLastLog >= logThrottle || priceChange >= 1 {
-			shouldLogPrice = true
-		}
-	}
-	
-	// 如果需要打印，更新限流状态
-	if shouldLogPrice {
-		s.lastPriceLogToken = e.TokenType
-		s.lastPriceLogAt = now
-		s.lastPriceLogPriceCents = priceCents
-	}
-	s.mu.Unlock()
-	
-	// 在锁外打印日志（避免长时间持锁）
-	if shouldLogPrice {
-		log.Debugf("📈 [%s] 价格更新: token=%s price=%.4f (%dc) market=%s",
-			ID, e.TokenType, priceDecimal, priceCents, e.Market.Slug)
-	}
+
+	// 显示 WebSocket 实时价格（用于调试，带限流避免刷屏）
+	s.maybeLogPriceUpdate(now, e.TokenType, e.NewPrice, e.Market.Slug)
 
 	// ===== 实时订单簿价格日志 =====
 	// 打印 UP/DOWN 的 bid/ask 价格（带限流，避免频繁调用 API）
-	s.mu.Lock()
-	shouldLogOrderBook := false
-	if s.lastOrderBookLogAt.IsZero() {
-		shouldLogOrderBook = true
-	} else {
-		logThrottle := time.Duration(s.orderBookLogThrottleMs) * time.Millisecond
-		if logThrottle <= 0 {
-			logThrottle = 2 * time.Second // 默认 2 秒
-		}
-		if now.Sub(s.lastOrderBookLogAt) >= logThrottle {
-			shouldLogOrderBook = true
-		}
-	}
-	if shouldLogOrderBook {
-		s.lastOrderBookLogAt = now
-	}
-	s.mu.Unlock()
-
-	// 在锁外获取订单簿价格并打印（避免长时间持锁）
-	// 注意：此时 e.Market 已经通过上面的市场匹配验证，确保是新周期的市场
-	if shouldLogOrderBook && e.Market != nil {
-		// 使用背景上下文，避免阻塞策略主流程
-		bookCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		defer cancel()
-		
-		yesBid, yesAsk, noBid, noAsk, source, err := s.TradingService.GetTopOfBook(bookCtx, e.Market)
-		if err != nil {
-			// 静默失败，不影响策略运行
-			log.Debugf("⚠️ [%s] 获取订单簿价格失败（实时日志）: %v", ID, err)
-		} else {
-			yesBidDec := yesBid.ToDecimal()
-			yesAskDec := yesAsk.ToDecimal()
-			noBidDec := noBid.ToDecimal()
-			noAskDec := noAsk.ToDecimal()
-			log.Infof("💰 [%s] 实时订单簿: UP bid=%.4f ask=%.4f, DOWN bid=%.4f ask=%.4f (source=%s market=%s)",
-				ID, yesBidDec, yesAskDec, noBidDec, noAskDec, source, e.Market.Slug)
-		}
-	}
+	s.maybeLogOrderBook(now, e.Market)
 
 	// ===== 出场（平仓）逻辑：优先于开仓 =====
 	// 仅当启用 TP/SL/超时退出 且 当前 market 存在持仓时才触发（避免每个 tick 都打 orderbook）
-	if s.exitEnabled() && e.Market != nil {
-		positions := s.TradingService.GetOpenPositionsForMarket(e.Market.Slug)
-		hasPos := false
-		for _, p := range positions {
-			if p != nil && p.IsOpen() && p.Size > 0 {
-				hasPos = true
-				break
-			}
-		}
-		if hasPos {
-			// 节流：避免每条行情都尝试出场（默认 200ms）
-			nowCheck := now
-			s.mu.Lock()
-			lastCheck := s.lastExitCheckAt
-			s.mu.Unlock()
-			if lastCheck.IsZero() || nowCheck.Sub(lastCheck) >= 200*time.Millisecond {
-				s.mu.Lock()
-				s.lastExitCheckAt = nowCheck
-				s.mu.Unlock()
-				if exited := s.tryExitPositions(ctx, e.Market, nowCheck, positions); exited {
-					return nil
-				}
-			}
-			// 已有持仓时默认不再开新仓，等待出场逻辑处理完毕（避免叠加风险）
-			return nil
-		}
+	if s.maybeHandleExit(ctx, e.Market, now) {
+		return nil
 	}
 
 	s.mu.Lock()
@@ -706,51 +575,13 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 
 	// 2. 周期检测：检测周期切换，更新 cycleStartMs
 	// 尽量用 market.Timestamp 作为本周期起点（框架会从 slug 解析）
-	if e.Market.Timestamp > 0 {
-		st := e.Market.Timestamp * 1000
-		if s.cycleStartMs == 0 || s.cycleStartMs != st {
-			s.cycleStartMs = st
-			s.biasReady = false
-			s.biasToken = ""
-			s.biasReason = ""
-		}
-	}
+	s.updateCycleStartLocked(e.Market)
 
 	// 3. Binance bias：检查开盘 1m K 线 bias（如果启用）
 	// 可选：用"开盘第 1 根 1m K线阴阳"做 bias（hard/soft）
-	if s.UseBinanceOpen1mBias {
-		// 如果等太久还没有拿到那根 1m，就降级为“无 bias”继续跑
-		if !s.biasReady && s.cycleStartMs > 0 && s.Open1mMaxWaitSeconds > 0 {
-			if now.UnixMilli()-s.cycleStartMs > int64(s.Open1mMaxWaitSeconds)*1000 {
-				s.biasReady = true
-				s.biasToken = ""
-				s.biasReason = "open1m_timeout"
-			}
-		}
-
-		if !s.biasReady && s.BinanceFuturesKlines != nil && s.cycleStartMs > 0 {
-			if k, ok := s.BinanceFuturesKlines.Get("1m", s.cycleStartMs); ok && k.IsClosed && k.Open > 0 {
-				bodyBps, wickBps, dirTok := candleStatsBps(k, domain.TokenTypeUp, domain.TokenTypeDown)
-				if bodyBps < s.Open1mMinBodyBps {
-					s.biasReady = true
-					s.biasToken = ""
-					s.biasReason = "open1m_body_too_small"
-				} else if wickBps > s.Open1mMaxWickBps {
-					s.biasReady = true
-					s.biasToken = ""
-					s.biasReason = "open1m_wick_too_large"
-				} else {
-					s.biasReady = true
-					s.biasToken = dirTok
-					s.biasReason = "open1m_ok"
-				}
-			}
-		}
-
-		if s.RequireBiasReady && !s.biasReady {
-			s.mu.Unlock()
-			return nil
-		}
+	if s.shouldSkipUntilBiasReadyLocked(now) {
+		s.mu.Unlock()
+		return nil
 	}
 
 	// 4. 预热检查：检查是否在预热窗口内
@@ -946,7 +777,6 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	s.lastTriggerSide = winner
 	s.lastTriggerSideAt = now
 
-
 	// 5.5 库存偏斜检查：如果净持仓超过阈值，降低该方向的交易频率
 	if s.Config.InventoryThreshold > 0 && s.inventoryCalculator != nil && e.Market != nil {
 		shouldSkip := s.inventoryCalculator.CheckInventorySkew(e.Market.Slug, s.Config.InventoryThreshold, winner)
@@ -1094,11 +924,31 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 				}
 			}
 			log.Debugf("⏭️ [%s] 跳过：MarketQuality gate 未通过: score=%d(min=%d) tradable=%v problems=%v source=%s%s",
-				ID, func() int { if mq != nil { return mq.Score }; return -1 }(),
+				ID, func() int {
+					if mq != nil {
+						return mq.Score
+					}
+					return -1
+				}(),
 				s.MarketQualityMinScore,
-				func() bool { if mq != nil { return mq.Tradable() }; return false }(),
-				func() []string { if mq != nil { return mq.Problems }; return nil }(),
-				func() string { if mq != nil { return mq.Source }; return "" }(),
+				func() bool {
+					if mq != nil {
+						return mq.Tradable()
+					}
+					return false
+				}(),
+				func() []string {
+					if mq != nil {
+						return mq.Problems
+					}
+					return nil
+				}(),
+				func() string {
+					if mq != nil {
+						return mq.Source
+					}
+					return ""
+				}(),
 				scoreBreakdown,
 			)
 			return nil
@@ -1161,11 +1011,10 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	// 约束：
 	// - Entry 是 FAK：必须使用订单簿实际 ask（taker）
 	// - Hedge 是 GTC：应使用“互补挂单价格”在买一侧做 maker（由 hedgeOffsetCents 提供保护边际）
-	entryAskCents := int(entryAskDec*100 + 0.5)       // FAK 实际下单 ask（cents）
+	entryAskCents := int(entryAskDec*100 + 0.5) // FAK 实际下单 ask（cents）
 	entryBidCents := int(entryBidDec*100 + 0.5)
 	hedgeBidCents := int(hedgeBidDec*100 + 0.5)
 	hedgeAskCentsDirect := int(hedgeAskDec*100 + 0.5) // 对侧当前 ask（仅用于防止挂单穿价）
-
 
 	// 基础验证
 	if entryAskCents <= 0 || entryAskCents >= 100 || hedgeAskCentsDirect <= 0 || hedgeAskCentsDirect >= 100 {
@@ -1253,8 +1102,8 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	}
 
 	// 最终下单价格
-	entryPriceForFAK := domain.Price{Pips: entryAskCents * 100}   // FAK：使用实际 ask
-	hedgePrice := domain.Price{Pips: hedgeLimitCents * 100}       // GTC：互补挂单价（maker）
+	entryPriceForFAK := domain.Price{Pips: entryAskCents * 100} // FAK：使用实际 ask
+	hedgePrice := domain.Price{Pips: hedgeLimitCents * 100}     // GTC：互补挂单价（maker）
 	entryPriceDec := entryPriceForFAK.ToDecimal()
 	hedgeDec := hedgePrice.ToDecimal()
 
@@ -1326,1386 +1175,227 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	}
 }
 
-// executeSequential 顺序下单模式（新架构特性）
-//
-// 执行流程：
-// 1. 下 Entry 订单（FAK，立即成交或取消）
-// 2. 等待 Entry 订单成交（轮询检查订单状态）
-// 3. Entry 成交后，下 Hedge 订单（GTC 限价单）
-//
-// 优势：
-// - 风险低：确保 Entry 成交后再下 Hedge
-// - 适合 FAK 订单：FAK 订单通常立即成交
-//
-// 参数：
-// - SequentialCheckIntervalMs: 检查订单状态的间隔（默认 50ms）
-// - SequentialMaxWaitMs: 最大等待时间（默认 1000ms）
-func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market, winner domain.TokenType,
-	entryAsset, hedgeAsset string, entryPrice, hedgePrice domain.Price, entryShares, hedgeShares float64,
-	entryAskCents, hedgeAskCents int, winMet metrics, biasTok, biasReason string) error {
-	// 使用更短的超时时间（10秒），快速失败，避免阻塞策略
-	orderCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
+// executeSequential moved to entry_sequential.go
 
-	// ===== 顺序下单：先买主单（Entry），成交后再下对冲单（Hedge）=====
-	// ⚠️ 重要：FAK 买入订单必须在下单前再次验证订单簿价格和流动性
-	// 因为价格可能在获取订单簿和下单之间发生变化
-	// 策略：使用卖二价作为缓冲，提高下单成功率
-	// - 卖一价（asks[0]）是最优价格，但可能很快被吃掉
-	// - 卖二价（asks[1]）是次优价格，更稳定，有更大的价格缓冲空间
-	// - 使用卖二价下单，即使卖一价被吃掉，仍然可以匹配到卖二价
-	secondLevelPrice, hasSecondLevel := s.TradingService.GetSecondLevelPrice(orderCtx, entryAsset, types.SideBuy)
-	_, actualAsk, err := s.TradingService.GetBestPrice(orderCtx, entryAsset)
-	
-	if err != nil {
-		log.Warnf("⚠️ [%s] 下单前获取订单簿价格失败，使用原价格: err=%v", ID, err)
-	} else if actualAsk > 0 {
-		// 优先使用卖二价（如果存在且合理）
-		targetPrice := actualAsk
-		targetPriceName := "卖一价"
-		
-		if hasSecondLevel && secondLevelPrice > 0 && secondLevelPrice <= actualAsk*1.02 {
-			// 卖二价存在且不超过卖一价的 2%，使用卖二价
-			targetPrice = secondLevelPrice
-			targetPriceName = "卖二价"
-			log.Infof("💰 [%s] 使用卖二价作为缓冲: 卖一价=%.4f, 卖二价=%.4f (价格缓冲=%.2f%%)",
-				ID, actualAsk, secondLevelPrice, (secondLevelPrice-actualAsk)/actualAsk*100)
-		}
-		
-		// 对于买入订单，需要检查 ask 价格
-		targetPriceCents := int(targetPrice*100 + 0.5)
-		entryPriceCents := int(entryPrice.ToDecimal()*100 + 0.5)
-		priceDiffCents := targetPriceCents - entryPriceCents
-		
-		if priceDiffCents > 0 {
-			// 订单簿的 ask 价格高于我们的价格
-			// 如果价格偏差 <= 5c，调整价格为订单簿的 ask 价格
-			// 如果价格偏差 > 5c，跳过这次下单（市场波动太大）
-			if priceDiffCents <= 5 {
-				log.Warnf("⚠️ [%s] 订单簿价格变化：原价格=%dc, %s=%dc (偏差=%dc)，调整为订单簿价格",
-					ID, entryPriceCents, targetPriceName, targetPriceCents, priceDiffCents)
-				entryPrice = domain.PriceFromDecimal(targetPrice)
-			} else {
-				log.Warnf("⚠️ [%s] 订单簿价格变化过大：原价格=%dc, %s=%dc (偏差=%dc > 5c)，跳过下单",
-					ID, entryPriceCents, targetPriceName, targetPriceCents, priceDiffCents)
-				return nil // 跳过这次下单
-			}
-		} else if priceDiffCents < 0 {
-			// 订单簿的 ask 价格低于我们的价格，这是正常的，可以使用我们的价格
-			log.Debugf("💰 [%s] 订单簿价格更好：我们的价格=%dc, %s=%dc，使用我们的价格",
-				ID, entryPriceCents, targetPriceName, targetPriceCents)
-		} else {
-			// 价格一致
-			log.Debugf("💰 [%s] 订单簿价格一致：价格=%dc (%s)", ID, entryPriceCents, targetPriceName)
-		}
-	}
+// executeParallel / monitorAndReorderHedge moved to entry_parallel.go / hedge_reorder.go
 
-	// ⚠️ 重要：价格调整后，需要重新进行精度调整
-	// 因为价格可能从有效价格调整为实际订单簿价格（卖一价或卖二价）
-	// 精度调整必须使用实际下单价格，确保 maker amount = size × price 是 2 位小数
-	entryPriceDec := entryPrice.ToDecimal()
-	entrySharesAdjusted := adjustSizeForMakerAmountPrecision(entryShares, entryPriceDec)
-	if entrySharesAdjusted != entryShares {
-		log.Infof("🔧 [%s] Entry size 精度调整（价格调整后）: %.4f -> %.4f (maker amount: %.2f -> %.2f, price=%.4f)",
-			ID, entryShares, entrySharesAdjusted, entryShares*entryPriceDec, entrySharesAdjusted*entryPriceDec, entryPriceDec)
-		entryShares = entrySharesAdjusted
-	}
+// pruneLocked / computeLocked moved to sampling.go
 
-	// 检查订单簿流动性（使用 REST API 获取完整订单簿）
-	hasLiquidity, actualPrice, availableSize := s.TradingService.CheckOrderBookLiquidity(
-		orderCtx, entryAsset, types.SideBuy, entryPrice.ToDecimal(), entryShares)
-	if !hasLiquidity {
-		log.Warnf("⚠️ [%s] 订单簿无流动性：价格=%dc, size=%.4f，跳过下单",
-			ID, int(entryPrice.ToDecimal()*100+0.5), entryShares)
-		return nil // 跳过这次下单
-	}
-	
-	// 如果可用数量不足，记录警告但仍尝试下单（FAK 允许部分成交）
-	if availableSize < entryShares {
-		log.Warnf("⚠️ [%s] 订单簿流动性不足：需要=%.4f, 可用=%.4f, 实际价格=%.4f，FAK订单将尝试部分成交",
-			ID, entryShares, availableSize, actualPrice)
-		// FAK 订单允许部分成交，所以继续下单
-	} else {
-		log.Infof("✅ [%s] 订单簿流动性充足：需要=%.4f, 可用=%.4f, 实际价格=%.4f",
-			ID, entryShares, availableSize, actualPrice)
-	}
+// exit logic moved to exit.go
 
-	// 主单：价格 >= minPreferredPriceCents 的订单（FAK，立即成交或取消）
-	log.Infof("📤 [%s] 步骤1: 下主单 Entry (side=%s price=%dc size=%.4f FAK)",
-		ID, winner, int(entryPrice.ToDecimal()*100+0.5), entryShares)
-
-	// 获取市场精度信息（从缓存）
-	var tickSize types.TickSize
-	var negRisk *bool
-	if s.currentPrecision != nil {
-		if parsed, err := ParseTickSize(s.currentPrecision.TickSize); err == nil {
-			tickSize = parsed
-		}
-		negRisk = boolPtr(s.currentPrecision.NegRisk)
-	}
-
-	entryOrder := &domain.Order{
-		MarketSlug:   market.Slug,
-		AssetID:      entryAsset,
-		TokenType:    winner,
-		Side:         types.SideBuy,
-		Price:        entryPrice,
-		Size:         entryShares,
-		OrderType:    types.OrderTypeFAK,
-		IsEntryOrder: true,
-		Status:       domain.OrderStatusPending,
-		CreatedAt:    time.Now(),
-		TickSize:     tickSize, // 使用缓存的精度信息
-		NegRisk:      negRisk,   // 使用缓存的 neg_risk 信息
-	}
-
-	entryOrderResult, execErr := s.TradingService.PlaceOrder(orderCtx, entryOrder)
-	if execErr != nil {
-		log.Warnf("⚠️ [%s] 主单下单失败: err=%v side=%s market=%s", ID, execErr, winner, market.Slug)
-		return nil
-	}
-
-	if entryOrderResult == nil || entryOrderResult.OrderID == "" {
-		log.Warnf("⚠️ [%s] 主单下单失败: 订单ID为空", ID)
-		return nil
-	}
-
-	log.Infof("✅ [%s] 主单已提交: orderID=%s status=%s",
-		ID, entryOrderResult.OrderID, entryOrderResult.Status)
-
-	// 等待主单成交（FAK 订单要么立即成交，要么立即取消）
-	// 优化：使用更短的检查间隔和更长的等待时间，同时使用订单更新回调来检测成交
-	maxWaitTime := time.Duration(s.Config.SequentialMaxWaitMs) * time.Millisecond
-	if maxWaitTime <= 0 {
-		maxWaitTime = 2000 * time.Millisecond // 默认 2 秒
-	}
-	checkInterval := time.Duration(s.Config.SequentialCheckIntervalMs) * time.Millisecond
-	if checkInterval <= 0 {
-		checkInterval = 20 * time.Millisecond // 默认 20ms（更频繁）
-	}
-	entryFilled := false
-	entryOrderID := entryOrderResult.OrderID
-
-	// ✅ 修复：在纸交易模式下，FAK 订单应该立即成交
-	// 因为 io_executor 在纸交易模式下会将 FAK 订单状态设置为 filled
-	if s.TradingService != nil && s.TradingService.IsDryRun() && entryOrderResult.OrderType == types.OrderTypeFAK {
-		// 纸交易模式：FAK 订单立即成交
-		entryFilled = true
-		log.Infof("✅ [%s] 主单已成交（纸交易模式，FAK 订单立即成交）: orderID=%s",
-			ID, entryOrderID)
-	}
-
-	// 先检查一次订单状态（可能已经成交）
-	// ⚠️ 重要：优先检查 entryOrderResult 的状态，因为它可能已经通过 WebSocket 更新
-	if !entryFilled && entryOrderResult != nil {
-		if entryOrderResult.Status == domain.OrderStatusFilled {
-			entryFilled = true
-			log.Infof("✅ [%s] 主单已成交（通过订单结果）: orderID=%s filledSize=%.4f",
-				ID, entryOrderID, entryOrderResult.FilledSize)
-		} else if entryOrderResult.Status == domain.OrderStatusFailed ||
-			entryOrderResult.Status == domain.OrderStatusCanceled {
-			log.Warnf("⚠️ [%s] 主单失败/取消（通过订单结果）: orderID=%s status=%s",
-				ID, entryOrderID, entryOrderResult.Status)
-			return nil
-		}
-	}
-
-	// 如果订单结果中没有成交信息，再检查本地订单状态（包含已成交订单）
-	// ⚠️ 修复：GetActiveOrders 只包含 openOrders，订单一旦 filled 会从列表移除，导致“误判未成交”。
-	if !entryFilled && s.TradingService != nil {
-		if ord, ok := s.TradingService.GetOrder(entryOrderID); ok && ord != nil {
-			if ord.Status == domain.OrderStatusFilled {
-				entryFilled = true
-				log.Infof("✅ [%s] 主单已成交（立即检查）: orderID=%s filledSize=%.4f",
-					ID, ord.OrderID, ord.FilledSize)
-			} else if ord.Status == domain.OrderStatusFailed || ord.Status == domain.OrderStatusCanceled {
-				log.Warnf("⚠️ [%s] 主单失败/取消（立即检查）: orderID=%s status=%s",
-					ID, ord.OrderID, ord.Status)
-				return nil
-			}
-		}
-	}
-
-	// 如果未成交，轮询检查订单状态（使用更短的间隔）
-	if !entryFilled {
-		deadline := time.Now().Add(maxWaitTime)
-		checkCount := 0
-		for time.Now().Before(deadline) {
-			checkCount++
-			// 查询订单状态（包含已成交/已取消）
-			if s.TradingService != nil {
-				if ord, ok := s.TradingService.GetOrder(entryOrderID); ok && ord != nil {
-					if ord.Status == domain.OrderStatusFilled {
-						entryFilled = true
-						log.Infof("✅ [%s] 主单已成交（轮询检查，第%d次）: orderID=%s filledSize=%.4f",
-							ID, checkCount, ord.OrderID, ord.FilledSize)
-					} else if ord.Status == domain.OrderStatusFailed || ord.Status == domain.OrderStatusCanceled {
-						log.Warnf("⚠️ [%s] 主单失败/取消（轮询检查，第%d次）: orderID=%s status=%s",
-							ID, checkCount, ord.OrderID, ord.Status)
-						return nil
-					}
-				}
-			}
-
-			if entryFilled {
-				break
-			}
-
-			// 等待一小段时间后再次检查（使用更短的间隔）
-			time.Sleep(checkInterval)
-		}
-
-		if !entryFilled {
-			log.Debugf("🔄 [%s] 主单轮询检查完成（共检查%d次）: orderID=%s 未在预期时间内成交",
-				ID, checkCount, entryOrderID)
-		}
-	}
-
-	if !entryFilled {
-		log.Warnf("⚠️ [%s] 主单未在预期时间内成交: orderID=%s (可能部分成交或仍在处理中)",
-			ID, entryOrderID)
-		// 即使主单未完全成交，也继续下对冲单（使用实际成交数量）
-		// 但为了安全，我们仍然继续执行
-	}
-
-	// ✅ 修复：若 Entry 下单前发生了价格上调（例如使用卖二价缓冲），必须同步重算 Hedge 互补挂单价，
-	// 否则可能出现 entryPrice 上调后 totalCost > 100c 的结构性必亏。
-	{
-		entryCentsNow := int(entryPrice.ToDecimal()*100 + 0.5)
-		if entryCentsNow > 0 && entryCentsNow < 100 && s.HedgeOffsetCents > 0 {
-			newHedgeLimit := 100 - entryCentsNow - s.HedgeOffsetCents
-			if newHedgeLimit > 0 && newHedgeLimit < 100 {
-				// 防止穿价：确保买单价格 < 当前 ask
-				if s.TradingService != nil {
-					_, bestAsk, err := s.TradingService.GetBestPrice(orderCtx, hedgeAsset)
-					if err == nil && bestAsk > 0 {
-						askCents := int(bestAsk*100 + 0.5)
-						if newHedgeLimit >= askCents {
-							newHedgeLimit = askCents - 1
-						}
-					}
-				}
-				if newHedgeLimit > 0 && newHedgeLimit < 100 && newHedgeLimit != hedgeAskCents {
-					log.Infof("💰 [%s] Hedge 价格随 Entry 调整而重算: entry=%dc hedge(old)=%dc -> hedge(new)=%dc (offset=%dc)",
-						ID, entryCentsNow, hedgeAskCents, newHedgeLimit, s.HedgeOffsetCents)
-					hedgeAskCents = newHedgeLimit
-					hedgePrice = domain.Price{Pips: hedgeAskCents * 100}
-				}
-			}
-		}
-	}
-
-	// ===== 步骤2: 主单成交后，下对冲单（Hedge）=====
-	log.Infof("📤 [%s] 步骤2: 下对冲单 Hedge (side=%s price=%dc size=%.4f GTC)",
-		ID, opposite(winner), hedgeAskCents, hedgeShares)
-
-	hedgeOrder := &domain.Order{
-		MarketSlug:   market.Slug,
-		AssetID:      hedgeAsset,
-		TokenType:    opposite(winner),
-		Side:         types.SideBuy,
-		Price:        hedgePrice,
-		Size:         hedgeShares,
-		OrderType:    types.OrderTypeGTC,
-		IsEntryOrder: false,
-		HedgeOrderID: &entryOrderID, // 关联主单ID
-		Status:       domain.OrderStatusPending,
-		TickSize:     tickSize, // 使用缓存的精度信息
-		NegRisk:      negRisk,   // 使用缓存的 neg_risk 信息
-		CreatedAt:    time.Now(),
-	}
-
-	hedgeOrderResult, hedgeErr := s.TradingService.PlaceOrder(orderCtx, hedgeOrder)
-	hedgeOrderID := ""
-	if hedgeErr != nil {
-		log.Errorf("❌ [%s] 对冲单下单失败: err=%v (主单已成交，需要处理)",
-			ID, hedgeErr)
-		
-		// ⚠️ 重要：如果 Entry 订单已成交，但 Hedge 订单失败，这是一个高风险情况
-		// 选项1：如果 Entry 订单还未完全成交，尝试取消 Entry 订单
-		// 选项2：记录未对冲的 Entry 订单，提醒手动处理
-		if entryFilled {
-			// Entry 订单已成交，无法取消，记录未对冲风险
-			log.Errorf("🚨 [%s] 【风险警告】Entry 订单已成交但 Hedge 订单失败！Entry orderID=%s, 需要手动对冲！",
-				ID, entryOrderID)
-			log.Errorf("🚨 [%s] Entry 订单详情: side=%s, price=%dc, size=%.4f, filledSize=%.4f",
-				ID, winner, entryAskCents, entryShares, entryShares)
-			log.Errorf("🚨 [%s] 建议：立即手动下 Hedge 订单对冲风险，或取消 Entry 订单（如果可能）",
-				ID)
-			
-			// 记录未对冲的 Entry 订单到策略状态中，方便后续查询
-			s.mu.Lock()
-			if s.unhedgedEntries == nil {
-				s.unhedgedEntries = make(map[string]*domain.Order)
-			}
-			if entryOrderResult != nil {
-				s.unhedgedEntries[entryOrderID] = entryOrderResult
-				log.Errorf("🚨 [%s] 已记录未对冲的 Entry 订单到策略状态: orderID=%s",
-					ID, entryOrderID)
-			}
-			s.mu.Unlock()
-		} else {
-			// Entry 订单未成交或部分成交，尝试取消 Entry 订单
-			log.Warnf("⚠️ [%s] Entry 订单未完全成交，尝试取消 Entry 订单以避免未对冲风险: orderID=%s",
-				ID, entryOrderID)
-			go func(orderID string) {
-				if err := s.TradingService.CancelOrder(context.Background(), orderID); err != nil {
-					log.Warnf("⚠️ [%s] 取消 Entry 订单失败: orderID=%s err=%v", ID, orderID, err)
-				} else {
-					log.Infof("✅ [%s] 已取消 Entry 订单（Hedge 订单失败）: orderID=%s", ID, orderID)
-				}
-			}(entryOrderID)
-		}
-		
-		// 主单已成交，对冲单失败，这是一个风险情况
-		execErr = hedgeErr
-		return nil // 返回错误，不再继续执行
-	} else if hedgeOrderResult != nil && hedgeOrderResult.OrderID != "" {
-		hedgeOrderID = hedgeOrderResult.OrderID
-		log.Infof("✅ [%s] 对冲单已提交: orderID=%s status=%s (关联主单=%s)",
-			ID, hedgeOrderResult.OrderID, hedgeOrderResult.Status, entryOrderID)
-	} else {
-		log.Errorf("❌ [%s] 对冲单下单失败: 订单ID为空 (主单已成交，需要手动处理)",
-			ID)
-		// 同样处理：记录未对冲风险或取消 Entry 订单
-		if entryFilled {
-			log.Errorf("🚨 [%s] 【风险警告】Entry 订单已成交但 Hedge 订单ID为空！Entry orderID=%s",
-				ID, entryOrderID)
-			s.mu.Lock()
-			if s.unhedgedEntries == nil {
-				s.unhedgedEntries = make(map[string]*domain.Order)
-			}
-			if entryOrderResult != nil {
-				s.unhedgedEntries[entryOrderID] = entryOrderResult
-			}
-			s.mu.Unlock()
-		} else {
-			go func(orderID string) {
-				_ = s.TradingService.CancelOrder(context.Background(), orderID)
-			}(entryOrderID)
-		}
-		return nil
-	}
-
-	// 更新订单关联关系（如果对冲单成功）
-	// entryOrderResult 一定不为 nil（因为如果为 nil，execErr 不为 nil，函数会提前返回）
-	if hedgeOrderID != "" {
-		entryOrderResult.HedgeOrderID = &hedgeOrderID
-	}
-
-	// ===== 主单成交后：实时计算盈亏并监控对冲单 =====
-	if entryFilled {
-		entryFilledTime := time.Now()
-		entryFilledSize := entryShares
-		if entryOrderResult.FilledSize > 0 {
-			entryFilledSize = entryOrderResult.FilledSize
-		}
-
-		// 实时计算盈亏：如果 UP/DOWN 各自 win 时的收益与亏损
-		// 使用实际成交价格（从 Trade 消息获取），而不是下单时的价格
-
-		// Entry 成本：优先使用实际成交价格，如果没有则使用实际下单价格（不是有效价格）
-		// ⚠️ 重要：entryPrice 是实际下单价格（可能已被调整为订单簿价格），entryAskCents 是有效价格（用于成本估算）
-		// 如果 FilledPrice 为空，应该使用实际下单价格 entryPrice，而不是有效价格 entryAskCents
-		var entryActualPriceCents int
-		entryOrderPriceCents := int(entryPrice.ToDecimal()*100 + 0.5) // 实际下单价格
-		if entryOrderResult.FilledPrice != nil {
-			entryActualPriceCents = entryOrderResult.FilledPrice.ToCents()
-			log.Debugf("💰 [%s] Entry 使用实际成交价格: %dc (下单价格: %dc, 有效价格: %dc)", ID, entryActualPriceCents, entryOrderPriceCents, entryAskCents)
-		} else {
-			entryActualPriceCents = entryOrderPriceCents // 使用实际下单价格，而不是有效价格
-			log.Debugf("💰 [%s] Entry 使用实际下单价格: %dc (有效价格: %dc, 实际成交价格未获取)", ID, entryOrderPriceCents, entryAskCents)
-		}
-		entryCost := float64(entryActualPriceCents) / 100.0 * entryFilledSize
-
-		// 计算如果 UP win 时的盈亏
-		var upWinProfit, downWinProfit float64
-		if winner == domain.TokenTypeUp {
-			// Entry 是 UP，如果 UP win：收益 = entryFilledSize * $1 - entryCost
-			upWinProfit = entryFilledSize*1.0 - entryCost
-			// 如果 DOWN win：亏损 = -entryCost（对冲单未成交时）
-			downWinProfit = -entryCost
-		} else {
-			// Entry 是 DOWN，如果 DOWN win：收益 = entryFilledSize * $1 - entryCost
-			downWinProfit = entryFilledSize*1.0 - entryCost
-			// 如果 UP win：亏损 = -entryCost（对冲单未成交时）
-			upWinProfit = -entryCost
-		}
-
-		// 计算 Hedge 订单成本（无论是否已成交）
-		// 如果对冲单已成交，使用实际成交价格；如果未成交，使用下单价格
-		if hedgeOrderID != "" && s.TradingService != nil {
-			var hedgeOrder *domain.Order
-			if ord, ok := s.TradingService.GetOrder(hedgeOrderID); ok {
-				hedgeOrder = ord
-			}
-
-			if hedgeOrder != nil {
-				// 获取 Hedge 订单的实际成交数量
-				hedgeFilledSize := hedgeOrder.FilledSize
-				if hedgeFilledSize <= 0 {
-					// 如果未成交，使用下单时的 size（因为我们需要承担这个成本）
-					hedgeFilledSize = hedgeShares
-				}
-
-				// 优先使用实际成交价格，如果没有则使用实际下单价格（不是有效价格）
-				// ⚠️ 重要：hedgePrice 是实际下单价格（有效价格），hedgeAskCents 也是有效价格
-				// 对于 GTC 订单，下单价格就是有效价格，所以可以直接使用 hedgeAskCents
-				// 但如果 FilledPrice 存在，应该优先使用实际成交价格
-				var hedgeActualPriceCents int
-				hedgeOrderPriceCents := int(hedgePrice.ToDecimal()*100 + 0.5) // 实际下单价格（对于GTC订单，这就是有效价格）
-				if hedgeOrder.FilledPrice != nil {
-					hedgeActualPriceCents = hedgeOrder.FilledPrice.ToCents()
-					log.Debugf("💰 [%s] Hedge 使用实际成交价格: %dc (下单价格: %dc, 有效价格: %dc)", ID, hedgeActualPriceCents, hedgeOrderPriceCents, hedgeAskCents)
-				} else {
-					hedgeActualPriceCents = hedgeOrderPriceCents // 使用实际下单价格（对于GTC订单，这就是有效价格）
-					if hedgeOrder.Status == domain.OrderStatusFilled {
-						log.Debugf("💰 [%s] Hedge 使用下单价格: %dc (实际成交价格未获取，但订单已成交)", ID, hedgeOrderPriceCents)
-					} else {
-						log.Debugf("💰 [%s] Hedge 使用下单价格: %dc (订单未成交，使用下单价格计算成本)", ID, hedgeOrderPriceCents)
-					}
-				}
-
-				hedgeCost := float64(hedgeActualPriceCents) / 100.0 * hedgeFilledSize
-				totalCost := entryCost + hedgeCost
-
-				// 记录价格对比（如果实际价格与下单价格不同）
-				if hedgeOrder.Status == domain.OrderStatusFilled && hedgeActualPriceCents != hedgeAskCents {
-					log.Infof("💰 [%s] 对冲单价格差异: 下单价格=%dc, 实际成交价格=%dc, 差异=%dc",
-						ID, hedgeAskCents, hedgeActualPriceCents, hedgeActualPriceCents-hedgeAskCents)
-				}
-
-				// 重新计算盈亏（考虑 Hedge 成本）
-				if winner == domain.TokenTypeUp {
-					// Entry UP + Hedge DOWN，无论哪边 win，总成本 = entryCost + hedgeCost
-					// UP win: 收益 = entryFilledSize * $1 - totalCost
-					// DOWN win: 收益 = hedgeFilledSize * $1 - totalCost
-					upWinProfit = entryFilledSize*1.0 - totalCost
-					downWinProfit = hedgeFilledSize*1.0 - totalCost
-				} else {
-					// Entry DOWN + Hedge UP
-					downWinProfit = entryFilledSize*1.0 - totalCost
-					upWinProfit = hedgeFilledSize*1.0 - totalCost
-				}
-
-				// 记录 Hedge 订单状态
-				if hedgeOrder.Status == domain.OrderStatusFilled {
-					log.Debugf("💰 [%s] Hedge 订单已成交，使用实际成交价格计算成本", ID)
-				} else {
-					log.Debugf("💰 [%s] Hedge 订单未成交（status=%s），使用下单价格计算成本", ID, hedgeOrder.Status)
-				}
-			} else {
-				// Hedge 订单未找到，使用下单价格计算成本（保守估计）
-				log.Debugf("💰 [%s] Hedge 订单未找到，使用下单价格计算成本: price=%dc size=%.4f", ID, hedgeAskCents, hedgeShares)
-				hedgeCost := float64(hedgeAskCents) / 100.0 * hedgeShares
-				totalCost := entryCost + hedgeCost
-
-				// 重新计算盈亏（考虑 Hedge 成本）
-				if winner == domain.TokenTypeUp {
-					upWinProfit = entryFilledSize*1.0 - totalCost
-					downWinProfit = hedgeShares*1.0 - totalCost
-				} else {
-					downWinProfit = entryFilledSize*1.0 - totalCost
-					upWinProfit = hedgeShares*1.0 - totalCost
-				}
-			}
-		}
-
-		// 计算 Hedge 成本（用于日志显示）
-		hedgeCostDisplay := 0.0
-		if hedgeOrderID != "" && s.TradingService != nil {
-			if ord, ok := s.TradingService.GetOrder(hedgeOrderID); ok && ord != nil {
-				hedgeFilledSize := ord.FilledSize
-				if hedgeFilledSize <= 0 {
-					hedgeFilledSize = hedgeShares
-				}
-				var hedgeActualPriceCents int
-				if ord.FilledPrice != nil {
-					hedgeActualPriceCents = ord.FilledPrice.ToCents()
-				} else {
-					hedgeActualPriceCents = hedgeAskCents
-				}
-				hedgeCostDisplay = float64(hedgeActualPriceCents) / 100.0 * hedgeFilledSize
-			}
-		}
-		totalCostDisplay := entryCost + hedgeCostDisplay
-
-		log.Infof("💰 [%s] 主单成交后实时盈亏计算: Entry=%s @ %dc(有效)/%dc(下单)/%dc(实际) size=%.4f cost=$%.2f | Hedge cost=$%.2f | Total cost=$%.2f | UP win: $%.2f | DOWN win: $%.2f",
-			ID, winner, entryAskCents, entryOrderPriceCents, entryActualPriceCents, entryFilledSize, entryCost, hedgeCostDisplay, totalCostDisplay, upWinProfit, downWinProfit)
-
-		// 启动对冲单重下监控（如果对冲单未成交）
-		if hedgeOrderID != "" && s.HedgeReorderTimeoutSeconds > 0 {
-			// 使用 Entry 实际下单价格（不是“信号时刻的 ask”）作为对冲成本约束基准
-			go s.monitorAndReorderHedge(ctx, market, entryOrderID, hedgeOrderID, hedgeAsset, hedgePrice, hedgeShares, entryFilledTime, entryFilledSize, entryOrderPriceCents, winner)
-		}
-	}
-
-	var tradesCount int
-	// entryOrderResult 一定不为 nil（因为如果为 nil，execErr 不为 nil，函数会提前返回）
-	if execErr == nil {
-		now := time.Now()
-		// 只在更新共享状态时持锁，避免阻塞订单更新回调/行情分发（性能关键）
-		s.mu.Lock()
-		s.lastTriggerAt = now
-		// 注意：lastTriggerSide 和 lastTriggerSideAt 已经在上面提前更新了
-		// 这里只需要更新交易计数和订单跟踪状态
-		s.tradedThisCycle = true
-		s.tradesCountThisCycle++ // 增加交易计数
-
-		// 更新订单跟踪状态
-		s.lastEntryOrderID = entryOrderResult.OrderID
-		s.lastEntryOrderStatus = entryOrderResult.Status
-		if entryFilled {
-			s.lastEntryOrderStatus = domain.OrderStatusFilled
-		}
-		if hedgeOrderID != "" {
-			s.lastHedgeOrderID = hedgeOrderID
-		}
-		tradesCount = s.tradesCountThisCycle
-		s.mu.Unlock()
-
-		log.Infof("⚡ [%s] 触发(顺序): side=%s ask=%dc hedge=%dc vel=%.3f(c/s) move=%dc/%0.1fs bias=%s(%s) market=%s trades=%d/%d",
-			ID, winner, entryAskCents, hedgeAskCents, winMet.velocity, winMet.delta, winMet.seconds, biasTok, biasReason, market.Slug, tradesCount, s.MaxTradesPerCycle)
-		if biasTok != "" || biasReason != "" {
-			log.Infof("🧭 [%s] bias: token=%s reason=%s cycleStartMs=%d", ID, biasTok, biasReason, s.cycleStartMs)
-		}
-
-		// 额外：打印 Binance 1s/1m 最新 K 线（用于你观察“开盘 1 分钟”关系）
-		if s.BinanceFuturesKlines != nil {
-			if k1m, ok := s.BinanceFuturesKlines.Latest("1m"); ok {
-				log.Infof("📊 [%s] Binance 1m kline: sym=%s o=%.2f c=%.2f h=%.2f l=%.2f closed=%v startMs=%d",
-					ID, k1m.Symbol, k1m.Open, k1m.Close, k1m.High, k1m.Low, k1m.IsClosed, k1m.StartTimeMs)
-			}
-			if k1s, ok := s.BinanceFuturesKlines.Latest("1s"); ok {
-				log.Infof("📊 [%s] Binance 1s kline: sym=%s o=%.2f c=%.2f closed=%v startMs=%d",
-					ID, k1s.Symbol, k1s.Open, k1s.Close, k1s.IsClosed, k1s.StartTimeMs)
-			}
-		}
-	} else {
-		log.Warnf("⚠️ [%s] 下单失败: err=%v side=%s market=%s", ID, execErr, winner, market.Slug)
-	}
-	return nil
-}
-
-// executeParallel 并发下单模式（新架构特性）
-//
-// 执行流程：
-// 1. 同时提交 Entry 和 Hedge 订单（使用 ExecuteMultiLeg）
-// 2. 等待两个订单都返回结果
-//
-// 优势：
-// - 速度快：减少下单延迟（~100-200ms）
-// - 适合高频交易：减少跨腿时差
-//
-// 风险：
-// - Entry 订单失败时，Hedge 订单可能已提交（通过 OnOrderUpdate 自动取消）
-func (s *Strategy) executeParallel(ctx context.Context, market *domain.Market, winner domain.TokenType,
-	entryAsset, hedgeAsset string, entryPrice, hedgePrice domain.Price, entryShares, hedgeShares float64,
-	entryAskCents, hedgeAskCents int, winMet metrics, biasTok, biasReason string) error {
-	// 使用更短的超时时间（10秒），快速失败，避免阻塞策略
-	orderCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	// ===== 并发下单：使用 ExecuteMultiLeg 同时提交 Entry 和 Hedge 订单 =====
-	req := execution.MultiLegRequest{
-		Name:       "velocityfollow",
-		MarketSlug: market.Slug,
-		Legs: []execution.LegIntent{
-			{
-				Name:      "taker_buy_winner",
-				AssetID:   entryAsset,
-				TokenType: winner,
-				Side:      types.SideBuy,
-				Price:     entryPrice,
-				Size:      entryShares,
-				OrderType: types.OrderTypeFAK,
-			},
-			{
-				Name:      "maker_buy_hedge",
-				AssetID:   hedgeAsset,
-				TokenType: opposite(winner),
-				Side:      types.SideBuy,
-				Price:     hedgePrice,
-				Size:      hedgeShares,
-				OrderType: types.OrderTypeGTC,
-			},
-		},
-		Hedge: execution.AutoHedgeConfig{Enabled: false},
-	}
-
-	createdOrders, execErr := s.TradingService.ExecuteMultiLeg(orderCtx, req)
-	var tradesCount int
-	if execErr == nil && len(createdOrders) > 0 {
-		now := time.Now()
-		// 只在更新共享状态时持锁（性能关键）
-		s.mu.Lock()
-		s.lastTriggerAt = now
-		s.lastTriggerSide = winner
-		s.lastTriggerSideAt = now
-		s.tradedThisCycle = true
-		s.tradesCountThisCycle++ // 增加交易计数
-
-		// 更新订单跟踪状态
-		for _, order := range createdOrders {
-			if order == nil || order.OrderID == "" {
-				continue
-			}
-			if order.TokenType == winner {
-				s.lastEntryOrderID = order.OrderID
-				s.lastEntryOrderStatus = order.Status
-			} else if order.TokenType == opposite(winner) {
-				s.lastHedgeOrderID = order.OrderID
-			}
-		}
-		tradesCount = s.tradesCountThisCycle
-		s.mu.Unlock()
-
-		log.Infof("⚡ [%s] 触发(并发): side=%s ask=%dc hedge=%dc vel=%.3f(c/s) move=%dc/%0.1fs bias=%s(%s) market=%s trades=%d/%d orders=%d",
-			ID, winner, entryAskCents, hedgeAskCents, winMet.velocity, winMet.delta, winMet.seconds, biasTok, biasReason, market.Slug, tradesCount, s.MaxTradesPerCycle, len(createdOrders))
-		if biasTok != "" || biasReason != "" {
-			log.Infof("🧭 [%s] bias: token=%s reason=%s cycleStartMs=%d", ID, biasTok, biasReason, s.cycleStartMs)
-		}
-
-		// 额外：打印 Binance 1s/1m 最新 K 线（用于你观察"开盘 1 分钟"关系）
-		if s.BinanceFuturesKlines != nil {
-			if k1m, ok := s.BinanceFuturesKlines.Latest("1m"); ok {
-				log.Infof("📊 [%s] Binance 1m kline: sym=%s o=%.2f c=%.2f h=%.2f l=%.2f closed=%v startMs=%d",
-					ID, k1m.Symbol, k1m.Open, k1m.Close, k1m.High, k1m.Low, k1m.IsClosed, k1m.StartTimeMs)
-			}
-			if k1s, ok := s.BinanceFuturesKlines.Latest("1s"); ok {
-				log.Infof("📊 [%s] Binance 1s kline: sym=%s o=%.2f c=%.2f closed=%v startMs=%d",
-					ID, k1s.Symbol, k1s.Open, k1s.Close, k1s.IsClosed, k1s.StartTimeMs)
-			}
-		}
-	} else {
-		log.Warnf("⚠️ [%s] 下单失败: err=%v side=%s market=%s", ID, execErr, winner, market.Slug)
-	}
-	return nil
-}
-
-// monitorAndReorderHedge 监控对冲单成交状态，如果超时未成交则重新下单
-func (s *Strategy) monitorAndReorderHedge(ctx context.Context, market *domain.Market,
-	entryOrderID, hedgeOrderID, hedgeAsset string, hedgePrice domain.Price, hedgeShares float64,
-	entryFilledTime time.Time, entryFilledSize float64, entryAskCents int, winner domain.TokenType) {
-
-	timeout := time.Duration(s.HedgeReorderTimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 30 * time.Second // 默认 30 秒
-	}
-
-	deadline := entryFilledTime.Add(timeout)
-	checkInterval := 1 * time.Second // 每秒检查一次
-
-	ticker := time.NewTicker(checkInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			now := time.Now()
-
-			// 检查是否超时
-			if now.After(deadline) {
-				// 超时：检查对冲单状态
-				if s.TradingService == nil {
-					return
-				}
-
-				hedgeFilled := false
-				if ord, ok := s.TradingService.GetOrder(hedgeOrderID); ok && ord != nil {
-					hedgeFilled = ord.Status == domain.OrderStatusFilled
-				}
-
-				if hedgeFilled {
-					// 对冲单已成交，停止监控
-					log.Infof("✅ [%s] 对冲单监控结束：对冲单已成交 orderID=%s", ID, hedgeOrderID)
-					return
-				}
-
-				// 对冲单未成交，取消旧单并重新下单
-				log.Warnf("⏰ [%s] 对冲单超时未成交（%d秒），取消旧单并重新下单: orderID=%s",
-					ID, s.HedgeReorderTimeoutSeconds, hedgeOrderID)
-
-				// 取消旧对冲单
-				if err := s.TradingService.CancelOrder(ctx, hedgeOrderID); err != nil {
-					log.Warnf("⚠️ [%s] 取消旧对冲单失败: orderID=%s err=%v", ID, hedgeOrderID, err)
-				} else {
-					log.Infof("✅ [%s] 已取消旧对冲单: orderID=%s", ID, hedgeOrderID)
-				}
-
-				// 重新获取订单簿价格（确保价格是最新的）
-				reorderCtx, reorderCancel := context.WithTimeout(ctx, 5*time.Second)
-				defer reorderCancel()
-
-				_, yesAsk, _, noAsk, source, err := s.TradingService.GetTopOfBook(reorderCtx, market)
-				if err != nil {
-					log.Warnf("⚠️ [%s] 重新获取订单簿价格失败，使用原价格: err=%v", ID, err)
-					// 使用原价格继续
-				} else {
-					// ✅ 修复：对冲单重下也必须遵守“互补挂单”原则，避免追价买到 ask 导致结构性必亏
-					oldPriceCents := int(hedgePrice.ToDecimal()*100 + 0.5)
-					hedgeAskCentsDirect := int(yesAsk.ToCents())
-					if winner == domain.TokenTypeUp {
-						// Hedge 是 DOWN
-						hedgeAskCentsDirect = noAsk.ToCents()
-					}
-
-					// 基于 Entry 成本约束的最大对冲价格（cents）
-					// 注：entryAskCents 是 Entry 下单时的实际 ask（FAK）；用它来约束 hedge 的最坏成本。
-					maxHedgeCents := 100 - entryAskCents - s.HedgeOffsetCents
-					newLimitCents := maxHedgeCents
-					if hedgeAskCentsDirect > 0 && newLimitCents >= hedgeAskCentsDirect {
-						newLimitCents = hedgeAskCentsDirect - 1
-					}
-					if newLimitCents <= 0 || newLimitCents >= 100 {
-						log.Errorf("🚨 [%s] 对冲重下失败：互补挂单价格无效: entryAsk=%dc hedgeOffset=%dc => maxHedge=%dc (hedgeAsk=%dc)",
-							ID, entryAskCents, s.HedgeOffsetCents, maxHedgeCents, hedgeAskCentsDirect)
-						// 保守处理：停止重下，维持未对冲风险提示
-						return
-					}
-
-					hedgePrice = domain.Price{Pips: newLimitCents * 100}
-					log.Infof("💰 [%s] 重新计算对冲单价格: 原=%dc 新=%dc (max=%dc hedgeAsk=%dc source=%s)",
-						ID, oldPriceCents, newLimitCents, maxHedgeCents, hedgeAskCentsDirect, source)
-				}
-
-				// 重新下单
-				// 获取市场精度信息（从缓存）
-				var newTickSize types.TickSize
-				var newNegRisk *bool
-				if s.currentPrecision != nil {
-					if parsed, err := ParseTickSize(s.currentPrecision.TickSize); err == nil {
-						newTickSize = parsed
-					}
-					newNegRisk = boolPtr(s.currentPrecision.NegRisk)
-				}
-				
-				newHedgeOrder := &domain.Order{
-					MarketSlug:   market.Slug,
-					AssetID:      hedgeAsset,
-					TokenType:    opposite(winner),
-					Side:         types.SideBuy,
-					Price:        hedgePrice,
-					Size:         hedgeShares,
-					OrderType:    types.OrderTypeGTC,
-					IsEntryOrder: false,
-					HedgeOrderID: &entryOrderID,
-					Status:       domain.OrderStatusPending,
-					TickSize:     newTickSize, // 使用缓存的精度信息
-					NegRisk:      newNegRisk,   // 使用缓存的 neg_risk 信息
-					CreatedAt:    time.Now(),
-				}
-
-				newHedgeResult, err := s.TradingService.PlaceOrder(reorderCtx, newHedgeOrder)
-				if err != nil {
-					log.Errorf("❌ [%s] 重新下对冲单失败: err=%v (主单已成交，存在风险敞口)", ID, err)
-				} else if newHedgeResult != nil && newHedgeResult.OrderID != "" {
-					log.Infof("✅ [%s] 对冲单已重新提交: orderID=%s (原订单=%s)",
-						ID, newHedgeResult.OrderID, hedgeOrderID)
-
-					// 更新跟踪状态
-					s.mu.Lock()
-					s.lastHedgeOrderID = newHedgeResult.OrderID
-					s.mu.Unlock()
-				}
-
-				// 重新下单后，继续监控新订单（最多再等一次超时时间）
-				hedgeOrderID = ""
-				if newHedgeResult != nil && newHedgeResult.OrderID != "" {
-					hedgeOrderID = newHedgeResult.OrderID
-					deadline = time.Now().Add(timeout) // 重置超时时间
-				} else {
-					// 重新下单失败，停止监控
-					return
-				}
-			} else {
-				// 未超时，检查对冲单是否已成交
-				if s.TradingService == nil {
-					continue
-				}
-
-				if ord, ok := s.TradingService.GetOrder(hedgeOrderID); ok && ord != nil {
-					if ord.Status == domain.OrderStatusFilled {
-						// 对冲单已成交，停止监控
-						log.Infof("✅ [%s] 对冲单监控结束：对冲单已成交 orderID=%s (耗时 %.1f秒)",
-							ID, hedgeOrderID, time.Since(entryFilledTime).Seconds())
-						return
-					}
-				}
-			}
-		}
-	}
-}
-
-func (s *Strategy) pruneLocked(now time.Time) {
-	window := time.Duration(s.WindowSeconds) * time.Second
-	if window <= 0 {
-		window = 10 * time.Second
-	}
-	cut := now.Add(-window)
-	for tok, arr := range s.samples {
-		// 找到第一个 >= cut 的索引
-		i := 0
-		for i < len(arr) && arr[i].ts.Before(cut) {
-			i++
-		}
-		if i > 0 {
-			arr = arr[i:]
-		}
-		// 防止极端情况下 slice 无限增长（保守上限）
-		if len(arr) > 512 {
-			arr = arr[len(arr)-512:]
-		}
-		s.samples[tok] = arr
-	}
-}
-
-func (s *Strategy) computeLocked(tok domain.TokenType) metrics {
-	arr := s.samples[tok]
-	if len(arr) < 2 {
-		return metrics{}
-	}
-	first := arr[0]
-	last := arr[len(arr)-1]
-	dt := last.ts.Sub(first.ts).Seconds()
-	if dt <= 0.001 {
-		return metrics{}
-	}
-	delta := last.priceCents - first.priceCents
-	// 只做“上行”触发（你的描述是追涨买上涨的一方）
-	if delta <= 0 {
-		return metrics{}
-	}
-	vel := float64(delta) / dt
-	if math.IsNaN(vel) || math.IsInf(vel, 0) {
-		return metrics{}
-	}
-	return metrics{ok: true, delta: delta, seconds: dt, velocity: vel}
-}
-
-func opposite(t domain.TokenType) domain.TokenType {
-	if t == domain.TokenTypeUp {
-		return domain.TokenTypeDown
-	}
-	return domain.TokenTypeUp
-}
-
-
-func ensureMinOrderSize(desiredShares float64, price float64, minUSDC float64) float64 {
-	if desiredShares <= 0 || price <= 0 {
-		return desiredShares
-	}
-	if minUSDC <= 0 {
-		minUSDC = 1.0
-	}
-	minShares := minUSDC / price
-	if minShares > desiredShares {
-		return minShares
-	}
-	return desiredShares
-}
-
-// adjustSizeForMakerAmountPrecision 调整 size 使得 maker amount = size × price 是 2 位小数
-// 对于买入订单（FAK），maker amount 是 USDC 金额，必须 <= 2 位小数
-// taker amount (size) 必须 <= 4 位小数
-// 策略：先调整 maker amount 到 2 位小数，再重新计算 size 到 4 位小数
-func adjustSizeForMakerAmountPrecision(size float64, price float64) float64 {
-	if size <= 0 || price <= 0 {
-		return size
-	}
-	
-	// 计算 maker amount = size × price
-	makerAmount := size * price
-	
-	// 将 maker amount 向下舍入到 2 位小数
-	makerAmountRounded := math.Floor(makerAmount*100) / 100
-	
-	// 如果舍入后为 0，使用最小有效值（0.01）
-	if makerAmountRounded <= 0 {
-		makerAmountRounded = 0.01
-	}
-	
-	// 重新计算 size = maker amount / price
-	newSize := makerAmountRounded / price
-	
-	// 将 size 向下舍入到 4 位小数（taker amount 要求）
-	newSize = math.Floor(newSize*10000) / 10000
-	
-	// 确保 size 不为 0
-	if newSize <= 0 {
-		return size // 如果调整后为 0，返回原始值
-	}
-	
-	return newSize
-}
-
-func candleStatsBps(k services.Kline, upTok domain.TokenType, downTok domain.TokenType) (bodyBps int, wickBps int, dirTok domain.TokenType) {
-	// body: |c-o|/o
-	body := math.Abs(k.Close-k.Open) / k.Open * 10000
-	bodyBps = int(body + 0.5)
-
-	hi := k.High
-	lo := k.Low
-	o := k.Open
-	c := k.Close
-	maxOC := math.Max(o, c)
-	minOC := math.Min(o, c)
-	upperWick := (hi - maxOC) / o * 10000
-	lowerWick := (minOC - lo) / o * 10000
-	w := math.Max(upperWick, lowerWick)
-	if w < 0 {
-		w = 0
-	}
-	wickBps = int(w + 0.5)
-
-	dirTok = downTok
-	if c >= o {
-		dirTok = upTok
-	}
-	return
-}
-
-func (s *Strategy) exitEnabled() bool {
-	if s == nil {
-		return false
-	}
-	return s.TakeProfitCents > 0 || s.StopLossCents > 0 || s.MaxHoldSeconds > 0
-}
-
-// tryExitPositions 在满足止盈/止损/超时条件时下 SELL FAK 出场。
-// 返回 true 表示本次“已有持仓，因此策略将跳过后续开仓逻辑”（无论是否真的触发了出场）。
-func (s *Strategy) tryExitPositions(ctx context.Context, market *domain.Market, now time.Time, positions []*domain.Position) bool {
-	if s == nil || s.TradingService == nil || market == nil {
+func (s *Strategy) shouldHandleMarketEvent(m *domain.Market) bool {
+	if s == nil || m == nil {
 		return false
 	}
 
-	// 出场冷却：避免短时间重复下 SELL
-	exitCooldown := time.Duration(s.ExitCooldownMs) * time.Millisecond
-	if exitCooldown <= 0 {
-		exitCooldown = 1500 * time.Millisecond
-	}
-	s.mu.Lock()
-	lastExit := s.lastExitAt
-	s.mu.Unlock()
-	if !lastExit.IsZero() && now.Sub(lastExit) < exitCooldown {
-		return true
+	// 目标市场过滤：只处理目标 market（通过 prefix 匹配）
+	if !strings.HasPrefix(strings.ToLower(m.Slug), s.marketSlugPrefix) {
+		return false
 	}
 
-	// 只在确实需要评估时才拉 top-of-book（优先 WS，必要时回退 REST）
-	orderCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	yesBid, _, noBid, _, _, err := s.TradingService.GetTopOfBook(orderCtx, market)
-	if err != nil {
-		log.Warnf("⚠️ [%s] 出场检查获取盘口失败: %v", ID, err)
-		return true // 有持仓但无法评估：保守起见先不新开仓
-	}
-
-	type leg struct {
-		name    string
-		assetID string
-		token   domain.TokenType
-		price   domain.Price
-		size    float64
-		reason  string
-	}
-	legs := make([]leg, 0, 2)
-
-	// 找到是否双边持仓（用于可选“一次性全平”）
-	var upPos, downPos *domain.Position
-	for _, p := range positions {
-		if p == nil || !p.IsOpen() || p.Size <= 0 {
-			continue
-		}
-		if p.TokenType == domain.TokenTypeUp {
-			upPos = p
-		} else if p.TokenType == domain.TokenTypeDown {
-			downPos = p
+	// 【重要】验证事件中的 market 是否与 TradingService 中的当前 market 匹配
+	// 周期切换后，价格更新事件中的 Market 可能还是旧周期的数据
+	// 如果 market 不匹配，说明这是旧周期的价格更新，应该忽略
+	if s.TradingService != nil {
+		currentMarketSlug := s.TradingService.GetCurrentMarket()
+		if currentMarketSlug != "" && currentMarketSlug != m.Slug {
+			log.Debugf("🔄 [%s] 跳过旧周期价格更新: eventMarket=%s currentMarket=%s",
+				ID, m.Slug, currentMarketSlug)
+			return false
 		}
 	}
 
-	shouldExitBoth := false
-	if s.ExitBothSidesIfHedged != nil && *s.ExitBothSidesIfHedged {
-		shouldExitBoth = upPos != nil && downPos != nil
-	}
-
-	// helper：获取 positionID（用于状态 map key）
-	posKey := func(p *domain.Position) string {
-		if p == nil {
-			return ""
-		}
-		if p.ID != "" {
-			return p.ID
-		}
-		// 兜底：用 market+token 组合（理论上 Position.ID 一定存在）
-		return fmt.Sprintf("%s_%s", p.MarketSlug, p.TokenType)
-	}
-
-	type decision struct {
-		fullExit bool
-		fullReason string
-		partial []leg
-	}
-
-	evalPos := func(p *domain.Position) decision {
-		d := decision{partial: make([]leg, 0, 2)}
-		if p == nil || !p.IsOpen() || p.Size <= 0 {
-			return d
-		}
-		key := posKey(p)
-		if p.TokenType == domain.TokenTypeUp {
-			// ok
-		} else {
-			// ok
-		}
-		bid := yesBid
-		assetID := market.YesAssetID
-		if p.TokenType == domain.TokenTypeDown {
-			bid = noBid
-			assetID = market.NoAssetID
-		}
-		if bid.Pips <= 0 {
-			return d
-		}
-		curC := bid.ToCents()
-		avgC := p.EntryPrice.ToCents()
-		if p.AvgPrice > 0 {
-			avgC = int(p.AvgPrice*100 + 0.5)
-		}
-		diff := curC - avgC
-
-		// 1) 硬止损 / 超时：优先全平
-		if s.StopLossCents > 0 && diff <= -s.StopLossCents {
-			d.fullExit = true
-			d.fullReason = "stop_loss"
-			return d
-		}
-		if s.MaxHoldSeconds > 0 && !p.EntryTime.IsZero() {
-			if now.Sub(p.EntryTime) >= time.Duration(s.MaxHoldSeconds)*time.Second {
-				d.fullExit = true
-				d.fullReason = "max_hold"
-				return d
-			}
-		}
-
-		// 2) 追踪止盈（trailing）：达到 TrailStart 后开始追踪；跌破 stop 触发全平
-		if s.EnableTrailingTakeProfit && s.TrailStartCents > 0 && s.TrailDistanceCents > 0 {
-			s.mu.Lock()
-			st := s.trailing[key]
-			if st == nil {
-				st = &trailState{}
-				s.trailing[key] = st
-			}
-			// arm
-			if !st.Armed && diff >= s.TrailStartCents {
-				st.Armed = true
-				st.HighBidCents = curC
-				st.StopCents = curC - s.TrailDistanceCents
-			}
-			// update high/stop
-			if st.Armed {
-				if curC > st.HighBidCents {
-					st.HighBidCents = curC
-					st.StopCents = curC - s.TrailDistanceCents
-				}
-				if st.StopCents > 0 && curC <= st.StopCents {
-					d.fullExit = true
-					d.fullReason = "trailing_stop"
-					s.mu.Unlock()
-					return d
-				}
-			}
-			s.mu.Unlock()
-		}
-
-		// 3) 硬止盈：达到 takeProfitCents 直接全平（作为最终落袋）
-		if s.TakeProfitCents > 0 && diff >= s.TakeProfitCents {
-			d.fullExit = true
-			d.fullReason = "take_profit"
-			return d
-		}
-
-		// 4) 分批止盈：达到 level 后卖出 fraction（每个 level 只触发一次）
-		if len(s.PartialTakeProfits) > 0 && diff > 0 {
-			for i, lv := range s.PartialTakeProfits {
-				if diff < lv.ProfitCents {
-					continue
-				}
-				s.mu.Lock()
-				doneSet := s.partialTPDone[key]
-				if doneSet == nil {
-					doneSet = make(map[int]bool)
-					s.partialTPDone[key] = doneSet
-				}
-				already := doneSet[i]
-				s.mu.Unlock()
-				if already {
-					continue
-				}
-
-				// 计算卖出数量（按当前剩余持仓比例）
-				sellSize := p.Size * lv.Fraction
-				if sellSize > p.Size {
-					sellSize = p.Size
-				}
-				// 最小金额保护（SELL 不允许系统自动放大；不足则跳过该 level）
-				bidDec := bid.ToDecimal()
-				if bidDec <= 0 {
-					continue
-				}
-				minSharesByNotional := s.minOrderSize / bidDec
-				if s.minOrderSize <= 0 {
-					minSharesByNotional = 0
-				}
-				if minSharesByNotional > 0 && sellSize*bidDec < s.minOrderSize {
-					// 如果当前持仓都不足最小金额，则无法卖，留待后续（或由 maxHold/stopLoss 接管）
-					if p.Size*bidDec < s.minOrderSize {
-						continue
-					}
-					// 否则把这次卖出提升到“可卖的最小份额”，但不超过持仓
-					if minSharesByNotional <= p.Size {
-						sellSize = minSharesByNotional
-					}
-				}
-				if sellSize <= 0 {
-					continue
-				}
-
-				d.partial = append(d.partial, leg{
-					name:    fmt.Sprintf("partial_tp_%s_%d", p.TokenType, i),
-					assetID: assetID,
-					token:   p.TokenType,
-					price:   bid,
-					size:    sellSize,
-					reason:  fmt.Sprintf("partial_tp_%dc_%0.2f", lv.ProfitCents, lv.Fraction),
-				})
-			}
-		}
-
-		return d
-	}
-
-	// 先评估每个仓位的决策
-	upDec := evalPos(upPos)
-	downDec := evalPos(downPos)
-
-	// exitBoth：任意一侧触发“全平”，则两侧都全平
-	if shouldExitBoth && (upDec.fullExit || downDec.fullExit) {
-		reason := upDec.fullReason
-		if reason == "" {
-			reason = downDec.fullReason
-		}
-		if upPos != nil && upPos.Size > 0 {
-			legs = append(legs, leg{name: "exit_sell_up", assetID: market.YesAssetID, token: domain.TokenTypeUp, price: yesBid, size: upPos.Size, reason: reason})
-		}
-		if downPos != nil && downPos.Size > 0 {
-			legs = append(legs, leg{name: "exit_sell_down", assetID: market.NoAssetID, token: domain.TokenTypeDown, price: noBid, size: downPos.Size, reason: reason})
-		}
-	} else {
-		// 非 exitBoth：分别处理全平与分批止盈
-		if upDec.fullExit && upPos != nil && upPos.Size > 0 {
-			legs = append(legs, leg{name: "exit_sell_up", assetID: market.YesAssetID, token: domain.TokenTypeUp, price: yesBid, size: upPos.Size, reason: upDec.fullReason})
-		} else {
-			legs = append(legs, upDec.partial...)
-		}
-		if downDec.fullExit && downPos != nil && downPos.Size > 0 {
-			legs = append(legs, leg{name: "exit_sell_down", assetID: market.NoAssetID, token: domain.TokenTypeDown, price: noBid, size: downPos.Size, reason: downDec.fullReason})
-		} else {
-			legs = append(legs, downDec.partial...)
-		}
-	}
-
-	if len(legs) == 0 {
-		return true // 有持仓但未触发：默认不再叠加开仓
-	}
-
-	// 出场前先清理本周期挂单（尤其是未成交的 hedge GTC），避免出场后反向被动成交
-	s.TradingService.CancelOrdersForMarket(orderCtx, market.Slug)
-
-	req := execution.MultiLegRequest{
-		Name:       "velocityfollow_exit",
-		MarketSlug: market.Slug,
-		Legs:       make([]execution.LegIntent, 0, len(legs)),
-		Hedge:      execution.AutoHedgeConfig{Enabled: false},
-	}
-	for _, l := range legs {
-		if l.size <= 0 || l.price.Pips <= 0 {
-			continue
-		}
-		// 获取市场精度信息（从缓存）
-		var exitTickSize types.TickSize
-		var exitNegRisk *bool
-		if s.currentPrecision != nil {
-			if parsed, err := ParseTickSize(s.currentPrecision.TickSize); err == nil {
-				exitTickSize = parsed
-			}
-			exitNegRisk = boolPtr(s.currentPrecision.NegRisk)
-		}
-		req.Legs = append(req.Legs, execution.LegIntent{
-			Name:      l.name,
-			AssetID:   l.assetID,
-			TokenType: l.token,
-			Side:      types.SideSell,
-			Price:     l.price,
-			Size:      l.size,
-			OrderType: types.OrderTypeFAK,
-			TickSize:  exitTickSize, // 使用缓存的精度信息
-			NegRisk:   exitNegRisk,   // 使用缓存的 neg_risk 信息
-		})
-		log.Infof("📤 [%s] 出场: reason=%s token=%s bid=%dc size=%.4f market=%s",
-			ID, l.reason, l.token, l.price.ToCents(), l.size, market.Slug)
-	}
-	if len(req.Legs) == 0 {
-		return true
-	}
-
-	created, execErr := s.TradingService.ExecuteMultiLeg(orderCtx, req)
-	if execErr == nil && len(created) > 0 {
-		// 仅在执行成功后标记分批止盈 level 已触发（避免失败导致"错过 level"）
-		for _, l := range legs {
-			if !strings.HasPrefix(l.reason, "partial_tp_") {
-				continue
-			}
-			// 从 name 中解析 level idx（partial_tp_{token}_{idx}）
-			parts := strings.Split(l.name, "_")
-			if len(parts) < 4 {
-				continue
-			}
-			idxStr := parts[len(parts)-1]
-			idx, err := strconv.Atoi(idxStr)
-			if err != nil {
-				continue
-			}
-			var p *domain.Position
-			if l.token == domain.TokenTypeUp {
-				p = upPos
-			} else {
-				p = downPos
-			}
-			key := posKey(p)
-			if key == "" {
-				continue
-			}
-			s.mu.Lock()
-			doneSet := s.partialTPDone[key]
-			if doneSet == nil {
-				doneSet = make(map[int]bool)
-				s.partialTPDone[key] = doneSet
-			}
-			doneSet[idx] = true
-			s.mu.Unlock()
-		}
-
-		// ✅ 优化：平仓后再次检查持仓，防止Hedge单在平仓过程中成交导致单边持仓
-		go func() {
-			// 等待一小段时间，让订单状态更新
-			time.Sleep(500 * time.Millisecond)
-			
-			// 再次检查持仓
-			checkCtx, checkCancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer checkCancel()
-			
-			remainingPositions := s.TradingService.GetOpenPositionsForMarket(market.Slug)
-			if len(remainingPositions) == 0 {
-				return // 没有剩余持仓，安全
-			}
-			
-			// 检查是否有单边持仓（只有Hedge单，没有Entry单）
-			var hedgeOnlyPositions []*domain.Position
-			for _, p := range remainingPositions {
-				if p == nil || !p.IsOpen() || p.Size <= 0 {
-					continue
-				}
-				// 检查是否是对冲单持仓（通过EntryOrder判断）
-				// 如果EntryOrder为空或已平仓，可能是Hedge单单独持仓
-				if p.EntryOrder == nil || p.EntryOrder.Status == domain.OrderStatusFilled {
-					// 检查是否有对应的Entry持仓
-					hasEntryPos := false
-					for _, otherPos := range remainingPositions {
-						if otherPos == nil || !otherPos.IsOpen() || otherPos.Size <= 0 {
-							continue
-						}
-						// 如果是对侧持仓，说明是Entry单
-						if otherPos.TokenType != p.TokenType && otherPos.MarketSlug == p.MarketSlug {
-							hasEntryPos = true
-							break
-						}
-					}
-					if !hasEntryPos {
-						hedgeOnlyPositions = append(hedgeOnlyPositions, p)
-					}
-				}
-			}
-			
-			// 如果发现单边持仓，立即平掉
-			if len(hedgeOnlyPositions) > 0 {
-				log.Warnf("🚨 [%s] 【风险检测】平仓后发现单边持仓（可能是Hedge单在平仓过程中成交），立即平掉: count=%d",
-					ID, len(hedgeOnlyPositions))
-				
-				// 获取订单簿价格（需要完整的market对象）
-				if market == nil || market.YesAssetID == "" || market.NoAssetID == "" {
-					log.Warnf("⚠️ [%s] Market信息不完整，无法平掉单边持仓", ID)
-					return
-				}
-				
-				yesBid, _, noBid, _, _, err := s.TradingService.GetTopOfBook(checkCtx, market)
-				if err != nil {
-					log.Warnf("⚠️ [%s] 获取订单簿价格失败，无法平掉单边持仓: %v", ID, err)
-					return
-				}
-				
-				// 平掉所有单边持仓
-				for _, p := range hedgeOnlyPositions {
-					if p.Market == nil {
-						log.Warnf("⚠️ [%s] 持仓缺少Market信息，跳过: token=%s", ID, p.TokenType)
-						continue
-					}
-					
-					var exitPrice domain.Price
-					var exitAssetID string
-					if p.TokenType == domain.TokenTypeUp {
-						exitPrice = yesBid
-						exitAssetID = p.Market.YesAssetID
-					} else {
-						exitPrice = noBid
-						exitAssetID = p.Market.NoAssetID
-					}
-					
-					if exitPrice.Pips <= 0 {
-						log.Warnf("⚠️ [%s] 订单簿价格无效，无法平掉单边持仓: token=%s", ID, p.TokenType)
-						continue
-					}
-					
-					log.Infof("🔧 [%s] 平掉单边持仓: token=%s size=%.4f price=%dc reason=hedge_only_after_exit",
-						ID, p.TokenType, p.Size, exitPrice.ToCents())
-					
-					// 创建平仓订单
-					exitOrder := &domain.Order{
-						MarketSlug: market.Slug,
-						AssetID:    exitAssetID,
-						TokenType:  p.TokenType,
-						Side:       types.SideSell,
-						Price:      exitPrice,
-						Size:       p.Size,
-						OrderType:  types.OrderTypeFAK,
-						Status:     domain.OrderStatusPending,
-						CreatedAt:  time.Now(),
-					}
-					
-					// 提交平仓订单
-					if _, err := s.TradingService.PlaceOrder(checkCtx, exitOrder); err != nil {
-						log.Errorf("❌ [%s] 平掉单边持仓失败: token=%s err=%v", ID, p.TokenType, err)
-					} else {
-						log.Infof("✅ [%s] 已平掉单边持仓: token=%s size=%.4f", ID, p.TokenType, p.Size)
-					}
-				}
-			}
-		}()
-	}
-	s.mu.Lock()
-	s.lastExitAt = now
-	s.mu.Unlock()
 	return true
 }
 
+func (s *Strategy) maybeLogPriceUpdate(now time.Time, tok domain.TokenType, p domain.Price, marketSlug string) {
+	if s == nil {
+		return
+	}
+
+	// 显示 WebSocket 实时价格（用于调试，带限流避免刷屏）
+	priceDecimal := p.ToDecimal()
+	priceCents := p.ToCents()
+
+	// 价格日志限流：同一 token 的价格更新，如果价格变化不大且时间间隔短，则限流
+	shouldLogPrice := false
+
+	s.mu.Lock()
+	// 在锁内检查限流条件
+	if s.lastPriceLogToken != tok || s.lastPriceLogAt.IsZero() {
+		// 不同 token 或首次，直接打印
+		shouldLogPrice = true
+	} else {
+		// 相同 token，检查时间间隔和价格变化
+		logThrottle := time.Duration(s.priceLogThrottleMs) * time.Millisecond
+		if logThrottle <= 0 {
+			logThrottle = 1 * time.Second // 默认 1 秒
+		}
+		timeSinceLastLog := now.Sub(s.lastPriceLogAt)
+		priceChange := priceCents - s.lastPriceLogPriceCents
+		if priceChange < 0 {
+			priceChange = -priceChange
+		}
+
+		// 如果时间间隔超过限流时间，或者价格变化超过 1 分，则打印
+		if timeSinceLastLog >= logThrottle || priceChange >= 1 {
+			shouldLogPrice = true
+		}
+	}
+
+	// 如果需要打印，更新限流状态
+	if shouldLogPrice {
+		s.lastPriceLogToken = tok
+		s.lastPriceLogAt = now
+		s.lastPriceLogPriceCents = priceCents
+	}
+	s.mu.Unlock()
+
+	// 在锁外打印日志（避免长时间持锁）
+	if shouldLogPrice {
+		log.Debugf("📈 [%s] 价格更新: token=%s price=%.4f (%dc) market=%s",
+			ID, tok, priceDecimal, priceCents, marketSlug)
+	}
+}
+
+func (s *Strategy) maybeLogOrderBook(now time.Time, market *domain.Market) {
+	if s == nil || s.TradingService == nil || market == nil {
+		return
+	}
+
+	// 打印 UP/DOWN 的 bid/ask 价格（带限流，避免频繁调用 API）
+	s.mu.Lock()
+	shouldLogOrderBook := false
+	if s.lastOrderBookLogAt.IsZero() {
+		shouldLogOrderBook = true
+	} else {
+		logThrottle := time.Duration(s.orderBookLogThrottleMs) * time.Millisecond
+		if logThrottle <= 0 {
+			logThrottle = 2 * time.Second // 默认 2 秒
+		}
+		if now.Sub(s.lastOrderBookLogAt) >= logThrottle {
+			shouldLogOrderBook = true
+		}
+	}
+	if shouldLogOrderBook {
+		s.lastOrderBookLogAt = now
+	}
+	s.mu.Unlock()
+
+	// 在锁外获取订单簿价格并打印（避免长时间持锁）
+	if !shouldLogOrderBook {
+		return
+	}
+
+	// 使用背景上下文，避免阻塞策略主流程
+	bookCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	yesBid, yesAsk, noBid, noAsk, source, err := s.TradingService.GetTopOfBook(bookCtx, market)
+	if err != nil {
+		// 静默失败，不影响策略运行
+		log.Debugf("⚠️ [%s] 获取订单簿价格失败（实时日志）: %v", ID, err)
+		return
+	}
+
+	log.Infof("💰 [%s] 实时订单簿: UP bid=%.4f ask=%.4f, DOWN bid=%.4f ask=%.4f (source=%s market=%s)",
+		ID, yesBid.ToDecimal(), yesAsk.ToDecimal(), noBid.ToDecimal(), noAsk.ToDecimal(), source, market.Slug)
+}
+
+// maybeHandleExit returns true when we should stop processing entry logic for this tick.
+// It encapsulates: "if there is any open position in this market, throttle exit checks, and never open new positions".
+func (s *Strategy) maybeHandleExit(ctx context.Context, market *domain.Market, now time.Time) bool {
+	if s == nil || s.TradingService == nil || market == nil {
+		return false
+	}
+	if !s.exitEnabled() {
+		return false
+	}
+
+	positions := s.TradingService.GetOpenPositionsForMarket(market.Slug)
+	hasPos := false
+	for _, p := range positions {
+		if p != nil && p.IsOpen() && p.Size > 0 {
+			hasPos = true
+			break
+		}
+	}
+	if !hasPos {
+		return false
+	}
+
+	// 节流：避免每条行情都尝试出场（默认 200ms）
+	s.mu.Lock()
+	lastCheck := s.lastExitCheckAt
+	s.mu.Unlock()
+	if lastCheck.IsZero() || now.Sub(lastCheck) >= 200*time.Millisecond {
+		s.mu.Lock()
+		s.lastExitCheckAt = now
+		s.mu.Unlock()
+
+		// tryExitPositions() returns true to indicate "positions exist, skip opening logic" even if no exit is triggered.
+		_ = s.tryExitPositions(ctx, market, now, positions)
+	}
+
+	// 已有持仓时默认不再开新仓，等待出场逻辑处理完毕（避免叠加风险）
+	return true
+}
+
+func (s *Strategy) updateCycleStartLocked(market *domain.Market) {
+	if s == nil || market == nil {
+		return
+	}
+	if market.Timestamp <= 0 {
+		return
+	}
+
+	st := market.Timestamp * 1000
+	if s.cycleStartMs == 0 || s.cycleStartMs != st {
+		s.cycleStartMs = st
+		s.biasReady = false
+		s.biasToken = ""
+		s.biasReason = ""
+	}
+}
+
+// shouldSkipUntilBiasReadyLocked computes open1m bias state (when enabled) and returns true
+// when RequireBiasReady is enabled and bias is still not ready.
+// Callers must hold s.mu.
+func (s *Strategy) shouldSkipUntilBiasReadyLocked(now time.Time) bool {
+	if s == nil {
+		return false
+	}
+	if !s.UseBinanceOpen1mBias {
+		return false
+	}
+
+	// 如果等太久还没有拿到那根 1m，就降级为“无 bias”继续跑
+	if !s.biasReady && s.cycleStartMs > 0 && s.Open1mMaxWaitSeconds > 0 {
+		if now.UnixMilli()-s.cycleStartMs > int64(s.Open1mMaxWaitSeconds)*1000 {
+			s.biasReady = true
+			s.biasToken = ""
+			s.biasReason = "open1m_timeout"
+		}
+	}
+
+	if !s.biasReady && s.BinanceFuturesKlines != nil && s.cycleStartMs > 0 {
+		if k, ok := s.BinanceFuturesKlines.Get("1m", s.cycleStartMs); ok && k.IsClosed && k.Open > 0 {
+			bodyBps, wickBps, dirTok := candleStatsBps(k, domain.TokenTypeUp, domain.TokenTypeDown)
+			if bodyBps < s.Open1mMinBodyBps {
+				s.biasReady = true
+				s.biasToken = ""
+				s.biasReason = "open1m_body_too_small"
+			} else if wickBps > s.Open1mMaxWickBps {
+				s.biasReady = true
+				s.biasToken = ""
+				s.biasReason = "open1m_wick_too_large"
+			} else {
+				s.biasReady = true
+				s.biasToken = dirTok
+				s.biasReason = "open1m_ok"
+			}
+		}
+	}
+
+	return s.RequireBiasReady && !s.biasReady
+}
