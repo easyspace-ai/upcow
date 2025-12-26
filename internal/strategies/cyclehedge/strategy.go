@@ -244,7 +244,11 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			cancel()
 		}
 		s.maybeLog(now, m, fmt.Sprintf("maxSingleSideShares reached: up=%.2f down=%.2f limit=%.2f", upShares, downShares, s.MaxSingleSideShares))
-		// 仍允许下面的“超时补齐/回平”处理裸露风险
+		// 若没有裸露风险：直接停止本周期新增挂单/加仓（只持有到结算）
+		if unhedged < s.MinUnhedgedShares {
+			return
+		}
+		// 若仍有裸露：继续让下方“超时补齐/回平”逻辑处理风险
 	}
 
 	// 1) 已达到目标：撤单，持有到结算
