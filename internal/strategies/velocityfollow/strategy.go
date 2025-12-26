@@ -563,32 +563,8 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 
 	// ===== 出场（平仓）逻辑：优先于开仓 =====
 	// 仅当启用 TP/SL/超时退出 且 当前 market 存在持仓时才触发（避免每个 tick 都打 orderbook）
-	if s.exitEnabled() && e.Market != nil {
-		positions := s.TradingService.GetOpenPositionsForMarket(e.Market.Slug)
-		hasPos := false
-		for _, p := range positions {
-			if p != nil && p.IsOpen() && p.Size > 0 {
-				hasPos = true
-				break
-			}
-		}
-		if hasPos {
-			// 节流：避免每条行情都尝试出场（默认 200ms）
-			nowCheck := now
-			s.mu.Lock()
-			lastCheck := s.lastExitCheckAt
-			s.mu.Unlock()
-			if lastCheck.IsZero() || nowCheck.Sub(lastCheck) >= 200*time.Millisecond {
-				s.mu.Lock()
-				s.lastExitCheckAt = nowCheck
-				s.mu.Unlock()
-				if exited := s.tryExitPositions(ctx, e.Market, nowCheck, positions); exited {
-					return nil
-				}
-			}
-			// 已有持仓时默认不再开新仓，等待出场逻辑处理完毕（避免叠加风险）
-			return nil
-		}
+	if s.maybeHandleExit(ctx, e.Market, now) {
+		return nil
 	}
 
 	s.mu.Lock()
@@ -1362,4 +1338,43 @@ func (s *Strategy) maybeLogOrderBook(now time.Time, market *domain.Market) {
 
 	log.Infof("💰 [%s] 实时订单簿: UP bid=%.4f ask=%.4f, DOWN bid=%.4f ask=%.4f (source=%s market=%s)",
 		ID, yesBid.ToDecimal(), yesAsk.ToDecimal(), noBid.ToDecimal(), noAsk.ToDecimal(), source, market.Slug)
+}
+
+// maybeHandleExit returns true when we should stop processing entry logic for this tick.
+// It encapsulates: "if there is any open position in this market, throttle exit checks, and never open new positions".
+func (s *Strategy) maybeHandleExit(ctx context.Context, market *domain.Market, now time.Time) bool {
+	if s == nil || s.TradingService == nil || market == nil {
+		return false
+	}
+	if !s.exitEnabled() {
+		return false
+	}
+
+	positions := s.TradingService.GetOpenPositionsForMarket(market.Slug)
+	hasPos := false
+	for _, p := range positions {
+		if p != nil && p.IsOpen() && p.Size > 0 {
+			hasPos = true
+			break
+		}
+	}
+	if !hasPos {
+		return false
+	}
+
+	// 节流：避免每条行情都尝试出场（默认 200ms）
+	s.mu.Lock()
+	lastCheck := s.lastExitCheckAt
+	s.mu.Unlock()
+	if lastCheck.IsZero() || now.Sub(lastCheck) >= 200*time.Millisecond {
+		s.mu.Lock()
+		s.lastExitCheckAt = now
+		s.mu.Unlock()
+
+		// tryExitPositions() returns true to indicate "positions exist, skip opening logic" even if no exit is triggered.
+		_ = s.tryExitPositions(ctx, market, now, positions)
+	}
+
+	// 已有持仓时默认不再开新仓，等待出场逻辑处理完毕（避免叠加风险）
+	return true
 }
