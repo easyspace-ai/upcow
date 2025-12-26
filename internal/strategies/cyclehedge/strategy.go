@@ -444,11 +444,18 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	}
 
 	// 下 YES
-	if needUp >= s.MinUnhedgedShares {
+	needUpOK := needUp >= s.MinUnhedgedShares
+	needDownOK := needDown >= s.MinUnhedgedShares
+	if needUpOK {
 		needUp = s.clampOrderSize(needUp)
-		if needUp < s.MinUnhedgedShares {
-			return
-		}
+		needUpOK = needUp >= s.MinUnhedgedShares
+	}
+	if needDownOK {
+		needDown = s.clampOrderSize(needDown)
+		needDownOK = needDown >= s.MinUnhedgedShares
+	}
+
+	placeYes := func() {
 		placeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		ord, err := s.TradingService.PlaceOrder(placeCtx, &domain.Order{
 			MarketSlug: m.Slug,
@@ -467,12 +474,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			s.stateMu.Unlock()
 		}
 	}
-	// 下 NO
-	if needDown >= s.MinUnhedgedShares {
-		needDown = s.clampOrderSize(needDown)
-		if needDown < s.MinUnhedgedShares {
-			return
-		}
+	placeNo := func() {
 		placeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		ord, err := s.TradingService.PlaceOrder(placeCtx, &domain.Order{
 			MarketSlug: m.Slug,
@@ -490,6 +492,27 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			s.stats.OrdersPlacedNo++
 			s.stateMu.Unlock()
 		}
+	}
+
+	// 方向偏好：当需要同时下两腿时，优先下“价格更高且超过阈值”的那一腿，
+	// 目的是在短时间裸露时尽量站在胜率更高的一侧。
+	if needUpOK && needDownOK {
+		if prefer, ok := s.preferHighPriceFirstToken(yesBidC, noBidC); ok {
+			if prefer == domain.TokenTypeUp {
+				placeYes()
+				placeNo()
+			} else {
+				placeNo()
+				placeYes()
+			}
+		} else {
+			placeYes()
+			placeNo()
+		}
+	} else if needUpOK {
+		placeYes()
+	} else if needDownOK {
+		placeNo()
 	}
 
 	if needUp >= s.MinUnhedgedShares || needDown >= s.MinUnhedgedShares {
@@ -510,6 +533,26 @@ func (s *Strategy) clampOrderSize(size float64) float64 {
 		return limit
 	}
 	return size
+}
+
+func (s *Strategy) preferHighPriceFirstToken(yesBidC, noBidC int) (domain.TokenType, bool) {
+	if s == nil {
+		return "", false
+	}
+	th := s.PreferHighPriceThresholdCents
+	if th <= 0 {
+		return "", false
+	}
+	// 只在“一边明显高于阈值”时启用，避免两边都>=阈值时产生随机偏好
+	yesHigh := yesBidC >= th
+	noHigh := noBidC >= th
+	if yesHigh && !noHigh {
+		return domain.TokenTypeUp, true
+	}
+	if noHigh && !yesHigh {
+		return domain.TokenTypeDown, true
+	}
+	return "", false
 }
 
 func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Market) {

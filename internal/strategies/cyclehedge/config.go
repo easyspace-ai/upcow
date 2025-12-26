@@ -60,6 +60,18 @@ type Config struct {
 	// - 对 maker 建仓 / taker 补齐 / flatten 回平 都生效（统一裁剪）
 	MaxOrderSizeShares float64 `yaml:"maxOrderSizeShares" json:"maxOrderSizeShares"`
 
+	// ===== 盘口方向偏好（减少“单腿成交时拿错方向”的风险）=====
+	// 当 maker 建仓需要同时下 YES/NO 两腿时，优先下“盘口价格更高且超过阈值”的那一腿，
+	// 目的是：若短时间只成交一腿（裸露），尽量让裸露落在“更可能胜出”的方向上。
+	//
+	// 例：preferHighPriceThresholdCents=60
+	// - 若 yesBid>=60 且 noBid<60，则先下 YES
+	// - 若 noBid>=60 且 yesBid<60，则先下 NO
+	// - 否则不启用偏好（保持原顺序）
+	//
+	// 0 表示关闭该功能（默认关闭，避免改变既有行为；你可配置为 50 或 60）。
+	PreferHighPriceThresholdCents int `yaml:"preferHighPriceThresholdCents" json:"preferHighPriceThresholdCents"`
+
 	// ===== 盘口质量 gate（可选，建议开启）=====
 	EnableMarketQualityGate *bool `yaml:"enableMarketQualityGate" json:"enableMarketQualityGate"`
 	MarketQualityMinScore   int   `yaml:"marketQualityMinScore" json:"marketQualityMinScore"` // 默认 70
@@ -153,6 +165,9 @@ func (c *Config) Validate() error {
 	// 默认给一个保守值：避免单笔异常放大（策略仍可能分多笔完成）
 	if c.MaxOrderSizeShares == 0 {
 		c.MaxOrderSizeShares = 20
+	}
+	if c.PreferHighPriceThresholdCents < 0 || c.PreferHighPriceThresholdCents > 99 {
+		return fmt.Errorf("preferHighPriceThresholdCents 必须在 [0,99] 范围内")
 	}
 	if c.EnableMarketQualityGate == nil {
 		c.EnableMarketQualityGate = boolPtr(true)

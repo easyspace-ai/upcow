@@ -42,6 +42,10 @@ exchangeStrategies:
       
       # 单笔最大下单数量（shares）：硬风控，避免单笔失控
       maxOrderSizeShares: 20
+      
+      # 方向偏好：两腿都要下单时，优先下盘口价格更高且 >= 阈值的一腿（例如 60c）
+      # 用于减少“只成交一腿时拿错方向”的概率。0 表示关闭。
+      preferHighPriceThresholdCents: 60
 
       # 报价刷新
       requoteMs: 1000
