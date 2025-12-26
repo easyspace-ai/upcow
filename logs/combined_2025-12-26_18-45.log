@@ -1,0 +1,2 @@
+[36mINFO[0m[25-12-26 18:50:14] 使用默认配置文件: yml/config.yaml                    
+[36mINFO[0m[25-12-26 18:50:14] 已加载策略配置: strategy=cyclehedge file=yml/cyclehedge.yaml 

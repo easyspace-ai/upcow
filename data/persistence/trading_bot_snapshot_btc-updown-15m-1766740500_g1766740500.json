@@ -1,0 +1,60 @@
+{
+  "updated_at": "2025-12-26T17:20:17.146365+08:00",
+  "balance": 75.708956,
+  "open_orders": [],
+  "positions": [
+    {
+      "ID": "btc-updown-15m-1766740500_92254360660137750485539121929082752411333995129524464517603636690613445320747_up",
+      "MarketSlug": "btc-updown-15m-1766740500",
+      "Market": {
+        "Slug": "btc-updown-15m-1766740500",
+        "YesAssetID": "92254360660137750485539121929082752411333995129524464517603636690613445320747",
+        "NoAssetID": "74309318703566038926624581122834259388398678926863725137700682187035177633418",
+        "ConditionID": "0xc021f4c0fe586a9913d69b95ac14b4777d2fc029daf80131c2f8068a64d358bd",
+        "Question": "Bitcoin Up or Down - December 26, 4:15AM-4:30AM ET",
+        "Timestamp": 1766740500
+      },
+      "EntryOrder": {
+        "OrderID": "0xf047525de9ae7268abf44a6b8c479a1062c69d392730f29486fbe9fb57f0f7c6",
+        "MarketSlug": "btc-updown-15m-1766740500",
+        "AssetID": "92254360660137750485539121929082752411333995129524464517603636690613445320747",
+        "Side": "BUY",
+        "Price": {
+          "Pips": 5800
+        },
+        "Size": 11,
+        "FilledSize": 11,
+        "FilledPrice": {
+          "Pips": 5800
+        },
+        "GridLevel": 0,
+        "TokenType": "up",
+        "HedgeOrderID": null,
+        "CreatedAt": "2025-12-26T17:17:22.092711+08:00",
+        "FilledAt": "2025-12-26T17:17:23.346476+08:00",
+        "CanceledAt": null,
+        "IsEntryOrder": true,
+        "PairOrderID": null,
+        "Status": "filled",
+        "OrderType": "FAK",
+        "TickSize": "0.001",
+        "NegRisk": false
+      },
+      "HedgeOrder": null,
+      "EntryPrice": {
+        "Pips": 5800
+      },
+      "EntryTime": "2025-12-26T17:17:23.346346+08:00",
+      "ExitOrder": null,
+      "ExitPrice": null,
+      "ExitTime": null,
+      "Size": 11,
+      "TokenType": "down",
+      "Status": "open",
+      "Unhedged": false,
+      "CostBasis": 6.38,
+      "AvgPrice": 0.58,
+      "TotalFilledSize": 11
+    }
+  ]
+}

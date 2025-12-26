@@ -1,0 +1,126 @@
+# Gobet 交易机器人配置文件示例
+# 复制此文件为 config.yaml 并修改相应的配置
+#
+# 注意：钱包配置（private_key, funder_address）会自动从 data/user.json 加载
+# 无需在此配置文件中设置钱包信息
+
+# 代理配置（可选，如果不设置会从 data/user.json 加载）
+proxy:
+  host: "127.0.0.1"
+  port: 15236
+
+# 策略配置（bbgo main 风格：exchangeStrategies 动态挂载）
+# 格式说明：
+# - on: 会话名（本项目通常是 "polymarket"）
+# - 其余 key 是策略 ID（如 updown, grid, threshold, arbitrage 等）
+# - value 是该策略的配置
+exchangeStrategies:
+  #threshold 策略（价格阈值策略）
+ - on: polymarket
+   threshold:
+     # ========== 价格阈值（美分，1-100，表示价格）==========
+     buyThreshold: 62        # 买入阈值（美分）：当价格从低到高突破 62 cents（$0.62）时买入
+                             # 规则：必须价格从低于 62c 涨到 >= 62c 才买入（突破买入）
+                             # 示例：价格从 60c → 62c，触发买入；价格从 99c → 62c，不买入
+     maxBuyPrice: 0         # 最大买入价格（美分）：价格超过此值时不买入（0 表示不限制）
+                             # 规则：如果价格 > 80c，即使突破阈值也不买入
+                             # 示例：价格从 79c → 82c，不买入（超过 80c）
+     sellThreshold: 40        # 卖出阈值（美分）：当价格 <= 此值时卖出（0 表示不使用此功能）
+                             # 示例：如果设置为 30，当价格跌到 30c 时卖出
+
+     # ========== 订单配置 ==========
+     orderSize: 3.0          # 订单大小：每次买入/卖出的 share 数量（Polymarket 要求最小 5 shares）
+                             # 注意：如果配置小于 5，系统会自动调整为 5
+     tokenType: ""           # Token 类型：""=监控所有, "YES"=只买UP, "NO"=只买DOWN
+
+     # ========== 止盈止损（美分，表示价格差）==========
+     profitTargetCents: 5    # 止盈目标（美分）：买入后，价格比买入价高 N 美分时卖出
+                             # 示例：买入价 62c，如果设置为 5，则当价格 >= 67c 时卖出
+                             #       盈利 = 67c - 62c = 5 cents
+     stopLossCents: 10       # 止损目标（美分）：买入后，价格比买入价低 N 美分时卖出
+                             # 示例：买入价 62c，如果设置为 10，则当价格 <= 52c 时卖出
+                             #       亏损 = 62c - 52c = 10 cents
+  
+  # #Updown 策略配置（价格变化时自动下单）
+  # - on: polymarket
+  #   updown:
+  #     tokenType: "up"              # Token 类型：up/down/yes/no，默认 up
+  #     orderSize: 3.0               # 订单大小（shares），必须 > 0
+  #     oncePerCycle: true           # 每个周期只下1次单（默认 true，避免信号风暴）
+  #     minOrderSize: 1.1            # 最小订单金额（USDC），默认 1.1
+  #     maxBuySlippageCents: 0       # 最大买入滑点（美分），0 表示不限制
+  #     warmupMs: 500                # 预热期（毫秒），默认 1200ms。设置为 0 可关闭预热期，但可能增加误触发风险
+  #     maxBuyPriceCents: 80         # 买入价硬上限（分），默认 80，过滤极端价格
+  #     maxSpreadCents: 5            # 盘口价差上限（分），默认 5，过滤假盘口
+  
+  # 网格策略配置（已注释，如需启用请取消注释）
+  # - on: polymarket
+  #   grid:
+  #     grid_levels: [62, 65, 71, 77]  # 网格层级列表（分）
+  #     order_size: 3                  # 订单大小（share数量）
+  #     min_order_size: 1.1            # 最小下单金额（USDC）
+  #     enable_rebuy: true             # 允许重新买入
+  #     enable_double_side: true       # 双向交易
+  #     profit_target: 3               # 止盈目标（分）
+  #     max_unhedged_loss: 10          # 最大未对冲损失（分）
+  #     hard_stop_price: 50            # 硬止损价格（分）
+  #     elastic_stop_price: 40         # 弹性止损价格（分）
+  #     max_rounds_per_period: 1       # 每个周期最大轮数
+  
+  # 价格阈值策略配置（已注释，如需启用请取消注释）
+  # - on: polymarket
+  #   threshold:
+  #     buy_threshold: 0.62      # 买入阈值（小数，例如 0.62 表示 62 cents）
+  #     sell_threshold: 0        # 卖出阈值（小数，0 表示不卖出）
+  #     order_size: 3.0          # 订单大小
+  #     token_type: ""           # Token 类型：YES、NO 或空字符串（监控所有）
+  #     profit_target_cents: 3   # 止盈目标（分），例如 3 表示 +3 cents（价格比买入价高 3 cents 时卖出）
+  #     stop_loss_cents: 10      # 止损目标（分），例如 10 表示 -10 cents（价格比买入价低 10 cents 时卖出）
+  
+  # 套利策略配置（适用于 btc-updown-15m-* 市场，已注释，如需启用请取消注释）
+  # 当前配置适用于 40 USDC 资金量测试
+  # - on: polymarket
+  #   arbitrage:
+  #     lock_start_minutes: 10    # 锁盈阶段起始时间（分钟，从10分钟开始进入锁定阶段）
+  #     early_lock_price_threshold: 0.85  # 提前锁盈价格阈值（默认0.85，当UP或DOWN价格达到此阈值时提前进入锁盈阶段）
+  #     target_up_base: 2.0       # UP胜目标利润（USDC，适合40 USDC资金量，目标5%收益率）
+  #     target_down_base: 2.0      # DOWN胜目标利润（USDC，适合40 USDC资金量，目标5%收益率）
+  #     base_target: 30.0          # 基础建仓目标持仓量（从1500降至30，适合40 USDC资金量）
+  #     build_lot_size: 3.0       # 建仓阶段单次下单量（从18降至3，适合40 USDC资金量）
+  #     max_up_increment: 3.0      # 锁盈阶段单次最大UP加仓量（从100降至3，适合40 USDC资金量）
+  #     max_down_increment: 3.0   # 锁盈阶段单次最大DOWN加仓量（从100降至3，适合40 USDC资金量）
+  #     small_increment: 1.5       # 反向保险小额加仓量（从20降至1.5，适合40 USDC资金量）
+  #     min_order_size: 1.1       # 最小下单金额（USDC，默认1.1，交易所要求不能小于1）
+  
+  # 数据记录策略配置（不交易，只记录数据，已注释，如需启用请取消注释）
+#  - on: polymarket
+#    datarecorder:
+#        output_dir: "data/recordings"  # CSV 文件保存目录
+#        use_rtds_fallback: true        # 是否使用 RTDS 作为目标价备选方案
+#
+# 系统级配置
+order_status_check_timeout: 3   # 订单状态检查超时时间（秒），如果WebSocket在此时长内没有更新，则启用API轮询，默认3秒
+order_status_check_interval: 3  # 订单状态API轮询间隔（秒），默认3秒
+
+# 订单大小限制配置
+minOrderSize: 1.1    # 最小订单金额（USDC），默认 1.1（交易所要求 >= 1）
+minShareSize: 5.0   # 限价单最小 share 数量，默认 5.0（仅限价单 GTC 时应用，Polymarket 要求）
+
+# 日志配置
+log_level: "info"         # 日志级别：debug, info, warn, error
+log_file: "logs/bot.log"  # 日志文件路径
+log_by_cycle: true        # 是否按周期命名日志文件（一个周期一个日志文件，格式：bot_2025-12-17_22-30.log）
+
+# 纸交易模式（dry run）
+# 如果设置为 true，不会进行真实交易，只在日志中打印订单信息，方便测试策略
+dry_run: true            # 纸交易模式：true = 仅模拟交易，false = 真实交易
+
+# 订单状态同步配置
+# 定期通过API同步订单状态，作为WebSocket的补充机制
+# 官方API限流：150请求/10秒（约15次/秒），理论上可支持1秒，但建议3秒以上
+order_status_sync_interval_with_orders: 3     # 有活跃订单时的同步间隔（秒），默认3秒（需要快速判断是否下对冲单）
+order_status_sync_interval_without_orders: 30 # 无活跃订单时的同步间隔（秒），默认30秒
+
+GRID_HEALTH_LOG_INTERVAL_SECONDS: 15
+GRID_STRONG_HEDGE_DEBOUNCE_SECONDS: 2
+GRID_ENABLE_ADHOC_STRONG_HEDGE: true

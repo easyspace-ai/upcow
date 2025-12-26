@@ -103,7 +103,7 @@ func main() {
 		logrus.Infof("使用配置文件: %s", *configPath)
 	} else {
 		// 配置集中管理：默认只加载 yml/base.yaml，并兼容旧名 yml/config.yaml
-		if p, ok := firstExistingFile("yml/base.yaml", "yml/config.yaml"); ok {
+		if p, ok := firstExistingFile("yml/config.yaml"); ok {
 			config.SetConfigPath(p)
 			logrus.Infof("使用默认配置文件: %s", p)
 		} else {

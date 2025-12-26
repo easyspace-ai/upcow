@@ -1,0 +1,119 @@
+# Gobet 交易机器人配置文件（示例）
+# 注意：钱包相关（private_key, funder_address）通常从 data/user.json 加载，不要写在这里
+ 
+# 代理（可选；不需要就删掉这一段）
+proxy:
+  host: "127.0.0.1"
+  port: 15236
+ 
+# 市场选择：通过这里切换币种/周期
+# timeframe: "15m" / "1h" / "4h"
+# slugTemplates: 格式模板，程序根据时间替换变量
+# 支持的变量：
+#   - {symbol}: 币种符号 (btc, eth)
+#   - {coinName}: 币种全名 (bitcoin, ethereum) - 自动映射
+#   - {kind}: 市场类型 (updown)
+#   - {timeframe}: 周期 (15m, 1h)
+#   - {timestamp}: Unix 时间戳
+#   - {month}: 月份全名小写 (december)
+#   - {day}: 日期 (24)
+#   - {hour}: 12小时制小时 (11)
+#   - {ampm}: am/pm
+#   - {et}: 时区标识 (et)
+market:
+  symbol: "btc"
+  timeframe: "15m"
+  kind: "updown"
+  # slugTemplates: 格式模板映射（根据 timeframe 选择）
+  slugTemplates:
+    "15m": "{symbol}-{kind}-{timeframe}-{timestamp}"
+    "1h": "{coinName}-up-or-down-{month}-{day}-{hour}{ampm}-et"
+    "4h": "{symbol}-{kind}-{timeframe}-{timestamp}"  # 默认使用 timestamp 格式
+ 
+# 策略挂载（bbgo main 风格）
+exchangeStrategies:
+  - on: polymarket
+    velocityfollow:
+      # ====== 下单参数 ======
+      orderSize: 5
+      hedgeOrderSize: 0          # 0=跟随 orderSize（对侧挂单 shares）
+ 
+      # ====== 开仓质量过滤（胜率） ======
+      enableMarketQualityGate: true
+      marketQualityMinScore: 70
+      marketQualityMaxSpreadCents: 5     # <=0 则使用 maxSpreadCents
+      marketQualityMaxBookAgeMs: 3000
+
+      # ====== 出场（平仓）参数：建议开启形成闭环 ======
+      # 说明：当持仓存在时，策略会优先处理出场，不再叠加开仓。
+      # - 触发价使用 bestBid（SELL FAK），因此实际成交价会略受盘口影响
+      takeProfitCents: 3         # 止盈（分）：当前 bid - 入场均价 >= 3c 则卖出平仓（0=禁用）
+      stopLossCents: 6           # 止损（分）：入场均价 - 当前 bid >= 6c 则卖出平仓（0=禁用）
+      maxHoldSeconds: 120        # 时间止损（秒）：持仓超过 120 秒强制平仓（0=禁用）
+      exitCooldownMs: 1500       # 出场冷却（ms）：避免频繁重复下卖单
+      exitBothSidesIfHedged: true # 若同周期同时持有 UP/DOWN，则同时卖出全平（更简单、更安全）
+
+      # ====== 分批止盈（盈亏比） ======
+      # 达到利润阈值后，卖出“当前剩余持仓”的 fraction 比例（每个 level 只触发一次）
+      partialTakeProfits:
+        - profitCents: 3
+          fraction: 0.5
+        - profitCents: 6
+          fraction: 0.5
+
+      # ====== 追踪止盈（trailing） ======
+      enableTrailingTakeProfit: true
+      trailStartCents: 4
+      trailDistanceCents: 2
+
+      # ====== “速度快”判定 ======
+      windowSeconds: 10
+      minMoveCents: 3
+      minVelocityCentsPerSec: 0.3
+ 
+      cooldownMs: 1500
+      maxTradesPerCycle: 1      # 每周期最多交易次数（0=不设限，1=每周期只交易一次）
+      warmupMs: 800
+ 
+      # ====== 安全参数 ======
+      hedgeOffsetCents: 3        # 对侧挂单价 = (100 - entryAskCents - offset)
+      maxEntryPriceCents: 95
+      maxSpreadCents: 5
+ 
+      # ====== Binance 开盘 1m K 线阴阳 bias（已禁用用于测试）======
+      useBinanceOpen1mBias: false
+      biasMode: "hard"           # hard=只顺势；soft=逆势门槛更高
+      open1mMaxWaitSeconds: 120
+      open1mMinBodyBps: 3
+      open1mMaxWickBps: 25
+      requireBiasReady: false    # 禁用 bias 等待
+
+      # soft 模式下才需要（hard 模式也可以留着不生效）
+      oppositeBiasVelocityMultiplier: 1.5
+      oppositeBiasMinMoveExtraCents: 2
+
+      # ====== Binance 1s "底层硬动确认"（已禁用用于测试）======
+      useBinanceMoveConfirm: false
+      moveConfirmWindowSeconds: 60
+      minUnderlyingMoveBps: 20
+ 
+# ====== 系统级配置 ======
+order_status_check_timeout: 3
+order_status_check_interval: 3
+ 
+minOrderSize: 1.1
+minShareSize: 5.0
+ 
+log_level: "info"
+log_file: "logs/bot.log"
+log_by_cycle: true
+ 
+# 先用 dry_run 测试，确认逻辑和日志 OK 再改 false
+dry_run: true
+ 
+order_status_sync_interval_with_orders: 3
+order_status_sync_interval_without_orders: 30
+ 
+GRID_HEALTH_LOG_INTERVAL_SECONDS: 15
+GRID_STRONG_HEDGE_DEBOUNCE_SECONDS: 2
+GRID_ENABLE_ADHOC_STRONG_HEDGE: true

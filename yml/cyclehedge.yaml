@@ -1,52 +1,64 @@
-# cyclehedge：BTC 15m 周期“对冲锁利”策略示例
+# cyclehedge：40U 测试版（BTC 15m）
 #
-# 目标：
-# - 每个 15m 周期里，用 complete-set（同时持有 YES+NO）锁定 1~5c 的确定收益
-# - 以 maker(GTC) 挂单为主，成交后持有到结算
-# - 余额每周期刷新，按余额比例自动放大投入（上限 maxNotionalUSDC）
+# 说明：
+# - 每周期固定投入 40 USDC（fixedNotionalUSDC）
+# - 距离结算 3 分钟（180s）停止开新仓并撤单（entryCutoffSeconds）
 #
-# 风险提示：
-# - 最大风险来自“单腿成交而另一腿未成交”，本策略会在超时/临近结算前自动补齐或回平
-# - maker 成交速度取决于流动性，profit 目标越大越难成交
-#
+
+market:
+  symbol: "btc"
+  timeframe: "15m"
+  kind: "updown"
+
+# 实盘交易开关（⚠️ 实盘前必须改为 false）
+# 建议：先用 dry_run: true 测试，确认逻辑和日志 OK 再改 false
+dry_run: true  # ⚠️ 实盘模式：已启用真实交易
+
+
 exchangeStrategies:
   - on: polymarket
     cyclehedge:
-      # 周期长度（秒）：btc 15m = 900
+      # 周期长度：15m
       cycleDurationSeconds: 900
 
-      # 锁利区间：优先尝试 profitMaxCents，若盘口不允许则向下尝试到 profitMinCents
+      # 锁利目标（分）：测试期建议更偏“容易成交”
       profitMinCents: 1
-      profitMaxCents: 5
-      # 动态 profit：在区间内按“收益 vs 距离盘口的远近”选最优
+      profitMaxCents: 3
       enableDynamicProfit: true
-      distancePenaltyBps: 30
+      distancePenaltyBps: 40
 
-      # 单腿裸露处理：
-      # - allowTakerComplete=true：优先用 FAK 补齐另一腿（只要不低于 minProfitAfterCompleteCents）
-      # - allowFlatten=true：若无法补齐则卖出多出来的一腿回平
+      # 每周期资金量（USDC notional）：固定 40U（不随余额滚动）
+      fixedNotionalUSDC: 40
+      # 下方滚动参数在 fixedNotionalUSDC>0 时不会生效，但保留默认值便于切换
+      minNotionalUSDC: 30
+      maxNotionalUSDC: 3000
+      balanceAllocationPct: 0.8
+
+      # 距离结算 3 分钟：停止开新仓并撤单
+      entryCutoffSeconds: 180
+
+      # 每周期最大单向持仓（shares）：40U 情况下正常在几十 shares 级别，这里给一个保守上限
+      maxSingleSideShares: 50
+
+      # 报价刷新
+      requoteMs: 1000
+
+      # 单腿裸露自救
       minProfitAfterCompleteCents: 0
       unhedgedTimeoutSeconds: 10
       allowTakerComplete: true
       allowFlatten: true
       minUnhedgedShares: 1
 
-      # 每周期投入（USDC notional）：min/max + 按余额比例滚动
-      # fixedNotionalUSDC: 3000   # 若设置>0，则每周期固定使用该资金量（不随余额滚动）
-      minNotionalUSDC: 30
-      maxNotionalUSDC: 3000
-      balanceAllocationPct: 0.8
-
-      # 每周期最大单向持仓（shares）
-      maxSingleSideShares: 5000
-
-      # 执行节奏
-      requoteMs: 800
-      entryCutoffSeconds: 25
-
       # 盘口质量 gate（建议开启）
       enableMarketQualityGate: true
       marketQualityMinScore: 70
       marketQualityMaxSpreadCents: 5
       marketQualityMaxBookAgeMs: 3000
+
+      # 周期报表：写入 data/reports/cyclehedge/
+      enableReport: true
+      reportDir: "data/reports/cyclehedge"
+      reportWriteJSONL: true
+      reportWritePerCycle: true
 

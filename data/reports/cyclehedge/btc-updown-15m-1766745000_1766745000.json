@@ -1,0 +1,29 @@
+{
+  "strategy": "cyclehedge",
+  "marketSlug": "btc-updown-15m-1766745000",
+  "cycleStartUnix": 1766745000,
+  "cycleEndUnix": 1766745900,
+  "generatedAtUnix": 1766745000,
+  "targetNotionalUSDC": 40,
+  "targetShares": 41.23711340206186,
+  "upShares": 0,
+  "downShares": 0,
+  "minShares": 0,
+  "unhedgedShares": 0,
+  "upAvgPrice": 0,
+  "downAvgPrice": 0,
+  "lockedProfitCentsPerShare": 0,
+  "lockedProfitUSDC": 0,
+  "quotes": 7955,
+  "ordersPlacedYes": 0,
+  "ordersPlacedNo": 0,
+  "cancels": 0,
+  "takerCompletes": 0,
+  "flattens": 0,
+  "closeoutCancels": 1334,
+  "maxSingleSideStops": 0,
+  "profitChoice": {
+    "3c": 7955
+  },
+  "lastChosenProfit": 3
+}
