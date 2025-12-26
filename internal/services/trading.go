@@ -34,7 +34,7 @@ type OrderResult struct {
 // TradingService 交易服务（重构后，无锁，使用 OrderEngine）
 type TradingService struct {
 	orderEngine *OrderEngine
-	ioExecutor  *IOExecutor
+	ioExecutor  *ioExecutor
 	clobClient  *client.Client
 
 	// 组件化子服务（对外 API 仍由 TradingService 承载）
@@ -101,7 +101,7 @@ func NewTradingService(clobClient *client.Client, dryRun bool) *TradingService {
 	minOrderSize := 1.1 // 默认最小订单金额
 
 	// 创建 IO 执行器
-	ioExecutor := NewIOExecutor(clobClient, dryRun)
+	ioExecutor := newIOExecutor(clobClient, dryRun)
 
 	// 创建 OrderEngine
 	orderEngine := NewOrderEngine(ioExecutor, minOrderSize, dryRun)

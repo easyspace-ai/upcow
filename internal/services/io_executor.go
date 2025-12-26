@@ -14,8 +14,12 @@ import (
 
 var ioExecutorLog = logrus.WithField("component", "io_executor")
 
-// IOExecutor IO 操作执行器（异步执行，不阻塞 OrderEngine）
-type IOExecutor struct {
+// ioExecutor IO 操作执行器（异步执行，不阻塞 OrderEngine）。
+//
+// 系统级约束：
+// - 必须只被 OrderEngine 调用（统一受 TradingService 的 paused/market gate 管控）。
+// - 不对外导出，防止未来误用绕过下单安全门。
+type ioExecutor struct {
 	clobClient *client.Client
 	dryRun     bool
 
@@ -26,9 +30,9 @@ type IOExecutor struct {
 	signatureType types.SignatureType
 }
 
-// NewIOExecutor 创建 IO 执行器
-func NewIOExecutor(clobClient *client.Client, dryRun bool) *IOExecutor {
-	return &IOExecutor{
+// newIOExecutor 创建 IO 执行器（包内私有）。
+func newIOExecutor(clobClient *client.Client, dryRun bool) *ioExecutor {
+	return &ioExecutor{
 		clobClient:    clobClient,
 		dryRun:        dryRun,
 		funderAddress: "",
@@ -38,13 +42,13 @@ func NewIOExecutor(clobClient *client.Client, dryRun bool) *IOExecutor {
 
 // SetFunderAddress 设置下单资金地址（proxy_address）与签名类型。
 // 注意：这里不会校验地址合法性，调用方应保证传入的 funderAddress 正确。
-func (e *IOExecutor) SetFunderAddress(funderAddress string, signatureType types.SignatureType) {
+func (e *ioExecutor) SetFunderAddress(funderAddress string, signatureType types.SignatureType) {
 	e.funderAddress = funderAddress
 	e.signatureType = signatureType
 }
 
 // PlaceOrderAsync 异步下单
-func (e *IOExecutor) PlaceOrderAsync(
+func (e *ioExecutor) PlaceOrderAsync(
 	ctx context.Context,
 	order *domain.Order,
 	callback func(*PlaceOrderResult),
@@ -56,7 +60,7 @@ func (e *IOExecutor) PlaceOrderAsync(
 			// 纸交易模式：模拟下单成功
 			result.Order = order
 			result.Order.Status = domain.OrderStatusOpen
-			
+
 			// ✅ 修复：FAK 订单在纸交易模式下立即"成交"
 			// FAK (Fill-And-Kill) 订单要么立即成交，要么立即取消
 			// 在纸交易模式下，我们模拟立即成交
@@ -64,7 +68,7 @@ func (e *IOExecutor) PlaceOrderAsync(
 				result.Order.Status = domain.OrderStatusFilled
 				result.Order.FilledSize = order.Size // 完全成交
 			}
-			
+
 			// 保持原始订单ID，不生成新的
 			if result.Order.OrderID == "" {
 				result.Order.OrderID = fmt.Sprintf("dry_run_%d", time.Now().UnixNano())
@@ -93,7 +97,7 @@ func (e *IOExecutor) PlaceOrderAsync(
 }
 
 // placeOrderSync 同步下单（内部方法）
-func (e *IOExecutor) placeOrderSync(ctx context.Context, order *domain.Order) (*domain.Order, error) {
+func (e *ioExecutor) placeOrderSync(ctx context.Context, order *domain.Order) (*domain.Order, error) {
 	// 确定订单类型（默认 GTC）
 	orderType := order.OrderType
 	if orderType == "" {
@@ -105,12 +109,12 @@ func (e *IOExecutor) placeOrderSync(ctx context.Context, order *domain.Order) (*
 		TickSize: types.TickSize0001, // 默认值
 		NegRisk:  boolPtr(false),     // 默认值
 	}
-	
+
 	// 如果订单中指定了 TickSize，使用订单的值
 	if order.TickSize != "" {
 		options.TickSize = order.TickSize
 	}
-	
+
 	// 如果订单中指定了 NegRisk，使用订单的值
 	if order.NegRisk != nil {
 		options.NegRisk = order.NegRisk
@@ -158,7 +162,7 @@ func (e *IOExecutor) placeOrderSync(ctx context.Context, order *domain.Order) (*
 }
 
 // CancelOrderAsync 异步取消订单
-func (e *IOExecutor) CancelOrderAsync(
+func (e *ioExecutor) CancelOrderAsync(
 	ctx context.Context,
 	orderID string,
 	callback func(error),
