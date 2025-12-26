@@ -255,10 +255,19 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 		if currentSession != nil && currentSession.MarketDataStream != nil {
 			if ms, ok := currentSession.MarketDataStream.(*websocket.MarketStream); ok {
 				schedulerLog.Infof("🔄 [切换市场] 使用动态订阅切换: %s -> %s", currentMarket.Slug, nextMarket.Slug)
-				
+
 				// 【修复】先更新会话的市场信息，确保策略能获取到正确的市场信息
 				currentSession.SetMarket(nextMarket)
-				
+
+				// 【关键修复】在“更新当前市场信息并触发回调”之前，先原地清空 WS bestBook。
+				// 否则会出现一个严重窗口：
+				// - 回调里 TradingService.SetCurrentMarketInfo 已更新为新周期
+				// - 策略立刻调用 GetTopOfBook/ GetBestPrice（source=ws.bestbook）
+				// - 但 bestBook 仍然是旧周期的“新鲜数据”，会被当作新周期使用（你日志里的 0.99/1.0）
+				if bb := ms.BestBook(); bb != nil {
+					bb.Reset()
+				}
+
 				// 【修复】先触发回调注册价格处理器，然后再订阅市场（避免价格数据丢失）
 				// 注意：这里先更新状态，让回调中的策略能获取到正确的市场信息
 				s.mu.Lock()
@@ -266,7 +275,7 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 				s.currentMarket = nextMarket
 				callback := s.sessionSwitchCallback
 				s.mu.Unlock()
-				
+
 				// 先触发回调，让策略注册价格处理器
 				if callback != nil {
 					schedulerLog.Infof("🔄 [切换市场] 先注册价格处理器，然后再订阅市场")
@@ -274,7 +283,7 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 					// 等待一小段时间，确保价格处理器已注册
 					time.Sleep(100 * time.Millisecond)
 				}
-				
+
 				// 现在订阅新市场（价格处理器已注册）
 				if err := ms.SwitchMarket(s.ctx, currentMarket, nextMarket); err != nil {
 					schedulerLog.Errorf("动态切换市场失败: %v，回退到创建新会话", err)
@@ -286,6 +295,10 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 					}
 
 					s.mu.Lock()
+					// 动态切换失败时：必须关闭旧 session，避免旧 WS/旧 user stream 继续推送导致重复事件与资源泄漏。
+					if currentSession != nil {
+						_ = currentSession.Close()
+					}
 					s.environment.AddSession(s.sessionName, nextSession)
 					oldSession := s.currentSession
 					s.currentSession = nextSession
