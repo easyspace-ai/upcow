@@ -181,31 +181,37 @@ func (m *MarketStream) SwitchMarket(ctx context.Context, oldMarket, newMarket *d
 	}
 
 	// 【关键修复】先更新市场信息，确保后续消息过滤使用正确的市场信息
+	// 同时将“订阅报文（wire）”与“允许处理资产集合（logical）”解耦：
+	// - wire：只发送 YES(UP) asset_id（服务器会回推 UP/DOWN 两个 token 的 price_change）
+	// - logical：本地允许处理 YES+NO，避免把 DOWN 数据丢掉
 	if newMarket != nil {
 		m.market = newMarket
 		marketLog.Infof("🔄 [切换市场] 已更新市场信息: %s", newMarket.Slug)
 	}
 
-	// 退订旧市场
+	// 退订旧市场（wire 只退订 YES/UP；logical 订阅集合会在下面重置，防止旧周期残留被重连恢复）
 	if oldMarket != nil {
-		oldAssetIDs := []string{oldMarket.YesAssetID, oldMarket.NoAssetID}
-		if err := m.unsubscribe(oldAssetIDs); err != nil {
-			marketLog.Warnf("⚠️ [切换市场] 退订旧市场失败: %v", err)
-			// 继续执行，不中断切换流程
-		} else {
-			marketLog.Infof("✅ [切换市场] 已退订旧市场: %s", oldMarket.Slug)
+		if oldMarket.YesAssetID != "" {
+			if err := m.sendMarketSubscription([]string{oldMarket.YesAssetID}, "unsubscribe"); err != nil {
+				marketLog.Warnf("⚠️ [切换市场] 退订旧市场(UP)失败: %v", err)
+			} else {
+				marketLog.Infof("✅ [切换市场] 已发送旧市场退订(UP): %s", oldMarket.Slug)
+			}
 		}
-		// 【关键修复】等待一小段时间，确保退订消息已发送，避免旧消息被误处理
+		// 等待一小段时间，尽量让退订先落地，降低旧数据继续推送窗口
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	// 订阅新市场
+	// 订阅新市场（wire 只订阅 YES/UP；logical 重置为当前 market 的 YES+NO）
 	if newMarket != nil {
-		newAssetIDs := []string{newMarket.YesAssetID, newMarket.NoAssetID}
-		if err := m.subscribe(newAssetIDs, "subscribe"); err != nil {
+		m.resetLogicalSubscriptionsForMarket(newMarket)
+		if newMarket.YesAssetID == "" {
+			return fmt.Errorf("订阅新市场失败: YesAssetID 为空 market=%s", newMarket.Slug)
+		}
+		if err := m.sendMarketSubscription([]string{newMarket.YesAssetID}, "subscribe"); err != nil {
 			return fmt.Errorf("订阅新市场失败: %w", err)
 		}
-		marketLog.Infof("✅ [切换市场] 已订阅新市场: %s", newMarket.Slug)
+		marketLog.Infof("✅ [切换市场] 已订阅新市场(UP-only): %s", newMarket.Slug)
 
 		// 重置 bestBook（新市场需要重新构建订单簿）
 		// 创建新的 AtomicBestBook 实例来重置状态
@@ -249,7 +255,8 @@ func (m *MarketStream) SwitchMarket(ctx context.Context, oldMarket, newMarket *d
 				// 如果 handlers 已注册但没有数据，尝试重新订阅
 				if handlerCount > 0 {
 					marketLog.Warnf("🔄 [切换市场] 尝试重新订阅: market=%s", newMarket.Slug)
-					if err := m.subscribe(newAssetIDs, "subscribe"); err != nil {
+					// wire 仍然只发 UP；logical 不动（仍为 YES+NO）
+					if err := m.sendMarketSubscription([]string{newMarket.YesAssetID}, "subscribe"); err != nil {
 						marketLog.Errorf("❌ [切换市场] 重新订阅失败: %v", err)
 					} else {
 						marketLog.Infof("✅ [切换市场] 重新订阅成功: market=%s", newMarket.Slug)
@@ -280,7 +287,11 @@ func (m *MarketStream) Connect(ctx context.Context, market *domain.Market) error
 	if conn != nil {
 		marketLog.Infof("🔄 [Connect] 连接已建立，使用动态订阅: %s", market.Slug)
 		m.market = market
-		return m.subscribe([]string{market.YesAssetID, market.NoAssetID}, "subscribe")
+		m.resetLogicalSubscriptionsForMarket(market)
+		if market.YesAssetID == "" {
+			return fmt.Errorf("market YesAssetID not set: market=%s", market.Slug)
+		}
+		return m.sendMarketSubscription([]string{market.YesAssetID}, "subscribe")
 	}
 
 	// 连接未建立，建立新连接
@@ -372,8 +383,9 @@ func (m *MarketStream) DialAndConnect(ctx context.Context) error {
 		return fmt.Errorf("market asset IDs not set: YesAssetID=%s NoAssetID=%s", m.market.YesAssetID, m.market.NoAssetID)
 	}
 
-	// 使用新的 subscribe 方法（支持动态订阅）
-	if err := m.subscribe([]string{m.market.YesAssetID, m.market.NoAssetID}, "subscribe"); err != nil {
+	// 订阅当前市场（wire: UP-only；logical: YES+NO）
+	m.resetLogicalSubscriptionsForMarket(m.market)
+	if err := m.sendMarketSubscription([]string{m.market.YesAssetID}, "subscribe"); err != nil {
 		conn.Close()
 		return err
 	}
@@ -511,60 +523,95 @@ func (m *MarketStream) reconnector(ctx context.Context) {
 					marketLog.Errorf("❌ [重连验证] Handlers 为空！价格事件将无法触发策略！")
 				}
 
-				// 重连成功后，恢复所有订阅
-				m.subscribedAssetsMu.RLock()
-				subscribedAssetIDs := make([]string, 0, len(m.subscribedAssets))
-				for assetID, isSubscribed := range m.subscribedAssets {
-					if isSubscribed {
-						subscribedAssetIDs = append(subscribedAssetIDs, assetID)
-					}
+				// 重连成功后：强制恢复“当前周期 market”的订阅，避免把旧周期的资产带回来（数据源污染根因之一）
+				// wire: 只订阅 YES/UP；logical: 只允许当前 market 的 YES+NO 进入策略
+				if m.market == nil || m.market.YesAssetID == "" || m.market.NoAssetID == "" {
+					marketLog.Errorf("❌ [重连恢复] Market 未就绪，无法恢复订阅: market=%v", m.market != nil)
+					continue
 				}
-				m.subscribedAssetsMu.RUnlock()
-
-				if len(subscribedAssetIDs) > 0 {
-					marketLog.Infof("🔄 [重连恢复] 恢复 %d 个资产的订阅", len(subscribedAssetIDs))
-					// 记录重连恢复订阅前的时间，用于后续超时检测
-					resubscribeStartTime := time.Now()
-					
-					// 使用强制重新订阅，确保订阅消息发送到服务器
-					if err := m.subscribe(subscribedAssetIDs, "subscribe", true); err != nil {
-						marketLog.Warnf("⚠️ [重连恢复] 恢复订阅失败: %v", err)
-					} else {
-						marketLog.Infof("✅ [重连恢复] 订阅消息已发送: assets=%d handlers=%d (强制重新订阅)", len(subscribedAssetIDs), handlerCount)
-						// 启动监控：如果重连后 30 秒内没有收到任何消息，自动重新订阅
-						go func() {
-							time.Sleep(30 * time.Second)
-							m.lastMsgMu.RLock()
-							lastMsg := m.lastMessageAt
-							m.lastMsgMu.RUnlock()
-							
-							// 检查是否在重连恢复订阅后收到了新消息
-							// 如果 lastMsg 没有更新（仍然是重连前的消息），或者距离重连恢复订阅时间超过30秒，说明没有收到消息
-							if lastMsg.Before(resubscribeStartTime) || time.Since(lastMsg) > 30*time.Second {
-								marketLog.Warnf("⚠️ [重连监控] 重连后 30 秒内未收到任何消息: market=%s lastMsg=%v resubscribeStartTime=%v",
-									marketSlug, lastMsg, resubscribeStartTime)
-								
-								// 自动重新订阅
-								if handlerCount > 0 {
-									marketLog.Warnf("🔄 [重连监控] 尝试自动重新订阅: market=%s assets=%d", marketSlug, len(subscribedAssetIDs))
-									if err := m.subscribe(subscribedAssetIDs, "subscribe", true); err != nil {
-										marketLog.Errorf("❌ [重连监控] 自动重新订阅失败: %v", err)
-									} else {
-										marketLog.Infof("✅ [重连监控] 自动重新订阅成功: market=%s assets=%d", marketSlug, len(subscribedAssetIDs))
-									}
-								}
-							} else {
-								marketLog.Debugf("✅ [重连监控] 重连后已收到消息: market=%s lastMsg=%v",
-									marketSlug, lastMsg)
-							}
-						}()
-					}
+				m.resetLogicalSubscriptionsForMarket(m.market)
+				marketLog.Infof("🔄 [重连恢复] 恢复当前市场订阅(UP-only wire, YES+NO logical): market=%s", marketSlug)
+				resubscribeStartTime := time.Now()
+				if err := m.sendMarketSubscription([]string{m.market.YesAssetID}, "subscribe"); err != nil {
+					marketLog.Warnf("⚠️ [重连恢复] 恢复订阅失败: %v", err)
 				} else {
-					marketLog.Warnf("⚠️ [重连恢复] 没有需要恢复的订阅")
+					marketLog.Infof("✅ [重连恢复] 订阅消息已发送(UP-only): market=%s handlers=%d", marketSlug, handlerCount)
+					// 启动监控：如果重连后 30 秒内没有收到任何消息，自动重新订阅（仍然只发 UP）
+					go func() {
+						time.Sleep(30 * time.Second)
+						m.lastMsgMu.RLock()
+						lastMsg := m.lastMessageAt
+						m.lastMsgMu.RUnlock()
+						if lastMsg.Before(resubscribeStartTime) || time.Since(lastMsg) > 30*time.Second {
+							marketLog.Warnf("⚠️ [重连监控] 重连后 30 秒内未收到任何消息，尝试自动重新订阅: market=%s lastMsg=%v",
+								marketSlug, lastMsg)
+							if handlerCount > 0 {
+								if err := m.sendMarketSubscription([]string{m.market.YesAssetID}, "subscribe"); err != nil {
+									marketLog.Errorf("❌ [重连监控] 自动重新订阅失败: %v", err)
+								} else {
+									marketLog.Infof("✅ [重连监控] 自动重新订阅成功: market=%s", marketSlug)
+								}
+							}
+						} else {
+							marketLog.Debugf("✅ [重连监控] 重连后已收到消息: market=%s lastMsg=%v", marketSlug, lastMsg)
+						}
+					}()
 				}
 			}
 		}
 	}
+}
+
+// resetLogicalSubscriptionsForMarket 将“允许处理的资产集合（logical）”重置为指定 market 的 YES+NO。
+// 目的：
+// - 周期切换/重连成功后，强制清掉旧周期资产，避免旧资产在后续重连时被恢复（数据源污染）
+// - 支持“wire 只订阅 UP，但本地仍允许处理 UP+DOWN”
+func (m *MarketStream) resetLogicalSubscriptionsForMarket(market *domain.Market) {
+	if market == nil {
+		return
+	}
+	newMap := make(map[string]bool, 2)
+	if market.YesAssetID != "" {
+		newMap[market.YesAssetID] = true
+	}
+	if market.NoAssetID != "" {
+		newMap[market.NoAssetID] = true
+	}
+	m.subscribedAssetsMu.Lock()
+	m.subscribedAssets = newMap
+	m.subscribedAssetsMu.Unlock()
+}
+
+// sendMarketSubscription 发送 market-channel 的订阅/退订消息（wire 层）。
+// 说明：
+// - 为对齐服务端行为与“只需订阅 UP”的约束，我们这里允许只发送 1 个 asset_id。
+// - logical 层（本地过滤允许处理的资产）由 resetLogicalSubscriptionsForMarket 负责维护。
+func (m *MarketStream) sendMarketSubscription(assetIDs []string, operation string) error {
+	if len(assetIDs) == 0 {
+		return fmt.Errorf("资产 ID 列表为空")
+	}
+
+	// 订阅报文
+	msg := map[string]interface{}{
+		"assets_ids": assetIDs,
+		"type":       "market",
+	}
+	if operation != "" {
+		msg["operation"] = operation
+	}
+
+	m.connMu.Lock()
+	conn := m.conn
+	m.connMu.Unlock()
+	if conn == nil {
+		return fmt.Errorf("连接未建立")
+	}
+
+	// 记录订阅消息内容（用于调试）
+	if msgBytes, err := json.Marshal(msg); err == nil {
+		marketLog.Debugf("📤 [订阅发送] market msg: %s", string(msgBytes))
+	}
+	return conn.WriteJSON(msg)
 }
 
 // Read 读取消息循环
@@ -810,7 +857,12 @@ func (m *MarketStream) subscribeMarket(market *domain.Market) error {
 	if market == nil {
 		return fmt.Errorf("market 为 nil")
 	}
-	return m.subscribe([]string{market.YesAssetID, market.NoAssetID}, "subscribe")
+	m.market = market
+	m.resetLogicalSubscriptionsForMarket(market)
+	if market.YesAssetID == "" {
+		return fmt.Errorf("market YesAssetID not set: market=%s", market.Slug)
+	}
+	return m.sendMarketSubscription([]string{market.YesAssetID}, "subscribe")
 }
 
 // unsubscribe 退订市场资产（支持动态退订和批量退订）
@@ -1780,30 +1832,15 @@ func (m *MarketStream) Close() error {
 	}
 	marketLog.Infof("🔄 [关闭] MarketStream 已清空所有 handlers，市场=%s", marketSlug)
 
-	// 关闭前退订所有资产（可选，但更优雅）
+	// 关闭前退订当前 market（wire 只退订 UP；不依赖 map 顺序，避免退订错 token）
+	// 注意：即使退订失败，也会在 close 时断开连接；这里主要用于减少服务器侧推送与带宽
+	if m.market != nil && m.market.YesAssetID != "" {
+		_ = m.sendMarketSubscription([]string{m.market.YesAssetID}, "unsubscribe")
+	}
+	// 清空订阅列表（防止 Close 后仍被重连逻辑“恢复”）
 	m.subscribedAssetsMu.Lock()
-	subscribedAssetIDs := make([]string, 0, len(m.subscribedAssets))
-	for assetID, isSubscribed := range m.subscribedAssets {
-		if isSubscribed {
-			subscribedAssetIDs = append(subscribedAssetIDs, assetID)
-		}
-	}
+	m.subscribedAssets = make(map[string]bool)
 	m.subscribedAssetsMu.Unlock()
-
-	if len(subscribedAssetIDs) > 0 {
-		// 尝试退订（如果连接还存在）
-		m.connMu.Lock()
-		conn := m.conn
-		m.connMu.Unlock()
-		if conn != nil {
-			marketLog.Infof("🔕 [关闭] 退订 %d 个资产", len(subscribedAssetIDs))
-			_ = m.unsubscribe(subscribedAssetIDs) // 忽略错误，因为正在关闭
-		}
-		// 清空订阅列表
-		m.subscribedAssetsMu.Lock()
-		m.subscribedAssets = make(map[string]bool)
-		m.subscribedAssetsMu.Unlock()
-	}
 
 	// 发送关闭信号（在清空 handlers 之后）
 	close(m.closeC)
