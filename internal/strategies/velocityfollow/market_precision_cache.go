@@ -28,4 +28,3 @@ func ParseTickSize(tickSizeStr string) (types.TickSize, error) {
 		return "", fmt.Errorf("不支持的 tick size: %s", tickSizeStr)
 	}
 }
-
