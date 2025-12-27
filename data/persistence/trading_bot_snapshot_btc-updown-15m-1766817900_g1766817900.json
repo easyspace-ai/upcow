@@ -1,0 +1,60 @@
+{
+  "updated_at": "2025-12-27T14:57:08.020146+08:00",
+  "balance": 11.240258,
+  "open_orders": [],
+  "positions": [
+    {
+      "ID": "btc-updown-15m-1766817900_58576404449192708067389489351668054628104163596542782771363633162501740339104_up",
+      "MarketSlug": "btc-updown-15m-1766817900",
+      "Market": {
+        "Slug": "btc-updown-15m-1766817900",
+        "YesAssetID": "58576404449192708067389489351668054628104163596542782771363633162501740339104",
+        "NoAssetID": "68902592490674653900692116425158807120693578821739773225172350840484125497710",
+        "ConditionID": "0xc26bde4ff15c2105fb33eab2f95d56d0c5e8b9700fa05e1db3e36d3dff05bc9e",
+        "Question": "Bitcoin Up or Down - December 27, 1:45AM-2:00AM ET",
+        "Timestamp": 1766817900
+      },
+      "EntryOrder": {
+        "OrderID": "0x89d53fc8c222e1f9678ffcf7fd673f6c92b8efcf77a1a86c01116ee467ba59de",
+        "MarketSlug": "btc-updown-15m-1766817900",
+        "AssetID": "58576404449192708067389489351668054628104163596542782771363633162501740339104",
+        "Side": "BUY",
+        "Price": {
+          "Pips": 7500
+        },
+        "Size": 5,
+        "FilledSize": 5,
+        "FilledPrice": {
+          "Pips": 7500
+        },
+        "GridLevel": 0,
+        "TokenType": "up",
+        "HedgeOrderID": null,
+        "CreatedAt": "2025-12-27T14:57:04.634328+08:00",
+        "FilledAt": "2025-12-27T14:57:06.018641+08:00",
+        "CanceledAt": null,
+        "IsEntryOrder": true,
+        "PairOrderID": null,
+        "Status": "filled",
+        "OrderType": "FAK",
+        "TickSize": "",
+        "NegRisk": null
+      },
+      "HedgeOrder": null,
+      "EntryPrice": {
+        "Pips": 7500
+      },
+      "EntryTime": "2025-12-27T14:57:04+08:00",
+      "ExitOrder": null,
+      "ExitPrice": null,
+      "ExitTime": null,
+      "Size": 5,
+      "TokenType": "up",
+      "Status": "open",
+      "Unhedged": false,
+      "CostBasis": 3.75,
+      "AvgPrice": 0.75,
+      "TotalFilledSize": 5
+    }
+  ]
+}

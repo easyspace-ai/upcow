@@ -2,6 +2,7 @@ package updownthreshold
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/betbot/gobet/clob/types"
@@ -29,9 +30,10 @@ type Strategy struct {
 	lastUpCents   int
 	lastDownCents int
 
-	firstSeenAt   time.Time
-	cycleStartAt  time.Time // 周期开始时间（用于延迟交易）
-	lastActionAt  time.Time
+	firstSeenAt      time.Time
+	cycleStartAt     time.Time // 周期开始时间（用于延迟交易）
+	lastActionAt     time.Time
+	lastPriceLogAt   time.Time // 上次打印价格日志的时间（避免过于频繁）
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -60,6 +62,8 @@ func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, _ *domain.Market
 	s.firstSeenAt = time.Now()
 	s.cycleStartAt = time.Now() // 记录周期开始时间
 	s.lastActionAt = time.Time{}
+	s.lastPriceLogAt = time.Time{} // 重置价格日志时间
+	log.Infof("🔄 [%s] 周期切换，延迟交易倒计时开始: %d 分钟", ID, s.DelayedEntryMinutes)
 }
 
 func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
@@ -91,7 +95,14 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	prevCents := s.getLastCents(token)
 	s.setLastCents(token, curCents)
 
-	// 1) 已持仓：只对“持仓方向”的价格做止损判断
+	// 打印实时价格和倒计时（限制频率：每1秒最多打印一次）
+	now := time.Now()
+	if s.lastPriceLogAt.IsZero() || time.Since(s.lastPriceLogAt) >= 1*time.Second {
+		s.printPriceAndCountdown(token, curCents, e.Market)
+		s.lastPriceLogAt = now
+	}
+
+	// 1) 已持仓：只对"持仓方向"的价格做止损判断
 	if s.inPosition {
 		if token != s.positionToken {
 			return nil
@@ -147,6 +158,37 @@ func (s *Strategy) getLastCents(token domain.TokenType) int {
 		return s.lastUpCents
 	}
 	return s.lastDownCents
+}
+
+// printPriceAndCountdown 打印实时价格和8分钟解锁倒计时
+func (s *Strategy) printPriceAndCountdown(token domain.TokenType, curCents int, market *domain.Market) {
+	if s.cycleStartAt.IsZero() {
+		return
+	}
+
+	delayedEntryDuration := time.Duration(s.DelayedEntryMinutes) * time.Minute
+	elapsed := time.Since(s.cycleStartAt)
+	remaining := delayedEntryDuration - elapsed
+
+	var status string
+	var countdown string
+	if remaining > 0 {
+		minutes := int(remaining.Minutes())
+		seconds := int(remaining.Seconds()) % 60
+		countdown = fmt.Sprintf("%02d:%02d", minutes, seconds)
+		status = "⏳ 等待解锁"
+	} else {
+		countdown = "00:00"
+		status = "✅ 已解锁"
+	}
+
+	tokenName := "UP"
+	if token == domain.TokenTypeDown {
+		tokenName = "DOWN"
+	}
+
+	log.Infof("📊 [%s] %s 价格: %dc | 解锁倒计时: %s | %s | 买入阈值: %dc | market=%s",
+		ID, tokenName, curCents, countdown, status, s.EntryCents, market.Slug)
 }
 
 func (s *Strategy) setLastCents(token domain.TokenType, cents int) {

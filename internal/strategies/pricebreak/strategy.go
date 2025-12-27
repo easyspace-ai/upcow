@@ -10,7 +10,6 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/execution"
-	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
@@ -135,12 +134,20 @@ func (s *Strategy) checkAndHandleStopLoss(ctx context.Context, market *domain.Ma
 		return nil // 没有持仓，无需止损
 	}
 
-	// 获取订单簿价格
-	yesBid, _, noBid, _, _, err := s.TradingService.GetTopOfBook(ctx, market)
+	// 获取订单簿价格（同时获取 YES 和 NO 的价格，用于验证）
+	yesBid, yesAsk, noBid, noAsk, source, err := s.TradingService.GetTopOfBook(ctx, market)
 	if err != nil {
 		log.Debugf("⏭️ [%s] 止损检查：无法获取订单簿价格: %v", ID, err)
 		return nil
 	}
+
+	// 打印实时价格信息（用于调试和问题排查）
+	yesBidCents := yesBid.ToCents()
+	yesAskCents := yesAsk.ToCents()
+	noBidCents := noBid.ToCents()
+	noAskCents := noAsk.ToCents()
+	log.Debugf("📊 [%s] 订单簿价格 (source=%s): YES bid=%dc ask=%dc | NO bid=%dc ask=%dc | market=%s",
+		ID, source, yesBidCents, yesAskCents, noBidCents, noAskCents, market.Slug)
 
 	// 检查每个持仓是否需要止损
 	for _, pos := range positions {
@@ -165,12 +172,15 @@ func (s *Strategy) checkAndHandleStopLoss(ctx context.Context, market *domain.Ma
 
 		var currentBid domain.Price
 		var assetID string
+		var oppositeBid domain.Price // 用于对比验证
 		if tokenType == domain.TokenTypeUp {
 			currentBid = yesBid
 			assetID = market.YesAssetID
+			oppositeBid = noBid // NO 的 bid，用于验证
 		} else if tokenType == domain.TokenTypeDown {
 			currentBid = noBid
 			assetID = market.NoAssetID
+			oppositeBid = yesBid // YES 的 bid，用于验证
 		} else {
 			log.Warnf("⚠️ [%s] 未知的 TokenType，跳过止损: tokenType=%s positionID=%s market=%s",
 				ID, tokenType, pos.ID, market.Slug)
@@ -178,20 +188,56 @@ func (s *Strategy) checkAndHandleStopLoss(ctx context.Context, market *domain.Ma
 		}
 
 		if currentBid.Pips <= 0 {
+			log.Debugf("⏭️ [%s] 止损检查：%s bid价格无效 (pips=%d)，跳过", ID, tokenType, currentBid.Pips)
 			continue
 		}
 
 		currentCents := currentBid.ToCents()
+		oppositeCents := oppositeBid.ToCents()
+
+		// 价格合理性检查：如果价格异常低（< 5c），记录详细日志
+		if currentCents < 5 {
+			log.Warnf("⚠️ [%s] 检测到异常低价: %s bid=%dc (阈值=%dc) | 持仓: size=%.4f entryOrder=%s | 订单簿: YES bid=%dc ask=%dc NO bid=%dc ask=%dc source=%s",
+				ID, tokenType, currentCents, s.Config.StopLossThreshold, pos.Size,
+				func() string {
+					if pos.EntryOrder != nil {
+						return pos.EntryOrder.OrderID
+					}
+					return "nil"
+				}(),
+				yesBidCents, yesAskCents, noBidCents, noAskCents, source)
+			log.Warnf("⚠️ [%s] 价格合理性检查: %s bid=%dc, 对侧(NO) bid=%dc, 价差=%dc",
+				ID, tokenType, currentCents, oppositeCents, func() int {
+					if currentCents > oppositeCents {
+						return currentCents - oppositeCents
+					}
+					return oppositeCents - currentCents
+				}())
+		}
 
 		// 检查是否触发止损
 		if currentCents <= s.Config.StopLossThreshold {
-			log.Infof("🛑 [%s] 触发止损: token=%s price=%dc threshold=%dc size=%.4f market=%s",
-				ID, tokenType, currentCents, s.Config.StopLossThreshold, pos.Size, market.Slug)
+			// 计算止损订单金额
+			orderAmount := currentBid.ToDecimal() * pos.Size
+			minOrderSize := 1.1 // 最小订单金额（USDC）
+
+			log.Infof("🛑 [%s] 触发止损: token=%s price=%dc threshold=%dc size=%.4f orderAmount=%.2f USDC market=%s",
+				ID, tokenType, currentCents, s.Config.StopLossThreshold, pos.Size, orderAmount, market.Slug)
+			log.Infof("📊 [%s] 止损时订单簿详情: YES bid=%dc ask=%dc | NO bid=%dc ask=%dc | source=%s | positionID=%s",
+				ID, yesBidCents, yesAskCents, noBidCents, noAskCents, source, pos.ID)
+
+			// 检查订单金额是否满足最小要求
+			if orderAmount < minOrderSize {
+				log.Warnf("⚠️ [%s] 止损订单金额 %.2f USDC 小于最小要求 %.2f USDC，但仍尝试止损（紧急操作）",
+					ID, orderAmount, minOrderSize)
+				log.Warnf("⚠️ [%s] 注意：交易所可能拒绝此订单，持仓可能无法及时止损",
+					ID)
+			}
 
 			// 取消该市场的所有挂单
 			s.TradingService.CancelOrdersForMarket(ctx, market.Slug)
 
-			// 创建止损卖出订单
+			// 创建止损卖出订单（即使金额太小也尝试，止损是紧急操作）
 			req := execution.MultiLegRequest{
 				Name:       "pricebreak_stop_loss",
 				MarketSlug: market.Slug,
@@ -212,6 +258,12 @@ func (s *Strategy) checkAndHandleStopLoss(ctx context.Context, market *domain.Ma
 				estr := strings.ToLower(err.Error())
 				if strings.Contains(estr, "trading paused") || strings.Contains(estr, "market mismatch") {
 					log.Warnf("⏸️ [%s] 系统拒绝止损下单（fail-safe，预期行为）: %v", ID, err)
+					return nil
+				}
+				// 如果是订单金额太小导致的错误，记录但不返回错误（避免重复触发）
+				if strings.Contains(estr, "订单金额") || strings.Contains(estr, "小于最小要求") {
+					log.Warnf("⚠️ [%s] 止损订单金额太小，交易所拒绝: %v", ID, err)
+					log.Warnf("⚠️ [%s] 持仓可能无法及时止损，请手动处理", ID)
 					return nil
 				}
 				return err
@@ -273,16 +325,29 @@ func (s *Strategy) checkAndHandleBuy(ctx context.Context, e *events.PriceChanged
 		}
 		s.mu.Unlock()
 
-		// 获取买入价格
-		ask, err := orderutil.QuoteBuyPrice(ctx, s.TradingService, dir.assetID, s.Config.MaxBuyPriceCents)
+		// 获取完整的订单簿价格（用于验证和日志）
+		yesBid, yesAsk, noBid, noAsk, source, err := s.TradingService.GetTopOfBook(ctx, market)
 		if err != nil {
-			log.Debugf("⏭️ [%s] 无法获取 %s 价格: %v", ID, dir.name, err)
+			log.Debugf("⏭️ [%s] 无法获取订单簿价格: %v", ID, err)
 			continue
 		}
 
-		askCents := ask.ToCents()
+		// 根据方向选择买入价格
+		var ask domain.Price
+		var askCents int
+		if dir.tokenType == domain.TokenTypeUp {
+			ask = yesAsk
+			askCents = yesAsk.ToCents()
+		} else {
+			ask = noAsk
+			askCents = noAsk.ToCents()
+		}
 
-		// 检查价格上限
+		// 打印订单簿价格信息
+		log.Debugf("📊 [%s] 买入检查订单簿 (source=%s): YES bid=%dc ask=%dc | NO bid=%dc ask=%dc | %s ask=%dc market=%s",
+			ID, source, yesBid.ToCents(), yesAsk.ToCents(), noBid.ToCents(), noAsk.ToCents(), dir.name, askCents, market.Slug)
+
+		// 检查价格上限（使用 MaxBuyPriceCents 限制）
 		if s.Config.MaxBuyPriceCents > 0 && askCents > s.Config.MaxBuyPriceCents {
 			log.Debugf("⏭️ [%s] %s 价格超过上限: ask=%dc max=%dc",
 				ID, dir.name, askCents, s.Config.MaxBuyPriceCents)
@@ -293,6 +358,8 @@ func (s *Strategy) checkAndHandleBuy(ctx context.Context, e *events.PriceChanged
 		if askCents >= s.Config.BuyThreshold {
 			log.Infof("📈 [%s] 触发买入: token=%s price=%dc threshold=%dc size=%.4f market=%s",
 				ID, dir.name, askCents, s.Config.BuyThreshold, s.Config.OrderSize, market.Slug)
+			log.Infof("📊 [%s] 买入时订单簿详情: YES bid=%dc ask=%dc | NO bid=%dc ask=%dc | source=%s",
+				ID, yesBid.ToCents(), yesAsk.ToCents(), noBid.ToCents(), noAsk.ToCents(), source)
 
 			// 创建买入订单
 			req := execution.MultiLegRequest{

@@ -1,0 +1,113 @@
+{
+  "updated_at": "2025-12-27T15:05:54.682828+08:00",
+  "balance": 13.340258,
+  "open_orders": [],
+  "positions": [
+    {
+      "ID": "btc-updown-15m-1766818800_31472165105535618321836039854947078630039325797536953738451614690396344857613_down",
+      "MarketSlug": "btc-updown-15m-1766818800",
+      "Market": {
+        "Slug": "btc-updown-15m-1766818800",
+        "YesAssetID": "31472165105535618321836039854947078630039325797536953738451614690396344857613",
+        "NoAssetID": "80132482336534939395222493578470906461241489205469552450401326017466116063419",
+        "ConditionID": "0xc05394a3207ef5d3388c720a9c26a6efa6eae740d2072d59a3415ccfcae45cb9",
+        "Question": "Bitcoin Up or Down - December 27, 2:00AM-2:15AM ET",
+        "Timestamp": 1766818800
+      },
+      "EntryOrder": {
+        "OrderID": "0x8831fe9802a173d8e85eeb43f5aac6a94afe6d94c68f0e6659b7e9019bcebb2c",
+        "MarketSlug": "btc-updown-15m-1766818800",
+        "AssetID": "31472165105535618321836039854947078630039325797536953738451614690396344857613",
+        "Side": "BUY",
+        "Price": {
+          "Pips": 7500
+        },
+        "Size": 5,
+        "FilledSize": 5,
+        "FilledPrice": {
+          "Pips": 7500
+        },
+        "GridLevel": 0,
+        "TokenType": "down",
+        "HedgeOrderID": null,
+        "CreatedAt": "2025-12-27T15:03:53+08:00",
+        "FilledAt": "2025-12-27T15:03:54.054271+08:00",
+        "CanceledAt": null,
+        "IsEntryOrder": false,
+        "PairOrderID": null,
+        "Status": "filled",
+        "OrderType": "",
+        "TickSize": "",
+        "NegRisk": null
+      },
+      "HedgeOrder": null,
+      "EntryPrice": {
+        "Pips": 7500
+      },
+      "EntryTime": "2025-12-27T15:03:53+08:00",
+      "ExitOrder": null,
+      "ExitPrice": null,
+      "ExitTime": null,
+      "Size": 20,
+      "TokenType": "down",
+      "Status": "open",
+      "Unhedged": false,
+      "CostBasis": 17.7,
+      "AvgPrice": 0.885,
+      "TotalFilledSize": 20
+    },
+    {
+      "ID": "btc-updown-15m-1766818800_31472165105535618321836039854947078630039325797536953738451614690396344857613_up",
+      "MarketSlug": "btc-updown-15m-1766818800",
+      "Market": {
+        "Slug": "btc-updown-15m-1766818800",
+        "YesAssetID": "31472165105535618321836039854947078630039325797536953738451614690396344857613",
+        "NoAssetID": "80132482336534939395222493578470906461241489205469552450401326017466116063419",
+        "ConditionID": "0xc05394a3207ef5d3388c720a9c26a6efa6eae740d2072d59a3415ccfcae45cb9",
+        "Question": "Bitcoin Up or Down - December 27, 2:00AM-2:15AM ET",
+        "Timestamp": 1766818800
+      },
+      "EntryOrder": {
+        "OrderID": "order_1766819073359325000",
+        "MarketSlug": "btc-updown-15m-1766818800",
+        "AssetID": "31472165105535618321836039854947078630039325797536953738451614690396344857613",
+        "Side": "BUY",
+        "Price": {
+          "Pips": 7900
+        },
+        "Size": 10,
+        "FilledSize": 10,
+        "FilledPrice": {
+          "Pips": 7900
+        },
+        "GridLevel": 0,
+        "TokenType": "up",
+        "HedgeOrderID": null,
+        "CreatedAt": "2025-12-27T15:04:33.359325+08:00",
+        "FilledAt": "2025-12-27T15:04:34.839975+08:00",
+        "CanceledAt": null,
+        "IsEntryOrder": true,
+        "PairOrderID": null,
+        "Status": "filled",
+        "OrderType": "FAK",
+        "TickSize": "",
+        "NegRisk": null
+      },
+      "HedgeOrder": null,
+      "EntryPrice": {
+        "Pips": 7900
+      },
+      "EntryTime": "2025-12-27T15:04:34+08:00",
+      "ExitOrder": null,
+      "ExitPrice": null,
+      "ExitTime": null,
+      "Size": 10,
+      "TokenType": "up",
+      "Status": "open",
+      "Unhedged": false,
+      "CostBasis": 7.9,
+      "AvgPrice": 0.79,
+      "TotalFilledSize": 10
+    }
+  ]
+}
