@@ -38,15 +38,11 @@ func newHTTPClient(host string, authConfig *AuthConfig, useProxy bool, proxyURL 
 		TLSHandshakeTimeout: 10 * time.Second,
 	}
 
-	// 默认使用代理
+	// 仅在 useProxy 为 true 且 proxyURL 不为 nil 时使用代理
 	if useProxy && proxyURL != nil {
 		transport.Proxy = http.ProxyURL(proxyURL)
-	} else if useProxy {
-		// 如果 useProxy 为 true 但 proxyURL 为 nil，尝试使用默认代理
-		if defaultProxy, err := url.Parse("http://127.0.0.1:15236"); err == nil {
-			transport.Proxy = http.ProxyURL(defaultProxy)
-		}
 	}
+	// 如果 useProxy 为 false 或 proxyURL 为 nil，则不设置代理（直接连接）
 
 	client := &http.Client{
 		Transport: transport,

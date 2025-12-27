@@ -51,7 +51,8 @@ func getGammaMarketCache() *cache.InMemoryCache[string, *GammaMarket] {
 	return gammaMarketCache
 }
 
-// getProxyFromEnv 从环境变量获取代理 URL，默认使用 http://127.0.0.1:15236
+// getProxyFromEnv 从环境变量获取代理 URL
+// 如果环境变量未设置，返回空字符串（不使用代理）
 func getProxyFromEnv() string {
 	proxyVars := []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"}
 	for _, v := range proxyVars {
@@ -59,8 +60,8 @@ func getProxyFromEnv() string {
 			return proxy
 		}
 	}
-	// 默认使用代理
-	return "http://127.0.0.1:15236"
+	// 如果环境变量未设置，返回空字符串（不使用代理）
+	return ""
 }
 
 // FetchMarketFromGamma 从 Gamma API 获取市场数据（独立函数，不依赖 Client）
@@ -86,28 +87,25 @@ func FetchMarketFromGamma(ctx context.Context, slug string) (*GammaMarket, error
 	
 	fullURL := fmt.Sprintf("%s?%s", gammaURL, params.Encode())
 	
-	// 创建 HTTP 传输配置，默认使用代理
+	// 创建 HTTP 传输配置，仅在环境变量设置时使用代理
 	transport := &http.Transport{
 		MaxIdleConns:        100,
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
 	}
 	
-	// 必须使用代理
+	// 仅在环境变量设置时使用代理
 	proxyURL := getProxyFromEnv()
-	proxyURLParsed, parseErr := url.Parse(proxyURL)
-	if parseErr == nil {
-		transport.Proxy = http.ProxyURL(proxyURLParsed)
-		log.Printf("使用代理获取市场数据: %s", proxyURL)
-	} else {
-		// 如果解析失败，使用默认代理
-		if defaultProxy, err := url.Parse("http://127.0.0.1:15236"); err == nil {
-			transport.Proxy = http.ProxyURL(defaultProxy)
-			log.Printf("警告: 解析代理 URL 失败，使用默认代理: http://127.0.0.1:15236")
+	if proxyURL != "" {
+		proxyURLParsed, parseErr := url.Parse(proxyURL)
+		if parseErr == nil {
+			transport.Proxy = http.ProxyURL(proxyURLParsed)
+			log.Printf("使用代理获取市场数据: %s", proxyURL)
 		} else {
-			log.Printf("错误: 无法设置代理，请求可能失败")
+			log.Printf("警告: 解析代理 URL 失败: %v", parseErr)
 		}
 	}
+	// 如果环境变量未设置，则不设置代理（直接连接）
 	
 	// 创建 HTTP 客户端（增加超时时间到 30 秒）
 	client := &http.Client{

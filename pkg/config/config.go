@@ -31,8 +31,9 @@ type WalletConfig struct {
 
 // ProxyConfig 代理配置
 type ProxyConfig struct {
-	Host string
-	Port int
+	Enabled bool   // 是否启用代理（默认 true，保持向后兼容）
+	Host    string
+	Port    int
 }
 
 // ExchangeStrategyMount 按 bbgo main 的风格挂载策略：
@@ -238,8 +239,9 @@ type ConfigFile struct {
 		FunderAddress string `yaml:"funder_address" json:"funder_address"`
 	} `yaml:"wallet" json:"wallet"`
 	Proxy struct {
-		Host string `yaml:"host" json:"host"`
-		Port int    `yaml:"port" json:"port"`
+		Enabled *bool  `yaml:"enabled" json:"enabled"` // 是否启用代理（nil 表示使用默认值 true，保持向后兼容）
+		Host    string `yaml:"host" json:"host"`
+		Port    int    `yaml:"port" json:"port"`
 	} `yaml:"proxy" json:"proxy"`
 	ExchangeStrategies []ExchangeStrategyMount `yaml:"exchangeStrategies" json:"exchangeStrategies"`
 	Market             struct {
@@ -531,12 +533,19 @@ func LoadFromFileWithOptions(filePath string, opts LoadOptions) (*Config, error)
 	}
 
 	// 设置代理环境变量（供 HTTP 客户端使用）
-	if proxyConfig != nil {
+	// 仅在代理配置存在且启用时设置环境变量
+	if proxyConfig != nil && proxyConfig.Enabled {
 		proxyURL := fmt.Sprintf("http://%s:%d", proxyConfig.Host, proxyConfig.Port)
 		os.Setenv("HTTP_PROXY", proxyURL)
 		os.Setenv("HTTPS_PROXY", proxyURL)
 		os.Setenv("http_proxy", proxyURL)
 		os.Setenv("https_proxy", proxyURL)
+	} else if proxyConfig == nil {
+		// 如果代理未启用，清除可能存在的环境变量（避免使用旧的代理配置）
+		os.Unsetenv("HTTP_PROXY")
+		os.Unsetenv("HTTPS_PROXY")
+		os.Unsetenv("http_proxy")
+		os.Unsetenv("https_proxy")
 	}
 
 	globalConfig = config
@@ -664,6 +673,23 @@ func loadConfigFile(filePath string) (*ConfigFile, error) {
 
 // parseProxyConfigFromSources 从多个源解析代理配置
 func parseProxyConfigFromSources(configFile *ConfigFile, userJSON *UserJSON) *ProxyConfig {
+	// 检查是否启用代理（优先级：配置文件 > 环境变量 > 默认值 true）
+	var enabled bool = true // 默认启用，保持向后兼容
+	
+	if configFile != nil && configFile.Proxy.Enabled != nil {
+		enabled = *configFile.Proxy.Enabled
+	} else {
+		// 检查环境变量 PROXY_ENABLED
+		if envVal := getEnv("PROXY_ENABLED", ""); envVal != "" {
+			enabled = envVal == "true" || envVal == "1"
+		}
+	}
+	
+	// 如果代理未启用，返回 nil
+	if !enabled {
+		return nil
+	}
+
 	// 优先级：配置文件 > 环境变量 > user.json > 默认值
 	var proxyHost, proxyPortStr string
 
@@ -699,8 +725,9 @@ func parseProxyConfigFromSources(configFile *ConfigFile, userJSON *UserJSON) *Pr
 	}
 
 	return &ProxyConfig{
-		Host: proxyHost,
-		Port: proxyPort,
+		Enabled: true, // 已通过上面的检查，这里设置为 true
+		Host:    proxyHost,
+		Port:    proxyPort,
 	}
 }
 
@@ -806,8 +833,20 @@ func loadUserJSON() (*UserJSON, error) {
 	return nil, fmt.Errorf("未找到 /pm/data/user.json 文件")
 }
 
-// parseProxyConfig 解析代理配置
+// parseProxyConfig 解析代理配置（旧版本，已废弃，请使用 parseProxyConfigFromSources）
+// 保留此函数以保持向后兼容性
 func parseProxyConfig(userJSON *UserJSON) *ProxyConfig {
+	// 检查是否启用代理（通过环境变量）
+	enabled := true // 默认启用，保持向后兼容
+	if envVal := getEnv("PROXY_ENABLED", ""); envVal != "" {
+		enabled = envVal == "true" || envVal == "1"
+	}
+	
+	// 如果代理未启用，返回 nil
+	if !enabled {
+		return nil
+	}
+
 	// 优先使用环境变量
 	proxyHost := getEnv("PROXY_HOST", "")
 	proxyPortStr := getEnv("PROXY_PORT", "")
@@ -838,8 +877,9 @@ func parseProxyConfig(userJSON *UserJSON) *ProxyConfig {
 	}
 
 	return &ProxyConfig{
-		Host: proxyHost,
-		Port: proxyPort,
+		Enabled: true, // 已通过上面的检查
+		Host:    proxyHost,
+		Port:    proxyPort,
 	}
 }
 

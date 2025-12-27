@@ -9,7 +9,7 @@ import (
 )
 
 // createHTTPTransport creates an HTTP transport with optional proxy support
-// Priority: HTTP_PROXY env var > HTTPS_PROXY env var > default proxy (127.0.0.1:15236)
+// 仅在环境变量 HTTP_PROXY/HTTPS_PROXY 设置时使用代理，否则直接连接
 func createHTTPTransport() *http.Transport {
 	transport := &http.Transport{
 		MaxIdleConns:        100,
@@ -33,22 +33,18 @@ func createHTTPTransport() *http.Transport {
 		}
 	}
 
-	// Default proxy if no environment variable is set
+	// 如果环境变量未设置，不使用代理（直接连接）
 	if proxyURL == "" {
-		proxyURL = "http://127.0.0.1:15236"
-		log.Printf("[Proxy] Using default proxy: %s", proxyURL)
+		log.Printf("[Proxy] 代理未启用，使用直接连接")
 	} else {
-		log.Printf("[Proxy] Using proxy from environment: %s", proxyURL)
-	}
-
-	// If proxy is configured, set it
-	if proxyURL != "" {
+		log.Printf("[Proxy] 使用代理: %s", proxyURL)
+		// 如果代理 URL 已设置，配置代理
 		parsedURL, err := url.Parse(proxyURL)
 		if err == nil {
 			transport.Proxy = http.ProxyURL(parsedURL)
-			log.Printf("[Proxy] Proxy configured: %s", parsedURL.Host)
+			log.Printf("[Proxy] 代理已配置: %s", parsedURL.Host)
 		} else {
-			log.Printf("[Proxy] Warning: Failed to parse proxy URL %s: %v", proxyURL, err)
+			log.Printf("[Proxy] 警告: 解析代理 URL 失败 %s: %v", proxyURL, err)
 		}
 	}
 
@@ -56,7 +52,7 @@ func createHTTPTransport() *http.Transport {
 }
 
 // getProxyURL returns the proxy URL to use
-// Priority: HTTP_PROXY env var > HTTPS_PROXY env var > default proxy (127.0.0.1:15236)
+// 仅在环境变量 HTTP_PROXY/HTTPS_PROXY 设置时返回代理 URL，否则返回空字符串（不使用代理）
 func getProxyURL() string {
 	// Check for proxy configuration from environment variables first
 	proxyURL := os.Getenv("HTTP_PROXY")
@@ -71,12 +67,11 @@ func getProxyURL() string {
 		}
 	}
 
-	// Default proxy if no environment variable is set
+	// 如果环境变量未设置，返回空字符串（不使用代理）
 	if proxyURL == "" {
-		proxyURL = "http://127.0.0.1:15236"
-		log.Printf("[Proxy] Using default proxy: %s", proxyURL)
+		log.Printf("[Proxy] 代理未启用，使用直接连接")
 	} else {
-		log.Printf("[Proxy] Using proxy from environment: %s", proxyURL)
+		log.Printf("[Proxy] 使用代理: %s", proxyURL)
 	}
 
 	return proxyURL

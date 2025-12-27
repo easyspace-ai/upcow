@@ -281,7 +281,8 @@ func main() {
 	logrus.Info("🚀 启动交易机器人（BBGO 架构）...")
 
 	// 设置代理环境变量（让 Gamma API 调用使用代理）
-	if cfg.Proxy != nil {
+	// 仅在代理配置存在且启用时设置环境变量
+	if cfg.Proxy != nil && cfg.Proxy.Enabled {
 		proxyURL := fmt.Sprintf("http://%s:%d", cfg.Proxy.Host, cfg.Proxy.Port)
 		os.Setenv("HTTP_PROXY", proxyURL)
 		os.Setenv("HTTPS_PROXY", proxyURL)
@@ -289,13 +290,15 @@ func main() {
 		os.Setenv("https_proxy", proxyURL)
 		logrus.Infof("已设置 HTTP 代理环境变量: %s（Gamma API 将使用此代理）", proxyURL)
 	} else {
-		// 如果没有配置代理，检查环境变量是否已设置
-		if os.Getenv("HTTP_PROXY") == "" && os.Getenv("HTTPS_PROXY") == "" {
-			// 使用默认代理
-			defaultProxy := "http://127.0.0.1:15236"
-			os.Setenv("HTTP_PROXY", defaultProxy)
-			os.Setenv("HTTPS_PROXY", defaultProxy)
-			logrus.Infof("未配置代理，使用默认代理: %s", defaultProxy)
+		// 如果代理未启用，清除可能存在的环境变量（避免使用旧的代理配置）
+		os.Unsetenv("HTTP_PROXY")
+		os.Unsetenv("HTTPS_PROXY")
+		os.Unsetenv("http_proxy")
+		os.Unsetenv("https_proxy")
+		if cfg.Proxy == nil {
+			logrus.Info("代理未启用，已清除代理环境变量")
+		} else {
+			logrus.Infof("代理已禁用（enabled=false），已清除代理环境变量")
 		}
 	}
 	//fmt.Println("======", cfg.Wallet.PrivateKey)

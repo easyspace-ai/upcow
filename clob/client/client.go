@@ -37,18 +37,14 @@ func NewClient(
 		Creds:      creds,
 	}
 
-	// 解析代理 URL（默认使用代理）
+	// 解析代理 URL（仅在环境变量设置时使用代理）
 	proxyStr := getProxyURL()
 	var proxyURL *url.URL
-	useProxy := true // 默认启用代理
-	if parsed, err := url.Parse(proxyStr); err == nil {
-		proxyURL = parsed
-	} else {
-		// 如果解析失败，使用默认代理
-		if defaultProxy, err := url.Parse("http://127.0.0.1:15236"); err == nil {
-			proxyURL = defaultProxy
-		} else {
-			useProxy = false
+	useProxy := false // 默认不使用代理（除非环境变量已设置）
+	if proxyStr != "" {
+		if parsed, err := url.Parse(proxyStr); err == nil {
+			proxyURL = parsed
+			useProxy = true
 		}
 	}
 
@@ -66,7 +62,8 @@ func NewClient(
 	}
 }
 
-// getProxyURL 从环境变量获取代理 URL，默认使用 http://127.0.0.1:15236
+// getProxyURL 从环境变量获取代理 URL
+// 如果环境变量未设置，返回空字符串（不使用代理）
 func getProxyURL() string {
 	// 检查常见的代理环境变量
 	proxyVars := []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"}
@@ -75,8 +72,8 @@ func getProxyURL() string {
 			return val
 		}
 	}
-	// 默认使用代理
-	return "http://127.0.0.1:15236"
+	// 如果环境变量未设置，返回空字符串（不使用代理）
+	return ""
 }
 
 // GetHost 获取主机地址
