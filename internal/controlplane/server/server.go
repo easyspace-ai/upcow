@@ -88,6 +88,13 @@ func (s *Server) Router() http.Handler {
 				r.Post("/reveal-mnemonic", s.handleAccountRevealMnemonic)
 				r.Post("/sync_balance", s.handleAccountSyncBalance)
 				r.Post("/redeem", s.handleAccountRedeem)
+				r.Post("/sync_trades", s.handleAccountSyncTrades)
+				r.Post("/sync_positions", s.handleAccountSyncPositions)
+				r.Post("/sync_open_orders", s.handleAccountSyncOpenOrders)
+				r.Get("/trades", s.handleAccountTrades)
+				r.Get("/positions", s.handleAccountPositions)
+				r.Get("/open_orders", s.handleAccountOpenOrders)
+				r.Get("/stats", s.handleAccountStats)
 			})
 		})
 
@@ -95,6 +102,9 @@ func (s *Server) Router() http.Handler {
 			r.Get("/runs", s.handleJobRunsList)
 			r.Post("/balance_sync", s.handleJobBalanceSyncNow)
 			r.Post("/redeem", s.handleJobRedeemNow)
+			r.Post("/trades_sync", s.handleJobTradesSyncNow)
+			r.Post("/positions_sync", s.handleJobPositionsSyncNow)
+			r.Post("/open_orders_sync", s.handleJobOpenOrdersSyncNow)
 		})
 
 		r.Route("/bots", func(r chi.Router) {

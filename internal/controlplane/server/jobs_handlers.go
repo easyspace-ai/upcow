@@ -60,3 +60,48 @@ func (s *Server) handleJobRedeemNow(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 202, map[string]any{"ok": true, "run_id": runID})
 }
+
+func (s *Server) handleJobTradesSyncNow(w http.ResponseWriter, r *http.Request) {
+	var req jobTriggerRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	trigger := strings.TrimSpace(req.Trigger)
+	if trigger == "" {
+		trigger = "manual"
+	}
+	runID, err := s.startTradesSyncBatch(trigger)
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("start job failed: %v", err))
+		return
+	}
+	writeJSON(w, 202, map[string]any{"ok": true, "run_id": runID})
+}
+
+func (s *Server) handleJobPositionsSyncNow(w http.ResponseWriter, r *http.Request) {
+	var req jobTriggerRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	trigger := strings.TrimSpace(req.Trigger)
+	if trigger == "" {
+		trigger = "manual"
+	}
+	runID, err := s.startPositionsSyncBatch(trigger)
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("start job failed: %v", err))
+		return
+	}
+	writeJSON(w, 202, map[string]any{"ok": true, "run_id": runID})
+}
+
+func (s *Server) handleJobOpenOrdersSyncNow(w http.ResponseWriter, r *http.Request) {
+	var req jobTriggerRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	trigger := strings.TrimSpace(req.Trigger)
+	if trigger == "" {
+		trigger = "manual"
+	}
+	runID, err := s.startOpenOrdersSyncBatch(trigger)
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("start job failed: %v", err))
+		return
+	}
+	writeJSON(w, 202, map[string]any{"ok": true, "run_id": runID})
+}

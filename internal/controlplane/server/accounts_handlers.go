@@ -240,3 +240,33 @@ func (s *Server) handleAccountRedeem(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 202, map[string]any{"ok": true, "run_id": runID})
 }
+
+func (s *Server) handleAccountSyncTrades(w http.ResponseWriter, r *http.Request) {
+	accountID := strings.TrimSpace(chiURLParam(r, "accountID"))
+	runID, err := s.startTradesSyncAccount(accountID, "manual")
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("start job failed: %v", err))
+		return
+	}
+	writeJSON(w, 202, map[string]any{"ok": true, "run_id": runID})
+}
+
+func (s *Server) handleAccountSyncPositions(w http.ResponseWriter, r *http.Request) {
+	accountID := strings.TrimSpace(chiURLParam(r, "accountID"))
+	runID, err := s.startPositionsSyncAccount(accountID, "manual")
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("start job failed: %v", err))
+		return
+	}
+	writeJSON(w, 202, map[string]any{"ok": true, "run_id": runID})
+}
+
+func (s *Server) handleAccountSyncOpenOrders(w http.ResponseWriter, r *http.Request) {
+	accountID := strings.TrimSpace(chiURLParam(r, "accountID"))
+	runID, err := s.startOpenOrdersSyncAccount(accountID, "manual")
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("start job failed: %v", err))
+		return
+	}
+	writeJSON(w, 202, map[string]any{"ok": true, "run_id": runID})
+}

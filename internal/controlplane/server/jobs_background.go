@@ -19,8 +19,11 @@ func (s *Server) startBackground() {
 
 	balanceInterval := parseDurationEnv("GOBET_BALANCE_SYNC_INTERVAL", 60*time.Second)
 	redeemInterval := parseDurationEnv("GOBET_REDEEM_INTERVAL", 3*time.Minute)
+	tradesInterval := parseDurationEnv("GOBET_TRADES_SYNC_INTERVAL", 60*time.Second)
+	positionsInterval := parseDurationEnv("GOBET_POSITIONS_SYNC_INTERVAL", 60*time.Second)
+	openOrdersInterval := parseDurationEnv("GOBET_OPEN_ORDERS_SYNC_INTERVAL", 60*time.Second)
 
-	s.bgWG.Add(2)
+	s.bgWG.Add(5)
 	go func() {
 		defer s.bgWG.Done()
 		s.balanceSyncLoop(ctx, balanceInterval)
@@ -28,6 +31,18 @@ func (s *Server) startBackground() {
 	go func() {
 		defer s.bgWG.Done()
 		s.redeemLoop(ctx, redeemInterval)
+	}()
+	go func() {
+		defer s.bgWG.Done()
+		s.tradesSyncLoop(ctx, tradesInterval)
+	}()
+	go func() {
+		defer s.bgWG.Done()
+		s.positionsSyncLoop(ctx, positionsInterval)
+	}()
+	go func() {
+		defer s.bgWG.Done()
+		s.openOrdersSyncLoop(ctx, openOrdersInterval)
 	}()
 }
 
@@ -67,6 +82,60 @@ func (s *Server) redeemLoop(ctx context.Context, interval time.Duration) {
 			return
 		case <-t.C:
 			_, _ = s.startRedeemBatch("scheduled")
+		}
+	}
+}
+
+func (s *Server) tradesSyncLoop(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	if strings.TrimSpace(os.Getenv("GOBET_MASTER_KEY")) == "" {
+		return
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			_, _ = s.startTradesSyncBatch("scheduled")
+		}
+	}
+}
+
+func (s *Server) positionsSyncLoop(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			_, _ = s.startPositionsSyncBatch("scheduled")
+		}
+	}
+}
+
+func (s *Server) openOrdersSyncLoop(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	if strings.TrimSpace(os.Getenv("GOBET_MASTER_KEY")) == "" {
+		return
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			_, _ = s.startOpenOrdersSyncBatch("scheduled")
 		}
 	}
 }

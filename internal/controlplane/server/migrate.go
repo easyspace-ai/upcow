@@ -78,6 +78,73 @@ CREATE TABLE IF NOT EXISTS job_runs (
   meta_json TEXT
 );`,
 		`CREATE INDEX IF NOT EXISTS idx_job_runs_started_at ON job_runs(started_at DESC);`,
+		`
+CREATE TABLE IF NOT EXISTS sync_state (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (account_id, key)
+);`,
+		`
+CREATE TABLE IF NOT EXISTS positions_current (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  asset TEXT NOT NULL,
+  condition_id TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  size REAL NOT NULL,
+  avg_price REAL NOT NULL,
+  cur_price REAL NOT NULL,
+  realized_pnl REAL NOT NULL,
+  title TEXT,
+  slug TEXT,
+  outcome_index INTEGER,
+  event_slug TEXT,
+  ts TEXT NOT NULL,
+  PRIMARY KEY (account_id, asset)
+);`,
+		`CREATE INDEX IF NOT EXISTS idx_positions_current_account ON positions_current(account_id);`,
+		`
+CREATE TABLE IF NOT EXISTS open_orders_current (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  order_id TEXT NOT NULL,
+  status TEXT,
+  owner TEXT,
+  maker_address TEXT,
+  market TEXT,
+  asset_id TEXT,
+  side TEXT,
+  original_size REAL,
+  size_matched REAL,
+  price REAL,
+  outcome TEXT,
+  created_at_ts INTEGER,
+  expiration TEXT,
+  order_type TEXT,
+  ts TEXT NOT NULL,
+  PRIMARY KEY (account_id, order_id)
+);`,
+		`CREATE INDEX IF NOT EXISTS idx_open_orders_current_account ON open_orders_current(account_id);`,
+		`
+CREATE TABLE IF NOT EXISTS clob_trades (
+  trade_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  maker_address TEXT,
+  owner TEXT,
+  market TEXT,
+  asset_id TEXT,
+  side TEXT,
+  size REAL,
+  price REAL,
+  outcome TEXT,
+  status TEXT,
+  match_time_ts INTEGER,
+  transaction_hash TEXT,
+  volume_usdc REAL,
+  raw_json TEXT,
+  created_at TEXT NOT NULL
+);`,
+		`CREATE INDEX IF NOT EXISTS idx_clob_trades_account_time ON clob_trades(account_id, match_time_ts DESC);`,
 	}
 
 	for _, q := range stmts {

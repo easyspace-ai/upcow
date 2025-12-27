@@ -171,4 +171,3 @@ func redeemPositionViaRelayer(ctx context.Context, relayerClient *relayer.Client
 	}
 	return nil
 }
-

@@ -58,6 +58,9 @@ const uiHTML = `<!doctype html>
       <button onclick="reloadAccounts()">刷新账号</button>
       <button onclick="runBalanceBatch()">批量同步余额</button>
       <button onclick="runRedeemBatch()">批量Redeem</button>
+      <button onclick="runTradesBatch()">批量同步交易</button>
+      <button onclick="runPositionsBatch()">批量同步持仓</button>
+      <button onclick="runOpenOrdersBatch()">批量同步挂单</button>
       <button onclick="reloadJobRuns()">刷新任务记录</button>
     </div>
     <div id="accounts" class="muted"></div>
@@ -269,6 +272,24 @@ async function runBalanceBatch() {
 async function runRedeemBatch() {
   const res = await api('/api/jobs/redeem', {method:'POST', body: JSON.stringify({trigger:'manual_ui'})});
   alert('已触发Redeem，run_id='+res.run_id);
+  await reloadJobRuns();
+}
+
+async function runTradesBatch() {
+  const res = await api('/api/jobs/trades_sync', {method:'POST', body: JSON.stringify({trigger:'manual_ui'})});
+  alert('已触发交易同步，run_id='+res.run_id);
+  await reloadJobRuns();
+}
+
+async function runPositionsBatch() {
+  const res = await api('/api/jobs/positions_sync', {method:'POST', body: JSON.stringify({trigger:'manual_ui'})});
+  alert('已触发持仓同步，run_id='+res.run_id);
+  await reloadJobRuns();
+}
+
+async function runOpenOrdersBatch() {
+  const res = await api('/api/jobs/open_orders_sync', {method:'POST', body: JSON.stringify({trigger:'manual_ui'})});
+  alert('已触发挂单同步，run_id='+res.run_id);
   await reloadJobRuns();
 }
 
