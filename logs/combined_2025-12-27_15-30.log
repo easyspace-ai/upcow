@@ -1,0 +1,3 @@
+[36mINFO[0m[25-12-27 15:44:41] 使用默认配置文件: yml/config.yaml                    
+[36mINFO[0m[25-12-27 15:44:41] 已加载策略配置: strategy=updownthreshold file=yml/updownthreshold.yaml 
+[36mINFO[0m[25-12-27 15:44:41] 策略配置文件覆盖 dry_run: false (来源: yml/updownthreshold.yaml) 

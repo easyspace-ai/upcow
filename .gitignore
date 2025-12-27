@@ -45,3 +45,4 @@ data/market-data.json
 # Build artifacts
 *.a
 
+yml/

@@ -1,0 +1,362 @@
+[36mINFO[0m[25-12-27 15:45:00] 日志文件已切换到新周期: logs/btc-updown-15m-1766821500.log 
+[36mINFO[0m[25-12-27 15:45:00] 🔄 [切换市场] 使用动态订阅切换: btc-updown-15m-1766820600 -> btc-updown-15m-1766821500  [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-27 15:45:00] 🔄 [切换市场] 先注册价格处理器，然后再订阅市场                     [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-27 15:45:00] 🔄 [周期切换] 检测到会话切换，重新注册策略到新会话: btc-updown-15m-1766821500 
+[36mINFO[0m[25-12-27 15:45:00] ✅ [周期切换] 已设置当前市场: btc-updown-15m-1766821500   [36mcomponent[0m=trading_service
+[33mWARN[0m[25-12-27 15:45:00] 🔄 [周期切换] 已重置本地状态：orders/positions/cache/inflight（prev=btc-updown-15m-1766820600 -> new=btc-updown-15m-1766821500 gen=1766821500）  [33mcomponent[0m=trading_service
+[33mWARN[0m[25-12-27 15:45:00] 🔄 [周期切换] OrderEngine 已重置运行时状态: newMarket=btc-updown-15m-1766821500 reason=TradingService.SetCurrentMarket gen=1766821500  [33mcomponent[0m=order_engine
+[36mINFO[0m[25-12-27 15:45:00] 🔄 [updownthreshold] 周期切换，延迟交易倒计时开始: 12 分钟     [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:00] 🔄 [周期切换] 准备调用策略 updownthreshold 的 Subscribe 方法  [36mcomponent[0m=trader
+[36mINFO[0m[25-12-27 15:45:00] ✅ [Session polymarket] 注册价格变化处理器，当前 handlers 数量=2  [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:45:00] ✅ [updownthreshold] 策略已订阅价格变化事件 (session=polymarket)  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:00] ✅ [周期切换] 策略 updownthreshold 的 Subscribe 方法执行完成  [36mcomponent[0m=trader
+[36mINFO[0m[25-12-27 15:45:00] ✅ [周期切换] 策略 updownthreshold 已订阅会话 polymarket  [36mcomponent[0m=trader
+[36mINFO[0m[25-12-27 15:45:00] 🔄 [周期切换] 策略 updownthreshold 已切换到新 session=polymarket  [36mcomponent[0m=trader
+[36mINFO[0m[25-12-27 15:45:00] ✅ [周期切换] 策略已切换到新 session，market=btc-updown-15m-1766821500 
+[36mINFO[0m[25-12-27 15:45:00] 🔄 [切换市场] 已更新市场信息: btc-updown-15m-1766821500   [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:45:00] ✅ [切换市场] 已发送旧市场退订(UP): btc-updown-15m-1766820600  [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:45:00] ✅ [切换市场] 已订阅新市场(UP-only): btc-updown-15m-1766821500  [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:45:00] 📊 [切换市场] 订阅状态验证: 已订阅资产数量=2, 期望资产=[913642814439..., 348997512539...]  [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:45:00] ✅ 已切换到下一个市场（动态订阅）: btc-updown-15m-1766821500  [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-27 15:45:01] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:58 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:02] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:57 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:03] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:56 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:04] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:55 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:05] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:54 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:06] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:53 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:07] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:52 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:08] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:51 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:09] 📊 [updownthreshold] UP 价格: 49c | 解锁倒计时: 11:50 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:10] 📊 [updownthreshold] UP 价格: 47c | 解锁倒计时: 11:49 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:11] 📊 [updownthreshold] UP 价格: 47c | 解锁倒计时: 11:48 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:13] 📊 [updownthreshold] UP 价格: 47c | 解锁倒计时: 11:46 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:14] 📊 [updownthreshold] UP 价格: 36c | 解锁倒计时: 11:45 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:15] 📊 [updownthreshold] UP 价格: 40c | 解锁倒计时: 11:44 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:16] 📊 [updownthreshold] UP 价格: 38c | 解锁倒计时: 11:43 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:17] 📊 [updownthreshold] UP 价格: 35c | 解锁倒计时: 11:42 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:18] 📊 [updownthreshold] UP 价格: 35c | 解锁倒计时: 11:41 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:19] 📊 [updownthreshold] UP 价格: 35c | 解锁倒计时: 11:40 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:20] 📊 [updownthreshold] UP 价格: 33c | 解锁倒计时: 11:39 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:21] 📊 [updownthreshold] UP 价格: 32c | 解锁倒计时: 11:38 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:22] 📊 [updownthreshold] UP 价格: 32c | 解锁倒计时: 11:37 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:23] 📊 [updownthreshold] UP 价格: 34c | 解锁倒计时: 11:36 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:24] 📊 [updownthreshold] UP 价格: 31c | 解锁倒计时: 11:35 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:25] 📊 [updownthreshold] UP 价格: 37c | 解锁倒计时: 11:34 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:26] 📊 [updownthreshold] UP 价格: 39c | 解锁倒计时: 11:33 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:27] 📊 [updownthreshold] UP 价格: 41c | 解锁倒计时: 11:32 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:28] 📊 [updownthreshold] UP 价格: 41c | 解锁倒计时: 11:31 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:29] 📊 [updownthreshold] UP 价格: 42c | 解锁倒计时: 11:30 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:31] 📊 [updownthreshold] UP 价格: 40c | 解锁倒计时: 11:28 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:32] 📊 [updownthreshold] UP 价格: 39c | 解锁倒计时: 11:27 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:33] 📊 [updownthreshold] UP 价格: 40c | 解锁倒计时: 11:26 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:34] 📊 [updownthreshold] UP 价格: 40c | 解锁倒计时: 11:25 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:35] 📊 [updownthreshold] UP 价格: 39c | 解锁倒计时: 11:24 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:37] 📊 [updownthreshold] UP 价格: 39c | 解锁倒计时: 11:23 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:38] 📊 [updownthreshold] UP 价格: 38c | 解锁倒计时: 11:21 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:39] 📊 [updownthreshold] UP 价格: 38c | 解锁倒计时: 11:20 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:40] 📊 [updownthreshold] UP 价格: 37c | 解锁倒计时: 11:19 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:41] 📊 [updownthreshold] UP 价格: 37c | 解锁倒计时: 11:18 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:42] 📊 [updownthreshold] UP 价格: 38c | 解锁倒计时: 11:17 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:43] 📊 [updownthreshold] UP 价格: 37c | 解锁倒计时: 11:16 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:44] 📊 [updownthreshold] UP 价格: 38c | 解锁倒计时: 11:15 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:45] 📊 [updownthreshold] UP 价格: 37c | 解锁倒计时: 11:14 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:46] 📊 [updownthreshold] UP 价格: 37c | 解锁倒计时: 11:13 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:48] 📊 [updownthreshold] UP 价格: 37c | 解锁倒计时: 11:11 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:49] 📊 [updownthreshold] UP 价格: 37c | 解锁倒计时: 11:10 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:50] 📊 [updownthreshold] UP 价格: 37c | 解锁倒计时: 11:09 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:51] 📊 [updownthreshold] UP 价格: 37c | 解锁倒计时: 11:08 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:52] 📊 [updownthreshold] UP 价格: 37c | 解锁倒计时: 11:07 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:53] 📊 [updownthreshold] UP 价格: 37c | 解锁倒计时: 11:06 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:54] 📊 [updownthreshold] UP 价格: 37c | 解锁倒计时: 11:05 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:55] 📊 [updownthreshold] UP 价格: 37c | 解锁倒计时: 11:04 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:56] 📊 [updownthreshold] UP 价格: 37c | 解锁倒计时: 11:03 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:57] 📊 [updownthreshold] UP 价格: 36c | 解锁倒计时: 11:02 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:58] 📊 [updownthreshold] UP 价格: 36c | 解锁倒计时: 11:01 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:46:00] 📊 [updownthreshold] UP 价格: 36c | 解锁倒计时: 10:59 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:46:01] 📊 [updownthreshold] UP 价格: 37c | 解锁倒计时: 10:58 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:46:02] 📊 [updownthreshold] UP 价格: 37c | 解锁倒计时: 10:57 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:46:03] 📊 [updownthreshold] UP 价格: 36c | 解锁倒计时: 10:56 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:46:04] 📊 [updownthreshold] UP 价格: 36c | 解锁倒计时: 10:55 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:46:05] 📊 [updownthreshold] UP 价格: 36c | 解锁倒计时: 10:54 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:46:06] 📊 [updownthreshold] UP 价格: 34c | 解锁倒计时: 10:53 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:46:07] 收到停止信号，正在关闭...                               
+[36mINFO[0m[25-12-27 15:46:07] 正在停止市场调度器...                                 
+[36mINFO[0m[25-12-27 15:46:07] 停止市场调度器...                                    [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-27 15:46:07] 市场调度器已停止                                      [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-27 15:46:07] 🔄 [关闭] MarketStream 已清空所有 handlers，市场=btc-updown-15m-1766821500  [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:46:07] 🔄 [订单状态同步] 订单状态同步已停止                          [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:46:07] 🛑 OrderEngine 停止                              [36mcomponent[0m=order_engine
+[33mWARN[0m[25-12-27 15:46:07] WebSocket 读取错误: read tcp 127.0.0.1:50790->127.0.0.1:15236: use of closed network connection，触发重连  [33mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:46:07] ✅ [unsubscribe] MarketStream 已关闭并完成退订：market=btc-updown-15m-1766821500, elapsed=338.25µs  [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:46:07] 用户订单 WebSocket 读取错误且 context 已取消，退出           [36mcomponent[0m=user_websocket
+[36mINFO[0m[25-12-27 15:46:07] ✅ [unsubscribe] Session 已关闭并完成退订：session=polymarket, market=btc-updown-15m-1766821500, elapsed=514.708µs  [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:46:07] 正在关闭策略...                                    
+[36mINFO[0m[25-12-27 15:46:07] shutting down...                              [36mcomponent[0m=graceful_shutdown
+[36mINFO[0m[25-12-27 15:46:07] 没有注册的关闭回调                                    
+[36mINFO[0m[25-12-27 15:46:07] 正在停止交易服务...                                  
+[36mINFO[0m[25-12-27 15:46:07] 正在停止交易服务...                                   [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:46:07] 交易服务已停止                                       [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:46:07] ✅ CommandExecutor 已停止                         [36mcomponent[0m=command_executor
+[36mINFO[0m[25-12-27 15:46:07] ✅ WorkerPoolCommandExecutor 已停止               [36mcomponent[0m=command_executor_pool
+[36mINFO[0m[25-12-27 15:46:07] ✅ [unsubscribe] Session 已关闭并完成退订：session=polymarket, market=btc-updown-15m-1766821500, elapsed=7.833µs  [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:46:07] ✅ 交易机器人已停止                                   
+[36mINFO[0m[25-12-27 15:47:21] 日志文件已切换到新周期: logs/btc-updown-15m-1766821500.log 
+[36mINFO[0m[25-12-27 15:47:21] 🔗 [Session polymarket] 注册 sessionPriceHandler 到 MarketStream  [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:47:21] ✅ [注册] MarketStream 注册价格变化处理器，当前 handlers 数量=1，市场=  [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:47:21] 使用代理连接用户订单 WebSocket: http://127.0.0.1:15236  [36mcomponent[0m=user_websocket
+[36mINFO[0m[25-12-27 15:47:21] ✅ [Session polymarket] MarketStream handlers 数量=1 (注册后)  [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:47:21] 使用代理连接 WebSocket: http://127.0.0.1:15236      [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:47:22] 用户订单 WebSocket 已连接                            [36mcomponent[0m=user_websocket
+[36mINFO[0m[25-12-27 15:47:22] 从 API 获取市场信息成功: btc-updown-15m-1766821500 (YES: 913642814439..., NO: 348997512539...) 
+[36mINFO[0m[25-12-27 15:47:23] ✅ [重连健康检查] Handlers 数量=1: market=btc-updown-15m-1766821500  [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:47:23] 市场价格 WebSocket 已连接: btc-updown-15m-1766821500 (handlers=1)  [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:47:23] ✅ [Session polymarket] MarketStream handlers 数量=1 (连接后)  [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:47:23] [Session polymarket] 市场数据流已连接                 [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:47:23] [Session polymarket] 用户数据流已就绪                 [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:47:23] ✅ [周期切换] 新会话 MarketStream handlers 数量=1，市场=btc-updown-15m-1766821500  [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-27 15:47:23] ✅ [周期切换] 新会话 Session priceChangeHandlers 数量=0，市场=btc-updown-15m-1766821500  [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-27 15:47:23] 创建会话: market=btc-updown-15m-1766821500        [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-27 15:47:23] 市场调度器已启动                                      [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-27 15:47:23] 当前市场: btc-updown-15m-1766821500              
+[36mINFO[0m[25-12-27 15:47:23] ✅ [周期切换] 已设置当前市场: btc-updown-15m-1766821500   [36mcomponent[0m=trading_service
+[33mWARN[0m[25-12-27 15:47:23] 🔄 [周期切换] 已重置本地状态：orders/positions/cache/inflight（prev= -> new=btc-updown-15m-1766821500 gen=1766821500）  [33mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:47:23] ✅ 交易服务已启动（使用 OrderEngine）                     [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:47:23] ✅ CommandExecutor 已启动 (buffer=2048)           [36mcomponent[0m=command_executor
+[36mINFO[0m[25-12-27 15:47:23] ✅ WorkerPoolCommandExecutor 已启动 (workers=8 buffer=2048)  [36mcomponent[0m=command_executor_pool
+[36mINFO[0m[25-12-27 15:47:23] 🚀 正在启动策略...                                  
+[36mINFO[0m[25-12-27 15:47:23] 🔄 [updownthreshold] 周期切换，延迟交易倒计时开始: 12 分钟     [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:23] 🔄 [周期切换] 准备调用策略 updownthreshold 的 Subscribe 方法  [36mcomponent[0m=trader
+[36mINFO[0m[25-12-27 15:47:23] ✅ [Session polymarket] 注册价格变化处理器，当前 handlers 数量=1  [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:47:23] 🔄 [订单状态同步] 启动定期订单状态同步（有活跃订单时每3秒，无活跃订单时每30秒）   [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:47:23] 🚀 OrderEngine 启动                              [36mcomponent[0m=order_engine
+[36mINFO[0m[25-12-27 15:47:23] ✅ [updownthreshold] 策略已订阅价格变化事件 (session=polymarket)  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:23] ✅ [周期切换] 策略 updownthreshold 的 Subscribe 方法执行完成  [36mcomponent[0m=trader
+[36mINFO[0m[25-12-27 15:47:23] ✅ [周期切换] 策略 updownthreshold 已订阅会话 polymarket  [36mcomponent[0m=trader
+[36mINFO[0m[25-12-27 15:47:23] ✅ 策略 updownthreshold 已启动（session=polymarket）  [36mcomponent[0m=trader
+[36mINFO[0m[25-12-27 15:47:23] 所有策略已启动，共 1 个策略（session=polymarket）           [36mcomponent[0m=trader
+[36mINFO[0m[25-12-27 15:47:23] ✅ 交易机器人已启动，按 Ctrl+C 停止                       
+[36mINFO[0m[25-12-27 15:47:23] 📊 等待价格更新和交易信号...                             
+[36mINFO[0m[25-12-27 15:47:23] 💡 提示：如果长时间没有价格更新，请检查 WebSocket 连接是否正常        
+[33mWARN[0m[25-12-27 15:47:23] 🔄 [周期切换] OrderEngine 已重置运行时状态: newMarket=btc-updown-15m-1766821500 reason=TradingService.SetCurrentMarket gen=1766821500  [33mcomponent[0m=order_engine
+[36mINFO[0m[25-12-27 15:47:23] 📥 [sessionPriceHandler] 首次收到价格事件: up @ 0.5400 (Session=polymarket)  [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:47:23] 从 API 获取市场信息成功: btc-updown-15m-1766822400 (YES: 917757717685..., NO: 460431092708...) 
+[36mINFO[0m[25-12-27 15:47:23] 🔄 [快照恢复] 恢复订单: 当前周期=0, 跳过旧周期=5                [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:47:24] 后台预加载完成: 成功=2, 失败=0, 当前缓存大小=2                
+[36mINFO[0m[25-12-27 15:47:24] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 11:58 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:25] ✅ [余额初始化] 从链上查询到余额: 26.599659 USDC (地址: 0x89F684AB45206177E966b66a8722c9C8e3D9147a)  [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:47:25] ✅ [授权额度] 检测到无限授权（uint256 最大值），设置为足够大的值        [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:47:25] ═══════════════════════════════════════════════════════════  [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:47:25] 📋 [账号信息]                                      [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:47:25]    账号地址: 0x89F684AB45206177E966b66a8722c9C8e3D9147a  [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:47:25]    余额:     26.599659 USDC (原始值: 26599659, 整数: 26599659)  [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:47:25]    授权额度: 999999999.999000 USDC (原始值: 115792089237316195423570985008687907853269984665640564039457584007913129639935)  [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:47:25] ═══════════════════════════════════════════════════════════  [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:47:25] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 11:57 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:26] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 11:56 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:28] 📊 [updownthreshold] UP 价格: 56c | 解锁倒计时: 11:55 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:29] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 11:54 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:30] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 11:53 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:31] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 11:52 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:32] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 11:51 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:33] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 11:50 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:34] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:49 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:35] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:48 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:36] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:47 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:37] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:46 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:38] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:44 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:39] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:43 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:40] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:42 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:41] 📊 [updownthreshold] UP 价格: 51c | 解锁倒计时: 11:41 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:42] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:40 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:43] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:39 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:44] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:38 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:45] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:37 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:46] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:36 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:48] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:35 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:49] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:34 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:50] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:33 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:51] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:31 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:52] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:30 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:53] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:29 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:54] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:28 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:56] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:27 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:57] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:26 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:58] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:25 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:47:59] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:24 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:00] 📊 [updownthreshold] UP 价格: 51c | 解锁倒计时: 11:23 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:01] 📊 [updownthreshold] UP 价格: 51c | 解锁倒计时: 11:21 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:02] 📊 [updownthreshold] UP 价格: 51c | 解锁倒计时: 11:20 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:03] 📊 [updownthreshold] UP 价格: 51c | 解锁倒计时: 11:19 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:04] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:18 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:05] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:17 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:06] 📊 [updownthreshold] UP 价格: 51c | 解锁倒计时: 11:16 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:07] 📊 [updownthreshold] UP 价格: 51c | 解锁倒计时: 11:15 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:08] 📊 [updownthreshold] UP 价格: 51c | 解锁倒计时: 11:14 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:10] 📊 [updownthreshold] UP 价格: 51c | 解锁倒计时: 11:13 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:11] 📊 [updownthreshold] UP 价格: 52c | 解锁倒计时: 11:12 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:12] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:11 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:13] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:10 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:14] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:08 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:15] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:07 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:16] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 11:06 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:17] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 11:05 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:18] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 11:04 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:19] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 11:03 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:20] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 11:02 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:23] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 10:59 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:25] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 10:58 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:26] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 10:57 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:27] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 10:56 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:28] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 10:54 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:29] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 10:53 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:30] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 10:52 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:32] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 10:51 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:33] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 10:50 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:34] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 10:49 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:35] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 10:48 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:36] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 10:47 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:37] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 10:46 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:38] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 10:45 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:39] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:44 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:40] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:43 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:41] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:42 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:42] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:40 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:43] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:39 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:44] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:38 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:45] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:37 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:46] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:36 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:47] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:35 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:48] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:34 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:49] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:33 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:51] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:32 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:52] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:31 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:53] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:30 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:54] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:29 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:55] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:28 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:56] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:27 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:57] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:25 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:58] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:24 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:48:59] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:23 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:00] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 10:22 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:01] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 10:21 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:02] 📊 [updownthreshold] UP 价格: 53c | 解锁倒计时: 10:20 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:03] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 10:19 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:05] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 10:18 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:06] 📊 [updownthreshold] UP 价格: 54c | 解锁倒计时: 10:17 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:07] 📊 [updownthreshold] UP 价格: 55c | 解锁倒计时: 10:16 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:08] 📊 [updownthreshold] UP 价格: 56c | 解锁倒计时: 10:15 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:09] 📊 [updownthreshold] UP 价格: 56c | 解锁倒计时: 10:14 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:10] 📊 [updownthreshold] UP 价格: 56c | 解锁倒计时: 10:13 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:11] 📊 [updownthreshold] UP 价格: 56c | 解锁倒计时: 10:12 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:12] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 10:11 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:13] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 10:09 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:14] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 10:08 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:15] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 10:07 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:16] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 10:06 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:17] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 10:05 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:19] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 10:04 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:20] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 10:03 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:21] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 10:02 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:22] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 10:00 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:23] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:59 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:24] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:58 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:25] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:57 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:26] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:56 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:27] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:55 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:28] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:54 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:29] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:53 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:31] 📊 [updownthreshold] UP 价格: 56c | 解锁倒计时: 09:52 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:32] 📊 [updownthreshold] UP 价格: 56c | 解锁倒计时: 09:51 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:33] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:50 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:34] 📊 [updownthreshold] UP 价格: 59c | 解锁倒计时: 09:49 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:35] 📊 [updownthreshold] UP 价格: 59c | 解锁倒计时: 09:48 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:36] 📊 [updownthreshold] UP 价格: 58c | 解锁倒计时: 09:46 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:37] 📊 [updownthreshold] UP 价格: 58c | 解锁倒计时: 09:45 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:38] 📊 [updownthreshold] UP 价格: 58c | 解锁倒计时: 09:44 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:39] 📊 [updownthreshold] UP 价格: 58c | 解锁倒计时: 09:43 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:40] 📊 [updownthreshold] UP 价格: 58c | 解锁倒计时: 09:42 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:42] 📊 [updownthreshold] UP 价格: 58c | 解锁倒计时: 09:41 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:43] 📊 [updownthreshold] UP 价格: 59c | 解锁倒计时: 09:40 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:44] 📊 [updownthreshold] UP 价格: 58c | 解锁倒计时: 09:39 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:45] 📊 [updownthreshold] UP 价格: 58c | 解锁倒计时: 09:38 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:46] 📊 [updownthreshold] UP 价格: 58c | 解锁倒计时: 09:37 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:47] 📊 [updownthreshold] UP 价格: 58c | 解锁倒计时: 09:35 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:48] 📊 [updownthreshold] UP 价格: 58c | 解锁倒计时: 09:34 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:49] 📊 [updownthreshold] UP 价格: 58c | 解锁倒计时: 09:33 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:50] 📊 [updownthreshold] UP 价格: 58c | 解锁倒计时: 09:32 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:51] 📊 [updownthreshold] UP 价格: 58c | 解锁倒计时: 09:31 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:52] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:30 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:53] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:29 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:54] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:28 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:56] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:27 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:57] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:26 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:58] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:25 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:49:59] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:24 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:00] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:23 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:01] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:22 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:02] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:21 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:03] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:19 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:04] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:18 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:05] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:17 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:06] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:16 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:08] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:15 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:09] 📊 [updownthreshold] UP 价格: 56c | 解锁倒计时: 09:14 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:10] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:13 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:11] 📊 [updownthreshold] UP 价格: 56c | 解锁倒计时: 09:12 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:12] 📊 [updownthreshold] UP 价格: 56c | 解锁倒计时: 09:10 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:13] 📊 [updownthreshold] UP 价格: 56c | 解锁倒计时: 09:09 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:14] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:08 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:15] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:07 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:16] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:06 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:18] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:05 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:19] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:04 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:20] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:02 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:21] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:01 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:22] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 09:00 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:23] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:59 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:24] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:58 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:26] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:57 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:27] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:56 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:28] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:54 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:29] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:53 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:30] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:52 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:31] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:51 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:32] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:50 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:33] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:49 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:34] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:48 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:36] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:47 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:37] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:46 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:38] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:45 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:39] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:44 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:40] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:43 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:41] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:42 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:42] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:41 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:43] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:40 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:44] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:39 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:45] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:37 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:46] 📊 [updownthreshold] UP 价格: 57c | 解锁倒计时: 08:36 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:47] 📊 [updownthreshold] UP 价格: 58c | 解锁倒计时: 08:35 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:48] 📊 [updownthreshold] UP 价格: 58c | 解锁倒计时: 08:34 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:50] 📊 [updownthreshold] UP 价格: 58c | 解锁倒计时: 08:32 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:51] 📊 [updownthreshold] UP 价格: 56c | 解锁倒计时: 08:31 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766821500  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:50:52] 收到停止信号，正在关闭...                               
+[36mINFO[0m[25-12-27 15:50:52] 正在停止市场调度器...                                 
+[36mINFO[0m[25-12-27 15:50:52] 停止市场调度器...                                    [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-27 15:50:52] 🔄 [订单状态同步] 订单状态同步已停止                          [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:50:52] 市场调度器已停止                                      [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-27 15:50:52] 🔄 [关闭] MarketStream 已清空所有 handlers，市场=btc-updown-15m-1766821500  [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:50:52] 🛑 OrderEngine 停止                              [36mcomponent[0m=order_engine
+[33mWARN[0m[25-12-27 15:50:52] WebSocket 读取错误: read tcp 127.0.0.1:51174->127.0.0.1:15236: use of closed network connection，触发重连  [33mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:50:52] ✅ [unsubscribe] MarketStream 已关闭并完成退订：market=btc-updown-15m-1766821500, elapsed=178.25µs  [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:50:52] 用户订单 WebSocket 读取错误且 context 已取消，退出           [36mcomponent[0m=user_websocket
+[36mINFO[0m[25-12-27 15:50:52] ✅ [unsubscribe] Session 已关闭并完成退订：session=polymarket, market=btc-updown-15m-1766821500, elapsed=220.584µs  [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:50:52] 正在关闭策略...                                    
+[36mINFO[0m[25-12-27 15:50:52] shutting down...                              [36mcomponent[0m=graceful_shutdown
+[36mINFO[0m[25-12-27 15:50:52] 没有注册的关闭回调                                    
+[36mINFO[0m[25-12-27 15:50:52] 正在停止交易服务...                                  
+[36mINFO[0m[25-12-27 15:50:52] 正在停止交易服务...                                   [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:50:52] 交易服务已停止                                       [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:50:52] ✅ CommandExecutor 已停止                         [36mcomponent[0m=command_executor
+[36mINFO[0m[25-12-27 15:50:52] ✅ WorkerPoolCommandExecutor 已停止               [36mcomponent[0m=command_executor_pool
+[36mINFO[0m[25-12-27 15:50:52] ✅ [unsubscribe] Session 已关闭并完成退订：session=polymarket, market=btc-updown-15m-1766821500, elapsed=3.167µs  [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:50:52] ✅ 交易机器人已停止                                   

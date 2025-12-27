@@ -1,0 +1,62 @@
+[36mINFO[0m[25-12-27 15:44:44] 日志文件已切换到新周期: logs/btc-updown-15m-1766820600.log 
+[36mINFO[0m[25-12-27 15:44:44] 🔗 [Session polymarket] 注册 sessionPriceHandler 到 MarketStream  [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:44:44] ✅ [注册] MarketStream 注册价格变化处理器，当前 handlers 数量=1，市场=  [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:44:44] ✅ [Session polymarket] MarketStream handlers 数量=1 (注册后)  [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:44:44] 使用代理连接 WebSocket: http://127.0.0.1:15236      [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:44:44] 使用代理连接用户订单 WebSocket: http://127.0.0.1:15236  [36mcomponent[0m=user_websocket
+[36mINFO[0m[25-12-27 15:44:45] 从 API 获取市场信息成功: btc-updown-15m-1766820600 (YES: 172800260720..., NO: 105481574626...) 
+[36mINFO[0m[25-12-27 15:44:46] ✅ [重连健康检查] Handlers 数量=1: market=btc-updown-15m-1766820600  [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:44:46] 市场价格 WebSocket 已连接: btc-updown-15m-1766820600 (handlers=1)  [36mcomponent[0m=market_stream
+[36mINFO[0m[25-12-27 15:44:46] ✅ [Session polymarket] MarketStream handlers 数量=1 (连接后)  [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:44:46] [Session polymarket] 市场数据流已连接                 [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:44:46] [Session polymarket] 用户数据流已就绪                 [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:44:46] ✅ [周期切换] 新会话 MarketStream handlers 数量=1，市场=btc-updown-15m-1766820600  [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-27 15:44:46] ✅ [周期切换] 新会话 Session priceChangeHandlers 数量=0，市场=btc-updown-15m-1766820600  [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-27 15:44:46] 创建会话: market=btc-updown-15m-1766820600        [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-27 15:44:46] 市场调度器已启动                                      [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-27 15:44:46] 当前市场: btc-updown-15m-1766820600              
+[36mINFO[0m[25-12-27 15:44:46] ✅ [周期切换] 已设置当前市场: btc-updown-15m-1766820600   [36mcomponent[0m=trading_service
+[33mWARN[0m[25-12-27 15:44:46] 🔄 [周期切换] 已重置本地状态：orders/positions/cache/inflight（prev= -> new=btc-updown-15m-1766820600 gen=1766820600）  [33mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:44:46] ✅ 交易服务已启动（使用 OrderEngine）                     [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:44:46] ✅ CommandExecutor 已启动 (buffer=2048)           [36mcomponent[0m=command_executor
+[36mINFO[0m[25-12-27 15:44:46] ✅ WorkerPoolCommandExecutor 已启动 (workers=8 buffer=2048)  [36mcomponent[0m=command_executor_pool
+[36mINFO[0m[25-12-27 15:44:46] 🚀 正在启动策略...                                  
+[36mINFO[0m[25-12-27 15:44:46] 🔄 [updownthreshold] 周期切换，延迟交易倒计时开始: 12 分钟     [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:44:46] 🔄 [周期切换] 准备调用策略 updownthreshold 的 Subscribe 方法  [36mcomponent[0m=trader
+[36mINFO[0m[25-12-27 15:44:46] ✅ [Session polymarket] 注册价格变化处理器，当前 handlers 数量=1  [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:44:46] ✅ [updownthreshold] 策略已订阅价格变化事件 (session=polymarket)  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:44:46] ✅ [周期切换] 策略 updownthreshold 的 Subscribe 方法执行完成  [36mcomponent[0m=trader
+[36mINFO[0m[25-12-27 15:44:46] ✅ [周期切换] 策略 updownthreshold 已订阅会话 polymarket  [36mcomponent[0m=trader
+[36mINFO[0m[25-12-27 15:44:46] ✅ 策略 updownthreshold 已启动（session=polymarket）  [36mcomponent[0m=trader
+[36mINFO[0m[25-12-27 15:44:46] 所有策略已启动，共 1 个策略（session=polymarket）           [36mcomponent[0m=trader
+[36mINFO[0m[25-12-27 15:44:46] ✅ 交易机器人已启动，按 Ctrl+C 停止                       
+[36mINFO[0m[25-12-27 15:44:46] 📊 等待价格更新和交易信号...                             
+[36mINFO[0m[25-12-27 15:44:46] 💡 提示：如果长时间没有价格更新，请检查 WebSocket 连接是否正常        
+[36mINFO[0m[25-12-27 15:44:46] 🔄 [订单状态同步] 启动定期订单状态同步（有活跃订单时每3秒，无活跃订单时每30秒）   [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:44:46] 用户订单 WebSocket 已连接                            [36mcomponent[0m=user_websocket
+[36mINFO[0m[25-12-27 15:44:46] 🚀 OrderEngine 启动                              [36mcomponent[0m=order_engine
+[33mWARN[0m[25-12-27 15:44:46] 🔄 [周期切换] OrderEngine 已重置运行时状态: newMarket=btc-updown-15m-1766820600 reason=TradingService.SetCurrentMarket gen=1766820600  [33mcomponent[0m=order_engine
+[36mINFO[0m[25-12-27 15:44:46] 📥 [sessionPriceHandler] 首次收到价格事件: down @ 1.0000 (Session=polymarket)  [36mcomponent[0m=session
+[36mINFO[0m[25-12-27 15:44:46] 创建仓位: positionID=btc-updown-15m-1766820600_105481574626331497303756409985257820395362625331719377091980619290727843347040_down  [36mcomponent[0m=order_engine
+[36mINFO[0m[25-12-27 15:44:46] 从 API 获取市场信息成功: btc-updown-15m-1766821500 (YES: 913642814439..., NO: 348997512539...) 
+[36mINFO[0m[25-12-27 15:44:46] 后台预加载完成: 成功=2, 失败=0, 当前缓存大小=2                
+[36mINFO[0m[25-12-27 15:44:47] 📊 [updownthreshold] DOWN 价格: 100c | 解锁倒计时: 11:58 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766820600  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:44:48] ✅ [余额初始化] 从链上查询到余额: 26.599659 USDC (地址: 0x89F684AB45206177E966b66a8722c9C8e3D9147a)  [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:44:48] 📊 [updownthreshold] DOWN 价格: 100c | 解锁倒计时: 11:57 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766820600  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:44:48] ✅ [授权额度] 检测到无限授权（uint256 最大值），设置为足够大的值        [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:44:48] ═══════════════════════════════════════════════════════════  [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:44:48] 📋 [账号信息]                                      [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:44:48]    账号地址: 0x89F684AB45206177E966b66a8722c9C8e3D9147a  [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:44:48]    余额:     26.599659 USDC (原始值: 26599659, 整数: 26599659)  [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:44:48]    授权额度: 999999999.999000 USDC (原始值: 115792089237316195423570985008687907853269984665640564039457584007913129639935)  [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:44:48] ═══════════════════════════════════════════════════════════  [36mcomponent[0m=trading_service
+[36mINFO[0m[25-12-27 15:44:49] 📊 [updownthreshold] DOWN 价格: 100c | 解锁倒计时: 11:56 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766820600  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:44:51] 📊 [updownthreshold] DOWN 价格: 100c | 解锁倒计时: 11:54 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766820600  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:44:52] 📊 [updownthreshold] DOWN 价格: 100c | 解锁倒计时: 11:53 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766820600  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:44:54] 📊 [updownthreshold] DOWN 价格: 100c | 解锁倒计时: 11:51 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766820600  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:44:55] 📊 [updownthreshold] DOWN 价格: 100c | 解锁倒计时: 11:50 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766820600  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:44:56] 📊 [updownthreshold] DOWN 价格: 100c | 解锁倒计时: 11:49 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766820600  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:44:57] 📊 [updownthreshold] DOWN 价格: 100c | 解锁倒计时: 11:48 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766820600  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:44:58] 📊 [updownthreshold] DOWN 价格: 100c | 解锁倒计时: 11:47 | ⏳ 等待解锁 | 买入阈值: 79c | market=btc-updown-15m-1766820600  [36mstrategy[0m=updownthreshold
+[36mINFO[0m[25-12-27 15:45:00] 当前市场周期结束: btc-updown-15m-1766820600           [36mcomponent[0m=market_scheduler
+[36mINFO[0m[25-12-27 15:45:00] 准备切换到下一个市场: btc-updown-15m-1766821500 (当前周期=1766820600, 下一个周期=1766821500)  [36mcomponent[0m=market_scheduler

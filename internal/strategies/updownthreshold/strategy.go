@@ -53,17 +53,23 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.Exchan
 	return ctx.Err()
 }
 
-func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, _ *domain.Market) {
+func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, newMarket *domain.Market) {
 	s.enteredThisCycle = false
 	s.inPosition = false
 	s.positionToken = ""
 	s.lastUpCents = 0
 	s.lastDownCents = 0
 	s.firstSeenAt = time.Now()
-	s.cycleStartAt = time.Now() // 记录周期开始时间
+	// 使用周期开始时间（market.Timestamp）而不是当前时间
+	if newMarket != nil && newMarket.Timestamp > 0 {
+		s.cycleStartAt = time.Unix(newMarket.Timestamp, 0)
+	} else {
+		// fallback：如果 market 信息不可用，使用当前时间
+		s.cycleStartAt = time.Now()
+	}
 	s.lastActionAt = time.Time{}
 	s.lastPriceLogAt = time.Time{} // 重置价格日志时间
-	log.Infof("🔄 [%s] 周期切换，延迟交易倒计时开始: %d 分钟", ID, s.DelayedEntryMinutes)
+	log.Infof("🔄 [%s] 周期切换，延迟交易倒计时开始: %d 分钟 (周期开始时间: %s)", ID, s.DelayedEntryMinutes, s.cycleStartAt.Format("15:04:05"))
 }
 
 func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
@@ -73,9 +79,14 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if s.firstSeenAt.IsZero() {
 		s.firstSeenAt = time.Now()
 	}
-	// 如果 cycleStartAt 未初始化（第一次启动时），也初始化为当前时间
+	// 如果 cycleStartAt 未初始化（第一次启动时），使用 market.Timestamp
 	if s.cycleStartAt.IsZero() {
-		s.cycleStartAt = time.Now()
+		if e.Market != nil && e.Market.Timestamp > 0 {
+			s.cycleStartAt = time.Unix(e.Market.Timestamp, 0)
+		} else {
+			// fallback：如果 market 信息不可用，使用当前时间
+			s.cycleStartAt = time.Now()
+		}
 	}
 	// 预热：避免刚连上 WS 的脏快照/假盘口误触发
 	if s.WarmupMs > 0 && time.Since(s.firstSeenAt) < time.Duration(s.WarmupMs)*time.Millisecond {
@@ -118,9 +129,9 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		return nil
 	}
 
-	// 检查是否已过延迟交易时间
+	// 检查是否已过延迟交易时间（基于周期开始时间）
 	delayedEntryDuration := time.Duration(s.DelayedEntryMinutes) * time.Minute
-	canTradeAfterDelay := !s.cycleStartAt.IsZero() && time.Since(s.cycleStartAt) >= delayedEntryDuration
+	canTradeAfterDelay := !s.cycleStartAt.IsZero() && now.Sub(s.cycleStartAt) >= delayedEntryDuration
 
 	if canTradeAfterDelay {
 		// 延迟期后：只要价格 >= EntryCents 就买入（不需要"越过"逻辑）
@@ -160,14 +171,15 @@ func (s *Strategy) getLastCents(token domain.TokenType) int {
 	return s.lastDownCents
 }
 
-// printPriceAndCountdown 打印实时价格和8分钟解锁倒计时
+// printPriceAndCountdown 打印实时价格和延迟解锁倒计时（基于周期开始时间）
 func (s *Strategy) printPriceAndCountdown(token domain.TokenType, curCents int, market *domain.Market) {
 	if s.cycleStartAt.IsZero() {
 		return
 	}
 
 	delayedEntryDuration := time.Duration(s.DelayedEntryMinutes) * time.Minute
-	elapsed := time.Since(s.cycleStartAt)
+	now := time.Now()
+	elapsed := now.Sub(s.cycleStartAt)
 	remaining := delayedEntryDuration - elapsed
 
 	var status string
