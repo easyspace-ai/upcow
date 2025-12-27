@@ -1,11 +1,18 @@
 package server
 
-import (
-	"net/http"
-
-	"github.com/go-chi/chi/v5"
-)
+import "net/http"
 
 func chiURLParam(r *http.Request, key string) string {
-	return chi.URLParam(r, key)
+	if r == nil {
+		return ""
+	}
+	v := r.Context().Value(paramsKey)
+	if v == nil {
+		return ""
+	}
+	m, ok := v.(map[string]string)
+	if !ok {
+		return ""
+	}
+	return m[key]
 }

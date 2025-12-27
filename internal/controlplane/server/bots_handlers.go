@@ -11,7 +11,6 @@ import (
 	"time"
 
 	pkgconfig "github.com/betbot/gobet/pkg/config"
-	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
@@ -121,7 +120,7 @@ func (s *Server) handleBotsList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBotGet(w http.ResponseWriter, r *http.Request) {
-	botID := chi.URLParam(r, "botID")
+	botID := chiURLParam(r, "botID")
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	b, err := s.getBot(ctx, botID)
@@ -142,7 +141,7 @@ type updateConfigRequest struct {
 }
 
 func (s *Server) handleBotConfigUpdate(w http.ResponseWriter, r *http.Request) {
-	botID := chi.URLParam(r, "botID")
+	botID := chiURLParam(r, "botID")
 	var req updateConfigRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")

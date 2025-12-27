@@ -10,12 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/go-chi/chi/v5"
 )
 
 func (s *Server) handleBotLogsTail(w http.ResponseWriter, r *http.Request) {
-	botID := chi.URLParam(r, "botID")
+	botID := chiURLParam(r, "botID")
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 
@@ -45,7 +43,7 @@ func (s *Server) handleBotLogsTail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBotLogsStream(w http.ResponseWriter, r *http.Request) {
-	botID := chi.URLParam(r, "botID")
+	botID := chiURLParam(r, "botID")
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 
