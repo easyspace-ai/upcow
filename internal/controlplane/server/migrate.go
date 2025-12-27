@@ -57,6 +57,27 @@ CREATE TABLE IF NOT EXISTS bot_config_versions (
   PRIMARY KEY (bot_id, version)
 );`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_bots_account_id_unique ON bots(account_id) WHERE account_id IS NOT NULL;`,
+		`
+CREATE TABLE IF NOT EXISTS account_balances (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  balance_usdc REAL NOT NULL,
+  source TEXT NOT NULL,
+  ts TEXT NOT NULL
+);`,
+		`CREATE INDEX IF NOT EXISTS idx_account_balances_account_ts ON account_balances(account_id, ts DESC);`,
+		`
+CREATE TABLE IF NOT EXISTS job_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_name TEXT NOT NULL,
+  scope TEXT NOT NULL, -- "batch" | "account"
+  account_id TEXT,     -- nullable when batch
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  ok INTEGER,
+  error TEXT,
+  meta_json TEXT
+);`,
+		`CREATE INDEX IF NOT EXISTS idx_job_runs_started_at ON job_runs(started_at DESC);`,
 	}
 
 	for _, q := range stmts {

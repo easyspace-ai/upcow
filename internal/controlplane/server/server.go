@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	_ "modernc.org/sqlite"
@@ -22,6 +23,9 @@ type Config struct {
 type Server struct {
 	cfg Config
 	db  *sql.DB
+
+	bgCancel func()
+	bgWG     sync.WaitGroup
 }
 
 func New(cfg Config) (*Server, error) {
@@ -54,10 +58,15 @@ func New(cfg Config) (*Server, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	s.startBackground()
 	return s, nil
 }
 
 func (s *Server) Close() error {
+	if s.bgCancel != nil {
+		s.bgCancel()
+		s.bgWG.Wait()
+	}
 	if s.db != nil {
 		return s.db.Close()
 	}
@@ -77,7 +86,15 @@ func (s *Server) Router() http.Handler {
 				r.Get("/", s.handleAccountGet)
 				r.Put("/", s.handleAccountUpdate)
 				r.Post("/reveal-mnemonic", s.handleAccountRevealMnemonic)
+				r.Post("/sync_balance", s.handleAccountSyncBalance)
+				r.Post("/redeem", s.handleAccountRedeem)
 			})
+		})
+
+		r.Route("/jobs", func(r chi.Router) {
+			r.Get("/runs", s.handleJobRunsList)
+			r.Post("/balance_sync", s.handleJobBalanceSyncNow)
+			r.Post("/redeem", s.handleJobRedeemNow)
 		})
 
 		r.Route("/bots", func(r chi.Router) {

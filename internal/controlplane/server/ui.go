@@ -56,8 +56,12 @@ const uiHTML = `<!doctype html>
     <h3>账号（助记词）</h3>
     <div class="row">
       <button onclick="reloadAccounts()">刷新账号</button>
+      <button onclick="runBalanceBatch()">批量同步余额</button>
+      <button onclick="runRedeemBatch()">批量Redeem</button>
+      <button onclick="reloadJobRuns()">刷新任务记录</button>
     </div>
     <div id="accounts" class="muted"></div>
+    <div id="jobs" class="muted"></div>
     <h4>创建账号</h4>
     <div class="row">
       <input id="accName" placeholder="账号名称" style="width:180px"/>
@@ -111,6 +115,19 @@ async function reloadAccounts() {
   let html = '<div><b>账号列表</b></div><ul>';
   for (const a of accountsCache) {
     html += '<li><span class="muted">'+escapeHTML(a.id)+'</span> - <b>'+escapeHTML(a.name)+'</b> - '+escapeHTML(a.eoa_address)+' - path='+escapeHTML(a.derivation_path)+'</li>';
+  }
+  html += '</ul>';
+  root.innerHTML = html;
+}
+
+async function reloadJobRuns() {
+  const runs = await api('/api/jobs/runs?limit=30');
+  const root = document.getElementById('jobs');
+  if (!runs || runs.length === 0) { root.innerHTML = '暂无任务记录'; return; }
+  let html = '<div><b>最近任务</b></div><ul>';
+  for (const r of runs) {
+    const ok = (r.ok === true) ? 'OK' : (r.ok === false ? 'FAIL' : 'RUNNING');
+    html += '<li>#'+r.id+' '+escapeHTML(r.job_name)+' ['+escapeHTML(r.scope)+'] '+ok+' <span class="muted">'+escapeHTML(r.started_at||'')+'</span></li>';
   }
   html += '</ul>';
   root.innerHTML = html;
@@ -243,8 +260,21 @@ async function bindAccount() {
   await selectBot(selectedBotId);
 }
 
+async function runBalanceBatch() {
+  const res = await api('/api/jobs/balance_sync', {method:'POST', body: JSON.stringify({trigger:'manual_ui'})});
+  alert('已触发余额同步，run_id='+res.run_id);
+  await reloadJobRuns();
+}
+
+async function runRedeemBatch() {
+  const res = await api('/api/jobs/redeem', {method:'POST', body: JSON.stringify({trigger:'manual_ui'})});
+  alert('已触发Redeem，run_id='+res.run_id);
+  await reloadJobRuns();
+}
+
 reloadBots();
 reloadAccounts();
+reloadJobRuns();
 </script>
 </body>
 </html>`
