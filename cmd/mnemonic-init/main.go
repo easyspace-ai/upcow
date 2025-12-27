@@ -11,23 +11,76 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
+
+	sdkrelayer "github.com/betbot/gobet/pkg/sdk/relayer"
+	hdwallet "github.com/miguelmota/go-ethereum-hdwallet"
 )
 
 func main() {
 	var (
-		outPath = flag.String("out", getenv("GOBET_MNEMONIC_FILE", "data/mnemonic.enc"), "output file path for encrypted mnemonic")
-		force   = flag.Bool("force", false, "overwrite output file if exists")
+		// init mode: write encrypted mnemonic file
+		outPath = flag.String("out", getenv("GOBET_MNEMONIC_FILE", "data/mnemonic.enc"), "output file path for encrypted mnemonic (init mode)")
+		force   = flag.Bool("force", false, "overwrite output file if exists (init mode)")
+
+		// env / key management
+		envPath      = flag.String("env", getenv("GOBET_ENV_FILE", ".env"), "env file path to write GOBET_MASTER_KEY/GOBET_MNEMONIC_FILE")
+		writeEnv     = flag.Bool("write-env", true, "write GOBET_MASTER_KEY and GOBET_MNEMONIC_FILE to env file")
+		genMasterKey = flag.Bool("gen-master-key", false, "generate a new random master key (hex) and use it for this run")
+
+		// show mode: derive and print private key for a 3-digit account id
+		showID   = flag.String("id", "", "3-digit account id to derive and print private key (show mode), e.g. 456")
+		inPath   = flag.String("file", getenv("GOBET_MNEMONIC_FILE", "data/mnemonic.enc"), "encrypted mnemonic file path (show mode)")
+		showSafe = flag.Bool("show-safe", true, "also print expected safe(funder) address (show mode)")
 	)
 	flag.Parse()
 
-	masterKey, err := loadMasterKey()
+	// Master key for encrypt/decrypt.
+	masterKey, masterKeyHex, err := loadOrGenerateMasterKey(*genMasterKey)
 	if err != nil {
 		fatal(err)
 	}
 
+	// show mode: derive and print private key for given id
+	if strings.TrimSpace(*showID) != "" {
+		accountID := strings.TrimSpace(*showID)
+		if err := validateAccountID(accountID); err != nil {
+			fatal(err)
+		}
+		encMnemonic, err := readFileTrim(*inPath)
+		if err != nil {
+			fatal(err)
+		}
+		mn, err := decryptFromString(masterKey, encMnemonic)
+		if err != nil {
+			fatal(fmt.Errorf("decrypt mnemonic failed: %w", err))
+		}
+		path := derivationPathFromAccountID(accountID)
+		derived, err := deriveWalletFromMnemonic(mn, path)
+		if err != nil {
+			fatal(err)
+		}
+
+		fmt.Println("account_id:", accountID)
+		fmt.Println("derivation_path:", path)
+		fmt.Println("eoa_address:", derived.EOAAddress)
+		fmt.Println("private_key_hex:", derived.PrivateKeyHex)
+		if *showSafe {
+			chainID := big.NewInt(137)
+			rc := sdkrelayer.NewClient("https://relayer-v2.polymarket.com", chainID, nil, nil)
+			safeAddr, err := rc.GetExpectedSafe(derived.EOAAddress)
+			if err != nil {
+				fatal(err)
+			}
+			fmt.Println("expected_safe(funder_address):", safeAddr)
+		}
+		return
+	}
+
+	// init mode: prompt mnemonic and write encrypted file
 	if st, err := os.Stat(*outPath); err == nil && !st.IsDir() && !*force {
 		fatal(fmt.Errorf("output file already exists: %s (use -force to overwrite)", *outPath))
 	}
@@ -40,7 +93,6 @@ func main() {
 	if mn == "" {
 		fatal(errors.New("mnemonic is empty"))
 	}
-
 	enc, err := encryptToString(masterKey, mn)
 	if err != nil {
 		fatal(err)
@@ -51,6 +103,17 @@ func main() {
 		fatal(err)
 	}
 	fmt.Fprintf(os.Stderr, "已写入：%s\n", *outPath)
+
+	if *writeEnv {
+		// Best-effort write; do not print key unless generated in this run.
+		if err := upsertEnvFile(*envPath, map[string]string{
+			"GOBET_MASTER_KEY":    masterKeyHex,
+			"GOBET_MNEMONIC_FILE": *outPath,
+		}); err != nil {
+			fatal(err)
+		}
+		fmt.Fprintf(os.Stderr, "已写入：%s（包含 GOBET_MASTER_KEY / GOBET_MNEMONIC_FILE）\n", *envPath)
+	}
 }
 
 func getenv(key, def string) string {
@@ -71,27 +134,37 @@ func fatal(err error) {
 	os.Exit(1)
 }
 
-func loadMasterKey() ([]byte, error) {
+func loadOrGenerateMasterKey(gen bool) ([]byte, string, error) {
+	if gen {
+		b := make([]byte, 32)
+		if _, err := io.ReadFull(rand.Reader, b); err != nil {
+			return nil, "", err
+		}
+		hexKey := hex.EncodeToString(b)
+		return b, hexKey, nil
+	}
+
 	raw := strings.TrimSpace(os.Getenv("GOBET_MASTER_KEY"))
 	if raw == "" {
-		return nil, errors.New("GOBET_MASTER_KEY is required (32 bytes, base64 or hex)")
+		return nil, "", errors.New("GOBET_MASTER_KEY is required (32 bytes, base64 or hex) or use -gen-master-key")
 	}
 	// try base64
 	if b, err := base64.StdEncoding.DecodeString(raw); err == nil {
 		if len(b) != 32 {
-			return nil, fmt.Errorf("GOBET_MASTER_KEY base64 decoded length must be 32, got %d", len(b))
+			return nil, "", fmt.Errorf("GOBET_MASTER_KEY base64 decoded length must be 32, got %d", len(b))
 		}
-		return b, nil
+		// If user provided base64, keep original for writing back.
+		return b, raw, nil
 	}
 	// try hex
 	raw = strings.TrimPrefix(raw, "0x")
 	if b, err := hex.DecodeString(raw); err == nil {
 		if len(b) != 32 {
-			return nil, fmt.Errorf("GOBET_MASTER_KEY hex decoded length must be 32, got %d", len(b))
+			return nil, "", fmt.Errorf("GOBET_MASTER_KEY hex decoded length must be 32, got %d", len(b))
 		}
-		return b, nil
+		return b, raw, nil
 	}
-	return nil, errors.New("GOBET_MASTER_KEY must be base64(32 bytes) or hex(32 bytes)")
+	return nil, "", errors.New("GOBET_MASTER_KEY must be base64(32 bytes) or hex(32 bytes)")
 }
 
 // encryptToString: returns base64(nonce|ciphertext)
@@ -111,4 +184,139 @@ func encryptToString(masterKey []byte, plaintext string) (string, error) {
 	ct := gcm.Seal(nil, nonce, []byte(plaintext), nil)
 	out := append(nonce, ct...)
 	return base64.StdEncoding.EncodeToString(out), nil
+}
+
+func decryptFromString(masterKey []byte, enc string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(enc))
+	if err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(masterKey)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	if len(raw) < gcm.NonceSize() {
+		return "", errors.New("ciphertext too short")
+	}
+	nonce := raw[:gcm.NonceSize()]
+	ct := raw[gcm.NonceSize():]
+	pt, err := gcm.Open(nil, nonce, ct, nil)
+	if err != nil {
+		return "", err
+	}
+	return string(pt), nil
+}
+
+func readFileTrim(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	s := strings.TrimSpace(string(b))
+	if s == "" {
+		return "", fmt.Errorf("file is empty: %s", path)
+	}
+	return s, nil
+}
+
+func upsertEnvFile(path string, kv map[string]string) error {
+	// read existing
+	existing := ""
+	if b, err := os.ReadFile(path); err == nil {
+		existing = string(b)
+	}
+	lines := []string{}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(existing, "\n") {
+		l := strings.TrimRight(line, "\r")
+		trim := strings.TrimSpace(l)
+		if trim == "" || strings.HasPrefix(trim, "#") || !strings.Contains(l, "=") {
+			lines = append(lines, l)
+			continue
+		}
+		k := strings.SplitN(l, "=", 2)[0]
+		k = strings.TrimSpace(k)
+		if v, ok := kv[k]; ok {
+			lines = append(lines, k+"="+v)
+			seen[k] = true
+			continue
+		}
+		lines = append(lines, l)
+	}
+	for k, v := range kv {
+		if seen[k] {
+			continue
+		}
+		if len(lines) > 0 && lines[len(lines)-1] != "" {
+			// keep file nicely separated
+		}
+		lines = append(lines, k+"="+v)
+	}
+	out := strings.Join(lines, "\n")
+	if !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	// 0600: env file likely contains secrets
+	return os.WriteFile(path, []byte(out), 0o600)
+}
+
+func validateAccountID(id string) error {
+	id = strings.TrimSpace(id)
+	if len(id) != 3 {
+		return fmt.Errorf("id must be 3 digits (e.g. 456)")
+	}
+	for _, c := range id {
+		if c < '0' || c > '9' {
+			return fmt.Errorf("id must be 3 digits (e.g. 456)")
+		}
+	}
+	return nil
+}
+
+func derivationPathFromAccountID(id string) string {
+	// "456" -> "m/44'/60'/4'/5/6"
+	d0, d1, d2 := id[0], id[1], id[2]
+	return fmt.Sprintf("m/44'/60'/%c'/%c/%c", d0, d1, d2)
+}
+
+type derivedWallet struct {
+	PrivateKeyHex string
+	EOAAddress    string
+}
+
+func deriveWalletFromMnemonic(mnemonic string, derivationPath string) (*derivedWallet, error) {
+	mnemonic = strings.TrimSpace(mnemonic)
+	derivationPath = strings.TrimSpace(derivationPath)
+	if mnemonic == "" {
+		return nil, fmt.Errorf("mnemonic is required")
+	}
+	if derivationPath == "" {
+		return nil, fmt.Errorf("derivation_path is required")
+	}
+
+	// reuse same hdwallet implementation as server side
+	w, err := hdwallet.NewFromMnemonic(mnemonic)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mnemonic: %w", err)
+	}
+	path, err := hdwallet.ParseDerivationPath(derivationPath)
+	if err != nil {
+		return nil, fmt.Errorf("invalid derivation_path: %w", err)
+	}
+	acct, err := w.Derive(path, false)
+	if err != nil {
+		return nil, fmt.Errorf("derive failed: %w", err)
+	}
+	pk, err := w.PrivateKeyHex(acct)
+	if err != nil {
+		return nil, fmt.Errorf("private key failed: %w", err)
+	}
+	return &derivedWallet{
+		PrivateKeyHex: pk,
+		EOAAddress:    strings.ToLower(acct.Address.Hex()),
+	}, nil
 }
