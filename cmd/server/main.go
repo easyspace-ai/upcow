@@ -12,15 +12,26 @@ import (
 	"time"
 
 	"github.com/betbot/gobet/internal/controlplane/server"
+	"github.com/joho/godotenv"
 )
 
 func main() {
+	// Load .env (best-effort). If missing, fall back to real env vars.
+	_ = godotenv.Load()
+
+	getenv := func(key, def string) string {
+		if v := os.Getenv(key); v != "" {
+			return v
+		}
+		return def
+	}
+
 	var (
-		listenAddr = flag.String("listen", ":8080", "HTTP listen address")
-		dbPath     = flag.String("db", "data/controlplane.db", "SQLite db file path")
-		botBin     = flag.String("bot-bin", "bot", "bot executable (path or name in PATH)")
-		dataDir    = flag.String("data-dir", "data", "base data directory")
-		logsDir    = flag.String("logs-dir", "logs", "base logs directory")
+		listenAddr = flag.String("listen", getenv("GOBET_SERVER_LISTEN", ":8080"), "HTTP listen address")
+		dbPath     = flag.String("db", getenv("GOBET_SERVER_DB", "data/controlplane.db"), "SQLite db file path")
+		botBin     = flag.String("bot-bin", getenv("GOBET_BOT_BIN", "bot"), "bot executable (path or name in PATH)")
+		dataDir    = flag.String("data-dir", getenv("GOBET_DATA_DIR", "data"), "base data directory")
+		logsDir    = flag.String("logs-dir", getenv("GOBET_LOGS_DIR", "logs"), "base logs directory")
 	)
 	flag.Parse()
 
