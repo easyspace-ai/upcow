@@ -86,6 +86,10 @@ func (s *Server) handleAccountsList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, fmt.Sprintf("db list: %v", err))
 		return
 	}
+	// Ensure JSON is [] not null when empty.
+	if accounts == nil {
+		accounts = []Account{}
+	}
 	writeJSON(w, 200, accounts)
 }
 

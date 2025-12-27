@@ -107,42 +107,55 @@ function botCard(b) {
 function escapeHTML(s){ return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }
 
 async function reloadBots() {
-  const bots = await api('/api/bots');
   const root = document.getElementById('bots');
   root.innerHTML = '';
-  bots.forEach(b => root.appendChild(botCard(b)));
+  try {
+    const bots = await api('/api/bots');
+    const list = Array.isArray(bots) ? bots : [];
+    if (list.length === 0) { root.innerHTML = '<div class="muted">暂无 bots</div>'; return; }
+    list.forEach(b => root.appendChild(botCard(b)));
+  } catch (e) {
+    root.innerHTML = '<div class="muted">加载 bots 失败：'+escapeHTML(String(e && e.message ? e.message : e))+'</div>';
+  }
 }
 
 async function reloadAccounts() {
-  const accounts = await api('/api/accounts');
-  accountsCache = accounts || [];
   const root = document.getElementById('accounts');
-  if (accountsCache.length === 0) {
-    root.innerHTML = '暂无账号';
-    return;
-  }
-  root.innerHTML = '<div><b>账号列表</b></div>';
-  for (const a of accountsCache) {
-    const div = document.createElement('div');
-    div.className = 'acct';
-    div.onclick = () => selectAccount(a.id);
-    div.innerHTML = '<b>'+escapeHTML(a.name)+'</b><div class="muted">'+escapeHTML(a.id)+'</div><div class="muted">'+escapeHTML(a.eoa_address)+'</div>';
-    root.appendChild(div);
+  try {
+    const accounts = await api('/api/accounts');
+    accountsCache = Array.isArray(accounts) ? accounts : [];
+    if (accountsCache.length === 0) { root.innerHTML = '暂无账号'; return; }
+    root.innerHTML = '<div><b>账号列表</b></div>';
+    for (const a of accountsCache) {
+      const div = document.createElement('div');
+      div.className = 'acct';
+      div.onclick = () => selectAccount(a.id);
+      div.innerHTML = '<b>'+escapeHTML(a.name)+'</b><div class="muted">'+escapeHTML(a.id)+'</div><div class="muted">'+escapeHTML(a.eoa_address)+'</div>';
+      root.appendChild(div);
+    }
+  } catch (e) {
+    accountsCache = [];
+    root.innerHTML = '<div class="muted">加载账号失败：'+escapeHTML(String(e && e.message ? e.message : e))+'</div>';
   }
 }
 
 async function reloadJobRuns() {
   const qs = selectedAccountId ? ('&account_id='+encodeURIComponent(selectedAccountId)) : '';
-  const runs = await api('/api/jobs/runs?limit=30'+qs);
   const root = document.getElementById('jobs');
-  if (!runs || runs.length === 0) { root.innerHTML = '暂无任务记录'; return; }
-  let html = '<div><b>最近任务</b></div><ul>';
-  for (const r of runs) {
-    const ok = (r.ok === true) ? 'OK' : (r.ok === false ? 'FAIL' : 'RUNNING');
-    html += '<li>#'+r.id+' '+escapeHTML(r.job_name)+' ['+escapeHTML(r.scope)+'] '+ok+' <span class="muted">'+escapeHTML(r.started_at||'')+'</span></li>';
+  try {
+    const runs = await api('/api/jobs/runs?limit=30'+qs);
+    const list = Array.isArray(runs) ? runs : [];
+    if (list.length === 0) { root.innerHTML = '暂无任务记录'; return; }
+    let html = '<div><b>最近任务</b></div><ul>';
+    for (const r of list) {
+      const ok = (r.ok === true) ? 'OK' : (r.ok === false ? 'FAIL' : 'RUNNING');
+      html += '<li>#'+r.id+' '+escapeHTML(r.job_name)+' ['+escapeHTML(r.scope)+'] '+ok+' <span class="muted">'+escapeHTML(r.started_at||'')+'</span></li>';
+    }
+    html += '</ul>';
+    root.innerHTML = html;
+  } catch (e) {
+    root.innerHTML = '<div class="muted">加载任务失败：'+escapeHTML(String(e && e.message ? e.message : e))+'</div>';
   }
-  html += '</ul>';
-  root.innerHTML = html;
 }
 
 async function selectAccount(id) {

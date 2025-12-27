@@ -116,6 +116,10 @@ func (s *Server) handleBotsList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("db list: %v", err))
 		return
 	}
+	// Ensure JSON is [] not null when empty.
+	if bots == nil {
+		bots = []Bot{}
+	}
 	writeJSON(w, http.StatusOK, bots)
 }
 
