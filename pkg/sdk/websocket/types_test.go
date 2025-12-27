@@ -104,8 +104,8 @@ func TestConstants(t *testing.T) {
 		t.Errorf("期望 maxBatchSize 为 100，得到 %d", maxBatchSize)
 	}
 
-	if defaultMessageBufferSize != 100 {
-		t.Errorf("期望 defaultMessageBufferSize 为 100，得到 %d", defaultMessageBufferSize)
+	if defaultMessageBufferSize != 1000 {
+		t.Errorf("期望 defaultMessageBufferSize 为 1000，得到 %d", defaultMessageBufferSize)
 	}
 
 	if defaultErrorBufferSize != 100 {
@@ -182,4 +182,3 @@ func TestTradeEvent(t *testing.T) {
 		t.Errorf("期望时间戳为 %v，得到 %v", now, event.Timestamp)
 	}
 }
-

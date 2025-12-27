@@ -13,6 +13,7 @@ import (
 	"github.com/polymarket/go-order-utils/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"math/big"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,9 @@ func signature(signer string, digest []byte) ([]byte, error) {
 }
 
 func TestClient_GetNonce(t *testing.T) {
+	if os.Getenv("RUN_INTEGRATION_TESTS") != "1" {
+		t.Skip("integration test: set RUN_INTEGRATION_TESTS=1 to enable")
+	}
 	client := relayer.NewClient(PolymarketRelayURL, chaindId, signature, &sdktypes.BuilderApiKeyCreds{
 		Key:        "019a4dec-fc6a-79ba-8937-d9bf3c2792ca",
 		Secret:     "Q23ZHyR21V5_F8qVLvOvnXGhxtW6CmNCWDjHzFJQW7k=",
@@ -46,6 +50,9 @@ func TestClient_GetNonce(t *testing.T) {
 }
 
 func TestProxy(t *testing.T) {
+	if os.Getenv("RUN_INTEGRATION_TESTS") != "1" {
+		t.Skip("integration test: set RUN_INTEGRATION_TESTS=1 to enable")
+	}
 	client := relayer.NewClient(PolymarketRelayURL, chaindId, signature, &sdktypes.BuilderApiKeyCreds{
 		Key:        "019a4dec-fc6a-79ba-8937-d9bf3c2792ca",
 		Secret:     "Q23ZHyR21V5_F8qVLvOvnXGhxtW6CmNCWDjHzFJQW7k=",
@@ -62,6 +69,9 @@ func TestProxy(t *testing.T) {
 }
 
 func TestGetExpectedSafe(t *testing.T) {
+	if os.Getenv("RUN_INTEGRATION_TESTS") != "1" {
+		t.Skip("integration test: set RUN_INTEGRATION_TESTS=1 to enable")
+	}
 	client := relayer.NewClient(PolymarketRelayURL, chaindId, signature, &sdktypes.BuilderApiKeyCreds{
 		Key:        "019a4dec-fc6a-79ba-8937-d9bf3c2792ca",
 		Secret:     "Q23ZHyR21V5_F8qVLvOvnXGhxtW6CmNCWDjHzFJQW7k=",
