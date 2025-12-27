@@ -1,3 +1,0 @@
-[36mINFO[0m[25-12-27 04:58:54] 使用默认配置文件: yml/config.yaml                    
-[36mINFO[0m[25-12-27 04:58:54] 已加载策略配置: strategy=velocityfollow file=yml/velocityfollow.yaml 
-[36mINFO[0m[25-12-27 04:58:54] 策略配置文件覆盖 dry_run: true (来源: yml/velocityfollow.yaml) 

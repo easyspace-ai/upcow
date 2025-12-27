@@ -13,14 +13,14 @@ market:
 
 # 纸交易模式（可从策略配置文件读取，会覆盖主配置文件中的设置）
 # true = 仅模拟交易，false = 真实交易
-dry_run: true
+dry_run: false
 
 
 exchangeStrategies:
   - on: polymarket
     velocityfollow:
       # ====== 下单参数 ======
-      orderSize: 10
+      orderSize: 4
       hedgeOrderSize: 0          # 0=跟随 orderSize（对侧挂单 shares）
 
       # ====== 开仓质量过滤（胜率） ======
