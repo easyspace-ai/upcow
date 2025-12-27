@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -57,7 +56,7 @@ func (s *Server) handleAccountsCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// compute expected Safe as funder address (official relayer model)
-	funderAddr, warn, err := computeAndMaybeDeploySafe(derived.PrivateKeyHex, derived.EOAAddress)
+	funderAddr, warn, err := s.computeAndEnsureSafe(derived.PrivateKeyHex, derived.EOAAddress)
 	if err != nil {
 		writeError(w, 500, fmt.Sprintf("register failed: %v", err))
 		return
@@ -160,10 +159,10 @@ func (s *Server) handleAccountRevealMnemonic(w http.ResponseWriter, r *http.Requ
 	writeError(w, 410, "mnemonic is managed via local encrypted file; HTTP reveal is disabled")
 }
 
-func computeAndMaybeDeploySafe(privateKeyHex string, eoaAddress string) (funderAddress string, warning string, err error) {
+func (s *Server) computeAndEnsureSafe(privateKeyHex string, eoaAddress string) (funderAddress string, warning string, err error) {
 	// Always compute expected safe address as funder.
 	chainID := big.NewInt(137)
-	relayerURL := strings.TrimSpace(os.Getenv("POLYMARKET_RELAYER_URL"))
+	relayerURL := strings.TrimSpace(s.getenv("POLYMARKET_RELAYER_URL"))
 	if relayerURL == "" {
 		relayerURL = "https://relayer-v2.polymarket.com"
 	}
@@ -174,16 +173,10 @@ func computeAndMaybeDeploySafe(privateKeyHex string, eoaAddress string) (funderA
 		return "", "", err
 	}
 
-	// Optional: attempt to deploy if configured.
-	autoDeploy := strings.EqualFold(strings.TrimSpace(os.Getenv("GOBET_ACCOUNT_AUTO_DEPLOY_SAFE")), "true") ||
-		strings.TrimSpace(os.Getenv("GOBET_ACCOUNT_AUTO_DEPLOY_SAFE")) == "1"
-	if !autoDeploy {
+	// If it's not deployed, try to deploy (recommended for new wallets).
+	deployed, derr := rc.GetDeployed(safeAddr)
+	if derr == nil && deployed.Deployed {
 		return safeAddr, "", nil
-	}
-
-	bc, err := loadBuilderCredsFromEnv()
-	if err != nil {
-		return safeAddr, "auto deploy skipped: missing builder creds", nil
 	}
 
 	pk, err := crypto.HexToECDSA(strings.TrimPrefix(strings.TrimSpace(privateKeyHex), "0x"))
@@ -202,24 +195,32 @@ func computeAndMaybeDeploySafe(privateKeyHex string, eoaAddress string) (funderA
 		return sig, nil
 	}
 
+	// If builder creds are missing, we can't deploy, but we still return expected safe as funder.
+	bc, err := s.loadBuilderCreds()
+	if err != nil {
+		return safeAddr, "safe not deployed yet; missing builder creds for deploy", nil
+	}
+
 	rc2 := sdkrelayer.NewClient(relayerURL, chainID, signFn, &sdktypes.BuilderApiKeyCreds{
 		Key:        bc.Key,
 		Secret:     bc.Secret,
 		Passphrase: bc.Passphrase,
 	})
-	deployed, err := rc2.GetDeployed(safeAddr)
-	if err != nil {
-		return safeAddr, "auto deploy skipped: GetDeployed failed", nil
-	}
-	if deployed.Deployed {
-		return safeAddr, "", nil
-	}
+	// deploy (best effort)
 	_, err = rc2.Deploy(&sdktypes.AuthOption{SingerAddress: eoaAddress, FunderAddress: safeAddr})
 	if err != nil {
-		// Non-fatal: safe can be deployed later; funder address is deterministic.
-		return safeAddr, "auto deploy failed (safe not deployed yet)", nil
+		return safeAddr, fmt.Sprintf("safe deploy failed: %v", err), nil
 	}
-	return safeAddr, "", nil
+	// poll for deployed
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(2 * time.Second)
+		st, err2 := rc2.GetDeployed(safeAddr)
+		if err2 == nil && st.Deployed {
+			return safeAddr, "", nil
+		}
+	}
+	return safeAddr, "safe deploy submitted; not confirmed deployed yet", nil
 }
 
 func (s *Server) handleAccountSyncBalance(w http.ResponseWriter, r *http.Request) {

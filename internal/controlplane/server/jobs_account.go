@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"time"
 
@@ -66,7 +65,7 @@ func (s *Server) startRedeemAccount(accountID string, trigger string) (int64, er
 }
 
 func (s *Server) doRedeemAccount(ctx context.Context, runID int64, accountID string, trigger string) {
-	bc, err := loadBuilderCredsFromEnv()
+	bc, err := s.loadBuilderCreds()
 	if err != nil {
 		msg := err.Error()
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
@@ -79,7 +78,7 @@ func (s *Server) doRedeemAccount(ctx context.Context, runID int64, accountID str
 		return
 	}
 
-	baseURL := strings.TrimSpace(os.Getenv("POLYMARKET_API_URL"))
+	baseURL := strings.TrimSpace(s.getenv("POLYMARKET_API_URL"))
 	if baseURL == "" {
 		baseURL = "https://clob.polymarket.com"
 	}
@@ -112,7 +111,7 @@ func (s *Server) doRedeemAccount(ctx context.Context, runID int64, accountID str
 			Secret:     bc.Secret,
 			Passphrase: bc.Passphrase,
 		},
-		RelayerURL: strings.TrimSpace(os.Getenv("POLYMARKET_RELAYER_URL")),
+		RelayerURL: strings.TrimSpace(s.getenv("POLYMARKET_RELAYER_URL")),
 	}
 	res, err := sdkredeem.RunOnce(ctx, client, opts)
 	if err != nil {

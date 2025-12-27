@@ -72,10 +72,11 @@ func (s *Server) redeemLoop(ctx context.Context, interval time.Duration) {
 		return
 	}
 	// 没有 builder creds 时直接不跑定时 redeem（避免刷失败记录）
-	if _, err := loadBuilderCredsFromEnv(); err != nil {
+	if _, err := s.loadBuilderCreds(); err != nil {
 		return
 	}
-	if strings.TrimSpace(os.Getenv("GOBET_MASTER_KEY")) == "" {
+	// mnemonic must be available (badger or legacy file)
+	if _, err := s.loadMnemonic(); err != nil {
 		return
 	}
 
@@ -95,7 +96,7 @@ func (s *Server) tradesSyncLoop(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		return
 	}
-	if strings.TrimSpace(os.Getenv("GOBET_MASTER_KEY")) == "" {
+	if _, err := s.loadMnemonic(); err != nil {
 		return
 	}
 	t := time.NewTicker(interval)
@@ -130,7 +131,7 @@ func (s *Server) openOrdersSyncLoop(ctx context.Context, interval time.Duration)
 	if interval <= 0 {
 		return
 	}
-	if strings.TrimSpace(os.Getenv("GOBET_MASTER_KEY")) == "" {
+	if _, err := s.loadMnemonic(); err != nil {
 		return
 	}
 	t := time.NewTicker(interval)
@@ -183,10 +184,10 @@ type builderCreds struct {
 	Passphrase string
 }
 
-func loadBuilderCredsFromEnv() (*builderCreds, error) {
-	key := strings.TrimSpace(os.Getenv("BUILDER_API_KEY"))
-	secret := strings.TrimSpace(os.Getenv("BUILDER_SECRET"))
-	pass := strings.TrimSpace(os.Getenv("BUILDER_PASS_PHRASE"))
+func (s *Server) loadBuilderCreds() (*builderCreds, error) {
+	key := strings.TrimSpace(s.getenv("BUILDER_API_KEY"))
+	secret := strings.TrimSpace(s.getenv("BUILDER_SECRET"))
+	pass := strings.TrimSpace(s.getenv("BUILDER_PASS_PHRASE"))
 	if key == "" || secret == "" || pass == "" {
 		return nil, ErrMissingRedeemCreds
 	}
@@ -325,7 +326,7 @@ func (s *Server) startRedeemBatch(trigger string) (int64, error) {
 }
 
 func (s *Server) doRedeemBatch(ctx context.Context, runID int64, trigger string) {
-	bc, err := loadBuilderCredsFromEnv()
+	bc, err := s.loadBuilderCreds()
 	if err != nil {
 		msg := err.Error()
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
@@ -338,7 +339,7 @@ func (s *Server) doRedeemBatch(ctx context.Context, runID int64, trigger string)
 		return
 	}
 
-	baseURL := strings.TrimSpace(os.Getenv("POLYMARKET_API_URL"))
+	baseURL := strings.TrimSpace(s.getenv("POLYMARKET_API_URL"))
 	if baseURL == "" {
 		baseURL = "https://clob.polymarket.com"
 	}
@@ -393,7 +394,7 @@ func (s *Server) doRedeemBatch(ctx context.Context, runID int64, trigger string)
 					Secret:     bc.Secret,
 					Passphrase: bc.Passphrase,
 				},
-				RelayerURL: strings.TrimSpace(os.Getenv("POLYMARKET_RELAYER_URL")),
+				RelayerURL: strings.TrimSpace(s.getenv("POLYMARKET_RELAYER_URL")),
 			}
 			res, err := sdkredeem.RunOnce(acctCtx, client, opts)
 			if err != nil {

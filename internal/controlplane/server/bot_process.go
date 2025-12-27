@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,6 +16,9 @@ import (
 	"time"
 
 	pkgconfig "github.com/betbot/gobet/pkg/config"
+	sdkrelayer "github.com/betbot/gobet/pkg/sdk/relayer"
+	sdktypes "github.com/betbot/gobet/pkg/sdk/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"gopkg.in/yaml.v3"
 	"strings"
 
@@ -117,6 +121,15 @@ func (s *Server) startBot(ctx context.Context, botID string) (pid int, alreadyRu
 	derived, err := deriveWalletFromMnemonic(mn, path)
 	if err != nil {
 		return 0, false, err
+	}
+	// Ensure expected safe is deployed (best-effort). This helps new wallets which never used polymarket.com.
+	// If builder creds are missing, we proceed but bot may fail on relayer-required operations.
+	if strings.TrimSpace(a.FunderAddress) != "" {
+		if warn, err := s.ensureSafeDeployed(derived.PrivateKeyHex, derived.EOAAddress, a.FunderAddress); err != nil {
+			return 0, false, err
+		} else if warn != "" {
+			_ = s.clearBotPID(ctx, botID, nil, &warn)
+		}
 	}
 	runtimeYAML, err := injectWalletIntoBotConfig(b.ConfigYAML, derived.PrivateKeyHex, a.FunderAddress, b.LogPath, b.PersistenceDir)
 	if err != nil {
@@ -326,6 +339,64 @@ func (s *Server) spawnBotWithRuntimeConfig(b Bot, cfgYAML string) (int, error) {
 func autoRestartEnabled() bool {
 	v := strings.TrimSpace(os.Getenv("GOBET_BOT_AUTO_RESTART"))
 	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
+}
+
+func (s *Server) ensureSafeDeployed(privateKeyHex string, eoaAddress string, funderAddress string) (warning string, err error) {
+	chainID := big.NewInt(137)
+	relayerURL := strings.TrimSpace(s.getenv("POLYMARKET_RELAYER_URL"))
+	if relayerURL == "" {
+		relayerURL = "https://relayer-v2.polymarket.com"
+	}
+	rc := sdkrelayer.NewClient(relayerURL, chainID, nil, nil)
+	expected, err := rc.GetExpectedSafe(eoaAddress)
+	if err != nil {
+		return "", err
+	}
+	if !strings.EqualFold(strings.TrimSpace(expected), strings.TrimSpace(funderAddress)) {
+		return "", fmt.Errorf("funder_address mismatch: expected %s got %s", expected, funderAddress)
+	}
+	deployed, err := rc.GetDeployed(expected)
+	if err == nil && deployed.Deployed {
+		return "", nil
+	}
+	bc, err := s.loadBuilderCreds()
+	if err != nil {
+		return "safe not deployed yet; missing builder creds for deploy", nil
+	}
+	pk, err := crypto.HexToECDSA(strings.TrimPrefix(strings.TrimSpace(privateKeyHex), "0x"))
+	if err != nil {
+		return "", err
+	}
+	signFn := func(signer string, digest []byte) ([]byte, error) {
+		_ = signer
+		sig, err := crypto.Sign(digest, pk)
+		if err != nil {
+			return nil, err
+		}
+		if sig[64] < 27 {
+			sig[64] += 27
+		}
+		return sig, nil
+	}
+	rc2 := sdkrelayer.NewClient(relayerURL, chainID, signFn, &sdktypes.BuilderApiKeyCreds{
+		Key:        bc.Key,
+		Secret:     bc.Secret,
+		Passphrase: bc.Passphrase,
+	})
+	_, err = rc2.Deploy(&sdktypes.AuthOption{SingerAddress: eoaAddress, FunderAddress: expected})
+	if err != nil {
+		return fmt.Sprintf("safe deploy failed: %v", err), nil
+	}
+	// poll for deployed
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(2 * time.Second)
+		st, err2 := rc2.GetDeployed(expected)
+		if err2 == nil && st.Deployed {
+			return "", nil
+		}
+	}
+	return "safe deploy submitted; not confirmed deployed yet", nil
 }
 
 func injectWalletIntoBotConfig(yamlText string, privateKeyHex string, funderAddress string, logPath string, persistenceDir string) (string, error) {
