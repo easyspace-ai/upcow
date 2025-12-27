@@ -1,0 +1,60 @@
+{
+  "updated_at": "2025-12-27T13:01:17.116768+08:00",
+  "balance": 17.178956,
+  "open_orders": [],
+  "positions": [
+    {
+      "ID": "btc-updown-15m-1766811600_95685509575894446317094760510187455479994540642873501798537280531276121639504_down",
+      "MarketSlug": "btc-updown-15m-1766811600",
+      "Market": {
+        "Slug": "btc-updown-15m-1766811600",
+        "YesAssetID": "95685509575894446317094760510187455479994540642873501798537280531276121639504",
+        "NoAssetID": "95132881171273258150205261259016575489802748117621565200425569441179526987191",
+        "ConditionID": "0xd8bb7fb1e84b3fdf9211d85640644b653f7688aab42ff72ad287566c1f2535cc",
+        "Question": "Bitcoin Up or Down - December 27, 12:00AM-12:15AM ET",
+        "Timestamp": 1766811600
+      },
+      "EntryOrder": {
+        "OrderID": "0xce149b1157d948739b8a694f17565791f41cbcc58c3d51dcb82695949ca05f17",
+        "MarketSlug": "btc-updown-15m-1766811600",
+        "AssetID": "95685509575894446317094760510187455479994540642873501798537280531276121639504",
+        "Side": "BUY",
+        "Price": {
+          "Pips": 7200
+        },
+        "Size": 3.61,
+        "FilledSize": 3.61,
+        "FilledPrice": {
+          "Pips": 7200
+        },
+        "GridLevel": 0,
+        "TokenType": "down",
+        "HedgeOrderID": null,
+        "CreatedAt": "2025-12-27T13:01:12+08:00",
+        "FilledAt": "2025-12-27T13:01:13.400813+08:00",
+        "CanceledAt": null,
+        "IsEntryOrder": false,
+        "PairOrderID": null,
+        "Status": "filled",
+        "OrderType": "",
+        "TickSize": "",
+        "NegRisk": null
+      },
+      "HedgeOrder": null,
+      "EntryPrice": {
+        "Pips": 7200
+      },
+      "EntryTime": "2025-12-27T13:01:12+08:00",
+      "ExitOrder": null,
+      "ExitPrice": null,
+      "ExitTime": null,
+      "Size": 3.61,
+      "TokenType": "down",
+      "Status": "open",
+      "Unhedged": false,
+      "CostBasis": 2.5991999999999997,
+      "AvgPrice": 0.72,
+      "TotalFilledSize": 3.61
+    }
+  ]
+}

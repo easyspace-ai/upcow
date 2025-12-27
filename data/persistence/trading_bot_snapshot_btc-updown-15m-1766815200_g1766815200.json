@@ -1,0 +1,60 @@
+{
+  "updated_at": "2025-12-27T14:07:47.068867+08:00",
+  "balance": 14.430257000000001,
+  "open_orders": [],
+  "positions": [
+    {
+      "ID": "btc-updown-15m-1766815200_110067553883520482987831395716157455659646715929050286408309583966963261692816_down",
+      "MarketSlug": "btc-updown-15m-1766815200",
+      "Market": {
+        "Slug": "btc-updown-15m-1766815200",
+        "YesAssetID": "63262449812955165839878211457078576292917459209199049091193791400918610824314",
+        "NoAssetID": "110067553883520482987831395716157455659646715929050286408309583966963261692816",
+        "ConditionID": "0xfebcdd2e907cdb050eeb1233c82b7e182e194a74c7a904c4c3eaa65c070ab72c",
+        "Question": "Bitcoin Up or Down - December 27, 1:00AM-1:15AM ET",
+        "Timestamp": 1766815200
+      },
+      "EntryOrder": {
+        "OrderID": "0xac49e397c79008298b77e03d0fbdd07616171c75b7ce3fea40863eb3c469a1d8",
+        "MarketSlug": "btc-updown-15m-1766815200",
+        "AssetID": "110067553883520482987831395716157455659646715929050286408309583966963261692816",
+        "Side": "BUY",
+        "Price": {
+          "Pips": 7000
+        },
+        "Size": 7,
+        "FilledSize": 7,
+        "FilledPrice": {
+          "Pips": 6500
+        },
+        "GridLevel": 0,
+        "TokenType": "down",
+        "HedgeOrderID": null,
+        "CreatedAt": "2025-12-27T14:01:16.187992+08:00",
+        "FilledAt": "2025-12-27T14:01:18.168573+08:00",
+        "CanceledAt": null,
+        "IsEntryOrder": true,
+        "PairOrderID": null,
+        "Status": "filled",
+        "OrderType": "FAK",
+        "TickSize": "",
+        "NegRisk": null
+      },
+      "HedgeOrder": null,
+      "EntryPrice": {
+        "Pips": 6500
+      },
+      "EntryTime": "2025-12-27T14:01:17+08:00",
+      "ExitOrder": null,
+      "ExitPrice": null,
+      "ExitTime": null,
+      "Size": 0.5384599999999997,
+      "TokenType": "down",
+      "Status": "open",
+      "Unhedged": false,
+      "CostBasis": 6.999999,
+      "AvgPrice": 0.4814814636488321,
+      "TotalFilledSize": 14.53846
+    }
+  ]
+}

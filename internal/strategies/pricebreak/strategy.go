@@ -148,14 +148,33 @@ func (s *Strategy) checkAndHandleStopLoss(ctx context.Context, market *domain.Ma
 			continue
 		}
 
+		// 确定 TokenType：优先使用持仓的 TokenType，如果为空则根据 EntryOrder 的 AssetID 推断
+		tokenType := pos.TokenType
+		if tokenType == "" && pos.EntryOrder != nil && pos.EntryOrder.AssetID != "" {
+			if pos.EntryOrder.AssetID == market.YesAssetID {
+				tokenType = domain.TokenTypeUp
+			} else if pos.EntryOrder.AssetID == market.NoAssetID {
+				tokenType = domain.TokenTypeDown
+			}
+		}
+		if tokenType == "" {
+			log.Warnf("⚠️ [%s] 无法确定持仓 TokenType，跳过止损: positionID=%s assetID=%s market=%s",
+				ID, pos.ID, pos.EntryOrder.AssetID, market.Slug)
+			continue
+		}
+
 		var currentBid domain.Price
 		var assetID string
-		if pos.TokenType == domain.TokenTypeUp {
+		if tokenType == domain.TokenTypeUp {
 			currentBid = yesBid
 			assetID = market.YesAssetID
-		} else {
+		} else if tokenType == domain.TokenTypeDown {
 			currentBid = noBid
 			assetID = market.NoAssetID
+		} else {
+			log.Warnf("⚠️ [%s] 未知的 TokenType，跳过止损: tokenType=%s positionID=%s market=%s",
+				ID, tokenType, pos.ID, market.Slug)
+			continue
 		}
 
 		if currentBid.Pips <= 0 {
@@ -167,7 +186,7 @@ func (s *Strategy) checkAndHandleStopLoss(ctx context.Context, market *domain.Ma
 		// 检查是否触发止损
 		if currentCents <= s.Config.StopLossThreshold {
 			log.Infof("🛑 [%s] 触发止损: token=%s price=%dc threshold=%dc size=%.4f market=%s",
-				ID, pos.TokenType, currentCents, s.Config.StopLossThreshold, pos.Size, market.Slug)
+				ID, tokenType, currentCents, s.Config.StopLossThreshold, pos.Size, market.Slug)
 
 			// 取消该市场的所有挂单
 			s.TradingService.CancelOrdersForMarket(ctx, market.Slug)
@@ -179,7 +198,7 @@ func (s *Strategy) checkAndHandleStopLoss(ctx context.Context, market *domain.Ma
 				Legs: []execution.LegIntent{{
 					Name:      "stop_loss_sell",
 					AssetID:   assetID,
-					TokenType: pos.TokenType,
+					TokenType: tokenType, // ✅ 使用推断后的 TokenType
 					Side:      types.SideSell,
 					Price:     currentBid,
 					Size:      pos.Size,
@@ -203,7 +222,7 @@ func (s *Strategy) checkAndHandleStopLoss(ctx context.Context, market *domain.Ma
 			s.mu.Unlock()
 
 			log.Infof("✅ [%s] 止损订单已提交: token=%s price=%dc size=%.4f",
-				ID, pos.TokenType, currentCents, pos.Size)
+				ID, tokenType, currentCents, pos.Size)
 		}
 	}
 

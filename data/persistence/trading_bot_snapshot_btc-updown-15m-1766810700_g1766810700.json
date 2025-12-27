@@ -1,0 +1,60 @@
+{
+  "updated_at": "2025-12-27T12:51:25.421239+08:00",
+  "balance": 20.778956,
+  "open_orders": [],
+  "positions": [
+    {
+      "ID": "btc-updown-15m-1766810700_78098157265150797854817082215519338501381679604375810662491326813787167339341_down",
+      "MarketSlug": "btc-updown-15m-1766810700",
+      "Market": {
+        "Slug": "btc-updown-15m-1766810700",
+        "YesAssetID": "100891931431254603743790133156507443624166341497365296453214608494592444928113",
+        "NoAssetID": "78098157265150797854817082215519338501381679604375810662491326813787167339341",
+        "ConditionID": "0x293cb86457f028b04eaaec670b94be01332ccb7d9b08c94b82469dcb84af82e4",
+        "Question": "Bitcoin Up or Down - December 26, 11:45PM-12:00AM ET",
+        "Timestamp": 1766810700
+      },
+      "EntryOrder": {
+        "OrderID": "0x231ffe6e310d427b976163a4db71ca4a2c5ab855e1e7033415fd3b6354e96615",
+        "MarketSlug": "btc-updown-15m-1766810700",
+        "AssetID": "78098157265150797854817082215519338501381679604375810662491326813787167339341",
+        "Side": "BUY",
+        "Price": {
+          "Pips": 7900
+        },
+        "Size": 5,
+        "FilledSize": 5,
+        "FilledPrice": {
+          "Pips": 7900
+        },
+        "GridLevel": 0,
+        "TokenType": "down",
+        "HedgeOrderID": null,
+        "CreatedAt": "2025-12-27T12:51:22.471622+08:00",
+        "FilledAt": "2025-12-27T12:51:23.42072+08:00",
+        "CanceledAt": null,
+        "IsEntryOrder": true,
+        "PairOrderID": null,
+        "Status": "filled",
+        "OrderType": "FAK",
+        "TickSize": "",
+        "NegRisk": null
+      },
+      "HedgeOrder": null,
+      "EntryPrice": {
+        "Pips": 7900
+      },
+      "EntryTime": "2025-12-27T12:51:22+08:00",
+      "ExitOrder": null,
+      "ExitPrice": null,
+      "ExitTime": null,
+      "Size": 5,
+      "TokenType": "down",
+      "Status": "open",
+      "Unhedged": false,
+      "CostBasis": 3.95,
+      "AvgPrice": 0.79,
+      "TotalFilledSize": 5
+    }
+  ]
+}

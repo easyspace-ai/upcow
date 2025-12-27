@@ -29,8 +29,9 @@ type Strategy struct {
 	lastUpCents   int
 	lastDownCents int
 
-	firstSeenAt  time.Time
-	lastActionAt time.Time
+	firstSeenAt   time.Time
+	cycleStartAt  time.Time // 周期开始时间（用于延迟交易）
+	lastActionAt  time.Time
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -57,6 +58,7 @@ func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, _ *domain.Market
 	s.lastUpCents = 0
 	s.lastDownCents = 0
 	s.firstSeenAt = time.Now()
+	s.cycleStartAt = time.Now() // 记录周期开始时间
 	s.lastActionAt = time.Time{}
 }
 
@@ -66,6 +68,10 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	}
 	if s.firstSeenAt.IsZero() {
 		s.firstSeenAt = time.Now()
+	}
+	// 如果 cycleStartAt 未初始化（第一次启动时），也初始化为当前时间
+	if s.cycleStartAt.IsZero() {
+		s.cycleStartAt = time.Now()
 	}
 	// 预热：避免刚连上 WS 的脏快照/假盘口误触发
 	if s.WarmupMs > 0 && time.Since(s.firstSeenAt) < time.Duration(s.WarmupMs)*time.Millisecond {
@@ -100,7 +106,20 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if !s.tokenAllowed(token) {
 		return nil
 	}
-	// “越过 entry”：必须从 <entry 跨到 >=entry（避免一启动就高位直接买入）
+
+	// 检查是否已过延迟交易时间
+	delayedEntryDuration := time.Duration(s.DelayedEntryMinutes) * time.Minute
+	canTradeAfterDelay := !s.cycleStartAt.IsZero() && time.Since(s.cycleStartAt) >= delayedEntryDuration
+
+	if canTradeAfterDelay {
+		// 延迟期后：只要价格 >= EntryCents 就买入（不需要"越过"逻辑）
+		if curCents >= s.EntryCents {
+			return s.enter(ctx, e.Market, token)
+		}
+		return nil
+	}
+
+	// 延迟期内：保持原来的"越过 entry"逻辑（必须从 <entry 跨到 >=entry）
 	if prevCents <= 0 {
 		return nil
 	}

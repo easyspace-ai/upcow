@@ -28,6 +28,9 @@ type Config struct {
 	MaxSpreadCents int `yaml:"maxSpreadCents" json:"maxSpreadCents"`
 	// WarmupMs: 启动/周期切换后的预热期（毫秒），默认 1200
 	WarmupMs int `yaml:"warmupMs" json:"warmupMs"`
+	// DelayedEntryMinutes: 周期开始后延迟多少分钟才开始交易，默认 8
+	// 如果设置了此值，在延迟期间后，只要价格 >= EntryCents 就买入（不需要"越过"逻辑）
+	DelayedEntryMinutes int `yaml:"delayedEntryMinutes" json:"delayedEntryMinutes"`
 }
 
 func (c *Config) Validate() error {
@@ -70,6 +73,9 @@ func (c *Config) Validate() error {
 	}
 	if c.WarmupMs <= 0 {
 		c.WarmupMs = 1200
+	}
+	if c.DelayedEntryMinutes <= 0 {
+		c.DelayedEntryMinutes = 8 // 默认 8 分钟
 	}
 	return nil
 }

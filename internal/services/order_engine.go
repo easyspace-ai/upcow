@@ -1055,12 +1055,31 @@ func (e *OrderEngine) syntheticOrderFromTrade(trade *domain.Trade) *domain.Order
 
 // updatePositionFromTrade 从交易更新仓位
 func (e *OrderEngine) updatePositionFromTrade(trade *domain.Trade, order *domain.Order) {
+	// 确定 TokenType：优先使用订单的 TokenType（最可靠，来自策略层）
+	tokenType := order.TokenType
+	if tokenType == "" {
+		// 兜底：使用 trade 的 TokenType
+		tokenType = trade.TokenType
+	}
+	// 最后兜底：根据 AssetID 推断
+	if tokenType == "" && trade.Market != nil && order.AssetID != "" {
+		if order.AssetID == trade.Market.YesAssetID {
+			tokenType = domain.TokenTypeUp
+		} else if order.AssetID == trade.Market.NoAssetID {
+			tokenType = domain.TokenTypeDown
+		}
+	}
+
 	// 查找或创建仓位
 	var position *domain.Position
 	positionID := e.getPositionID(order)
 
 	if pos, exists := e.positions[positionID]; exists {
 		position = pos
+		// 如果已有仓位的 TokenType 为空，更新它
+		if position.TokenType == "" && tokenType != "" {
+			position.TokenType = tokenType
+		}
 	} else {
 		// 创建新仓位
 		position = &domain.Position{
@@ -1071,7 +1090,7 @@ func (e *OrderEngine) updatePositionFromTrade(trade *domain.Trade, order *domain
 			EntryPrice:      trade.Price,
 			EntryTime:       trade.Time,
 			Size:            0,
-			TokenType:       trade.TokenType,
+			TokenType:       tokenType, // ✅ 使用推断后的 TokenType（优先来自订单）
 			Status:          domain.PositionStatusOpen,
 			CostBasis:       0,
 			AvgPrice:        0,
