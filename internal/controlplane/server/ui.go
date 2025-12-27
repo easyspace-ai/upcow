@@ -106,7 +106,9 @@ async function selectBot(id) {
     '<textarea id="cfg">' + escapeHTML(b.config_yaml) + '</textarea>' +
     '<div class="row">' +
       '<button onclick="saveConfig()">保存配置</button>' +
+      '<button onclick="showVersions()">版本/回滚</button>' +
     '</div>' +
+    '<div id="versions" class="muted"></div>' +
     '<h4>实时日志</h4>' +
     '<pre id="log"></pre>';
 
@@ -121,6 +123,32 @@ async function selectBot(id) {
   logES.onerror = () => {
     // 静默
   };
+}
+
+async function showVersions() {
+  const data = await api('/api/bots/'+selectedBotId+'/config/versions?limit=30');
+  const cur = data.current_version || 0;
+  const list = data.versions || [];
+  let html = '<div><b>当前版本:</b> v'+cur+'</div>';
+  html += '<div class="row"><button onclick="promptRollback()">回滚到版本...</button></div>';
+  html += '<div class="muted">最近版本:</div>';
+  html += '<ul>';
+  for (const v of list) {
+    const c = v.comment ? (' - '+escapeHTML(v.comment)) : '';
+    html += '<li>v'+v.version+' '+escapeHTML(v.created_at || '')+c+'</li>';
+  }
+  html += '</ul>';
+  document.getElementById('versions').innerHTML = html;
+}
+
+async function promptRollback() {
+  const v = prompt('输入要回滚到的版本号（例如 1）');
+  if (!v) return;
+  const n = parseInt(v, 10);
+  if (!n || n <= 0) { alert('版本号无效'); return; }
+  const res = await api('/api/bots/'+selectedBotId+'/config/rollback', {method:'POST', body: JSON.stringify({version: n})});
+  alert('已回滚到新版本 v'+res.current_version+'（需要手动重启生效）');
+  await selectBot(selectedBotId);
 }
 
 async function createBot() {

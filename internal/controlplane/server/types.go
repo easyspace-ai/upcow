@@ -9,6 +9,7 @@ type Bot struct {
 	ConfigYAML     string    `json:"config_yaml"`
 	LogPath        string    `json:"log_path"`
 	PersistenceDir string    `json:"persistence_dir"`
+	CurrentVersion int       `json:"current_version"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }

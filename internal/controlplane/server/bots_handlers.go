@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	pkgconfig "github.com/betbot/gobet/pkg/config"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
@@ -37,7 +38,7 @@ func (s *Server) handleBotsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := validateBotConfigYAML(req.ConfigYAML); err != nil {
+	if err := validateBotConfigYAMLStrict(req.ConfigYAML); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("config invalid: %v", err))
 		return
 	}
@@ -72,6 +73,11 @@ func (s *Server) handleBotsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := validateBotConfigYAMLStrict(configYAML); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("config invalid: %v", err))
+		return
+	}
+
 	if err := os.WriteFile(configPath, []byte(configYAML+"\n"), 0o644); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("write config: %v", err))
 		return
@@ -85,6 +91,7 @@ func (s *Server) handleBotsCreate(w http.ResponseWriter, r *http.Request) {
 		ConfigYAML:     configYAML,
 		LogPath:        logPath,
 		PersistenceDir: persistenceDir,
+		CurrentVersion: 1,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -92,6 +99,11 @@ func (s *Server) handleBotsCreate(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	if err := s.insertBot(ctx, b); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("db insert: %v", err))
+		return
+	}
+	// version 1
+	if err := s.insertBotConfigVersion(ctx, b.ID, 1, b.ConfigYAML, ptrString("init")); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("db insert version: %v", err))
 		return
 	}
 	writeJSON(w, http.StatusCreated, b)
@@ -166,7 +178,7 @@ func (s *Server) handleBotConfigUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := validateBotConfigYAML(configYAML); err != nil {
+	if err := validateBotConfigYAMLStrict(configYAML); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("config invalid: %v", err))
 		return
 	}
@@ -179,64 +191,59 @@ func (s *Server) handleBotConfigUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("write config: %v", err))
 		return
 	}
-	if err := s.updateBotConfig(ctx, botID, configYAML); err != nil {
+
+	nextVer, err := s.nextBotConfigVersion(ctx, botID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("db next version: %v", err))
+		return
+	}
+	if err := s.insertBotConfigVersion(ctx, botID, nextVer, configYAML, nil); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("db insert version: %v", err))
+		return
+	}
+	if err := s.updateBotConfig(ctx, botID, configYAML, nextVer); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("db update: %v", err))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "current_version": nextVer})
 }
 
-// validateBotConfigYAML：只做“静态校验”，避免 server 引入交易逻辑/网络依赖。
-// 注意：这里验证的是你们 pkg/config 期望的字段形状（不是全量业务校验）。
-func validateBotConfigYAML(yamlText string) error {
-	var cf map[string]any
+// validateBotConfigYAMLStrict：更接近 bot 的真实校验逻辑，但不触网、不设置全局环境变量。
+func validateBotConfigYAMLStrict(yamlText string) error {
+	var cf pkgconfig.ConfigFile
 	if err := yaml.Unmarshal([]byte(yamlText), &cf); err != nil {
 		return fmt.Errorf("yaml parse failed: %w", err)
 	}
-	// wallet
-	walletRaw, ok := cf["wallet"]
-	if !ok {
-		return fmt.Errorf("wallet is required")
-	}
-	wallet, ok := walletRaw.(map[string]any)
-	if !ok {
-		return fmt.Errorf("wallet must be an object")
-	}
-	privateKey, _ := wallet["private_key"].(string)
-	funderAddress, _ := wallet["funder_address"].(string)
-	if strings.TrimSpace(privateKey) == "" {
-		return fmt.Errorf("wallet.private_key is required")
-	}
-	if strings.TrimSpace(funderAddress) == "" {
-		return fmt.Errorf("wallet.funder_address is required")
+
+	kind := strings.TrimSpace(cf.Market.Kind)
+	if kind == "" {
+		kind = "updown"
 	}
 
-	// market
-	marketRaw, ok := cf["market"]
-	if !ok {
-		return fmt.Errorf("market is required")
+	cfg := &pkgconfig.Config{
+		Wallet: pkgconfig.WalletConfig{
+			PrivateKey:    strings.TrimSpace(cf.Wallet.PrivateKey),
+			FunderAddress: strings.TrimSpace(cf.Wallet.FunderAddress),
+		},
+		Proxy:              nil, // server 校验不在这里处理 proxy
+		ExchangeStrategies: cf.ExchangeStrategies,
+		Market: pkgconfig.MarketConfig{
+			Symbol:        strings.TrimSpace(cf.Market.Symbol),
+			Timeframe:     strings.TrimSpace(cf.Market.Timeframe),
+			Kind:          kind,
+			SlugPrefix:    strings.TrimSpace(cf.Market.SlugPrefix),
+			SlugTemplates: cf.Market.SlugTemplates,
+			Precision:     cf.Market.Precision,
+		},
+		LogLevel:       strings.TrimSpace(cf.LogLevel),
+		LogFile:        strings.TrimSpace(cf.LogFile),
+		LogByCycle:     cf.LogByCycle,
+		PersistenceDir: strings.TrimSpace(cf.PersistenceDir),
+		MinOrderSize:   cf.MinOrderSize,
+		MinShareSize:   cf.MinShareSize,
+		DryRun:         cf.DryRun,
 	}
-	market, ok := marketRaw.(map[string]any)
-	if !ok {
-		return fmt.Errorf("market must be an object")
-	}
-	symbol, _ := market["symbol"].(string)
-	timeframe, _ := market["timeframe"].(string)
-	if strings.TrimSpace(symbol) == "" || strings.TrimSpace(timeframe) == "" {
-		return fmt.Errorf("market.symbol and market.timeframe are required")
-	}
-
-	// exchangeStrategies
-	es, ok := cf["exchangeStrategies"]
-	if !ok {
-		return fmt.Errorf("exchangeStrategies is required")
-	}
-	if _, ok := es.([]any); !ok {
-		// yaml.v3 解出来是 []interface{}
-		return fmt.Errorf("exchangeStrategies must be a list")
-	}
-
-	return nil
+	return cfg.Validate()
 }
 
 func upsertYAMLKey(yamlText string, key string, value any) (string, error) {

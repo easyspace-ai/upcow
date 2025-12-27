@@ -76,6 +76,8 @@ func (s *Server) Router() http.Handler {
 			r.Route("/{botID}", func(r chi.Router) {
 				r.Get("/", s.handleBotGet)
 				r.Put("/config", s.handleBotConfigUpdate) // 保存配置，不重启
+				r.Get("/config/versions", s.handleBotConfigVersions)
+				r.Post("/config/rollback", s.handleBotConfigRollback)
 				r.Post("/start", s.handleBotStart)
 				r.Post("/stop", s.handleBotStop)
 				r.Post("/restart", s.handleBotRestart)

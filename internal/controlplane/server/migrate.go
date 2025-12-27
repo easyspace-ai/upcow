@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS bots (
   config_yaml TEXT NOT NULL,
   log_path TEXT NOT NULL,
   persistence_dir TEXT NOT NULL,
+  current_version INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );`,
@@ -33,6 +35,15 @@ CREATE TABLE IF NOT EXISTS bot_process (
   last_exit_code INTEGER,
   last_error TEXT
 );`,
+		`
+CREATE TABLE IF NOT EXISTS bot_config_versions (
+  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  config_yaml TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  comment TEXT,
+  PRIMARY KEY (bot_id, version)
+);`,
 	}
 
 	for _, q := range stmts {
@@ -40,5 +51,43 @@ CREATE TABLE IF NOT EXISTS bot_process (
 			return fmt.Errorf("migrate exec failed: %w", err)
 		}
 	}
+
+	// 兼容：旧库没有 current_version 列时，补齐（SQLite 不支持 ADD COLUMN IF NOT EXISTS）
+	hasCol, err := hasColumn(ctx, s.db, "bots", "current_version")
+	if err != nil {
+		return err
+	}
+	if !hasCol {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE bots ADD COLUMN current_version INTEGER NOT NULL DEFAULT 0;`); err != nil {
+			return fmt.Errorf("alter bots add current_version: %w", err)
+		}
+	}
+
 	return nil
+}
+
+func hasColumn(ctx context.Context, db *sql.DB, table string, col string) (bool, error) {
+	rows, err := db.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s);`, table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	// PRAGMA table_info 返回：cid,name,type,notnull,dflt_value,pk
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			typ       string
+			notnull   int
+			dfltValue any
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dfltValue, &pk); err != nil {
+			return false, err
+		}
+		if name == col {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }

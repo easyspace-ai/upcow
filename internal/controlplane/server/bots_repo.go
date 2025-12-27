@@ -10,9 +10,9 @@ import (
 
 func (s *Server) insertBot(ctx context.Context, b Bot) error {
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO bots (id,name,config_path,config_yaml,log_path,persistence_dir,created_at,updated_at)
-VALUES (?,?,?,?,?,?,?,?)
-`, b.ID, b.Name, b.ConfigPath, b.ConfigYAML, b.LogPath, b.PersistenceDir, b.CreatedAt.Format(time.RFC3339Nano), b.UpdatedAt.Format(time.RFC3339Nano))
+INSERT INTO bots (id,name,config_path,config_yaml,log_path,persistence_dir,current_version,created_at,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?)
+`, b.ID, b.Name, b.ConfigPath, b.ConfigYAML, b.LogPath, b.PersistenceDir, b.CurrentVersion, b.CreatedAt.Format(time.RFC3339Nano), b.UpdatedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("insert bot: %w", err)
 	}
@@ -23,12 +23,12 @@ VALUES (?,?,?,?,?,?,?,?)
 	return nil
 }
 
-func (s *Server) updateBotConfig(ctx context.Context, botID string, newYAML string) error {
+func (s *Server) updateBotConfig(ctx context.Context, botID string, newYAML string, currentVersion int) error {
 	_, err := s.db.ExecContext(ctx, `
 UPDATE bots
-SET config_yaml=?, updated_at=?
+SET config_yaml=?, current_version=?, updated_at=?
 WHERE id=?
-`, newYAML, time.Now().Format(time.RFC3339Nano), botID)
+`, newYAML, currentVersion, time.Now().Format(time.RFC3339Nano), botID)
 	if err != nil {
 		return fmt.Errorf("update bot config: %w", err)
 	}
@@ -37,12 +37,12 @@ WHERE id=?
 
 func (s *Server) getBot(ctx context.Context, botID string) (*Bot, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id,name,config_path,config_yaml,log_path,persistence_dir,created_at,updated_at
+SELECT id,name,config_path,config_yaml,log_path,persistence_dir,current_version,created_at,updated_at
 FROM bots WHERE id=?
 `, botID)
 	var b Bot
 	var createdAt, updatedAt string
-	if err := row.Scan(&b.ID, &b.Name, &b.ConfigPath, &b.ConfigYAML, &b.LogPath, &b.PersistenceDir, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&b.ID, &b.Name, &b.ConfigPath, &b.ConfigYAML, &b.LogPath, &b.PersistenceDir, &b.CurrentVersion, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -55,7 +55,7 @@ FROM bots WHERE id=?
 
 func (s *Server) listBots(ctx context.Context) ([]Bot, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id,name,config_path,config_yaml,log_path,persistence_dir,created_at,updated_at
+SELECT id,name,config_path,config_yaml,log_path,persistence_dir,current_version,created_at,updated_at
 FROM bots ORDER BY created_at DESC
 `)
 	if err != nil {
@@ -67,7 +67,7 @@ FROM bots ORDER BY created_at DESC
 	for rows.Next() {
 		var b Bot
 		var createdAt, updatedAt string
-		if err := rows.Scan(&b.ID, &b.Name, &b.ConfigPath, &b.ConfigYAML, &b.LogPath, &b.PersistenceDir, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&b.ID, &b.Name, &b.ConfigPath, &b.ConfigYAML, &b.LogPath, &b.PersistenceDir, &b.CurrentVersion, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		b.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
@@ -75,6 +75,84 @@ FROM bots ORDER BY created_at DESC
 		out = append(out, b)
 	}
 	return out, rows.Err()
+}
+
+func (s *Server) nextBotConfigVersion(ctx context.Context, botID string) (int, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM bot_config_versions WHERE bot_id=?`, botID)
+	var max int
+	if err := row.Scan(&max); err != nil {
+		return 0, err
+	}
+	return max + 1, nil
+}
+
+func (s *Server) insertBotConfigVersion(ctx context.Context, botID string, version int, configYAML string, comment *string) error {
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO bot_config_versions (bot_id, version, config_yaml, created_at, comment)
+VALUES (?,?,?,?,?)
+`, botID, version, configYAML, time.Now().Format(time.RFC3339Nano), comment)
+	return err
+}
+
+func (s *Server) listBotConfigVersions(ctx context.Context, botID string, limit int) ([]BotConfigVersion, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT bot_id, version, config_yaml, created_at, comment
+FROM bot_config_versions
+WHERE bot_id=?
+ORDER BY version DESC
+LIMIT ?
+`, botID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []BotConfigVersion
+	for rows.Next() {
+		var (
+			v       BotConfigVersion
+			created string
+			comment sql.NullString
+		)
+		if err := rows.Scan(&v.BotID, &v.Version, &v.ConfigYAML, &created, &comment); err != nil {
+			return nil, err
+		}
+		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		if comment.Valid {
+			c := comment.String
+			v.Comment = &c
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+func (s *Server) getBotConfigVersion(ctx context.Context, botID string, version int) (*BotConfigVersion, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT bot_id, version, config_yaml, created_at, comment
+FROM bot_config_versions
+WHERE bot_id=? AND version=?
+`, botID, version)
+	var (
+		v       BotConfigVersion
+		created string
+		comment sql.NullString
+	)
+	if err := row.Scan(&v.BotID, &v.Version, &v.ConfigYAML, &created, &comment); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	v.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	if comment.Valid {
+		c := comment.String
+		v.Comment = &c
+	}
+	return &v, nil
 }
 
 func (s *Server) setBotPID(ctx context.Context, botID string, pid int) error {
