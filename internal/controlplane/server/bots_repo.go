@@ -175,7 +175,7 @@ func (s *Server) setBotPID(ctx context.Context, botID string, pid int) error {
 	now := time.Now().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx, `
 UPDATE bot_process
-SET pid=?, started_at=?, last_error=NULL
+SET pid=?, started_at=?, last_error=NULL, restart_attempts=0
 WHERE bot_id=?
 `, pid, now, botID)
 	return err
@@ -191,17 +191,56 @@ WHERE bot_id=?
 	return err
 }
 
+func (s *Server) setDesiredRunning(ctx context.Context, botID string, desired bool) error {
+	v := 0
+	if desired {
+		v = 1
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE bot_process SET desired_running=? WHERE bot_id=?`, v, botID)
+	return err
+}
+
+func (s *Server) getRestartState(ctx context.Context, botID string) (desired bool, attempts int, err error) {
+	row := s.db.QueryRowContext(ctx, `SELECT desired_running, restart_attempts FROM bot_process WHERE bot_id=?`, botID)
+	var d int
+	var a int
+	if err := row.Scan(&d, &a); err != nil {
+		return false, 0, err
+	}
+	return d == 1, a, nil
+}
+
+func (s *Server) incRestartAttempts(ctx context.Context, botID string) (int, error) {
+	now := time.Now().Format(time.RFC3339Nano)
+	if _, err := s.db.ExecContext(ctx, `
+UPDATE bot_process
+SET restart_attempts = restart_attempts + 1, last_restart_at=?
+WHERE bot_id=?
+`, now, botID); err != nil {
+		return 0, err
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT restart_attempts FROM bot_process WHERE bot_id=?`, botID)
+	var n int
+	if err := row.Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 func (s *Server) getBotProcess(ctx context.Context, botID string) (*BotProcess, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT bot_id,pid,started_at,last_exit_at,last_exit_code,last_error
+SELECT bot_id,pid,desired_running,restart_attempts,last_restart_at,started_at,last_exit_at,last_exit_code,last_error
 FROM bot_process WHERE bot_id=?
 `, botID)
 	var p BotProcess
 	var pid sql.NullInt64
+	var desiredRunning sql.NullInt64
+	var restartAttempts sql.NullInt64
+	var lastRestartAt sql.NullString
 	var startedAt, lastExitAt sql.NullString
 	var lastExitCode sql.NullInt64
 	var lastErr sql.NullString
-	if err := row.Scan(&p.BotID, &pid, &startedAt, &lastExitAt, &lastExitCode, &lastErr); err != nil {
+	if err := row.Scan(&p.BotID, &pid, &desiredRunning, &restartAttempts, &lastRestartAt, &startedAt, &lastExitAt, &lastExitCode, &lastErr); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -210,6 +249,17 @@ FROM bot_process WHERE bot_id=?
 	if pid.Valid {
 		v := int(pid.Int64)
 		p.PID = &v
+	}
+	if desiredRunning.Valid {
+		p.DesiredRunning = desiredRunning.Int64 == 1
+	}
+	if restartAttempts.Valid {
+		p.RestartAttempts = int(restartAttempts.Int64)
+	}
+	if lastRestartAt.Valid {
+		if t, err := time.Parse(time.RFC3339Nano, lastRestartAt.String); err == nil {
+			p.LastRestartAt = &t
+		}
 	}
 	if startedAt.Valid {
 		if t, err := time.Parse(time.RFC3339Nano, startedAt.String); err == nil {

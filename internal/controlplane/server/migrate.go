@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS bots (
 CREATE TABLE IF NOT EXISTS bot_process (
   bot_id TEXT PRIMARY KEY REFERENCES bots(id) ON DELETE CASCADE,
   pid INTEGER,
+  desired_running INTEGER NOT NULL DEFAULT 0,
+  restart_attempts INTEGER NOT NULL DEFAULT 0,
+  last_restart_at TEXT,
   started_at TEXT,
   last_exit_at TEXT,
   last_exit_code INTEGER,
@@ -183,6 +186,26 @@ CREATE TABLE IF NOT EXISTS account_equity_snapshots (
 			return fmt.Errorf("alter bots add account_id: %w", err)
 		}
 		// unique index already in stmts
+	}
+
+	// 兼容：旧库没有 bot_process desired_running/restart_attempts/last_restart_at 时补齐
+	for _, col := range []struct {
+		name string
+		ddl  string
+	}{
+		{"desired_running", `ALTER TABLE bot_process ADD COLUMN desired_running INTEGER NOT NULL DEFAULT 0;`},
+		{"restart_attempts", `ALTER TABLE bot_process ADD COLUMN restart_attempts INTEGER NOT NULL DEFAULT 0;`},
+		{"last_restart_at", `ALTER TABLE bot_process ADD COLUMN last_restart_at TEXT;`},
+	} {
+		ok, err := hasColumn(ctx, s.db, "bot_process", col.name)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			if _, err := s.db.ExecContext(ctx, col.ddl); err != nil {
+				return fmt.Errorf("alter bot_process add %s: %w", col.name, err)
+			}
+		}
 	}
 
 	return nil
