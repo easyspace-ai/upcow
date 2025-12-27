@@ -1298,8 +1298,33 @@ func (s *Strategy) maybeLogOrderBook(now time.Time, market *domain.Market) {
 		return
 	}
 
+	// 验证价差：过滤异常数据（价差过大表示订单簿异常，不应打印）
+	yesBidDec := yesBid.ToDecimal()
+	yesAskDec := yesAsk.ToDecimal()
+	noBidDec := noBid.ToDecimal()
+	noAskDec := noAsk.ToDecimal()
+
+	// 计算价差（单位：cents）
+	yesSpreadCents := int((yesAskDec - yesBidDec) * 100)
+	if yesSpreadCents < 0 {
+		yesSpreadCents = -yesSpreadCents
+	}
+	noSpreadCents := int((noAskDec - noBidDec) * 100)
+	if noSpreadCents < 0 {
+		noSpreadCents = -noSpreadCents
+	}
+
+	// 价差阈值：10 cents（与 market_stream.go 中的 marketDataMaxSpreadCents 保持一致）
+	maxSpreadCents := 10
+	if yesSpreadCents > maxSpreadCents || noSpreadCents > maxSpreadCents {
+		// 价差过大，跳过打印（避免误导性日志）
+		log.Debugf("⚠️ [%s] 订单簿价差异常，跳过日志: UP spread=%dc (bid=%.4f ask=%.4f), DOWN spread=%dc (bid=%.4f ask=%.4f)",
+			ID, yesSpreadCents, yesBidDec, yesAskDec, noSpreadCents, noBidDec, noAskDec)
+		return
+	}
+
 	log.Infof("💰 [%s] 实时订单簿: UP bid=%.4f ask=%.4f, DOWN bid=%.4f ask=%.4f (source=%s market=%s)",
-		ID, yesBid.ToDecimal(), yesAsk.ToDecimal(), noBid.ToDecimal(), noAsk.ToDecimal(), source, market.Slug)
+		ID, yesBidDec, yesAskDec, noBidDec, noAskDec, source, market.Slug)
 }
 
 // maybeHandleExit returns true when we should stop processing entry logic for this tick.

@@ -1,0 +1,99 @@
+{
+  "updated_at": "2025-12-27T08:00:26.661415+08:00",
+  "balance": 39.211301,
+  "open_orders": [],
+  "positions": [
+    {
+      "ID": "btc-updown-15m-1766793600_63234486122498243739783611377298222814374889062417127100896337145085936361716_up",
+      "MarketSlug": "btc-updown-15m-1766793600",
+      "Market": null,
+      "EntryOrder": {
+        "OrderID": "order_1766793607006576000",
+        "MarketSlug": "btc-updown-15m-1766793600",
+        "AssetID": "63234486122498243739783611377298222814374889062417127100896337145085936361716",
+        "Side": "BUY",
+        "Price": {
+          "Pips": 5800
+        },
+        "Size": 10,
+        "FilledSize": 10,
+        "FilledPrice": {
+          "Pips": 5800
+        },
+        "GridLevel": 0,
+        "TokenType": "up",
+        "HedgeOrderID": "order_1766793607007678000",
+        "CreatedAt": "2025-12-27T08:00:07.006577+08:00",
+        "FilledAt": "2025-12-27T08:00:07.00721+08:00",
+        "CanceledAt": null,
+        "IsEntryOrder": true,
+        "PairOrderID": null,
+        "Status": "filled",
+        "OrderType": "FAK",
+        "TickSize": "",
+        "NegRisk": null
+      },
+      "HedgeOrder": null,
+      "EntryPrice": {
+        "Pips": 5800
+      },
+      "EntryTime": "2025-12-27T08:00:07.00674+08:00",
+      "ExitOrder": null,
+      "ExitPrice": null,
+      "ExitTime": null,
+      "Size": 29.9649,
+      "TokenType": "up",
+      "Status": "open",
+      "Unhedged": false,
+      "CostBasis": 15.879992999999999,
+      "AvgPrice": 0.5299531451798604,
+      "TotalFilledSize": 29.9649
+    },
+    {
+      "ID": "btc-updown-15m-1766793600_75811201770102787353641441404863726013292824379443975999706241334392122743_down",
+      "MarketSlug": "btc-updown-15m-1766793600",
+      "Market": null,
+      "EntryOrder": {
+        "OrderID": "order_1766793607007678000",
+        "MarketSlug": "btc-updown-15m-1766793600",
+        "AssetID": "75811201770102787353641441404863726013292824379443975999706241334392122743",
+        "Side": "BUY",
+        "Price": {
+          "Pips": 3900
+        },
+        "Size": 10,
+        "FilledSize": 10,
+        "FilledPrice": {
+          "Pips": 3900
+        },
+        "GridLevel": 0,
+        "TokenType": "down",
+        "HedgeOrderID": "order_1766793607006576000",
+        "CreatedAt": "2025-12-27T08:00:07.00768+08:00",
+        "FilledAt": "2025-12-27T08:00:09.652169+08:00",
+        "CanceledAt": null,
+        "IsEntryOrder": false,
+        "PairOrderID": null,
+        "Status": "filled",
+        "OrderType": "GTC",
+        "TickSize": "",
+        "NegRisk": null
+      },
+      "HedgeOrder": null,
+      "EntryPrice": {
+        "Pips": 3900
+      },
+      "EntryTime": "2025-12-27T08:00:07.6495+08:00",
+      "ExitOrder": null,
+      "ExitPrice": null,
+      "ExitTime": null,
+      "Size": 30,
+      "TokenType": "down",
+      "Status": "open",
+      "Unhedged": false,
+      "CostBasis": 13.200000000000001,
+      "AvgPrice": 0.44000000000000006,
+      "TotalFilledSize": 30
+    }
+  ]
+}

@@ -121,11 +121,21 @@ func NewTradingService(clobClient *client.Client, dryRun bool) *TradingService {
 		orderStatusSyncIntervalWithOrders:    3,  // 默认3秒
 		orderStatusSyncIntervalWithoutOrders: 30, // 默认30秒
 		inFlightDeduper:                      execution.NewInFlightDeduper(2*time.Second, 64),
-		circuitBreaker: risk.NewCircuitBreaker(risk.CircuitBreakerConfig{
-			// 默认只启用“连续错误熔断”，避免误伤；当日亏损上限可后续接入完整 PnL 统计后再启用。
-			MaxConsecutiveErrors: 10,
-			DailyLossLimitCents:  0,
-		}),
+		circuitBreaker: func() *risk.CircuitBreaker {
+			// 纸交易模式下禁用熔断器（MaxConsecutiveErrors <= 0 表示关闭）
+			maxErrors := int64(10)
+			if dryRun {
+				maxErrors = 0 // 纸交易模式：禁用连续错误熔断
+				log.Info("🔓 Circuit Breaker 已禁用（纸交易模式）")
+			} else {
+				log.Infof("🔒 Circuit Breaker 已启用：MaxConsecutiveErrors=%d", maxErrors)
+			}
+			return risk.NewCircuitBreaker(risk.CircuitBreakerConfig{
+				// 默认只启用"连续错误熔断"，避免误伤；当日亏损上限可后续接入完整 PnL 统计后再启用。
+				MaxConsecutiveErrors: maxErrors,
+				DailyLossLimitCents:  0,
+			})
+		}(),
 	}
 	// 统一执行引擎（依赖 TradingService 自身的 PlaceOrder/GetBestPrice 等）
 	service.execEngine = execution.NewExecutionEngine(service)
