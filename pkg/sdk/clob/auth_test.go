@@ -9,6 +9,7 @@ import (
 	"github.com/polymarket/go-order-utils/pkg/model"
 	"github.com/stretchr/testify/assert"
 	"math/big"
+	"os"
 	"testing"
 	"time"
 )
@@ -29,6 +30,9 @@ func signature(signer string, digest []byte) ([]byte, error) {
 }
 
 func TestClient(t *testing.T) {
+	if os.Getenv("RUN_INTEGRATION_TESTS") != "1" {
+		t.Skip("integration test: set RUN_INTEGRATION_TESTS=1 to enable")
+	}
 	client := clob.NewClient(PolymarketClobURL, chaindId, signature, nil)
 	key, err := client.DeriveAPIKey(big.NewInt(1), &sdktypes.AuthOption{
 		SignatureType: model.POLY_GNOSIS_SAFE,
@@ -40,6 +44,9 @@ func TestClient(t *testing.T) {
 }
 
 func TestGetTickSize(t *testing.T) {
+	if os.Getenv("RUN_INTEGRATION_TESTS") != "1" {
+		t.Skip("integration test: set RUN_INTEGRATION_TESTS=1 to enable")
+	}
 	client := clob.NewClient(PolymarketClobURL, chaindId, signature, nil)
 	tokenID := "108743709732442130739073851488597967747030701044009651663118921104082786836017"
 	size, err := client.GetTickSize(tokenID)
@@ -56,6 +63,9 @@ func TestGetTickSize(t *testing.T) {
 }
 
 func TestPostOrder(t *testing.T) {
+	if os.Getenv("RUN_INTEGRATION_TESTS") != "1" {
+		t.Skip("integration test: set RUN_INTEGRATION_TESTS=1 to enable")
+	}
 	client := clob.NewClient(PolymarketClobURL, chaindId, signature, &sdktypes.BuilderApiKeyCreds{
 		Key:        "019a4dec-fc6a-79ba-8937-d9bf3c2792ca",
 		Secret:     "Q23ZHyR21V5_F8qVLvOvnXGhxtW6CmNCWDjHzFJQW7k=",

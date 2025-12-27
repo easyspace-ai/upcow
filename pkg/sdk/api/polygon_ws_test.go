@@ -71,9 +71,9 @@ func TestDecodeOrderFilledEvent(t *testing.T) {
 			"0000000000000000000000000000000000000000000000000000000000000000" + // takerAssetId (USDC = 0)
 			"0000000000000000000000000000000000000000000000000de0b6b3a7640000" + // makerAmount (1e18)
 			"0000000000000000000000000000000000000000000000000000000005f5e100" + // takerAmount (100000000 = 100 USDC)
-			"0000000000000000000000000000000000000000000000000000000000000064"   // fee (100)
+			"0000000000000000000000000000000000000000000000000000000000000064" // fee (100)
 
-		event, err := client.decodeOrderFilledEvent(topics, data, "0xtxhash123", "0x1234")
+		event, err := client.decodeOrderFilledEvent(topics, data, "0xtxhash123", "0x1234", "0x0")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -113,7 +113,7 @@ func TestDecodeOrderFilledEvent(t *testing.T) {
 			// Missing maker and taker topics
 		}
 
-		_, err := client.decodeOrderFilledEvent(topics, "0x", "0xtx", "0x1")
+		_, err := client.decodeOrderFilledEvent(topics, "0x", "0xtx", "0x1", "0x0")
 		if err == nil {
 			t.Error("expected error for insufficient topics")
 		}
@@ -122,12 +122,12 @@ func TestDecodeOrderFilledEvent(t *testing.T) {
 
 func TestAddressMatchingLogic(t *testing.T) {
 	tests := []struct {
-		name           string
-		followedAddrs  []string
-		makerAddr      string
-		takerAddr      string
-		expectMatch    bool
-		expectAsMaker  bool
+		name          string
+		followedAddrs []string
+		makerAddr     string
+		takerAddr     string
+		expectMatch   bool
+		expectAsMaker bool
 	}{
 		{
 			name:          "maker is followed",
