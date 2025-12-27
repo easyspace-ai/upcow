@@ -1,0 +1,93 @@
+package server
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+
+	"github.com/go-chi/chi/v5"
+	_ "modernc.org/sqlite"
+)
+
+type Config struct {
+	DBPath  string
+	BotBin  string
+	DataDir string
+	LogsDir string
+}
+
+type Server struct {
+	cfg Config
+	db  *sql.DB
+}
+
+func New(cfg Config) (*Server, error) {
+	if cfg.DBPath == "" {
+		return nil, errors.New("db path is required")
+	}
+	if cfg.BotBin == "" {
+		return nil, errors.New("bot-bin is required")
+	}
+	if cfg.DataDir == "" {
+		cfg.DataDir = "data"
+	}
+	if cfg.LogsDir == "" {
+		cfg.LogsDir = "logs"
+	}
+
+	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir db dir: %w", err)
+	}
+
+	db, err := sql.Open("sqlite", cfg.DBPath)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite: %w", err)
+	}
+	db.SetMaxOpenConns(1) // SQLite：单连接更稳定
+	db.SetMaxIdleConns(1)
+
+	s := &Server{cfg: cfg, db: db}
+	if err := s.migrate(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Server) Close() error {
+	if s.db != nil {
+		return s.db.Close()
+	}
+	return nil
+}
+
+func (s *Server) Router() http.Handler {
+	r := chi.NewRouter()
+
+	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	r.Route("/api", func(r chi.Router) {
+		r.Route("/bots", func(r chi.Router) {
+			r.Get("/", s.handleBotsList)
+			r.Post("/", s.handleBotsCreate)
+			r.Route("/{botID}", func(r chi.Router) {
+				r.Get("/", s.handleBotGet)
+				r.Put("/config", s.handleBotConfigUpdate) // 保存配置，不重启
+				r.Post("/start", s.handleBotStart)
+				r.Post("/stop", s.handleBotStop)
+				r.Post("/restart", s.handleBotRestart)
+				r.Get("/status", s.handleBotStatus)
+				r.Get("/logs", s.handleBotLogsTail)
+				r.Get("/logs/stream", s.handleBotLogsStream)
+			})
+		})
+	})
+
+	// UI：极简单页（阶段1）
+	r.Get("/", s.handleUI)
+
+	return r
+}

@@ -390,7 +390,7 @@ func main() {
 	}
 
 	// 创建持久化服务
-	persistenceService := persistence.NewJSONFileService("data/persistence")
+	persistenceService := persistence.NewJSONFileService(cfg.PersistenceDir)
 	environ.SetPersistenceService(persistenceService)
 	// 交易服务使用同一套持久化（用于重启恢复快照）
 	tradingService.SetPersistence(persistenceService, "bot")

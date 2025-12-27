@@ -1,0 +1,163 @@
+package server
+
+import (
+	"net/http"
+)
+
+func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(uiHTML))
+}
+
+const uiHTML = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>gobet controlplane</title>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 0; }
+    .wrap { display: grid; grid-template-columns: 320px 1fr; height: 100vh; }
+    .left { border-right: 1px solid #eee; padding: 12px; overflow:auto; }
+    .right { padding: 12px; overflow:auto; }
+    .bot { padding: 8px; border: 1px solid #eee; border-radius: 8px; margin-bottom: 8px; cursor: pointer; }
+    .bot:hover { background: #fafafa; }
+    textarea { width: 100%; min-height: 240px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    pre { background:#0b1020; color:#d6e2ff; padding:12px; border-radius:8px; overflow:auto; min-height: 220px; }
+    button { margin-right: 8px; }
+    .row { display:flex; gap: 8px; align-items:center; flex-wrap: wrap; }
+    .muted { color:#666; font-size: 12px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="left">
+    <div class="row">
+      <h3 style="margin:0">Bots</h3>
+      <button onclick="reloadBots()">刷新</button>
+    </div>
+    <div class="muted">提示：先用右侧“创建Bot”提交一份完整配置（包含 wallet/market/exchangeStrategies）。</div>
+    <div id="bots"></div>
+  </div>
+  <div class="right">
+    <h3 style="margin-top:0">Bot 详情</h3>
+    <div id="detail" class="muted">请选择左侧 bot</div>
+
+    <hr/>
+    <h3>创建 Bot</h3>
+    <div class="row">
+      <input id="newName" placeholder="bot 名称" style="width:260px"/>
+      <button onclick="createBot()">创建</button>
+    </div>
+    <div class="muted">服务器会强制注入 log_file 与 persistence_dir（按 bot_id 隔离）。</div>
+    <textarea id="newCfg" placeholder="粘贴 YAML 配置"></textarea>
+  </div>
+</div>
+
+<script>
+let selectedBotId = null;
+let logES = null;
+
+async function api(path, opts) {
+  const res = await fetch(path, Object.assign({headers: {'Content-Type':'application/json'}}, opts||{}));
+  const data = await res.json().catch(()=> ({}));
+  if (!res.ok) throw new Error(data.error || ('HTTP '+res.status));
+  return data;
+}
+
+function botCard(b) {
+  const div = document.createElement('div');
+  div.className = 'bot';
+  div.onclick = () => selectBot(b.id);
+  div.innerHTML = '<b>'+escapeHTML(b.name)+'</b><div class="muted">'+escapeHTML(b.id)+'</div>';
+  return div;
+}
+
+function escapeHTML(s){ return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }
+
+async function reloadBots() {
+  const bots = await api('/api/bots');
+  const root = document.getElementById('bots');
+  root.innerHTML = '';
+  bots.forEach(b => root.appendChild(botCard(b)));
+}
+
+async function selectBot(id) {
+  selectedBotId = id;
+  if (logES) { try { logES.close(); } catch(e) {} logES = null; }
+  const data = await api('/api/bots/'+id);
+  const b = data.bot;
+  const p = data.process || {};
+
+  const detail = document.getElementById('detail');
+  detail.innerHTML =
+    '<div class="row">' +
+      '<div><b>' + escapeHTML(b.name) + '</b> <span class="muted">(' + escapeHTML(b.id) + ')</span></div>' +
+    '</div>' +
+    '<div class="row">' +
+      '<button onclick="startBot()">启动</button>' +
+      '<button onclick="stopBot()">停止</button>' +
+      '<button onclick="restartBot()">重启</button>' +
+      '<button onclick="loadLogTail()">加载日志tail</button>' +
+      '<span class="muted">pid: ' + (p.pid || '-') + '</span>' +
+    '</div>' +
+    '<div class="muted">config: ' + escapeHTML(b.config_path) + ' | log: ' + escapeHTML(b.log_path) + '</div>' +
+    '<h4>配置（保存后手动重启生效）</h4>' +
+    '<textarea id="cfg">' + escapeHTML(b.config_yaml) + '</textarea>' +
+    '<div class="row">' +
+      '<button onclick="saveConfig()">保存配置</button>' +
+    '</div>' +
+    '<h4>实时日志</h4>' +
+    '<pre id="log"></pre>';
+
+  // start SSE
+  const logEl = document.getElementById('log');
+  logEl.textContent = '';
+  logES = new EventSource('/api/bots/'+id+'/logs/stream');
+  logES.onmessage = (ev) => {
+    logEl.textContent += ev.data + "\\n";
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+  logES.onerror = () => {
+    // 静默
+  };
+}
+
+async function createBot() {
+  const name = document.getElementById('newName').value.trim();
+  const cfg = document.getElementById('newCfg').value;
+  const b = await api('/api/bots', {method:'POST', body: JSON.stringify({name, config_yaml: cfg})});
+  await reloadBots();
+  await selectBot(b.id);
+}
+
+async function saveConfig() {
+  const cfg = document.getElementById('cfg').value;
+  await api('/api/bots/'+selectedBotId+'/config', {method:'PUT', body: JSON.stringify({config_yaml: cfg})});
+  alert('已保存（需要手动重启生效）');
+}
+
+async function startBot() {
+  await api('/api/bots/'+selectedBotId+'/start', {method:'POST', body:'{}'});
+  alert('已触发启动');
+}
+async function stopBot() {
+  await api('/api/bots/'+selectedBotId+'/stop', {method:'POST', body:'{}'});
+  alert('已触发停止');
+}
+async function restartBot() {
+  await api('/api/bots/'+selectedBotId+'/restart', {method:'POST', body:'{}'});
+  alert('已触发重启');
+}
+
+async function loadLogTail() {
+  const data = await api('/api/bots/'+selectedBotId+'/logs?tail=200');
+  const logEl = document.getElementById('log');
+  logEl.textContent = (data.lines || []).join("\\n") + "\\n";
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+reloadBots();
+</script>
+</body>
+</html>`

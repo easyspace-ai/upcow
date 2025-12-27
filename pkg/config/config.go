@@ -31,7 +31,7 @@ type WalletConfig struct {
 
 // ProxyConfig 代理配置
 type ProxyConfig struct {
-	Enabled bool   // 是否启用代理（默认 true，保持向后兼容）
+	Enabled bool // 是否启用代理（默认 true，保持向后兼容）
 	Host    string
 	Port    int
 }
@@ -137,6 +137,7 @@ type Config struct {
 	LogLevel                             string                  // 日志级别
 	LogFile                              string                  // 日志文件路径（可选）
 	LogByCycle                           bool                    // 是否按周期命名日志文件
+	PersistenceDir                       string                  // 持久化目录（用于状态恢复/快照），建议每个 bot 独立目录
 	DirectModeDebounce                   int                     // 直接回调模式的防抖间隔（毫秒），默认100ms（BBGO风格：只支持直接模式）
 	MinOrderSize                         float64                 // 全局最小下单金额（USDC），默认 1.1（交易所要求 >= 1）
 	MinShareSize                         float64                 // 限价单最小 share 数量，默认 5.0（仅限价单 GTC 时应用）
@@ -256,6 +257,7 @@ type ConfigFile struct {
 	LogLevel                             string  `yaml:"log_level" json:"log_level"`
 	LogFile                              string  `yaml:"log_file" json:"log_file"`
 	LogByCycle                           bool    `yaml:"log_by_cycle" json:"log_by_cycle"`
+	PersistenceDir                       string  `yaml:"persistence_dir" json:"persistence_dir"`
 	DirectModeDebounce                   int     `yaml:"direct_mode_debounce" json:"direct_mode_debounce"` // 直接回调模式的防抖间隔（毫秒），默认100ms（BBGO风格：只支持直接模式）
 	MinOrderSize                         float64 `yaml:"minOrderSize" json:"minOrderSize"`
 	MinShareSize                         float64 `yaml:"minShareSize" json:"minShareSize"`                                                           // 限价单最小 share 数量（仅限价单 GTC 时应用）
@@ -294,25 +296,65 @@ func LoadFromFileWithOptions(filePath string, opts LoadOptions) (*Config, error)
 		}
 	}
 
-	// 尝试加载 user.json（必须从 /pm/data/user.json 加载）
+	// 尝试加载 user.json（默认 /pm/data/user.json；也支持通过环境变量指定路径）。
+	// 说明：
+	// - 旧行为：强制要求 /pm/data/user.json 存在（用于单实例运行）。
+	// - 新行为：若配置文件已提供 wallet.private_key / wallet.funder_address，则允许 user.json 缺失（用于多 bot 独立配置）。
 	userJSON, err := loadUserJSON()
 	if err != nil {
-		// user.json 不存在或解析失败会严重影响程序运行，返回错误
-		return nil, fmt.Errorf("加载用户配置失败（必须从 /pm/data/user.json 加载）: %w", err)
+		hasWalletInConfig := configFile != nil &&
+			strings.TrimSpace(configFile.Wallet.PrivateKey) != "" &&
+			strings.TrimSpace(configFile.Wallet.FunderAddress) != ""
+		if !hasWalletInConfig {
+			return nil, fmt.Errorf("加载用户配置失败（默认从 /pm/data/user.json 加载，可用 GOBET_USER_JSON_PATH 覆盖）: %w", err)
+		}
+		// 允许缺失 user.json
+		userJSON = nil
 	}
 	if userJSON == nil {
-		return nil, fmt.Errorf("用户配置为空，请检查 /pm/data/user.json 文件")
+		// 若 user.json 缺失，则后续 proxy/wallet 需要完全来自 env 或 config file。
 	}
 
 	// 解析代理配置（优先级：配置文件 > 环境变量 > user.json > 默认值）
 	proxyConfig := parseProxyConfigFromSources(configFile, userJSON)
 
-	// 构建配置（优先级：环境变量 > user.json > 配置文件 > 默认值）
-	// 注意：钱包信息优先从 user.json 加载，配置文件中的钱包配置会被忽略
+	// 构建配置（优先级：环境变量 > 配置文件 > user.json > 默认值）
+	// - 多 bot 场景：推荐将 wallet 与 persistence_dir 写入每个 bot 的 config 文件。
+	// - 兼容旧行为：仍支持从 /pm/data/user.json 读取钱包信息。
+	userPrivateKey := ""
+	userProxyAddress := ""
+	userRecipientAddress := ""
+	userAddress := ""
+	if userJSON != nil {
+		userPrivateKey = userJSON.PrivateKey
+		userProxyAddress = userJSON.ProxyAddress
+		userRecipientAddress = userJSON.RecipientAddress
+		userAddress = userJSON.Address
+	}
+
+	configPrivateKey := ""
+	configFunderAddress := ""
+	if configFile != nil {
+		configPrivateKey = configFile.Wallet.PrivateKey
+		configFunderAddress = configFile.Wallet.FunderAddress
+	}
+
 	config := &Config{
 		Wallet: WalletConfig{
-			PrivateKey:    getEnvOrUserJSON("WALLET_PRIVATE_KEY", userJSON.PrivateKey, ""),
-			FunderAddress: getEnvOrUserJSON("WALLET_FUNDER_ADDRESS", userJSON.ProxyAddress, userJSON.RecipientAddress, userJSON.Address, ""),
+			PrivateKey: getEnvOrUserJSON(
+				"WALLET_PRIVATE_KEY",
+				configPrivateKey,
+				userPrivateKey,
+				"",
+			),
+			FunderAddress: getEnvOrUserJSON(
+				"WALLET_FUNDER_ADDRESS",
+				configFunderAddress,
+				userProxyAddress,
+				userRecipientAddress,
+				userAddress,
+				"",
+			),
 		},
 		Proxy: proxyConfig,
 		ExchangeStrategies: func() []ExchangeStrategyMount {
@@ -415,6 +457,15 @@ func LoadFromFileWithOptions(filePath string, opts LoadOptions) (*Config, error)
 				return envVal == "true" || envVal == "1"
 			}
 			return true // 默认按周期命名
+		}(),
+		PersistenceDir: func() string {
+			if configFile != nil && strings.TrimSpace(configFile.PersistenceDir) != "" {
+				return strings.TrimSpace(configFile.PersistenceDir)
+			}
+			if v := strings.TrimSpace(getEnv("PERSISTENCE_DIR", "")); v != "" {
+				return v
+			}
+			return "data/persistence" // 兼容旧默认
 		}(),
 		DirectModeDebounce: func() int {
 			if configFile != nil && configFile.DirectModeDebounce > 0 {
@@ -556,7 +607,7 @@ func LoadFromFileWithOptions(filePath string, opts LoadOptions) (*Config, error)
 
 // StrategyFile 用于加载策略配置文件的结构（支持 market、dry_run 和 exchangeStrategies）
 type StrategyFile struct {
-	Market             struct {
+	Market struct {
 		Symbol        string                 `yaml:"symbol" json:"symbol"`
 		Timeframe     string                 `yaml:"timeframe" json:"timeframe"`
 		Kind          string                 `yaml:"kind" json:"kind"`
@@ -675,7 +726,7 @@ func loadConfigFile(filePath string) (*ConfigFile, error) {
 func parseProxyConfigFromSources(configFile *ConfigFile, userJSON *UserJSON) *ProxyConfig {
 	// 检查是否启用代理（优先级：配置文件 > 环境变量 > 默认值 true）
 	var enabled bool = true // 默认启用，保持向后兼容
-	
+
 	if configFile != nil && configFile.Proxy.Enabled != nil {
 		enabled = *configFile.Proxy.Enabled
 	} else {
@@ -684,7 +735,7 @@ func parseProxyConfigFromSources(configFile *ConfigFile, userJSON *UserJSON) *Pr
 			enabled = envVal == "true" || envVal == "1"
 		}
 	}
-	
+
 	// 如果代理未启用，返回 nil
 	if !enabled {
 		return nil
@@ -808,10 +859,18 @@ func (c *Config) ValidateWithOptions(opts LoadOptions) error {
 
 // loadUserJSON 加载 user.json 文件
 func loadUserJSON() (*UserJSON, error) {
-	// 只从 /pm/data/user.json 加载（不再使用 botuser.json）
-	possiblePaths := []string{
-		"/pm/data/user.json", // 绝对路径（唯一路径）
+	// 默认从 /pm/data/user.json 加载（兼容旧行为）。
+	// 也支持通过环境变量指定路径，便于多 bot 场景给每个进程注入独立 user.json：
+	// - GOBET_USER_JSON_PATH（推荐）
+	// - USER_JSON_PATH（兼容）
+	possiblePaths := []string{}
+	if p := strings.TrimSpace(os.Getenv("GOBET_USER_JSON_PATH")); p != "" {
+		possiblePaths = append(possiblePaths, p)
 	}
+	if p := strings.TrimSpace(os.Getenv("USER_JSON_PATH")); p != "" {
+		possiblePaths = append(possiblePaths, p)
+	}
+	possiblePaths = append(possiblePaths, "/pm/data/user.json")
 
 	for _, path := range possiblePaths {
 		if _, err := os.Stat(path); err == nil {
@@ -830,7 +889,7 @@ func loadUserJSON() (*UserJSON, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("未找到 /pm/data/user.json 文件")
+	return nil, fmt.Errorf("未找到 user.json（已尝试：%s）", strings.Join(possiblePaths, ", "))
 }
 
 // parseProxyConfig 解析代理配置（旧版本，已废弃，请使用 parseProxyConfigFromSources）
@@ -841,7 +900,7 @@ func parseProxyConfig(userJSON *UserJSON) *ProxyConfig {
 	if envVal := getEnv("PROXY_ENABLED", ""); envVal != "" {
 		enabled = envVal == "true" || envVal == "1"
 	}
-	
+
 	// 如果代理未启用，返回 nil
 	if !enabled {
 		return nil
