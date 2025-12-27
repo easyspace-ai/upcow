@@ -78,25 +78,31 @@ func (s *Server) doRedeemAccount(ctx context.Context, runID int64, accountID str
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
 		return
 	}
+	mnemonic, err := loadMnemonicFromFile(masterKey)
+	if err != nil {
+		msg := err.Error()
+		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
+		return
+	}
 
 	baseURL := strings.TrimSpace(os.Getenv("POLYMARKET_API_URL"))
 	if baseURL == "" {
 		baseURL = "https://clob.polymarket.com"
 	}
 
-	row, err := s.getAccountRow(ctx, accountID)
-	if err != nil || row == nil {
+	a, err := s.getAccount(ctx, accountID)
+	if err != nil || a == nil {
 		msg := "account not found"
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
 		return
 	}
-	mnemonic, err := decryptFromString(masterKey, row.MnemonicEnc)
+	path, err := derivationPathFromAccountID(accountID)
 	if err != nil {
-		msg := "decrypt mnemonic failed"
+		msg := err.Error()
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
 		return
 	}
-	derived, err := deriveWalletFromMnemonic(mnemonic, row.DerivationPath)
+	derived, err := deriveWalletFromMnemonic(mnemonic, path)
 	if err != nil {
 		msg := "derive failed"
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
@@ -106,7 +112,7 @@ func (s *Server) doRedeemAccount(ctx context.Context, runID int64, accountID str
 	client := sdkapi.NewClient(baseURL)
 	opts := sdkredeem.RunOnceOptions{
 		PrivateKeyHex: derived.PrivateKeyHex,
-		FunderAddress: row.FunderAddress,
+		FunderAddress: a.FunderAddress,
 		BuilderCreds: &sdktypes.BuilderApiKeyCreds{
 			Key:        bc.Key,
 			Secret:     bc.Secret,

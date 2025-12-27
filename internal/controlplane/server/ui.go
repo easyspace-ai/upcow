@@ -39,7 +39,7 @@ const uiHTML = `<!doctype html>
       <h3 style="margin:0">Bots</h3>
       <button onclick="reloadBots()">刷新</button>
     </div>
-    <div class="muted">提示：先用右侧“创建Bot”提交一份完整配置（包含 wallet/market/exchangeStrategies）。</div>
+    <div class="muted">提示：Bot 配置无需包含 wallet（私钥不会入库）。启动前请先绑定 3 位账号ID（1账号1bot）。</div>
     <div id="bots"></div>
   </div>
   <div class="right">
@@ -72,11 +72,12 @@ const uiHTML = `<!doctype html>
     <div id="jobs" class="muted"></div>
     <h4>创建账号</h4>
     <div class="row">
-      <input id="accName" placeholder="账号名称" style="width:180px"/>
-      <input id="accPath" placeholder="派生路径 (m/...)" style="width:260px" value="m/44'/60'/0'/0/0"/>
-      <input id="accFunder" placeholder="funder/safe 地址 0x..." style="width:360px"/>
+      <input id="accId" placeholder="账号ID(三位数，例如 456)" style="width:220px"/>
+      <input id="accName" placeholder="账号名称(可选)" style="width:220px"/>
     </div>
-    <textarea id="accMnemonic" placeholder="助记词（会加密存储，默认不回显）" style="min-height:100px"></textarea>
+    <div class="muted">
+      助记词不会通过网页提交。请在服务启动前使用 <code>cmd/mnemonic-init</code> 生成本地加密助记词文件（默认 <code>data/mnemonic.enc</code>），并设置 <code>GOBET_MASTER_KEY</code>。
+    </div>
     <div class="row">
       <button onclick="createAccount()">创建账号</button>
     </div>
@@ -324,13 +325,14 @@ async function loadLogTail() {
 }
 
 async function createAccount() {
+  const account_id = document.getElementById('accId').value.trim();
   const name = document.getElementById('accName').value.trim();
-  const mnemonic = document.getElementById('accMnemonic').value.trim();
-  const derivation_path = document.getElementById('accPath').value.trim();
-  const funder_address = document.getElementById('accFunder').value.trim();
-  await api('/api/accounts', {method:'POST', body: JSON.stringify({name, mnemonic, derivation_path, funder_address})});
-  alert('账号已创建');
-  document.getElementById('accMnemonic').value = '';
+  const res = await api('/api/accounts', {method:'POST', body: JSON.stringify({account_id, name})});
+  if (res && res.warning) {
+    alert('账号已创建（有提示）：' + res.warning);
+  } else {
+    alert('账号已创建');
+  }
   await reloadAccounts();
 }
 
@@ -342,7 +344,7 @@ async function bindAccount() {
   const id = prompt('输入要绑定的 account_id：\\n'+hint);
   if (!id) return;
   const res = await api('/api/bots/'+selectedBotId+'/bind_account', {method:'POST', body: JSON.stringify({account_id: id.trim()})});
-  alert('已绑定，生成新配置版本 v'+res.current_version+'；请手动重启生效');
+  alert('已绑定：account_id='+res.account_id+'；请手动重启生效');
   await selectBot(selectedBotId);
 }
 

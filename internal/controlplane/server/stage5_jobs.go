@@ -32,6 +32,12 @@ func (s *Server) doTradesSyncBatch(ctx context.Context, runID int64, trigger str
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
 		return
 	}
+	mnemonic, err := loadMnemonicFromFile(masterKey)
+	if err != nil {
+		msg := err.Error()
+		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
+		return
+	}
 	accounts, err := s.listAccounts(ctx)
 	if err != nil {
 		msg := err.Error()
@@ -42,17 +48,12 @@ func (s *Server) doTradesSyncBatch(ctx context.Context, runID int64, trigger str
 	errCount := 0
 	insertedTotal := 0
 	for _, a := range accounts {
-		row, err := s.getAccountRow(ctx, a.ID)
-		if err != nil || row == nil {
-			errCount++
-			continue
-		}
-		mn, err := decryptFromString(masterKey, row.MnemonicEnc)
+		path, err := derivationPathFromAccountID(a.ID)
 		if err != nil {
 			errCount++
 			continue
 		}
-		derived, err := deriveWalletFromMnemonic(mn, row.DerivationPath)
+		derived, err := deriveWalletFromMnemonic(mnemonic, path)
 		if err != nil {
 			errCount++
 			continue
@@ -132,6 +133,12 @@ func (s *Server) doOpenOrdersSyncBatch(ctx context.Context, runID int64, trigger
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
 		return
 	}
+	mnemonic, err := loadMnemonicFromFile(masterKey)
+	if err != nil {
+		msg := err.Error()
+		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
+		return
+	}
 	host := strings.TrimSpace(os.Getenv("CLOB_API_URL"))
 	_ = host
 	accounts, err := s.listAccounts(ctx)
@@ -143,17 +150,12 @@ func (s *Server) doOpenOrdersSyncBatch(ctx context.Context, runID int64, trigger
 	okCount := 0
 	errCount := 0
 	for _, a := range accounts {
-		row, err := s.getAccountRow(ctx, a.ID)
-		if err != nil || row == nil {
-			errCount++
-			continue
-		}
-		mn, err := decryptFromString(masterKey, row.MnemonicEnc)
+		path, err := derivationPathFromAccountID(a.ID)
 		if err != nil {
 			errCount++
 			continue
 		}
-		derived, err := deriveWalletFromMnemonic(mn, row.DerivationPath)
+		derived, err := deriveWalletFromMnemonic(mnemonic, path)
 		if err != nil {
 			errCount++
 			continue

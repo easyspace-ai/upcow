@@ -1,12 +1,14 @@
-package server
+package main
 
 import (
+	"bufio"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -14,32 +16,59 @@ import (
 	"strings"
 )
 
-func mnemonicFilePath() string {
-	if v := strings.TrimSpace(os.Getenv("GOBET_MNEMONIC_FILE")); v != "" {
-		return v
+func main() {
+	var (
+		outPath = flag.String("out", getenv("GOBET_MNEMONIC_FILE", "data/mnemonic.enc"), "output file path for encrypted mnemonic")
+		force   = flag.Bool("force", false, "overwrite output file if exists")
+	)
+	flag.Parse()
+
+	masterKey, err := loadMasterKey()
+	if err != nil {
+		fatal(err)
 	}
-	return filepath.Join("data", "mnemonic.enc")
+
+	if st, err := os.Stat(*outPath); err == nil && !st.IsDir() && !*force {
+		fatal(fmt.Errorf("output file already exists: %s (use -force to overwrite)", *outPath))
+	}
+	if err := os.MkdirAll(filepath.Dir(*outPath), 0o755); err != nil {
+		fatal(fmt.Errorf("mkdir: %w", err))
+	}
+
+	fmt.Fprintln(os.Stderr, "请输入助记词（12/15/18/21/24 个单词），输入完成后回车：")
+	mn := strings.TrimSpace(readLine())
+	if mn == "" {
+		fatal(errors.New("mnemonic is empty"))
+	}
+
+	enc, err := encryptToString(masterKey, mn)
+	if err != nil {
+		fatal(err)
+	}
+
+	// 0600: only owner can read
+	if err := os.WriteFile(*outPath, []byte(enc+"\n"), 0o600); err != nil {
+		fatal(err)
+	}
+	fmt.Fprintf(os.Stderr, "已写入：%s\n", *outPath)
 }
 
-func loadMnemonicFromFile(masterKey []byte) (string, error) {
-	path := mnemonicFilePath()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read mnemonic file failed (%s): %w", path, err)
+func getenv(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
 	}
-	enc := strings.TrimSpace(string(b))
-	if enc == "" {
-		return "", fmt.Errorf("mnemonic file is empty: %s", path)
-	}
-	mn, err := decryptFromString(masterKey, enc)
-	if err != nil {
-		return "", fmt.Errorf("decrypt mnemonic failed: %w", err)
-	}
-	mn = strings.TrimSpace(mn)
-	if mn == "" {
-		return "", fmt.Errorf("mnemonic decrypted to empty string")
-	}
-	return mn, nil
+	return def
+}
+
+func readLine() string {
+	br := bufio.NewReader(os.Stdin)
+	s, _ := br.ReadString('\n')
+	return strings.TrimSpace(s)
+}
+
+func fatal(err error) {
+	fmt.Fprintln(os.Stderr, "error:", err.Error())
+	os.Exit(1)
 }
 
 func loadMasterKey() ([]byte, error) {
@@ -82,29 +111,4 @@ func encryptToString(masterKey []byte, plaintext string) (string, error) {
 	ct := gcm.Seal(nil, nonce, []byte(plaintext), nil)
 	out := append(nonce, ct...)
 	return base64.StdEncoding.EncodeToString(out), nil
-}
-
-func decryptFromString(masterKey []byte, enc string) (string, error) {
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(enc))
-	if err != nil {
-		return "", err
-	}
-	block, err := aes.NewCipher(masterKey)
-	if err != nil {
-		return "", err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-	if len(raw) < gcm.NonceSize() {
-		return "", errors.New("ciphertext too short")
-	}
-	nonce := raw[:gcm.NonceSize()]
-	ct := raw[gcm.NonceSize():]
-	pt, err := gcm.Open(nil, nonce, ct, nil)
-	if err != nil {
-		return "", err
-	}
-	return string(pt), nil
 }

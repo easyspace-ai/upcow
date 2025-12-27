@@ -88,17 +88,47 @@ func (s *Server) startBot(ctx context.Context, botID string) (pid int, alreadyRu
 		return *p.PID, true, nil
 	}
 
-	// Preflight: ensure wallet is configured (either in config YAML or via account binding).
-	// We allow creating bots without wallet, but we refuse to start them until wallet info exists.
-	pk, funder, err := extractWalletFromBotConfig(b.ConfigYAML)
-	if err != nil {
-		return 0, false, fmt.Errorf("config parse failed: %w", err)
+	// New security model: wallet is derived at start from local encrypted mnemonic file + bound account_id.
+	if b.AccountID == nil || strings.TrimSpace(*b.AccountID) == "" {
+		return 0, false, fmt.Errorf("bot 未绑定账号：请先绑定 account_id（1账号1bot）")
 	}
-	if pk == "" || funder == "" {
-		return 0, false, fmt.Errorf("bot 未配置钱包：请先绑定账号（1账号1bot）或在配置中填写 wallet.private_key / wallet.funder_address")
+	accountID := strings.TrimSpace(*b.AccountID)
+	if _, err := normalizeAccountID(accountID); err != nil {
+		return 0, false, fmt.Errorf("bot account_id invalid: %v", err)
+	}
+	a, err := s.getAccount(ctx, accountID)
+	if err != nil || a == nil {
+		return 0, false, fmt.Errorf("account not found: %s", accountID)
+	}
+	mk, err := loadMasterKey()
+	if err != nil {
+		return 0, false, err
+	}
+	mn, err := loadMnemonicFromFile(mk)
+	if err != nil {
+		return 0, false, err
+	}
+	path, err := derivationPathFromAccountID(accountID)
+	if err != nil {
+		return 0, false, err
+	}
+	derived, err := deriveWalletFromMnemonic(mn, path)
+	if err != nil {
+		return 0, false, err
+	}
+	runtimeYAML, err := injectWalletIntoBotConfig(b.ConfigYAML, derived.PrivateKeyHex, a.FunderAddress, b.LogPath, b.PersistenceDir)
+	if err != nil {
+		return 0, false, err
+	}
+	runtimeCfgPath := filepath.Join(s.cfg.DataDir, "bots", b.ID, "config.runtime.yaml")
+	if err := os.MkdirAll(filepath.Dir(runtimeCfgPath), 0o755); err != nil {
+		return 0, false, err
+	}
+	if err := os.WriteFile(runtimeCfgPath, []byte(runtimeYAML+"\n"), 0o600); err != nil {
+		return 0, false, err
 	}
 
-	pid, err = s.spawnBot(*b)
+	pid, err = s.spawnBotWithConfig(*b, runtimeCfgPath)
 	if err != nil {
 		_ = s.clearBotPID(ctx, botID, nil, ptrString(err.Error()))
 		return 0, false, err
@@ -161,7 +191,7 @@ func (s *Server) handleBotStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"bot_id": botID, "running": running, "pid": pid})
 }
 
-func (s *Server) spawnBot(b Bot) (int, error) {
+func (s *Server) spawnBotWithConfig(b Bot, cfgPath string) (int, error) {
 	// 额外确保目录存在
 	if err := os.MkdirAll(filepath.Dir(b.LogPath), 0o755); err != nil {
 		return 0, err
@@ -171,7 +201,7 @@ func (s *Server) spawnBot(b Bot) (int, error) {
 		return 0, err
 	}
 
-	cmd := exec.Command(s.cfg.BotBin, "-config", b.ConfigPath)
+	cmd := exec.Command(s.cfg.BotBin, "-config", cfgPath)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
@@ -214,12 +244,59 @@ func (s *Server) spawnBot(b Bot) (int, error) {
 	return pid, nil
 }
 
-func extractWalletFromBotConfig(yamlText string) (privateKey string, funderAddress string, err error) {
-	var cf pkgconfig.ConfigFile
-	if err := yaml.Unmarshal([]byte(yamlText), &cf); err != nil {
-		return "", "", err
+func injectWalletIntoBotConfig(yamlText string, privateKeyHex string, funderAddress string, logPath string, persistenceDir string) (string, error) {
+	var m map[string]any
+	if err := yaml.Unmarshal([]byte(yamlText), &m); err != nil {
+		return "", err
 	}
-	return strings.TrimSpace(cf.Wallet.PrivateKey), strings.TrimSpace(cf.Wallet.FunderAddress), nil
+	w, ok := m["wallet"].(map[string]any)
+	if !ok || w == nil {
+		w = map[string]any{}
+	}
+	w["private_key"] = strings.TrimSpace(privateKeyHex)
+	w["funder_address"] = strings.TrimSpace(funderAddress)
+	m["wallet"] = w
+
+	// Keep isolation constraints
+	m["log_file"] = strings.TrimSpace(logPath)
+	m["persistence_dir"] = strings.TrimSpace(persistenceDir)
+
+	out, err := yaml.Marshal(m)
+	if err != nil {
+		return "", err
+	}
+	// Validate with full config rules now that wallet is injected.
+	var cf pkgconfig.ConfigFile
+	if err := yaml.Unmarshal(out, &cf); err != nil {
+		return "", err
+	}
+	cfg := &pkgconfig.Config{
+		Wallet: pkgconfig.WalletConfig{
+			PrivateKey:    strings.TrimSpace(cf.Wallet.PrivateKey),
+			FunderAddress: strings.TrimSpace(cf.Wallet.FunderAddress),
+		},
+		Proxy:              nil,
+		ExchangeStrategies: cf.ExchangeStrategies,
+		Market: pkgconfig.MarketConfig{
+			Symbol:        strings.TrimSpace(cf.Market.Symbol),
+			Timeframe:     strings.TrimSpace(cf.Market.Timeframe),
+			Kind:          strings.TrimSpace(cf.Market.Kind),
+			SlugPrefix:    strings.TrimSpace(cf.Market.SlugPrefix),
+			SlugTemplates: cf.Market.SlugTemplates,
+			Precision:     cf.Market.Precision,
+		},
+		LogLevel:       strings.TrimSpace(cf.LogLevel),
+		LogFile:        strings.TrimSpace(cf.LogFile),
+		LogByCycle:     cf.LogByCycle,
+		PersistenceDir: strings.TrimSpace(cf.PersistenceDir),
+		MinOrderSize:   cf.MinOrderSize,
+		MinShareSize:   cf.MinShareSize,
+		DryRun:         cf.DryRun,
+	}
+	if err := cfg.Validate(); err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 func processAlive(pid int) bool {

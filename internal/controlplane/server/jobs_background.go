@@ -337,6 +337,12 @@ func (s *Server) doRedeemBatch(ctx context.Context, runID int64, trigger string)
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
 		return
 	}
+	mnemonic, err := loadMnemonicFromFile(masterKey)
+	if err != nil {
+		msg := err.Error()
+		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
+		return
+	}
 
 	baseURL := strings.TrimSpace(os.Getenv("POLYMARKET_API_URL"))
 	if baseURL == "" {
@@ -373,18 +379,12 @@ func (s *Server) doRedeemBatch(ctx context.Context, runID int64, trigger string)
 			defer func() { <-sem }()
 			acctCtx, cancel := context.WithTimeout(ctx, 6*time.Minute)
 			defer cancel()
-
-			mn, err := s.getAccountRow(acctCtx, a.ID)
-			if err != nil || mn == nil {
-				outCh <- rr{ok: false, err: "load account row failed"}
-				return
-			}
-			mnemonic, err := decryptFromString(masterKey, mn.MnemonicEnc)
+			path, err := derivationPathFromAccountID(a.ID)
 			if err != nil {
-				outCh <- rr{ok: false, err: "decrypt mnemonic failed"}
+				outCh <- rr{ok: false, err: err.Error()}
 				return
 			}
-			derived, err := deriveWalletFromMnemonic(mnemonic, a.DerivationPath)
+			derived, err := deriveWalletFromMnemonic(mnemonic, path)
 			if err != nil {
 				outCh <- rr{ok: false, err: "derive failed"}
 				return

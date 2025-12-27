@@ -98,6 +98,15 @@ WHERE id=?
 	return err
 }
 
+func (s *Server) updateAccountName(ctx context.Context, accountID string, name string) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE accounts
+SET name=?, updated_at=?
+WHERE id=?
+`, name, time.Now().Format(time.RFC3339Nano), accountID)
+	return err
+}
+
 func (s *Server) isAccountBound(ctx context.Context, accountID string) (bool, string, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT id FROM bots WHERE account_id=? LIMIT 1`, accountID)
 	var botID string

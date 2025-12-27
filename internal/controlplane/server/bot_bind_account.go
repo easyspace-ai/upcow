@@ -2,16 +2,11 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 type bindAccountRequest struct {
@@ -27,14 +22,9 @@ func (s *Server) handleBotBindAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.AccountID = strings.TrimSpace(req.AccountID)
-	if req.AccountID == "" {
-		writeError(w, 400, "account_id is required")
-		return
-	}
-
-	masterKey, err := loadMasterKey()
+	accountID, err := normalizeAccountID(req.AccountID)
 	if err != nil {
-		writeError(w, 500, err.Error())
+		writeError(w, 400, err.Error())
 		return
 	}
 
@@ -51,136 +41,41 @@ func (s *Server) handleBotBindAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	acctRow, err := s.getAccountRow(ctx, req.AccountID)
+	acct, err := s.getAccount(ctx, accountID)
 	if err != nil {
 		writeError(w, 500, fmt.Sprintf("db get account: %v", err))
 		return
 	}
-	if acctRow == nil {
+	if acct == nil {
 		writeError(w, 404, "account not found")
 		return
 	}
 
 	// enforce one-to-one
-	if err := s.ensureAccountNotBoundToOtherBot(ctx, req.AccountID, botID); err != nil {
+	if err := s.ensureAccountNotBoundToOtherBot(ctx, accountID, botID); err != nil {
 		writeError(w, 409, err.Error())
 		return
 	}
-	if boundID, err := s.botBoundAccount(ctx, botID); err == nil && boundID != nil && *boundID != req.AccountID {
+	if boundID, err := s.botBoundAccount(ctx, botID); err == nil && boundID != nil && *boundID != accountID {
 		writeError(w, 409, fmt.Sprintf("bot already bound to account %s", *boundID))
 		return
 	}
 
-	mnemonic, err := decryptFromString(masterKey, acctRow.MnemonicEnc)
-	if err != nil {
-		writeError(w, 500, fmt.Sprintf("decrypt mnemonic failed: %v", err))
-		return
-	}
-	derived, err := deriveWalletFromMnemonic(mnemonic, acctRow.DerivationPath)
-	if err != nil {
-		writeError(w, 400, fmt.Sprintf("derive failed: %v", err))
-		return
-	}
-
-	// Update bot config YAML: wallet.private_key + wallet.funder_address
-	newYAML, err := upsertYAMLWalletKeys(bot.ConfigYAML, derived.PrivateKeyHex, acctRow.FunderAddress)
-	if err != nil {
-		writeError(w, 400, fmt.Sprintf("update config failed: %v", err))
-		return
-	}
-	// Keep isolation constraints
-	newYAML, err = upsertYAMLKey(newYAML, "log_file", bot.LogPath)
-	if err != nil {
-		writeError(w, 400, fmt.Sprintf("set log_file failed: %v", err))
-		return
-	}
-	newYAML, err = upsertYAMLKey(newYAML, "persistence_dir", bot.PersistenceDir)
-	if err != nil {
-		writeError(w, 400, fmt.Sprintf("set persistence_dir failed: %v", err))
-		return
-	}
-
-	if err := validateBotConfigYAMLStrict(newYAML); err != nil {
-		writeError(w, 400, fmt.Sprintf("config invalid: %v", err))
-		return
-	}
-
-	// persist config file + new config version + bind account_id (transaction-ish)
-	if err := os.MkdirAll(filepath.Dir(bot.ConfigPath), 0o755); err != nil {
-		writeError(w, 500, fmt.Sprintf("mkdir config dir: %v", err))
-		return
-	}
-	if err := os.WriteFile(bot.ConfigPath, []byte(newYAML+"\n"), 0o644); err != nil {
-		writeError(w, 500, fmt.Sprintf("write config: %v", err))
-		return
-	}
-
-	nextVer, err := s.nextBotConfigVersion(ctx, botID)
-	if err != nil {
-		writeError(w, 500, fmt.Sprintf("db next version: %v", err))
-		return
-	}
-	comment := fmt.Sprintf("bind account %s (eoa=%s)", req.AccountID, acctRow.EOAAddress)
-
-	// do small transaction to keep things consistent
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
-	if err != nil {
-		writeError(w, 500, fmt.Sprintf("db begin: %v", err))
-		return
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.ExecContext(ctx, `
-INSERT INTO bot_config_versions (bot_id, version, config_yaml, created_at, comment)
-VALUES (?,?,?,?,?)
-`, botID, nextVer, newYAML, time.Now().Format(time.RFC3339Nano), comment); err != nil {
-		writeError(w, 500, fmt.Sprintf("db insert version: %v", err))
-		return
-	}
-
-	if _, err := tx.ExecContext(ctx, `
-UPDATE bots
-SET account_id=?, config_yaml=?, current_version=?, updated_at=?
-WHERE id=?
-`, req.AccountID, newYAML, nextVer, time.Now().Format(time.RFC3339Nano), botID); err != nil {
-		// 可能触发 UNIQUE index（一个账号绑定多个 bot）
+	// New security model: do NOT inject private key into bot config or store it in sqlite.
+	// We only bind account_id. Wallet will be derived on bot start from local encrypted mnemonic file + account_id.
+	if err := s.bindBotAccount(ctx, botID, accountID); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			writeError(w, 409, "account already bound to another bot")
 			return
 		}
-		writeError(w, 500, fmt.Sprintf("db update bot: %v", err))
-		return
-	}
-
-	if err := tx.Commit(); err != nil {
-		writeError(w, 500, fmt.Sprintf("db commit: %v", err))
+		writeError(w, 500, fmt.Sprintf("db bind bot: %v", err))
 		return
 	}
 
 	writeJSON(w, 200, map[string]any{
-		"ok":              true,
-		"bot_id":          botID,
-		"account_id":      req.AccountID,
-		"current_version": nextVer,
-		"note":            "config updated; restart bot to take effect",
+		"ok":         true,
+		"bot_id":     botID,
+		"account_id": accountID,
+		"note":       "account bound; restart bot to take effect (wallet is derived on start)",
 	})
-}
-
-func upsertYAMLWalletKeys(yamlText string, privateKeyHex string, funderAddress string) (string, error) {
-	var m map[string]any
-	if err := yaml.Unmarshal([]byte(yamlText), &m); err != nil {
-		return "", err
-	}
-	w, ok := m["wallet"].(map[string]any)
-	if !ok || w == nil {
-		w = map[string]any{}
-	}
-	w["private_key"] = strings.TrimSpace(privateKeyHex)
-	w["funder_address"] = strings.TrimSpace(funderAddress)
-	m["wallet"] = w
-	out, err := yaml.Marshal(m)
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
 }
