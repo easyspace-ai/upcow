@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	sdkrelayer "github.com/betbot/gobet/pkg/sdk/relayer"
+	"github.com/betbot/gobet/pkg/secretstore"
 	hdwallet "github.com/miguelmota/go-ethereum-hdwallet"
 )
 
@@ -33,10 +34,20 @@ func main() {
 
 		// show mode: derive and print private key for a 3-digit account id
 		showID   = flag.String("id", "", "3-digit account id to derive and print private key (show mode), e.g. 456")
-		inPath   = flag.String("file", getenv("GOBET_MNEMONIC_FILE", "data/mnemonic.enc"), "encrypted mnemonic file path (show mode)")
+		inPath   = flag.String("file", getenv("GOBET_MNEMONIC_FILE", "data/mnemonic.enc"), "encrypted mnemonic file path (legacy show mode)")
 		showSafe = flag.Bool("show-safe", true, "also print expected safe(funder) address (show mode)")
+
+		// badger secrets store (recommended)
+		secretDBPath = flag.String("badger", getenv("GOBET_SECRET_DB", "data/secrets.badger"), "badger secrets db path (recommended)")
+		importEnv    = flag.String("import-env", "", "import a .env file into badger under env/<KEY>")
 	)
 	flag.Parse()
+
+	// If badger is used, key comes from GOBET_SECRET_KEY (or -gen-master-key will generate for legacy .env flow only).
+	badgerKey, err := secretstore.ParseKey(os.Getenv("GOBET_SECRET_KEY"))
+	if err != nil {
+		fatal(err)
+	}
 
 	// Master key for encrypt/decrypt.
 	masterKey, masterKeyHex, err := loadOrGenerateMasterKey(*genMasterKey)
@@ -50,13 +61,27 @@ func main() {
 		if err := validateAccountID(accountID); err != nil {
 			fatal(err)
 		}
-		encMnemonic, err := readFileTrim(*inPath)
-		if err != nil {
-			fatal(err)
+		mn := ""
+		// prefer badger
+		if badgerKey != nil {
+			ss, err := secretstore.Open(secretstore.OpenOptions{Path: *secretDBPath, EncryptionKey: badgerKey, ReadOnly: true})
+			if err == nil {
+				defer ss.Close()
+				if v, ok, _ := ss.GetString("mnemonic"); ok {
+					mn = strings.TrimSpace(v)
+				}
+			}
 		}
-		mn, err := decryptFromString(masterKey, encMnemonic)
-		if err != nil {
-			fatal(fmt.Errorf("decrypt mnemonic failed: %w", err))
+		// fallback legacy file mode
+		if mn == "" {
+			encMnemonic, err := readFileTrim(*inPath)
+			if err != nil {
+				fatal(err)
+			}
+			mn, err = decryptFromString(masterKey, encMnemonic)
+			if err != nil {
+				fatal(fmt.Errorf("decrypt mnemonic failed: %w", err))
+			}
 		}
 		path := derivationPathFromAccountID(accountID)
 		derived, err := deriveWalletFromMnemonic(mn, path)
@@ -80,7 +105,48 @@ func main() {
 		return
 	}
 
+	// If user asks to import .env into badger, do it (requires GOBET_SECRET_KEY).
+	if strings.TrimSpace(*importEnv) != "" {
+		if badgerKey == nil {
+			fatal(fmt.Errorf("GOBET_SECRET_KEY is required for badger import"))
+		}
+		ss, err := secretstore.Open(secretstore.OpenOptions{Path: *secretDBPath, EncryptionKey: badgerKey, ReadOnly: false})
+		if err != nil {
+			fatal(err)
+		}
+		defer ss.Close()
+		kv, err := parseDotEnvFile(*importEnv)
+		if err != nil {
+			fatal(err)
+		}
+		for k, v := range kv {
+			_ = ss.SetString("env/"+k, v)
+		}
+		fmt.Fprintf(os.Stderr, "已导入 %d 项到 badger：%s（前缀 env/）\n", len(kv), *secretDBPath)
+		return
+	}
+
 	// init mode: prompt mnemonic and write encrypted file
+	// If GOBET_SECRET_KEY is set, we will prefer storing mnemonic into badger (encrypted at rest),
+	// and NOT require writing plaintext secrets into .env.
+	if badgerKey != nil {
+		ss, err := secretstore.Open(secretstore.OpenOptions{Path: *secretDBPath, EncryptionKey: badgerKey, ReadOnly: false})
+		if err != nil {
+			fatal(err)
+		}
+		defer ss.Close()
+		fmt.Fprintln(os.Stderr, "请输入助记词（12/15/18/21/24 个单词），输入完成后回车：")
+		mn := strings.TrimSpace(readLine())
+		if mn == "" {
+			fatal(errors.New("mnemonic is empty"))
+		}
+		if err := ss.SetString("mnemonic", mn); err != nil {
+			fatal(err)
+		}
+		fmt.Fprintf(os.Stderr, "已写入 badger：%s（key=mnemonic, encrypted-at-rest）\n", *secretDBPath)
+		return
+	}
+
 	if st, err := os.Stat(*outPath); err == nil && !st.IsDir() && !*force {
 		fatal(fmt.Errorf("output file already exists: %s (use -force to overwrite)", *outPath))
 	}
@@ -262,6 +328,35 @@ func upsertEnvFile(path string, kv map[string]string) error {
 	}
 	// 0600: env file likely contains secrets
 	return os.WriteFile(path, []byte(out), 0o600)
+}
+
+func parseDotEnvFile(path string) (map[string]string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, line := range strings.Split(string(b), "\n") {
+		l := strings.TrimSpace(strings.TrimRight(line, "\r"))
+		if l == "" || strings.HasPrefix(l, "#") {
+			continue
+		}
+		if !strings.Contains(l, "=") {
+			continue
+		}
+		parts := strings.SplitN(l, "=", 2)
+		k := strings.TrimSpace(parts[0])
+		v := strings.TrimSpace(parts[1])
+		if k == "" {
+			continue
+		}
+		// strip optional quotes
+		if len(v) >= 2 && ((v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'')) {
+			v = v[1 : len(v)-1]
+		}
+		out[k] = v
+	}
+	return out, nil
 }
 
 func validateAccountID(id string) error {

@@ -100,11 +100,7 @@ func (s *Server) startBot(ctx context.Context, botID string) (pid int, alreadyRu
 	if err != nil || a == nil {
 		return 0, false, fmt.Errorf("account not found: %s", accountID)
 	}
-	mk, err := loadMasterKey()
-	if err != nil {
-		return 0, false, err
-	}
-	mn, err := loadMnemonicFromFile(mk)
+	mn, err := s.loadMnemonic()
 	if err != nil {
 		return 0, false, err
 	}

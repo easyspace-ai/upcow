@@ -24,13 +24,7 @@ func (s *Server) startTradesSyncAccount(accountID string, trigger string) (int64
 }
 
 func (s *Server) doTradesSyncAccount(ctx context.Context, runID int64, accountID string, trigger string) {
-	masterKey, err := loadMasterKey()
-	if err != nil {
-		msg := err.Error()
-		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
-		return
-	}
-	mnemonic, err := loadMnemonicFromFile(masterKey)
+	mnemonic, err := s.loadMnemonic()
 	if err != nil {
 		msg := err.Error()
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
@@ -117,13 +111,7 @@ func (s *Server) startOpenOrdersSyncAccount(accountID string, trigger string) (i
 }
 
 func (s *Server) doOpenOrdersSyncAccount(ctx context.Context, runID int64, accountID string, trigger string) {
-	masterKey, err := loadMasterKey()
-	if err != nil {
-		msg := err.Error()
-		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
-		return
-	}
-	mnemonic, err := loadMnemonicFromFile(masterKey)
+	mnemonic, err := s.loadMnemonic()
 	if err != nil {
 		msg := err.Error()
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)

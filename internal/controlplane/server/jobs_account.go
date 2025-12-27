@@ -72,13 +72,7 @@ func (s *Server) doRedeemAccount(ctx context.Context, runID int64, accountID str
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
 		return
 	}
-	masterKey, err := loadMasterKey()
-	if err != nil {
-		msg := err.Error()
-		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
-		return
-	}
-	mnemonic, err := loadMnemonicFromFile(masterKey)
+	mnemonic, err := s.loadMnemonic()
 	if err != nil {
 		msg := err.Error()
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)

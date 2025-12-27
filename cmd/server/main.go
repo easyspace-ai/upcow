@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/betbot/gobet/internal/controlplane/server"
+	"github.com/betbot/gobet/pkg/secretstore"
 	"github.com/joho/godotenv"
 )
 
@@ -19,9 +21,33 @@ func main() {
 	// Load .env (best-effort). If missing, fall back to real env vars.
 	_ = godotenv.Load()
 
+	// Optional: load config/secrets from encrypted badger (no plaintext .env required).
+	secretDBPath := strings.TrimSpace(os.Getenv("GOBET_SECRET_DB"))
+	if secretDBPath == "" {
+		secretDBPath = "data/secrets.badger"
+	}
+	secretKey, _ := secretstore.ParseKey(os.Getenv("GOBET_SECRET_KEY"))
+	var ss *secretstore.Store
+	if secretKey != nil {
+		if store, err := secretstore.Open(secretstore.OpenOptions{
+			Path:          secretDBPath,
+			EncryptionKey: secretKey,
+			ReadOnly:      true,
+		}); err == nil {
+			ss = store
+			defer ss.Close()
+		}
+	}
+
 	getenv := func(key, def string) string {
 		if v := os.Getenv(key); v != "" {
 			return v
+		}
+		// fallback to badger imported env (env/<KEY>)
+		if ss != nil {
+			if v, ok, _ := ss.GetString("env/" + key); ok && strings.TrimSpace(v) != "" {
+				return strings.TrimSpace(v)
+			}
 		}
 		return def
 	}
@@ -36,10 +62,13 @@ func main() {
 	flag.Parse()
 
 	srv, err := server.New(server.Config{
-		DBPath:  *dbPath,
-		BotBin:  *botBin,
-		DataDir: *dataDir,
-		LogsDir: *logsDir,
+		DBPath:      *dbPath,
+		BotBin:      *botBin,
+		DataDir:     *dataDir,
+		LogsDir:     *logsDir,
+		Secrets:     ss,
+		SecretsPath: secretDBPath,
+		SecretsKey:  secretKey,
 	})
 	if err != nil {
 		log.Fatalf("init server failed: %v", err)

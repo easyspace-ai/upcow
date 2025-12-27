@@ -8,22 +8,28 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
+	"github.com/betbot/gobet/pkg/secretstore"
 	"github.com/gin-gonic/gin"
 	_ "modernc.org/sqlite"
 )
 
 type Config struct {
-	DBPath  string
-	BotBin  string
-	DataDir string
-	LogsDir string
+	DBPath      string
+	BotBin      string
+	DataDir     string
+	LogsDir     string
+	Secrets     *secretstore.Store // if provided, Server will use and close it
+	SecretsPath string             // optional: open secrets db if Secrets is nil
+	SecretsKey  []byte             // 32 bytes; required for encrypted-at-rest secrets
 }
 
 type Server struct {
-	cfg Config
-	db  *sql.DB
+	cfg     Config
+	db      *sql.DB
+	secrets *secretstore.Store
 
 	bgCancel func()
 	bgWG     sync.WaitGroup
@@ -54,8 +60,25 @@ func New(cfg Config) (*Server, error) {
 	db.SetMaxOpenConns(1) // SQLite：单连接更稳定
 	db.SetMaxIdleConns(1)
 
-	s := &Server{cfg: cfg, db: db}
+	ss := cfg.Secrets
+	if ss == nil && strings.TrimSpace(cfg.SecretsPath) != "" {
+		store, err := secretstore.Open(secretstore.OpenOptions{
+			Path:          cfg.SecretsPath,
+			EncryptionKey: cfg.SecretsKey,
+			ReadOnly:      true,
+		})
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("open secrets db: %w", err)
+		}
+		ss = store
+	}
+
+	s := &Server{cfg: cfg, db: db, secrets: ss}
 	if err := s.migrate(); err != nil {
+		if ss != nil {
+			_ = ss.Close()
+		}
 		_ = db.Close()
 		return nil, err
 	}
@@ -67,6 +90,9 @@ func (s *Server) Close() error {
 	if s.bgCancel != nil {
 		s.bgCancel()
 		s.bgWG.Wait()
+	}
+	if s.secrets != nil {
+		_ = s.secrets.Close()
 	}
 	if s.db != nil {
 		return s.db.Close()

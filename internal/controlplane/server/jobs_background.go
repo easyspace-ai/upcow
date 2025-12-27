@@ -331,13 +331,7 @@ func (s *Server) doRedeemBatch(ctx context.Context, runID int64, trigger string)
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
 		return
 	}
-	masterKey, err := loadMasterKey()
-	if err != nil {
-		msg := err.Error()
-		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
-		return
-	}
-	mnemonic, err := loadMnemonicFromFile(masterKey)
+	mnemonic, err := s.loadMnemonic()
 	if err != nil {
 		msg := err.Error()
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)

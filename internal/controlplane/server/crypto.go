@@ -42,6 +42,37 @@ func loadMnemonicFromFile(masterKey []byte) (string, error) {
 	return mn, nil
 }
 
+// loadMnemonicFromSecrets loads plaintext mnemonic from encrypted SecretStore (Badger).
+// The Store must be opened with Badger encryption enabled to avoid plaintext at rest.
+func (s *Server) loadMnemonicFromSecrets() (string, error) {
+	if s == nil || s.secrets == nil {
+		return "", errors.New("secrets store not configured")
+	}
+	mn, ok, err := s.secrets.GetString("mnemonic")
+	if err != nil {
+		return "", err
+	}
+	if !ok || strings.TrimSpace(mn) == "" {
+		return "", fmt.Errorf("mnemonic not found in secrets store (key=mnemonic)")
+	}
+	return strings.TrimSpace(mn), nil
+}
+
+func (s *Server) loadMnemonic() (string, error) {
+	// Prefer badger secrets store.
+	if s != nil && s.secrets != nil {
+		if mn, err := s.loadMnemonicFromSecrets(); err == nil {
+			return mn, nil
+		}
+	}
+	// Fallback legacy: encrypted mnemonic file + GOBET_MASTER_KEY
+	mk, err := loadMasterKey()
+	if err != nil {
+		return "", err
+	}
+	return loadMnemonicFromFile(mk)
+}
+
 func loadMasterKey() ([]byte, error) {
 	raw := strings.TrimSpace(os.Getenv("GOBET_MASTER_KEY"))
 	if raw == "" {

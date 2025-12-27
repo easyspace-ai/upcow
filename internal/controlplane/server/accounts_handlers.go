@@ -22,12 +22,6 @@ type createAccountRequest struct {
 }
 
 func (s *Server) handleAccountsCreate(w http.ResponseWriter, r *http.Request) {
-	masterKey, err := loadMasterKey()
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-
 	var req createAccountRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid json body")
@@ -45,7 +39,7 @@ func (s *Server) handleAccountsCreate(w http.ResponseWriter, r *http.Request) {
 		req.Name = accountID
 	}
 
-	mnemonic, err := loadMnemonicFromFile(masterKey)
+	mnemonic, err := s.loadMnemonic()
 	if err != nil {
 		writeError(w, 500, err.Error())
 		return
