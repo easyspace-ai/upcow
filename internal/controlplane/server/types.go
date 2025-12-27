@@ -5,6 +5,7 @@ import "time"
 type Bot struct {
 	ID             string    `json:"id"`
 	Name           string    `json:"name"`
+	AccountID      *string   `json:"account_id,omitempty"`
 	ConfigPath     string    `json:"config_path"`
 	ConfigYAML     string    `json:"config_yaml"`
 	LogPath        string    `json:"log_path"`

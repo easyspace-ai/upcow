@@ -15,9 +15,21 @@ func (s *Server) migrate() error {
 		`PRAGMA journal_mode=WAL;`,
 		`PRAGMA foreign_keys=ON;`,
 		`
+CREATE TABLE IF NOT EXISTS accounts (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  mnemonic_enc TEXT NOT NULL,
+  derivation_path TEXT NOT NULL,
+  eoa_address TEXT NOT NULL,
+  funder_address TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);`,
+		`
 CREATE TABLE IF NOT EXISTS bots (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  account_id TEXT,
   config_path TEXT NOT NULL,
   config_yaml TEXT NOT NULL,
   log_path TEXT NOT NULL,
@@ -44,6 +56,7 @@ CREATE TABLE IF NOT EXISTS bot_config_versions (
   comment TEXT,
   PRIMARY KEY (bot_id, version)
 );`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_bots_account_id_unique ON bots(account_id) WHERE account_id IS NOT NULL;`,
 	}
 
 	for _, q := range stmts {
@@ -61,6 +74,18 @@ CREATE TABLE IF NOT EXISTS bot_config_versions (
 		if _, err := s.db.ExecContext(ctx, `ALTER TABLE bots ADD COLUMN current_version INTEGER NOT NULL DEFAULT 0;`); err != nil {
 			return fmt.Errorf("alter bots add current_version: %w", err)
 		}
+	}
+
+	// 兼容：旧库没有 account_id 列时补齐
+	hasAccountIDCol, err := hasColumn(ctx, s.db, "bots", "account_id")
+	if err != nil {
+		return err
+	}
+	if !hasAccountIDCol {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE bots ADD COLUMN account_id TEXT;`); err != nil {
+			return fmt.Errorf("alter bots add account_id: %w", err)
+		}
+		// unique index already in stmts
 	}
 
 	return nil

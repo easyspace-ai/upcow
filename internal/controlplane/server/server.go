@@ -70,6 +70,16 @@ func (s *Server) Router() http.Handler {
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	r.Route("/api", func(r chi.Router) {
+		r.Route("/accounts", func(r chi.Router) {
+			r.Get("/", s.handleAccountsList)
+			r.Post("/", s.handleAccountsCreate)
+			r.Route("/{accountID}", func(r chi.Router) {
+				r.Get("/", s.handleAccountGet)
+				r.Put("/", s.handleAccountUpdate)
+				r.Post("/reveal-mnemonic", s.handleAccountRevealMnemonic)
+			})
+		})
+
 		r.Route("/bots", func(r chi.Router) {
 			r.Get("/", s.handleBotsList)
 			r.Post("/", s.handleBotsCreate)
@@ -78,6 +88,7 @@ func (s *Server) Router() http.Handler {
 				r.Put("/config", s.handleBotConfigUpdate) // 保存配置，不重启
 				r.Get("/config/versions", s.handleBotConfigVersions)
 				r.Post("/config/rollback", s.handleBotConfigRollback)
+				r.Post("/bind_account", s.handleBotBindAccount)
 				r.Post("/start", s.handleBotStart)
 				r.Post("/stop", s.handleBotStop)
 				r.Post("/restart", s.handleBotRestart)

@@ -5,14 +5,15 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
 func (s *Server) insertBot(ctx context.Context, b Bot) error {
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO bots (id,name,config_path,config_yaml,log_path,persistence_dir,current_version,created_at,updated_at)
-VALUES (?,?,?,?,?,?,?,?,?)
-`, b.ID, b.Name, b.ConfigPath, b.ConfigYAML, b.LogPath, b.PersistenceDir, b.CurrentVersion, b.CreatedAt.Format(time.RFC3339Nano), b.UpdatedAt.Format(time.RFC3339Nano))
+INSERT INTO bots (id,name,account_id,config_path,config_yaml,log_path,persistence_dir,current_version,created_at,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?)
+`, b.ID, b.Name, b.AccountID, b.ConfigPath, b.ConfigYAML, b.LogPath, b.PersistenceDir, b.CurrentVersion, b.CreatedAt.Format(time.RFC3339Nano), b.UpdatedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("insert bot: %w", err)
 	}
@@ -37,16 +38,21 @@ WHERE id=?
 
 func (s *Server) getBot(ctx context.Context, botID string) (*Bot, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id,name,config_path,config_yaml,log_path,persistence_dir,current_version,created_at,updated_at
+SELECT id,name,account_id,config_path,config_yaml,log_path,persistence_dir,current_version,created_at,updated_at
 FROM bots WHERE id=?
 `, botID)
 	var b Bot
+	var accountID sql.NullString
 	var createdAt, updatedAt string
-	if err := row.Scan(&b.ID, &b.Name, &b.ConfigPath, &b.ConfigYAML, &b.LogPath, &b.PersistenceDir, &b.CurrentVersion, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&b.ID, &b.Name, &accountID, &b.ConfigPath, &b.ConfigYAML, &b.LogPath, &b.PersistenceDir, &b.CurrentVersion, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
+	}
+	if accountID.Valid && strings.TrimSpace(accountID.String) != "" {
+		v := accountID.String
+		b.AccountID = &v
 	}
 	b.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	b.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
@@ -55,7 +61,7 @@ FROM bots WHERE id=?
 
 func (s *Server) listBots(ctx context.Context) ([]Bot, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id,name,config_path,config_yaml,log_path,persistence_dir,current_version,created_at,updated_at
+SELECT id,name,account_id,config_path,config_yaml,log_path,persistence_dir,current_version,created_at,updated_at
 FROM bots ORDER BY created_at DESC
 `)
 	if err != nil {
@@ -66,15 +72,25 @@ FROM bots ORDER BY created_at DESC
 	var out []Bot
 	for rows.Next() {
 		var b Bot
+		var accountID sql.NullString
 		var createdAt, updatedAt string
-		if err := rows.Scan(&b.ID, &b.Name, &b.ConfigPath, &b.ConfigYAML, &b.LogPath, &b.PersistenceDir, &b.CurrentVersion, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&b.ID, &b.Name, &accountID, &b.ConfigPath, &b.ConfigYAML, &b.LogPath, &b.PersistenceDir, &b.CurrentVersion, &createdAt, &updatedAt); err != nil {
 			return nil, err
+		}
+		if accountID.Valid && strings.TrimSpace(accountID.String) != "" {
+			v := accountID.String
+			b.AccountID = &v
 		}
 		b.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 		b.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
 		out = append(out, b)
 	}
 	return out, rows.Err()
+}
+
+func (s *Server) bindBotAccount(ctx context.Context, botID string, accountID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE bots SET account_id=?, updated_at=? WHERE id=?`, accountID, time.Now().Format(time.RFC3339Nano), botID)
+	return err
 }
 
 func (s *Server) nextBotConfigVersion(ctx context.Context, botID string) (int, error) {

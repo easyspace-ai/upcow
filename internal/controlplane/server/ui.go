@@ -51,12 +51,30 @@ const uiHTML = `<!doctype html>
     </div>
     <div class="muted">服务器会强制注入 log_file 与 persistence_dir（按 bot_id 隔离）。</div>
     <textarea id="newCfg" placeholder="粘贴 YAML 配置"></textarea>
+
+    <hr/>
+    <h3>账号（助记词）</h3>
+    <div class="row">
+      <button onclick="reloadAccounts()">刷新账号</button>
+    </div>
+    <div id="accounts" class="muted"></div>
+    <h4>创建账号</h4>
+    <div class="row">
+      <input id="accName" placeholder="账号名称" style="width:180px"/>
+      <input id="accPath" placeholder="派生路径 (m/...)" style="width:260px" value="m/44'/60'/0'/0/0"/>
+      <input id="accFunder" placeholder="funder/safe 地址 0x..." style="width:360px"/>
+    </div>
+    <textarea id="accMnemonic" placeholder="助记词（会加密存储，默认不回显）" style="min-height:100px"></textarea>
+    <div class="row">
+      <button onclick="createAccount()">创建账号</button>
+    </div>
   </div>
 </div>
 
 <script>
 let selectedBotId = null;
 let logES = null;
+let accountsCache = [];
 
 async function api(path, opts) {
   const res = await fetch(path, Object.assign({headers: {'Content-Type':'application/json'}}, opts||{}));
@@ -80,6 +98,22 @@ async function reloadBots() {
   const root = document.getElementById('bots');
   root.innerHTML = '';
   bots.forEach(b => root.appendChild(botCard(b)));
+}
+
+async function reloadAccounts() {
+  const accounts = await api('/api/accounts');
+  accountsCache = accounts || [];
+  const root = document.getElementById('accounts');
+  if (accountsCache.length === 0) {
+    root.innerHTML = '暂无账号';
+    return;
+  }
+  let html = '<div><b>账号列表</b></div><ul>';
+  for (const a of accountsCache) {
+    html += '<li><span class="muted">'+escapeHTML(a.id)+'</span> - <b>'+escapeHTML(a.name)+'</b> - '+escapeHTML(a.eoa_address)+' - path='+escapeHTML(a.derivation_path)+'</li>';
+  }
+  html += '</ul>';
+  root.innerHTML = html;
 }
 
 async function selectBot(id) {
@@ -107,6 +141,7 @@ async function selectBot(id) {
     '<div class="row">' +
       '<button onclick="saveConfig()">保存配置</button>' +
       '<button onclick="showVersions()">版本/回滚</button>' +
+      '<button onclick="bindAccount()">绑定账号到此Bot</button>' +
     '</div>' +
     '<div id="versions" class="muted"></div>' +
     '<h4>实时日志</h4>' +
@@ -185,7 +220,31 @@ async function loadLogTail() {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+async function createAccount() {
+  const name = document.getElementById('accName').value.trim();
+  const mnemonic = document.getElementById('accMnemonic').value.trim();
+  const derivation_path = document.getElementById('accPath').value.trim();
+  const funder_address = document.getElementById('accFunder').value.trim();
+  await api('/api/accounts', {method:'POST', body: JSON.stringify({name, mnemonic, derivation_path, funder_address})});
+  alert('账号已创建');
+  document.getElementById('accMnemonic').value = '';
+  await reloadAccounts();
+}
+
+async function bindAccount() {
+  if (!selectedBotId) { alert('请先选择一个 bot'); return; }
+  await reloadAccounts();
+  if (accountsCache.length === 0) { alert('没有可绑定的账号'); return; }
+  const hint = accountsCache.map(a => a.id+' ('+a.name+')').join('\\n');
+  const id = prompt('输入要绑定的 account_id：\\n'+hint);
+  if (!id) return;
+  const res = await api('/api/bots/'+selectedBotId+'/bind_account', {method:'POST', body: JSON.stringify({account_id: id.trim()})});
+  alert('已绑定，生成新配置版本 v'+res.current_version+'；请手动重启生效');
+  await selectBot(selectedBotId);
+}
+
 reloadBots();
+reloadAccounts();
 </script>
 </body>
 </html>`
