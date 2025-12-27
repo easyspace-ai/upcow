@@ -1,0 +1,24 @@
+# PriceBreak 策略配置示例
+# 价格突破策略：监控 up/down 两个方向，价格越过 70 买入，跌到 30 止损
+#
+# 使用方式：
+#   gobet -config yml/config.yaml -strategies yml/pricebreak.yaml
+
+exchangeStrategies:
+  - on: polymarket
+    pricebreak:
+      # ========== 价格阈值（美分，1-100）==========
+      buyThreshold: 70        # 买入阈值（美分）：当价格 >= 70 美分时买入
+                               # 示例：价格从 69c → 70c，触发买入
+      stopLossThreshold: 30    # 止损阈值（美分）：当价格 <= 30 美分时止损卖出
+                               # 示例：买入后价格跌到 30c，触发止损
+
+      # ========== 订单配置 ==========
+      orderSize: 10.0          # 订单大小：每次买入的 share 数量
+                               # 注意：Polymarket 要求最小 5 shares，系统会自动调整
+
+      # ========== 安全配置 ==========
+      maxBuyPriceCents: 99     # 最大买入价格（美分）：超过此价格不买入，防止极端价格
+                               # 默认 99，表示价格超过 99c 时不买入
+      warmupMs: 1200           # 预热期（毫秒）：启动后等待一段时间再开始交易
+                               # 默认 1200ms，避免刚启动时的脏数据
