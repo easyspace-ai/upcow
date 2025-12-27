@@ -61,6 +61,7 @@ const uiHTML = `<!doctype html>
       <button onclick="runTradesBatch()">批量同步交易</button>
       <button onclick="runPositionsBatch()">批量同步持仓</button>
       <button onclick="runOpenOrdersBatch()">批量同步挂单</button>
+      <button onclick="runEquityBatch()">批量生成净值快照</button>
       <button onclick="reloadJobRuns()">刷新任务记录</button>
     </div>
     <div id="accounts" class="muted"></div>
@@ -290,6 +291,12 @@ async function runPositionsBatch() {
 async function runOpenOrdersBatch() {
   const res = await api('/api/jobs/open_orders_sync', {method:'POST', body: JSON.stringify({trigger:'manual_ui'})});
   alert('已触发挂单同步，run_id='+res.run_id);
+  await reloadJobRuns();
+}
+
+async function runEquityBatch() {
+  const res = await api('/api/jobs/equity_snapshot', {method:'POST', body: JSON.stringify({trigger:'manual_ui'})});
+  alert('已触发净值快照，run_id='+res.run_id);
   await reloadJobRuns();
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -269,4 +270,33 @@ func (s *Server) handleAccountSyncOpenOrders(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, 202, map[string]any{"ok": true, "run_id": runID})
+}
+
+func (s *Server) handleAccountEquity(w http.ResponseWriter, r *http.Request) {
+	accountID := strings.TrimSpace(chiURLParam(r, "accountID"))
+	limit := 200
+	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 2000 {
+			limit = n
+		}
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	snaps, err := s.listEquitySnapshots(ctx, accountID, limit)
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("db list equity: %v", err))
+		return
+	}
+	writeJSON(w, 200, map[string]any{"account_id": accountID, "equity": snaps})
+}
+
+func (s *Server) handleAccountEquitySnapshotNow(w http.ResponseWriter, r *http.Request) {
+	accountID := strings.TrimSpace(chiURLParam(r, "accountID"))
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if err := s.createEquitySnapshotForAccount(ctx, accountID); err != nil {
+		writeError(w, 500, fmt.Sprintf("create equity snapshot failed: %v", err))
+		return
+	}
+	writeJSON(w, 202, map[string]any{"ok": true})
 }

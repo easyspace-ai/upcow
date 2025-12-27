@@ -95,6 +95,8 @@ func (s *Server) Router() http.Handler {
 				r.Get("/positions", s.handleAccountPositions)
 				r.Get("/open_orders", s.handleAccountOpenOrders)
 				r.Get("/stats", s.handleAccountStats)
+				r.Get("/equity", s.handleAccountEquity)
+				r.Post("/equity_snapshot", s.handleAccountEquitySnapshotNow)
 			})
 		})
 
@@ -105,6 +107,7 @@ func (s *Server) Router() http.Handler {
 			r.Post("/trades_sync", s.handleJobTradesSyncNow)
 			r.Post("/positions_sync", s.handleJobPositionsSyncNow)
 			r.Post("/open_orders_sync", s.handleJobOpenOrdersSyncNow)
+			r.Post("/equity_snapshot", s.handleJobEquitySnapshotNow)
 		})
 
 		r.Route("/bots", func(r chi.Router) {

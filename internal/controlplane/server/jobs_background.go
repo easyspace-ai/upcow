@@ -22,8 +22,9 @@ func (s *Server) startBackground() {
 	tradesInterval := parseDurationEnv("GOBET_TRADES_SYNC_INTERVAL", 60*time.Second)
 	positionsInterval := parseDurationEnv("GOBET_POSITIONS_SYNC_INTERVAL", 60*time.Second)
 	openOrdersInterval := parseDurationEnv("GOBET_OPEN_ORDERS_SYNC_INTERVAL", 60*time.Second)
+	equityInterval := parseDurationEnv("GOBET_EQUITY_SNAPSHOT_INTERVAL", 60*time.Second)
 
-	s.bgWG.Add(5)
+	s.bgWG.Add(6)
 	go func() {
 		defer s.bgWG.Done()
 		s.balanceSyncLoop(ctx, balanceInterval)
@@ -43,6 +44,10 @@ func (s *Server) startBackground() {
 	go func() {
 		defer s.bgWG.Done()
 		s.openOrdersSyncLoop(ctx, openOrdersInterval)
+	}()
+	go func() {
+		defer s.bgWG.Done()
+		s.equityLoop(ctx, equityInterval)
 	}()
 }
 
@@ -136,6 +141,22 @@ func (s *Server) openOrdersSyncLoop(ctx context.Context, interval time.Duration)
 			return
 		case <-t.C:
 			_, _ = s.startOpenOrdersSyncBatch("scheduled")
+		}
+	}
+}
+
+func (s *Server) equityLoop(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			_, _ = s.startEquitySnapshotBatch("scheduled")
 		}
 	}
 }

@@ -145,6 +145,15 @@ CREATE TABLE IF NOT EXISTS clob_trades (
   created_at TEXT NOT NULL
 );`,
 		`CREATE INDEX IF NOT EXISTS idx_clob_trades_account_time ON clob_trades(account_id, match_time_ts DESC);`,
+		`
+CREATE TABLE IF NOT EXISTS account_equity_snapshots (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  cash_usdc REAL NOT NULL,
+  positions_value_usdc REAL NOT NULL,
+  total_equity_usdc REAL NOT NULL,
+  ts TEXT NOT NULL
+);`,
+		`CREATE INDEX IF NOT EXISTS idx_account_equity_account_ts ON account_equity_snapshots(account_id, ts DESC);`,
 	}
 
 	for _, q := range stmts {

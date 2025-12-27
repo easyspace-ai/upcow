@@ -105,3 +105,18 @@ func (s *Server) handleJobOpenOrdersSyncNow(w http.ResponseWriter, r *http.Reque
 	}
 	writeJSON(w, 202, map[string]any{"ok": true, "run_id": runID})
 }
+
+func (s *Server) handleJobEquitySnapshotNow(w http.ResponseWriter, r *http.Request) {
+	var req jobTriggerRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	trigger := strings.TrimSpace(req.Trigger)
+	if trigger == "" {
+		trigger = "manual"
+	}
+	runID, err := s.startEquitySnapshotBatch(trigger)
+	if err != nil {
+		writeError(w, 500, fmt.Sprintf("start job failed: %v", err))
+		return
+	}
+	writeJSON(w, 202, map[string]any{"ok": true, "run_id": runID})
+}
