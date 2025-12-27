@@ -12,6 +12,10 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	pkgconfig "github.com/betbot/gobet/pkg/config"
+	"gopkg.in/yaml.v3"
+	"strings"
 )
 
 func (s *Server) handleBotStart(w http.ResponseWriter, r *http.Request) {
@@ -82,6 +86,16 @@ func (s *Server) startBot(ctx context.Context, botID string) (pid int, alreadyRu
 	p, _ := s.getBotProcess(ctx, botID)
 	if p != nil && p.PID != nil && processAlive(*p.PID) {
 		return *p.PID, true, nil
+	}
+
+	// Preflight: ensure wallet is configured (either in config YAML or via account binding).
+	// We allow creating bots without wallet, but we refuse to start them until wallet info exists.
+	pk, funder, err := extractWalletFromBotConfig(b.ConfigYAML)
+	if err != nil {
+		return 0, false, fmt.Errorf("config parse failed: %w", err)
+	}
+	if pk == "" || funder == "" {
+		return 0, false, fmt.Errorf("bot 未配置钱包：请先绑定账号（1账号1bot）或在配置中填写 wallet.private_key / wallet.funder_address")
 	}
 
 	pid, err = s.spawnBot(*b)
@@ -198,6 +212,14 @@ func (s *Server) spawnBot(b Bot) (int, error) {
 	}()
 
 	return pid, nil
+}
+
+func extractWalletFromBotConfig(yamlText string) (privateKey string, funderAddress string, err error) {
+	var cf pkgconfig.ConfigFile
+	if err := yaml.Unmarshal([]byte(yamlText), &cf); err != nil {
+		return "", "", err
+	}
+	return strings.TrimSpace(cf.Wallet.PrivateKey), strings.TrimSpace(cf.Wallet.FunderAddress), nil
 }
 
 func processAlive(pid int) bool {

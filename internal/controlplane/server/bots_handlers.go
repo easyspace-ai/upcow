@@ -246,7 +246,19 @@ func validateBotConfigYAMLStrict(yamlText string) error {
 		MinShareSize:   cf.MinShareSize,
 		DryRun:         cf.DryRun,
 	}
-	return cfg.Validate()
+	// 注意：控制台支持“先创建 Bot，再绑定账号注入钱包”。
+	// 因此这里不强制要求 wallet.private_key / wallet.funder_address；
+	// 但会保留 market / exchangeStrategies / minOrderSize 等校验。
+	if _, err := cfg.Market.Spec(); err != nil {
+		return fmt.Errorf("market 配置无效: %w", err)
+	}
+	if len(cfg.ExchangeStrategies) == 0 {
+		return fmt.Errorf("exchangeStrategies 不能为空（请按 bbgo main 风格配置策略）")
+	}
+	if cfg.MinOrderSize > 0 && cfg.MinOrderSize < 1.0 {
+		return fmt.Errorf("minOrderSize 必须 >= 1.0")
+	}
+	return nil
 }
 
 func upsertYAMLKey(yamlText string, key string, value any) (string, error) {
