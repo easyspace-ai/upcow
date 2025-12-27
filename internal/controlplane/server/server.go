@@ -91,6 +91,7 @@ func (s *Server) Router() http.Handler {
 				r.Post("/sync_trades", s.handleAccountSyncTrades)
 				r.Post("/sync_positions", s.handleAccountSyncPositions)
 				r.Post("/sync_open_orders", s.handleAccountSyncOpenOrders)
+				r.Get("/balances", s.handleAccountBalances)
 				r.Get("/trades", s.handleAccountTrades)
 				r.Get("/positions", s.handleAccountPositions)
 				r.Get("/open_orders", s.handleAccountOpenOrders)

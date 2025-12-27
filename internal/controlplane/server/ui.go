@@ -22,11 +22,14 @@ const uiHTML = `<!doctype html>
     .right { padding: 12px; overflow:auto; }
     .bot { padding: 8px; border: 1px solid #eee; border-radius: 8px; margin-bottom: 8px; cursor: pointer; }
     .bot:hover { background: #fafafa; }
+    .acct { padding: 8px; border: 1px solid #eee; border-radius: 8px; margin-bottom: 8px; cursor: pointer; }
+    .acct:hover { background: #fafafa; }
     textarea { width: 100%; min-height: 240px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
     pre { background:#0b1020; color:#d6e2ff; padding:12px; border-radius:8px; overflow:auto; min-height: 220px; }
     button { margin-right: 8px; }
     .row { display:flex; gap: 8px; align-items:center; flex-wrap: wrap; }
     .muted { color:#666; font-size: 12px; }
+    .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   </style>
 </head>
 <body>
@@ -65,6 +68,7 @@ const uiHTML = `<!doctype html>
       <button onclick="reloadJobRuns()">刷新任务记录</button>
     </div>
     <div id="accounts" class="muted"></div>
+    <div id="accountDetail" class="muted"></div>
     <div id="jobs" class="muted"></div>
     <h4>创建账号</h4>
     <div class="row">
@@ -81,6 +85,7 @@ const uiHTML = `<!doctype html>
 
 <script>
 let selectedBotId = null;
+let selectedAccountId = null;
 let logES = null;
 let accountsCache = [];
 
@@ -116,16 +121,19 @@ async function reloadAccounts() {
     root.innerHTML = '暂无账号';
     return;
   }
-  let html = '<div><b>账号列表</b></div><ul>';
+  root.innerHTML = '<div><b>账号列表</b></div>';
   for (const a of accountsCache) {
-    html += '<li><span class="muted">'+escapeHTML(a.id)+'</span> - <b>'+escapeHTML(a.name)+'</b> - '+escapeHTML(a.eoa_address)+' - path='+escapeHTML(a.derivation_path)+'</li>';
+    const div = document.createElement('div');
+    div.className = 'acct';
+    div.onclick = () => selectAccount(a.id);
+    div.innerHTML = '<b>'+escapeHTML(a.name)+'</b><div class="muted">'+escapeHTML(a.id)+'</div><div class="muted">'+escapeHTML(a.eoa_address)+'</div>';
+    root.appendChild(div);
   }
-  html += '</ul>';
-  root.innerHTML = html;
 }
 
 async function reloadJobRuns() {
-  const runs = await api('/api/jobs/runs?limit=30');
+  const qs = selectedAccountId ? ('&account_id='+encodeURIComponent(selectedAccountId)) : '';
+  const runs = await api('/api/jobs/runs?limit=30'+qs);
   const root = document.getElementById('jobs');
   if (!runs || runs.length === 0) { root.innerHTML = '暂无任务记录'; return; }
   let html = '<div><b>最近任务</b></div><ul>';
@@ -136,6 +144,67 @@ async function reloadJobRuns() {
   html += '</ul>';
   root.innerHTML = html;
 }
+
+async function selectAccount(id) {
+  selectedAccountId = id;
+  await reloadJobRuns();
+  const detail = document.getElementById('accountDetail');
+  detail.innerHTML = '<div class="muted">加载中...</div>';
+
+  const acc = await api('/api/accounts/'+id);
+  const stats = await api('/api/accounts/'+id+'/stats');
+  const equity = await api('/api/accounts/'+id+'/equity?limit=60');
+  const balances = await api('/api/accounts/'+id+'/balances?limit=60');
+  const positions = await api('/api/accounts/'+id+'/positions');
+  const orders = await api('/api/accounts/'+id+'/open_orders');
+  const trades = await api('/api/accounts/'+id+'/trades?limit=50');
+
+  const eq = equity.equity || [];
+  const bal = balances.balances || [];
+  const latestEq = eq.length ? eq[0].total_equity_usdc : null;
+  const oldestEq = eq.length ? eq[eq.length-1].total_equity_usdc : null;
+  const deltaEq = (latestEq != null && oldestEq != null) ? (latestEq - oldestEq) : null;
+  const latestBal = bal.length ? bal[0].balance_usdc : null;
+
+  const posList = (positions.positions || []);
+  const ordList = (orders.open_orders || []);
+  const trList = (trades.trades || []);
+
+  let html = '';
+  html += '<div class="row"><b>账号:</b> '+escapeHTML(acc.account.name)+' <span class="muted">('+escapeHTML(acc.account.id)+')</span></div>';
+  html += '<div class="muted">funder: '+escapeHTML(acc.account.funder_address)+' | eoa: '+escapeHTML(acc.account.eoa_address)+' | path: '+escapeHTML(acc.account.derivation_path)+'</div>';
+  html += '<div class="row">';
+  html += '<button onclick="accSyncBalance()">同步余额</button>';
+  html += '<button onclick="accSyncTrades()">同步交易</button>';
+  html += '<button onclick="accSyncPositions()">同步持仓</button>';
+  html += '<button onclick="accSyncOpenOrders()">同步挂单</button>';
+  html += '<button onclick="accRedeem()">Redeem</button>';
+  html += '<button onclick="accEquitySnapshot()">生成净值快照</button>';
+  html += '</div>';
+
+  html += '<div class="grid2">';
+  html += '<div><b>概览</b><div class="muted">最新余额: '+(latestBal==null?'-':latestBal.toFixed(6))+' USDC</div>';
+  html += '<div class="muted">最新净值: '+(latestEq==null?'-':latestEq.toFixed(6))+' USDC</div>';
+  html += '<div class="muted">净值变化(样本窗口): '+(deltaEq==null?'-':deltaEq.toFixed(6))+' USDC</div>';
+  html += '<div class="muted">24h Trades: '+escapeHTML(String(stats.trades||0))+' | 24h Volume: '+escapeHTML(String(stats.volume_usdc||0))+'</div></div>';
+  html += '<div><b>数量</b><div class="muted">持仓条目: '+posList.length+' | 挂单: '+ordList.length+' | 最近成交: '+trList.length+'</div></div>';
+  html += '</div>';
+
+  html += '<hr/><b>净值快照(最近)</b><pre>'+eq.map(e => (e.ts+' total='+e.total_equity_usdc)).slice(0,20).join('\\n')+'</pre>';
+  html += '<b>余额快照(最近)</b><pre>'+bal.map(b => (b.ts+' balance='+b.balance_usdc+' src='+b.source)).slice(0,20).join('\\n')+'</pre>';
+  html += '<b>持仓(当前)</b><pre>'+posList.slice(0,50).map(p => (p.slug+' '+p.outcome+' size='+p.size+' cur='+p.cur_price)).join('\\n')+'</pre>';
+  html += '<b>挂单(当前)</b><pre>'+ordList.slice(0,50).map(o => (o.market+' '+o.side+' '+o.price+' size='+o.original_size+' matched='+o.size_matched)).join('\\n')+'</pre>';
+  html += '<b>成交(最近)</b><pre>'+trList.slice(0,50).map(t => (t.match_time_ts+' '+t.side+' '+t.market+' '+t.price+' size='+t.size)).join('\\n')+'</pre>';
+
+  detail.innerHTML = html;
+}
+
+async function accSyncBalance(){ const r = await api('/api/accounts/'+selectedAccountId+'/sync_balance',{method:'POST',body:'{}'}); alert('已触发同步余额 run_id='+r.run_id); await reloadJobRuns(); }
+async function accSyncTrades(){ const r = await api('/api/accounts/'+selectedAccountId+'/sync_trades',{method:'POST',body:'{}'}); alert('已触发同步交易 run_id='+r.run_id); await reloadJobRuns(); }
+async function accSyncPositions(){ const r = await api('/api/accounts/'+selectedAccountId+'/sync_positions',{method:'POST',body:'{}'}); alert('已触发同步持仓 run_id='+r.run_id); await reloadJobRuns(); }
+async function accSyncOpenOrders(){ const r = await api('/api/accounts/'+selectedAccountId+'/sync_open_orders',{method:'POST',body:'{}'}); alert('已触发同步挂单 run_id='+r.run_id); await reloadJobRuns(); }
+async function accRedeem(){ const r = await api('/api/accounts/'+selectedAccountId+'/redeem',{method:'POST',body:'{}'}); alert('已触发Redeem run_id='+r.run_id); await reloadJobRuns(); }
+async function accEquitySnapshot(){ const r = await api('/api/accounts/'+selectedAccountId+'/equity_snapshot',{method:'POST',body:'{}'}); alert('已生成净值快照'); await reloadJobRuns(); }
 
 async function selectBot(id) {
   selectedBotId = id;

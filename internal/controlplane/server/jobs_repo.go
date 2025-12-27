@@ -29,15 +29,35 @@ WHERE id=?
 }
 
 func (s *Server) listJobRuns(ctx context.Context, limit int) ([]JobRun, error) {
+	return s.listJobRunsFiltered(ctx, limit, nil, nil)
+}
+
+func (s *Server) listJobRunsFiltered(ctx context.Context, limit int, accountID *string, jobName *string) ([]JobRun, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `
+
+	where := "1=1"
+	args := []any{}
+	if accountID != nil && *accountID != "" {
+		where += " AND account_id=?"
+		args = append(args, *accountID)
+	}
+	if jobName != nil && *jobName != "" {
+		where += " AND job_name=?"
+		args = append(args, *jobName)
+	}
+	args = append(args, limit)
+
+	q := fmt.Sprintf(`
 SELECT id, job_name, scope, account_id, started_at, finished_at, ok, error, meta_json
 FROM job_runs
+WHERE %s
 ORDER BY started_at DESC
 LIMIT ?
-`, limit)
+`, where)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

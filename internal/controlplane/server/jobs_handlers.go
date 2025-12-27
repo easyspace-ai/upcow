@@ -17,9 +17,19 @@ func (s *Server) handleJobRunsList(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
+	accountID := strings.TrimSpace(r.URL.Query().Get("account_id"))
+	jobName := strings.TrimSpace(r.URL.Query().Get("job_name"))
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	runs, err := s.listJobRuns(ctx, limit)
+	var accPtr *string
+	if accountID != "" {
+		accPtr = &accountID
+	}
+	var jobPtr *string
+	if jobName != "" {
+		jobPtr = &jobName
+	}
+	runs, err := s.listJobRunsFiltered(ctx, limit, accPtr, jobPtr)
 	if err != nil {
 		writeError(w, 500, fmt.Sprintf("db list job runs: %v", err))
 		return
