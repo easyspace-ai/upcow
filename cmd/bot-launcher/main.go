@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -120,7 +121,10 @@ func main() {
 		fatal(fmt.Errorf("config invalid after wallet injection: %w", err))
 	}
 
-	if err := startBotWithMemfd(*botBin, runtimeYAML); err != nil {
+	// 从 badger 读取环境变量（env/* 键值对）
+	envVars := loadEnvFromBadger(ss)
+
+	if err := startBotWithMemfd(*botBin, runtimeYAML, envVars); err != nil {
 		fatal(err)
 	}
 }
@@ -246,11 +250,52 @@ func validateFullConfig(yamlText string) error {
 	return cfg.Validate()
 }
 
-func startBotWithMemfd(botBin string, cfgYAML string) error {
+func loadEnvFromBadger(ss *secretstore.Store) map[string]string {
+	envVars := make(map[string]string)
+	if ss == nil {
+		return envVars
+	}
+	// 从 badger 读取所有 env/* 键值对
+	allEnv, err := ss.GetAllWithPrefix("env/")
+	if err != nil {
+		// 如果遍历失败，fallback 到读取常见键
+		envKeys := []string{
+			"BUILDER_API_KEY",
+			"BUILDER_SECRET",
+			"BUILDER_PASS_PHRASE",
+			"POLYMARKET_RELAYER_URL",
+			"RPC_URL",
+			"HTTP_PROXY",
+			"HTTPS_PROXY",
+		}
+		for _, key := range envKeys {
+			if v, ok, err := ss.GetString("env/" + key); err == nil && ok && strings.TrimSpace(v) != "" {
+				envVars[key] = strings.TrimSpace(v)
+			}
+		}
+		return envVars
+	}
+	// 转换 "env/KEY" -> "KEY"
+	for key, value := range allEnv {
+		if strings.HasPrefix(key, "env/") {
+			envKey := strings.TrimPrefix(key, "env/")
+			if strings.TrimSpace(envKey) != "" && strings.TrimSpace(value) != "" {
+				envVars[envKey] = strings.TrimSpace(value)
+			}
+		}
+	}
+	return envVars
+}
+
+func startBotWithMemfd(botBin string, cfgYAML string, envVars map[string]string) error {
 	botBin = strings.TrimSpace(botBin)
 	if botBin == "" {
 		return fmt.Errorf("bot-bin is empty")
 	}
+
+	var cmd *exec.Cmd
+	var tempConfigPath string
+
 	if runtime.GOOS != "linux" {
 		// fallback: temp file (best-effort cleanup)
 		tmpDir := os.TempDir()
@@ -258,43 +303,97 @@ func startBotWithMemfd(botBin string, cfgYAML string) error {
 		if err := os.WriteFile(p, []byte(cfgYAML+"\n"), 0o600); err != nil {
 			return err
 		}
-		defer os.Remove(p)
-		cmd := exec.Command(botBin, "-config", p)
+		tempConfigPath = p
+		defer func() {
+			if tempConfigPath != "" {
+				os.Remove(tempConfigPath)
+			}
+		}()
+		cmd = exec.Command(botBin, "-config", p)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		return cmd.Run()
+	} else {
+		fd, err := createMemfd("gobet-config")
+		if err != nil {
+			return err
+		}
+		cfgFile := os.NewFile(uintptr(fd), "gobet-config")
+		if cfgFile == nil {
+			_ = syscall.Close(fd)
+			return fmt.Errorf("memfd: os.NewFile failed")
+		}
+		defer cfgFile.Close()
+
+		if _, err := io.WriteString(cfgFile, cfgYAML+"\n"); err != nil {
+			return err
+		}
+		if _, err := cfgFile.Seek(0, 0); err != nil {
+			return err
+		}
+
+		cmd = exec.Command(botBin)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		idx := len(cmd.ExtraFiles)
+		cmd.ExtraFiles = append(cmd.ExtraFiles, cfgFile)
+		childFD := 3 + idx
+		cfgPath := fmt.Sprintf("/proc/self/fd/%d", childFD)
+		cmd.Args = []string{botBin, "-config", cfgPath}
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}
 
-	fd, err := createMemfd("gobet-config")
-	if err != nil {
+	// 设置环境变量：继承当前环境，并添加从 badger 读取的变量
+	cmd.Env = os.Environ()
+	for k, v := range envVars {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+
+	// 启动 bot 进程
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("启动 bot 失败: %w", err)
+	}
+
+	// 设置信号处理：优雅关闭 bot
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
+
+	// 等待 bot 退出或收到信号
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case sig := <-sigCh:
+		fmt.Fprintf(os.Stderr, "\n收到信号 %v，正在关闭 bot...\n", sig)
+		// 发送信号到 bot 进程组
+		if cmd.Process != nil {
+			pid := cmd.Process.Pid
+			if runtime.GOOS == "linux" {
+				// 发送信号到整个进程组
+				_ = syscall.Kill(-pid, syscall.SIGTERM)
+			} else {
+				// macOS: 发送信号到进程
+				_ = cmd.Process.Signal(sig)
+			}
+			// 等待进程退出（最多 5 秒）
+			select {
+			case <-time.After(5 * time.Second):
+				fmt.Fprintf(os.Stderr, "bot 未在 5 秒内退出，强制终止...\n")
+				if runtime.GOOS == "linux" {
+					_ = syscall.Kill(-pid, syscall.SIGKILL)
+				} else {
+					_ = cmd.Process.Kill()
+				}
+			case <-done:
+				// bot 已退出
+			}
+		}
+		return fmt.Errorf("被信号中断: %v", sig)
+	case err := <-done:
 		return err
 	}
-	cfgFile := os.NewFile(uintptr(fd), "gobet-config")
-	if cfgFile == nil {
-		_ = syscall.Close(fd)
-		return fmt.Errorf("memfd: os.NewFile failed")
-	}
-	defer cfgFile.Close()
-
-	if _, err := io.WriteString(cfgFile, cfgYAML+"\n"); err != nil {
-		return err
-	}
-	if _, err := cfgFile.Seek(0, 0); err != nil {
-		return err
-	}
-
-	cmd := exec.Command(botBin)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	idx := len(cmd.ExtraFiles)
-	cmd.ExtraFiles = append(cmd.ExtraFiles, cfgFile)
-	childFD := 3 + idx
-	cfgPath := fmt.Sprintf("/proc/self/fd/%d", childFD)
-	cmd.Args = []string{botBin, "-config", cfgPath}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
-	return cmd.Run()
 }
 
 func lookupFunderFromDB(dbPath string, accountID string) (string, error) {

@@ -254,8 +254,11 @@ func CheckAndRotateLogWithForce(config Config, forceRotate bool) error {
 	
 	// 记录切换信息（使用 fmt.Printf 避免依赖 Logger，因为可能正在切换）
 	if oldLogFile != "" {
-		fmt.Printf("[日志切换] %s -> %s (市场时间戳=%d, period=%d, forceRotate=%v)\n", 
-			oldLogFile, logFilePath, currentMarketTimestamp, period, forceRotate)
+		fmt.Printf("[日志切换] %s -> %s (市场时间戳=%d, period=%d, forceRotate=%v, basePath=%s)\n", 
+			oldLogFile, logFilePath, currentMarketTimestamp, period, forceRotate, basePath)
+	} else {
+		fmt.Printf("[日志切换] 初始化日志文件: %s (市场时间戳=%d, period=%d, basePath=%s)\n", 
+			logFilePath, currentMarketTimestamp, period, basePath)
 	}
 
 	// 重新初始化日志输出

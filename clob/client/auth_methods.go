@@ -3,6 +3,8 @@ package client
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 
 	"github.com/betbot/gobet/clob/signing"
 	"github.com/betbot/gobet/clob/types"
@@ -38,11 +40,45 @@ func (c *Client) CreateOrDeriveAPIKey(ctx context.Context, nonce *int64) (*types
 		"POLY_NONCE":     headers.PolyNonce,
 	}
 
-	// 直接推导现有 API 密钥（跳过创建步骤，避免 400 错误）
+	// 先尝试推导现有 API 密钥
 	endpoint := EndpointDeriveAPIKey
 	resp, err := c.httpClient.get(endpoint, headerMap, nil)
 	if err != nil {
-		return nil, fmt.Errorf("推导 API 密钥失败: %w", err)
+		// 网络错误，直接尝试创建
+	} else if resp != nil {
+		// 检查状态码：400 表示没有现有 API 密钥，需要创建
+		if resp.StatusCode == http.StatusOK {
+			// 推导成功，解析响应
+			var apiKeyRaw types.ApiKeyRaw
+			if err := parseResponse(resp, &apiKeyRaw); err == nil {
+				return &types.ApiKeyCreds{
+					Key:       apiKeyRaw.ApiKey,
+					Secret:    apiKeyRaw.Secret,
+					Passphrase: apiKeyRaw.Passphrase,
+				}, nil
+			}
+			// 解析失败，返回错误
+			return nil, fmt.Errorf("解析 API 密钥响应失败: %w", err)
+		} else if resp.StatusCode == http.StatusBadRequest {
+			// 400 错误：没有现有 API 密钥，需要创建新的
+			// 读取并关闭响应体（避免资源泄漏）
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			// 继续执行创建逻辑
+		} else {
+			// 其他错误，读取错误信息后返回
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("推导 API 密钥失败: HTTP %d: %s", resp.StatusCode, string(bodyBytes))
+		}
+	}
+
+	// 推导失败（可能是账户还没有 API 密钥），尝试创建新的
+	endpoint = EndpointCreateAPIKey
+	createBody := map[string]interface{}{}
+	resp, err = c.httpClient.post(endpoint, headerMap, createBody)
+	if err != nil {
+		return nil, fmt.Errorf("创建 API 密钥失败: %w", err)
 	}
 
 	var apiKeyRaw types.ApiKeyRaw

@@ -104,6 +104,34 @@ func (s *Store) SetString(key string, val string) error {
 	})
 }
 
+// GetAllWithPrefix returns all key-value pairs with the given prefix
+func (s *Store) GetAllWithPrefix(prefix string) (map[string]string, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("secretstore: not opened")
+	}
+	result := make(map[string]string)
+	prefixBytes := []byte(prefix)
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefixBytes
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			key := string(item.Key())
+			err := item.Value(func(val []byte) error {
+				result[key] = string(val)
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return result, err
+}
+
 // ParseKey expects 32 bytes (base64 or hex). Returns nil if input is empty.
 func ParseKey(raw string) ([]byte, error) {
 	raw = strings.TrimSpace(raw)

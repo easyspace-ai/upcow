@@ -59,3 +59,5 @@ logs/
 docs/
 cache/
 cmd/server/data/
+bot
+bot-launcher
