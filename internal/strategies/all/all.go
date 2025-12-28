@@ -5,7 +5,6 @@ package all
 
 import (
 	_ "github.com/betbot/gobet/internal/strategies/arbitrage"
-	_ "github.com/betbot/gobet/internal/strategies/ctfendgame"
 	_ "github.com/betbot/gobet/internal/strategies/cyclehedge"
 	_ "github.com/betbot/gobet/internal/strategies/datarecorder"
 	_ "github.com/betbot/gobet/internal/strategies/grid"
