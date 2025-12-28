@@ -55,13 +55,11 @@ type Config struct {
 	// CooldownMs: 每次尝试/批次间的最小冷却（毫秒），默认 250
 	CooldownMs int `yaml:"cooldownMs" json:"cooldownMs"`
 
-	// ===== CTF 自动编排（split next cycle + cycle start holdings check）=====
-	// EnableAutoSplitNextCycle: 是否在本周期中段自动 split 下个周期
-	EnableAutoSplitNextCycle bool `yaml:"enableAutoSplitNextCycle" json:"enableAutoSplitNextCycle"`
-	// SplitNextCycleAfterSeconds: 在本周期开始后多少秒触发 split（默认=周期时长的一半；15m -> 450s）
-	SplitNextCycleAfterSeconds int `yaml:"splitNextCycleAfterSeconds" json:"splitNextCycleAfterSeconds"`
-	// SplitNextCycleAmount: split 的 USDC 数量（默认=orderSize）
-	SplitNextCycleAmount float64 `yaml:"splitNextCycleAmount" json:"splitNextCycleAmount"`
+	// ===== CTF 自动编排（新周期开始立刻 split + 持仓校验）=====
+	// EnableAutoSplitOnCycleStart: 新周期开始时是否自动 split 本周期代币
+	EnableAutoSplitOnCycleStart bool `yaml:"enableAutoSplitOnCycleStart" json:"enableAutoSplitOnCycleStart"`
+	// SplitAmount: split 的 USDC 数量（默认=orderSize）
+	SplitAmount float64 `yaml:"splitAmount" json:"splitAmount"`
 
 	// RPCURL: Polygon RPC（默认 https://polygon-rpc.com）
 	RPCURL string `yaml:"rpcURL" json:"rpcURL"`
@@ -84,7 +82,6 @@ func (c *Config) Validate() error {
 	if _, err := time.ParseDuration(c.Timeframe); err != nil {
 		return fmt.Errorf("timeframe 无效: %q: %w", c.Timeframe, err)
 	}
-	tfDur, _ := time.ParseDuration(c.Timeframe)
 	if c.OrderSize <= 0 {
 		return fmt.Errorf("orderSize 必须 > 0")
 	}
@@ -140,16 +137,8 @@ func (c *Config) Validate() error {
 	}
 
 	// ===== CTF 自动编排默认值 =====
-	if c.SplitNextCycleAfterSeconds <= 0 {
-		// 默认取周期的一半（例如 15m -> 7.5m）
-		half := int(tfDur.Seconds() / 2)
-		if half <= 0 {
-			half = 450
-		}
-		c.SplitNextCycleAfterSeconds = half
-	}
-	if c.SplitNextCycleAmount <= 0 {
-		c.SplitNextCycleAmount = c.OrderSize
+	if c.SplitAmount <= 0 {
+		c.SplitAmount = c.OrderSize
 	}
 	if c.RPCURL == "" {
 		c.RPCURL = "https://polygon-rpc.com"

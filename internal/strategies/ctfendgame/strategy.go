@@ -22,7 +22,6 @@ import (
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/config"
-	"github.com/betbot/gobet/pkg/marketspec"
 	sdkapi "github.com/betbot/gobet/pkg/sdk/api"
 	sdkrelayer "github.com/betbot/gobet/pkg/sdk/relayer"
 	relayertypes "github.com/betbot/gobet/pkg/sdk/relayer/types"
@@ -55,10 +54,9 @@ type Strategy struct {
 	attemptsThisCycle int
 	lastAttemptAt     time.Time
 
-	// ===== 自动编排（split next cycle + cycle start holdings check）=====
+	// ===== 自动编排（新周期开始立刻 split + 持仓校验）=====
 	holdingsOK bool
 	splitDone  bool
-	splitTimer *time.Timer
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -88,10 +86,6 @@ func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, newMarket *domai
 	s.lastAttemptAt = time.Time{}
 	s.holdingsOK = false
 	s.splitDone = false
-	if s.splitTimer != nil {
-		s.splitTimer.Stop()
-		s.splitTimer = nil
-	}
 
 	if newMarket != nil && newMarket.Timestamp > 0 {
 		s.cycleStart = time.Unix(newMarket.Timestamp, 0)
@@ -99,24 +93,17 @@ func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, newMarket *domai
 		s.cycleStart = time.Time{}
 	}
 
-	// 周期开始：先检查持仓（默认开启）
+	// 新周期开始：立刻 split 本周期（更简单，避免跨周期做事）
+	if s.EnableAutoSplitOnCycleStart && newMarket != nil && newMarket.IsValid() {
+		go s.splitCurrentCycleAtStart(newMarket)
+		return
+	}
+
+	// 若不自动 split，则做一次持仓校验（持仓由外部 split/手工保证）
 	if newMarket != nil && newMarket.IsValid() && s.HoldingsCheckOnCycleStart != nil && *s.HoldingsCheckOnCycleStart {
 		go s.checkHoldingsAtCycleStart(newMarket)
 	} else {
-		// 若关闭检查，直接放行（避免影响尾盘卖弱）
 		s.holdingsOK = true
-	}
-
-	// 周期中段：自动 split 下个周期（约 7.5 分钟）
-	if s.EnableAutoSplitNextCycle && newMarket != nil && newMarket.IsValid() {
-		delay := time.Duration(s.SplitNextCycleAfterSeconds) * time.Second
-		if delay < 0 {
-			delay = 0
-		}
-		s.splitTimer = time.AfterFunc(delay, func() {
-			s.splitNextCycleFromMarket(newMarket)
-		})
-		log.Infof("⏱️ [%s] 已安排自动 split 下个周期: after=%ds market=%s", ID, s.SplitNextCycleAfterSeconds, newMarket.Slug)
 	}
 }
 
@@ -158,6 +145,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 
 	// 计算尾盘窗口（cycleEnd - now <= endgameWindow）
 	cycleStart := s.cycleStart
+	holdingsOK := s.holdingsOK
 	s.mu.Unlock()
 
 	if cycleStart.IsZero() && e.Market.Timestamp > 0 {
@@ -177,6 +165,11 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	}
 	if timeToEnd < -30*time.Second {
 		// 已明显过期的 market（避免历史回放/时钟漂移误触发）
+		return nil
+	}
+
+	// 核心原则：本周期若未确认持仓正常，则不执行尾盘卖弱（避免“没币还卖”）
+	if !holdingsOK {
 		return nil
 	}
 
@@ -348,4 +341,283 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (s *Strategy) splitCurrentCycleAtStart(market *domain.Market) {
+	if market == nil || strings.TrimSpace(market.ConditionID) == "" {
+		return
+	}
+
+	// 去重：每周期只做一次 split 尝试
+	s.mu.Lock()
+	if s.splitDone {
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+
+	gc := config.Get()
+	if gc == nil || strings.TrimSpace(gc.Wallet.PrivateKey) == "" {
+		log.Warnf("⚠️ [%s] 自动 split 失败：全局 wallet.private_key 不可用", ID)
+		return
+	}
+
+	privateKey, err := signing.PrivateKeyFromHex(gc.Wallet.PrivateKey)
+	if err != nil {
+		log.Warnf("⚠️ [%s] 自动 split 失败：解析私钥失败: %v", ID, err)
+		return
+	}
+
+	amount := s.SplitAmount
+	if amount <= 0 {
+		amount = s.OrderSize
+	}
+
+	// dry-run：不发链上交易，直接标记持仓 OK（用于演练链路）
+	if gc.DryRun {
+		log.Warnf("📝 [%s] dry-run：跳过真实 split，仅记录计划: market=%s amount=%.6f", ID, market.Slug, amount)
+		s.mu.Lock()
+		s.splitDone = true
+		s.holdingsOK = true
+		s.mu.Unlock()
+		return
+	}
+
+	builderKey := strings.TrimSpace(os.Getenv("BUILDER_API_KEY"))
+	builderSecret := strings.TrimSpace(os.Getenv("BUILDER_SECRET"))
+	builderPass := strings.TrimSpace(os.Getenv("BUILDER_PASS_PHRASE"))
+	funder := strings.TrimSpace(gc.Wallet.FunderAddress)
+	useRelayer := builderKey != "" && builderSecret != "" && builderPass != "" && funder != ""
+
+	checkAddr := crypto.PubkeyToAddress(privateKey.PublicKey)
+	if useRelayer {
+		checkAddr = common.HexToAddress(funder)
+	}
+
+	// 优先走 relayer（gasless）
+	if useRelayer {
+		if err := s.executeRelayerSplit(privateKey, funder, market.ConditionID, amount, market.Slug); err != nil {
+			log.Warnf("⚠️ [%s] 自动 split（relayer）失败: %v", ID, err)
+			return
+		}
+		s.mu.Lock()
+		s.splitDone = true
+		s.mu.Unlock()
+		log.Infof("✅ [%s] 已自动 split 本周期（relayer 已提交）: market=%s amount=%.6f", ID, market.Slug, amount)
+		go s.waitForHoldings(market, checkAddr, amount)
+		return
+	}
+
+	// fallback：直接调用（仅适用于 EOA 自己持仓 + 自己交易；若你依赖 Safe/代理钱包，不建议）
+	log.Warnf("⚠️ [%s] 未检测到 relayer 配置（BUILDER_* 或 funder_address 缺失），将尝试 direct split（需要 EOA 有 USDC 授权 + MATIC）", ID)
+	ctf, err := clobclient.NewCTFClient(s.RPCURL, types.Chain(s.ChainID), privateKey)
+	if err != nil {
+		log.Warnf("⚠️ [%s] 自动 split 失败：创建 CTFClient 失败: %v", ID, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tx, err := ctf.SplitPosition(ctx, clobclient.SplitPositionParams{
+		ConditionId: market.ConditionID,
+		Amount:      amount,
+	})
+	if err != nil {
+		log.Warnf("⚠️ [%s] 自动 split（direct）失败：构建 split tx 失败: %v", ID, err)
+		return
+	}
+	txHash, err := ctf.SendTransaction(ctx, tx)
+	if err != nil {
+		log.Warnf("⚠️ [%s] 自动 split（direct）失败：发送 split tx 失败: %v", ID, err)
+		return
+	}
+
+	s.mu.Lock()
+	s.splitDone = true
+	s.mu.Unlock()
+	log.Infof("✅ [%s] 已自动 split 本周期（direct 已发送）: market=%s amount=%.6f tx=%s", ID, market.Slug, amount, txHash.Hex())
+	go s.waitForHoldings(market, checkAddr, amount)
+}
+
+func (s *Strategy) checkHoldingsAtCycleStart(market *domain.Market) {
+	// “不自动 split”的场景：只是确认持仓存在
+	if market == nil || strings.TrimSpace(market.ConditionID) == "" {
+		return
+	}
+	gc := config.Get()
+	if gc == nil || strings.TrimSpace(gc.Wallet.PrivateKey) == "" {
+		log.Warnf("⚠️ [%s] 周期持仓校验失败：全局 wallet.private_key 不可用", ID)
+		return
+	}
+	privateKey, err := signing.PrivateKeyFromHex(gc.Wallet.PrivateKey)
+	if err != nil {
+		log.Warnf("⚠️ [%s] 周期持仓校验失败：解析私钥失败: %v", ID, err)
+		return
+	}
+	checkAddr := crypto.PubkeyToAddress(privateKey.PublicKey)
+	if strings.TrimSpace(gc.Wallet.FunderAddress) != "" {
+		checkAddr = common.HexToAddress(strings.TrimSpace(gc.Wallet.FunderAddress))
+	}
+	expected := s.SplitAmount
+	if expected <= 0 {
+		expected = s.OrderSize
+	}
+	go s.waitForHoldings(market, checkAddr, expected)
+}
+
+func (s *Strategy) waitForHoldings(market *domain.Market, address common.Address, expected float64) {
+	// 轮询等待余额出现（链上确认/索引同步可能有延迟）
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		ok, yesBal, noBal, err := s.checkHoldingsOnce(market, address, expected)
+		if err == nil && ok {
+			s.mu.Lock()
+			s.holdingsOK = true
+			s.mu.Unlock()
+			log.Infof("✅ [%s] 持仓校验通过: market=%s addr=%s yes=%.6f no=%.6f expected>=%.6f",
+				ID, market.Slug, address.Hex(), yesBal, noBal, expected*s.HoldingsExpectedMinRatio)
+			return
+		}
+		if time.Now().After(deadline) {
+			s.mu.Lock()
+			s.holdingsOK = false
+			s.mu.Unlock()
+			if err != nil {
+				log.Warnf("🛑 [%s] 持仓校验超时失败: market=%s addr=%s err=%v", ID, market.Slug, address.Hex(), err)
+			} else {
+				log.Warnf("🛑 [%s] 持仓校验超时失败: market=%s addr=%s yes=%.6f no=%.6f expected>=%.6f",
+					ID, market.Slug, address.Hex(), yesBal, noBal, expected*s.HoldingsExpectedMinRatio)
+			}
+			return
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+func (s *Strategy) checkHoldingsOnce(market *domain.Market, address common.Address, expected float64) (ok bool, yesBal float64, noBal float64, err error) {
+	if market == nil || strings.TrimSpace(market.ConditionID) == "" {
+		return false, 0, 0, fmt.Errorf("market/conditionId invalid")
+	}
+	gc := config.Get()
+	if gc == nil || strings.TrimSpace(gc.Wallet.PrivateKey) == "" {
+		return false, 0, 0, fmt.Errorf("wallet.private_key missing")
+	}
+	privateKey, err := signing.PrivateKeyFromHex(gc.Wallet.PrivateKey)
+	if err != nil {
+		return false, 0, 0, err
+	}
+	ctf, err := clobclient.NewCTFClient(s.RPCURL, types.Chain(s.ChainID), privateKey)
+	if err != nil {
+		return false, 0, 0, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cond := common.HexToHash(market.ConditionID)
+	parent := common.Hash{}
+
+	yesCol, err := ctf.GetCollectionId(parent, cond, big.NewInt(1))
+	if err != nil {
+		return false, 0, 0, err
+	}
+	noCol, err := ctf.GetCollectionId(parent, cond, big.NewInt(2))
+	if err != nil {
+		return false, 0, 0, err
+	}
+	yesPos, err := ctf.GetPositionId(ctf.GetCollateralToken(), yesCol)
+	if err != nil {
+		return false, 0, 0, err
+	}
+	noPos, err := ctf.GetPositionId(ctf.GetCollateralToken(), noCol)
+	if err != nil {
+		return false, 0, 0, err
+	}
+
+	yesBal, err = ctf.GetConditionalTokenBalanceForAddress(ctx, address, yesPos)
+	if err != nil {
+		return false, 0, 0, err
+	}
+	noBal, err = ctf.GetConditionalTokenBalanceForAddress(ctx, address, noPos)
+	if err != nil {
+		return false, 0, 0, err
+	}
+
+	minNeed := expected * s.HoldingsExpectedMinRatio
+	ok = yesBal >= minNeed && noBal >= minNeed
+	return ok, yesBal, noBal, nil
+}
+
+func (s *Strategy) executeRelayerSplit(privateKey *ecdsa.PrivateKey, funderAddress string, conditionID string, amount float64, slug string) error {
+	builderKey := strings.TrimSpace(os.Getenv("BUILDER_API_KEY"))
+	builderSecret := strings.TrimSpace(os.Getenv("BUILDER_SECRET"))
+	builderPass := strings.TrimSpace(os.Getenv("BUILDER_PASS_PHRASE"))
+	if builderKey == "" || builderSecret == "" || builderPass == "" {
+		return fmt.Errorf("builder creds missing")
+	}
+	if strings.TrimSpace(funderAddress) == "" {
+		return fmt.Errorf("funder_address missing")
+	}
+
+	// amount -> 6 decimals
+	amountBig := new(big.Int)
+	amountFloat := new(big.Float).SetFloat64(amount)
+	decimals := new(big.Float).SetInt64(1000000)
+	amountFloat.Mul(amountFloat, decimals)
+	amountBig, _ = amountFloat.Int(nil)
+
+	condHash := common.HexToHash(conditionID)
+	apiTx, err := sdkapi.BuildSplitTransaction(condHash, amountBig)
+	if err != nil {
+		return fmt.Errorf("build split tx failed: %w", err)
+	}
+
+	relayerTx := relayertypes.SafeTransaction{
+		To:        apiTx.To.Hex(),
+		Operation: relayertypes.OperationType(apiTx.Operation),
+		Data:      "0x" + hex.EncodeToString(apiTx.Data),
+		Value:     apiTx.Value.String(),
+	}
+
+	// 签名函数（EIP-191 digest 由 relayer SDK 处理）
+	signFn := func(_ string, digest []byte) ([]byte, error) {
+		sig, err := crypto.Sign(digest, privateKey)
+		if err != nil {
+			return nil, err
+		}
+		if sig[64] < 27 {
+			sig[64] += 27
+		}
+		return sig, nil
+	}
+
+	relayerURL := "https://relayer-v2.polymarket.com"
+	builderCreds := &sdktypes.BuilderApiKeyCreds{
+		Key:        builderKey,
+		Secret:     builderSecret,
+		Passphrase: builderPass,
+	}
+
+	chainID := big.NewInt(s.ChainID)
+	rc := sdkrelayer.NewClient(relayerURL, chainID, signFn, builderCreds)
+
+	signer := crypto.PubkeyToAddress(privateKey.PublicKey).Hex()
+	auth := &sdktypes.AuthOption{
+		SingerAddress: signer,
+		FunderAddress: strings.TrimSpace(funderAddress),
+	}
+
+	metadata := fmt.Sprintf("AutoSplit %.6f USDC for %s", amount, slug)
+	if len(metadata) > 500 {
+		metadata = metadata[:497] + "..."
+	}
+
+	resp, err := rc.Execute([]relayertypes.SafeTransaction{relayerTx}, metadata, auth)
+	if err != nil {
+		return err
+	}
+	txHash := resp.TransactionHash
+	if txHash == "" {
+		txHash = resp.Hash
+	}
+	log.Infof("📨 [%s] relayer split submitted: txID=%s txHash=%s state=%s", ID, resp.TransactionID, txHash, resp.State)
+	return nil
 }
