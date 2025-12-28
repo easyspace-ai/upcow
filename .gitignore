@@ -6,6 +6,13 @@
 *.dylib
 bin/
 dist/
+# Go binaries (compiled executables)
+bot
+bot-launcher
+server
+cmd/*/bot
+cmd/*/bot-launcher
+cmd/*/server
 
 # Test binary
 *.test
