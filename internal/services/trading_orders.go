@@ -3,7 +3,9 @@ package services
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/betbot/gobet/clob/types"
@@ -11,6 +13,112 @@ import (
 	"github.com/betbot/gobet/internal/execution"
 	"github.com/betbot/gobet/internal/metrics"
 )
+
+func cloneDomainOrder(o *domain.Order) *domain.Order {
+	if o == nil {
+		return nil
+	}
+	cp := *o
+	// deep copy pointer fields
+	if o.FilledPrice != nil {
+		fp := *o.FilledPrice
+		cp.FilledPrice = &fp
+	}
+	if o.FilledAt != nil {
+		t := *o.FilledAt
+		cp.FilledAt = &t
+	}
+	if o.CanceledAt != nil {
+		t := *o.CanceledAt
+		cp.CanceledAt = &t
+	}
+	if o.HedgeOrderID != nil {
+		id := *o.HedgeOrderID
+		cp.HedgeOrderID = &id
+	}
+	if o.PairOrderID != nil {
+		id := *o.PairOrderID
+		cp.PairOrderID = &id
+	}
+	if o.NegRisk != nil {
+		b := *o.NegRisk
+		cp.NegRisk = &b
+	}
+	return &cp
+}
+
+func absInt(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+func absFloat(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// findSimilarOpenOrder implements "less-action principle" for GTC quotes:
+// if there is already an open/pending order with same market+asset+side and
+// price/size are within small tolerance, we should NOT cancel/replace or place a duplicate.
+func (o *OrdersService) findSimilarOpenOrder(target *domain.Order) *domain.Order {
+	if o == nil || o.s == nil || target == nil {
+		return nil
+	}
+	if target.MarketSlug == "" || target.AssetID == "" || target.Side == "" {
+		return nil
+	}
+	// Only for maker-style GTC (avoid interfering with FAK/FOK "must execute now" orders).
+	ot := target.OrderType
+	if ot == "" {
+		ot = types.OrderTypeGTC
+	}
+	if ot != types.OrderTypeGTC {
+		return nil
+	}
+
+	// Tolerances (conservative defaults; can be made configurable later)
+	const priceTolCents = 1
+	const sizeRelTol = 0.02 // 2%
+	const sizeAbsTol = 0.5  // 0.5 shares
+
+	openOrders := o.s.GetActiveOrders()
+	for _, ex := range openOrders {
+		if ex == nil || ex.OrderID == "" {
+			continue
+		}
+		if ex.MarketSlug != target.MarketSlug || ex.AssetID != target.AssetID || ex.Side != target.Side {
+			continue
+		}
+		// Don't match canceling/final orders.
+		if ex.Status == domain.OrderStatusCanceling || ex.IsFinalStatus() {
+			continue
+		}
+		exType := ex.OrderType
+		if exType == "" {
+			exType = types.OrderTypeGTC
+		}
+		if exType != types.OrderTypeGTC {
+			continue
+		}
+		if absInt(ex.Price.ToCents()-target.Price.ToCents()) > priceTolCents {
+			continue
+		}
+		// size tolerance: accept either absolute or relative close
+		ds := absFloat(ex.Size - target.Size)
+		if ds <= sizeAbsTol {
+			return ex
+		}
+		den := math.Max(1e-9, math.Max(ex.Size, target.Size))
+		if ds/den <= sizeRelTol {
+			return ex
+		}
+	}
+	return nil
+}
 
 // boolPtr 返回 bool 指针
 func boolPtr(b bool) *bool {
@@ -27,10 +135,15 @@ func (o *OrdersService) PlaceOrder(ctx context.Context, order *domain.Order) (cr
 		metrics.PlaceOrderBlockedInvalidInput.Add(1)
 		return nil, fmt.Errorf("order 不能为空")
 	}
-	// 系统级硬防线：暂停模式下禁止任何下单（fail-safe）
-	if s == nil || s.isTradingPaused() {
+
+	// 系统级硬防线：暂停 / risk-off / 熔断（fail-safe）
+	if s == nil {
 		metrics.PlaceOrderBlockedInvalidInput.Add(1)
-		return nil, fmt.Errorf("trading paused: refusing to place order")
+		return nil, fmt.Errorf("trading service not initialized")
+	}
+	if e := s.allowPlaceOrder(); e != nil {
+		metrics.PlaceOrderBlockedCircuit.Add(1)
+		return nil, e
 	}
 	// 只管理本周期：强制要求所有策略下单都带 MarketSlug
 	// 否则订单更新无法可靠过滤，容易跨周期串单
@@ -45,18 +158,16 @@ func (o *OrdersService) PlaceOrder(ctx context.Context, order *domain.Order) (cr
 		return nil, fmt.Errorf("order market mismatch (refuse to trade): current=%s order=%s", cur, order.MarketSlug)
 	}
 
-	// 执行层风控：断路器快路径
-	if s.circuitBreaker != nil {
-		if e := s.circuitBreaker.AllowTrading(); e != nil {
-			metrics.PlaceOrderBlockedCircuit.Add(1)
-			return nil, e
-		}
-	}
-
 	// 调整/归一化订单（在去重 key 前）
 	// - 关键：OrderType 为空时默认按 GTC 处理，否则会导致最小 share 调整不生效
 	// - 去重 key 也应基于“实际会发送”的订单参数
 	order = o.adjustOrderSize(order)
+
+	// “少动原则”：若已有相似挂单，直接 no-op（避免重复挂单/撤挂抖动）
+	if ex := o.findSimilarOpenOrder(order); ex != nil {
+		// 返回副本，避免调用方误修改引擎内指针
+		return cloneDomainOrder(ex), nil
+	}
 
 	// 执行层去重：同一订单 key 的短窗口去重（避免重复下单/重复 IO）
 	dedupKey := fmt.Sprintf(
@@ -119,6 +230,15 @@ func (o *OrdersService) PlaceOrder(ctx context.Context, order *domain.Order) (cr
 		if s.circuitBreaker != nil {
 			s.circuitBreaker.OnError()
 		}
+		// risk-off：错误后短暂冷静，避免持续重试放大损失/限流
+		// - 保守：默认 2s；若疑似限流/网络抖动，提高到 5s
+		d := 2 * time.Second
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "429") || strings.Contains(msg, "rate") || strings.Contains(msg, "timeout") ||
+			strings.Contains(msg, "temporarily") || strings.Contains(msg, "too many") {
+			d = 5 * time.Second
+		}
+		s.TriggerRiskOff(d, "place_order_error")
 		return created, err
 	}
 	if s.circuitBreaker != nil {
@@ -216,6 +336,35 @@ func (o *OrdersService) adjustOrderSize(order *domain.Order) *domain.Order {
 // CancelOrder 取消订单（通过 OrderEngine）
 func (o *OrdersService) CancelOrder(ctx context.Context, orderID string) error {
 	s := o.s
+	if s == nil || orderID == "" {
+		return fmt.Errorf("invalid cancel: orderID empty")
+	}
+
+	// 幂等：已终态/取消中 => 直接认为成功（避免策略层反复 cancel 放大噪音）
+	if ord, ok := s.GetOrder(orderID); ok && ord != nil {
+		if ord.IsFinalStatus() || ord.Status == domain.OrderStatusCanceling {
+			return nil
+		}
+	}
+
+	// cancel 去重：同一 orderID 的短窗口重复撤单直接吞掉
+	cancelKey := "cancel|" + orderID
+	if s.inFlightDeduper != nil {
+		if e := s.inFlightDeduper.TryAcquire(cancelKey); e != nil {
+			if e == execution.ErrDuplicateInFlight {
+				return nil
+			}
+			return e
+		}
+		defer func() {
+			// 撤单失败允许尽快重试；成功则靠 TTL 过期
+			// 这里无法拿到真实失败与否（异步），因此仅在 ctx 取消时释放即可（保守不释放）
+			if ctx != nil && ctx.Err() != nil {
+				s.inFlightDeduper.Release(cancelKey)
+			}
+		}()
+	}
+
 	reply := make(chan error, 1)
 	cmd := &CancelOrderCommand{
 		id:      fmt.Sprintf("cancel_%d", time.Now().UnixNano()),
