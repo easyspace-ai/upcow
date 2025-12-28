@@ -2,12 +2,18 @@ package ctfendgame
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"encoding/hex"
 	"fmt"
 	"math"
+	"math/big"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
+	clobclient "github.com/betbot/gobet/clob/client"
+	"github.com/betbot/gobet/clob/signing"
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
@@ -15,6 +21,14 @@ import (
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/pkg/bbgo"
+	"github.com/betbot/gobet/pkg/config"
+	"github.com/betbot/gobet/pkg/marketspec"
+	sdkapi "github.com/betbot/gobet/pkg/sdk/api"
+	sdkrelayer "github.com/betbot/gobet/pkg/sdk/relayer"
+	relayertypes "github.com/betbot/gobet/pkg/sdk/relayer/types"
+	sdktypes "github.com/betbot/gobet/pkg/sdk/types"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/sirupsen/logrus"
 )
 
@@ -40,6 +54,11 @@ type Strategy struct {
 	sellSequencesDone int
 	attemptsThisCycle int
 	lastAttemptAt     time.Time
+
+	// ===== 自动编排（split next cycle + cycle start holdings check）=====
+	holdingsOK bool
+	splitDone  bool
+	splitTimer *time.Timer
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -67,11 +86,37 @@ func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, newMarket *domai
 	s.sellSequencesDone = 0
 	s.attemptsThisCycle = 0
 	s.lastAttemptAt = time.Time{}
+	s.holdingsOK = false
+	s.splitDone = false
+	if s.splitTimer != nil {
+		s.splitTimer.Stop()
+		s.splitTimer = nil
+	}
 
 	if newMarket != nil && newMarket.Timestamp > 0 {
 		s.cycleStart = time.Unix(newMarket.Timestamp, 0)
 	} else {
 		s.cycleStart = time.Time{}
+	}
+
+	// 周期开始：先检查持仓（默认开启）
+	if newMarket != nil && newMarket.IsValid() && s.HoldingsCheckOnCycleStart != nil && *s.HoldingsCheckOnCycleStart {
+		go s.checkHoldingsAtCycleStart(newMarket)
+	} else {
+		// 若关闭检查，直接放行（避免影响尾盘卖弱）
+		s.holdingsOK = true
+	}
+
+	// 周期中段：自动 split 下个周期（约 7.5 分钟）
+	if s.EnableAutoSplitNextCycle && newMarket != nil && newMarket.IsValid() {
+		delay := time.Duration(s.SplitNextCycleAfterSeconds) * time.Second
+		if delay < 0 {
+			delay = 0
+		}
+		s.splitTimer = time.AfterFunc(delay, func() {
+			s.splitNextCycleFromMarket(newMarket)
+		})
+		log.Infof("⏱️ [%s] 已安排自动 split 下个周期: after=%ds market=%s", ID, s.SplitNextCycleAfterSeconds, newMarket.Slug)
 	}
 }
 
