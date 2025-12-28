@@ -49,10 +49,17 @@ func main() {
 		fatal(err)
 	}
 
-	// Master key for encrypt/decrypt.
-	masterKey, masterKeyHex, err := loadOrGenerateMasterKey(*genMasterKey)
-	if err != nil {
-		fatal(err)
+	// Master key for encrypt/decrypt (only needed for legacy file mode or -id fallback).
+	// If using badger mode exclusively (no -id, no -import-env), masterKey is not required.
+	var masterKey []byte
+	var masterKeyHex string
+	hasShowID := strings.TrimSpace(*showID) != ""
+	needMasterKey := badgerKey == nil || hasShowID // need for legacy mode or -id fallback
+	if needMasterKey {
+		masterKey, masterKeyHex, err = loadOrGenerateMasterKey(*genMasterKey)
+		if err != nil {
+			fatal(err)
+		}
 	}
 
 	// show mode: derive and print private key for given id
@@ -74,6 +81,9 @@ func main() {
 		}
 		// fallback legacy file mode
 		if mn == "" {
+			if masterKey == nil {
+				fatal(errors.New("mnemonic not found in badger and GOBET_MASTER_KEY not set for legacy file fallback"))
+			}
 			encMnemonic, err := readFileTrim(*inPath)
 			if err != nil {
 				fatal(err)

@@ -30,11 +30,27 @@
 ### 2.1 生成 Badger 加密密钥（本地保存，**不要提交到仓库**）
 
 ```bash
+# Bash/Zsh 语法：
 export GOBET_SECRET_KEY="$(openssl rand -hex 32)"
 export GOBET_SECRET_DB="data/secrets.badger"
+
+# Fish shell 语法：
+set -x GOBET_SECRET_KEY (openssl rand -hex 32)
+set -x GOBET_SECRET_DB "data/secrets.badger"
 ```
 
-> `GOBET_SECRET_KEY` 必须是 **32 bytes**（hex 64 字符或 base64 解码后 32 bytes）。
+> **重要**：`GOBET_SECRET_KEY` 必须是 **32 bytes** 的 hex 格式（64 个十六进制字符）。
+> 
+> 验证密钥格式：
+> ```bash
+> # Bash/Zsh：
+> echo "$GOBET_SECRET_KEY" | wc -c  # 应该是 65（64 字符 + 换行符）
+> 
+> # Fish：
+> echo $GOBET_SECRET_KEY | wc -c  # 应该是 65（64 字符 + 换行符）
+> ```
+> 
+> 如果遇到 "decoded key length must be 32, got 48" 错误，说明密钥被误解析为 base64。请重新生成密钥，确保使用 `openssl rand -hex 32` 生成的是纯 hex 格式（64 个字符）。
 
 ### 2.2 写入助记词到 Badger（本地执行一次）
 

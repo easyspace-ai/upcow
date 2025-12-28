@@ -305,16 +305,54 @@ async function saveConfig() {
 }
 
 async function startBot() {
-  await api('/api/bots/'+selectedBotId+'/start', {method:'POST', body:'{}'});
-  alert('已触发启动');
+  try {
+    if (!selectedBotId) {
+      alert('请先选择一个 bot');
+      return;
+    }
+    const res = await api('/api/bots/'+selectedBotId+'/start', {method:'POST', body:'{}'});
+    if (res && res.already_running) {
+      alert('Bot 已在运行中 (pid: ' + (res.pid || '-') + ')');
+    } else {
+      alert('Bot 已启动 (pid: ' + (res.pid || '-') + ')');
+    }
+    await selectBot(selectedBotId); // 刷新状态
+  } catch (err) {
+    alert('启动失败：' + err.message);
+    console.error('startBot error:', err);
+  }
 }
 async function stopBot() {
-  await api('/api/bots/'+selectedBotId+'/stop', {method:'POST', body:'{}'});
-  alert('已触发停止');
+  try {
+    if (!selectedBotId) {
+      alert('请先选择一个 bot');
+      return;
+    }
+    const res = await api('/api/bots/'+selectedBotId+'/stop', {method:'POST', body:'{}'});
+    if (res && res.already_stopped) {
+      alert('Bot 已停止');
+    } else {
+      alert('Bot 已停止');
+    }
+    await selectBot(selectedBotId); // 刷新状态
+  } catch (err) {
+    alert('停止失败：' + err.message);
+    console.error('stopBot error:', err);
+  }
 }
 async function restartBot() {
-  await api('/api/bots/'+selectedBotId+'/restart', {method:'POST', body:'{}'});
-  alert('已触发重启');
+  try {
+    if (!selectedBotId) {
+      alert('请先选择一个 bot');
+      return;
+    }
+    const res = await api('/api/bots/'+selectedBotId+'/restart', {method:'POST', body:'{}'});
+    alert('Bot 已重启 (pid: ' + (res.pid || '-') + ')');
+    await selectBot(selectedBotId); // 刷新状态
+  } catch (err) {
+    alert('重启失败：' + err.message);
+    console.error('restartBot error:', err);
+  }
 }
 
 async function loadLogTail() {
@@ -325,15 +363,24 @@ async function loadLogTail() {
 }
 
 async function createAccount() {
-  const account_id = document.getElementById('accId').value.trim();
-  const name = document.getElementById('accName').value.trim();
-  const res = await api('/api/accounts', {method:'POST', body: JSON.stringify({account_id, name})});
-  if (res && res.warning) {
-    alert('账号已创建（有提示）：' + res.warning);
-  } else {
-    alert('账号已创建');
+  try {
+    const account_id = document.getElementById('accId').value.trim();
+    const name = document.getElementById('accName').value.trim();
+    if (!account_id) {
+      alert('请输入账号ID（三位数，例如 456）');
+      return;
+    }
+    const res = await api('/api/accounts', {method:'POST', body: JSON.stringify({account_id, name})});
+    if (res && res.warning) {
+      alert('账号已创建（有提示）：' + res.warning);
+    } else {
+      alert('账号已创建');
+    }
+    await reloadAccounts();
+  } catch (err) {
+    alert('创建账号失败：' + err.message);
+    console.error('createAccount error:', err);
   }
-  await reloadAccounts();
 }
 
 async function bindAccount() {

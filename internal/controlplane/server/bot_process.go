@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net/http"
 	"os"
@@ -21,8 +22,6 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"gopkg.in/yaml.v3"
 	"strings"
-
-	"golang.org/x/sys/unix"
 )
 
 func (s *Server) handleBotStart(w http.ResponseWriter, r *http.Request) {
@@ -30,8 +29,10 @@ func (s *Server) handleBotStart(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
+	log.Printf("[bot-start] bot_id=%s starting...", botID)
 	pid, alreadyRunning, err := s.startBot(ctx, botID)
 	if err != nil {
+		log.Printf("[bot-start] bot_id=%s failed: %v", botID, err)
 		if errors.Is(err, ErrBotNotFound) {
 			writeError(w, 404, "bot not found")
 			return
@@ -39,6 +40,7 @@ func (s *Server) handleBotStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, fmt.Sprintf("start failed: %v", err))
 		return
 	}
+	log.Printf("[bot-start] bot_id=%s success: pid=%d, already_running=%v", botID, pid, alreadyRunning)
 	writeJSON(w, 200, map[string]any{"ok": true, "pid": pid, "already_running": alreadyRunning})
 }
 
@@ -81,11 +83,14 @@ func (s *Server) handleBotRestart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) startBot(ctx context.Context, botID string) (pid int, alreadyRunning bool, err error) {
+	log.Printf("[start-bot] bot_id=%s starting...", botID)
 	b, err := s.getBot(ctx, botID)
 	if err != nil {
+		log.Printf("[start-bot] bot_id=%s db get error: %v", botID, err)
 		return 0, false, fmt.Errorf("db get: %w", err)
 	}
 	if b == nil {
+		log.Printf("[start-bot] bot_id=%s not found", botID)
 		return 0, false, ErrBotNotFound
 	}
 
@@ -95,52 +100,71 @@ func (s *Server) startBot(ctx context.Context, botID string) (pid int, alreadyRu
 	// 已在跑则直接返回
 	p, _ := s.getBotProcess(ctx, botID)
 	if p != nil && p.PID != nil && processAlive(*p.PID) {
+		log.Printf("[start-bot] bot_id=%s already running: pid=%d", botID, *p.PID)
 		return *p.PID, true, nil
 	}
 
 	// New security model: wallet is derived at start from local encrypted mnemonic file + bound account_id.
 	if b.AccountID == nil || strings.TrimSpace(*b.AccountID) == "" {
+		log.Printf("[start-bot] bot_id=%s error: account_id not bound", botID)
 		return 0, false, fmt.Errorf("bot 未绑定账号：请先绑定 account_id（1账号1bot）")
 	}
 	accountID := strings.TrimSpace(*b.AccountID)
+	log.Printf("[start-bot] bot_id=%s account_id=%s", botID, accountID)
 	if _, err := normalizeAccountID(accountID); err != nil {
+		log.Printf("[start-bot] bot_id=%s account_id invalid: %v", botID, err)
 		return 0, false, fmt.Errorf("bot account_id invalid: %v", err)
 	}
 	a, err := s.getAccount(ctx, accountID)
 	if err != nil || a == nil {
+		log.Printf("[start-bot] bot_id=%s account not found: %s, err=%v", botID, accountID, err)
 		return 0, false, fmt.Errorf("account not found: %s", accountID)
 	}
+	log.Printf("[start-bot] bot_id=%s loading mnemonic...", botID)
 	mn, err := s.loadMnemonic()
 	if err != nil {
+		log.Printf("[start-bot] bot_id=%s load mnemonic failed: %v", botID, err)
 		return 0, false, err
 	}
 	path, err := derivationPathFromAccountID(accountID)
 	if err != nil {
+		log.Printf("[start-bot] bot_id=%s derivation path error: %v", botID, err)
 		return 0, false, err
 	}
+	log.Printf("[start-bot] bot_id=%s deriving wallet from path=%s", botID, path)
 	derived, err := deriveWalletFromMnemonic(mn, path)
 	if err != nil {
+		log.Printf("[start-bot] bot_id=%s derive wallet failed: %v", botID, err)
 		return 0, false, err
 	}
+	log.Printf("[start-bot] bot_id=%s eoa_address=%s, funder_address=%s", botID, derived.EOAAddress, a.FunderAddress)
 	// Ensure expected safe is deployed (best-effort). This helps new wallets which never used polymarket.com.
 	// If builder creds are missing, we proceed but bot may fail on relayer-required operations.
 	if strings.TrimSpace(a.FunderAddress) != "" {
+		log.Printf("[start-bot] bot_id=%s ensuring safe deployed...", botID)
 		if warn, err := s.ensureSafeDeployed(derived.PrivateKeyHex, derived.EOAAddress, a.FunderAddress); err != nil {
+			log.Printf("[start-bot] bot_id=%s ensure safe deployed failed: %v", botID, err)
 			return 0, false, err
 		} else if warn != "" {
+			log.Printf("[start-bot] bot_id=%s safe deploy warning: %s", botID, warn)
 			_ = s.clearBotPID(ctx, botID, nil, &warn)
 		}
 	}
+	log.Printf("[start-bot] bot_id=%s injecting wallet into config...", botID)
 	runtimeYAML, err := injectWalletIntoBotConfig(b.ConfigYAML, derived.PrivateKeyHex, a.FunderAddress, b.LogPath, b.PersistenceDir)
 	if err != nil {
+		log.Printf("[start-bot] bot_id=%s inject wallet failed: %v", botID, err)
 		return 0, false, err
 	}
 
+	log.Printf("[start-bot] bot_id=%s spawning bot process...", botID)
 	pid, err = s.spawnBotWithRuntimeConfig(*b, runtimeYAML)
 	if err != nil {
+		log.Printf("[start-bot] bot_id=%s spawn failed: %v", botID, err)
 		_ = s.clearBotPID(ctx, botID, nil, ptrString(err.Error()))
 		return 0, false, err
 	}
+	log.Printf("[start-bot] bot_id=%s spawned successfully: pid=%d", botID, pid)
 	_ = s.setBotPID(ctx, botID, pid)
 	return pid, false, nil
 }
@@ -203,70 +227,109 @@ func (s *Server) handleBotStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) spawnBotWithRuntimeConfig(b Bot, cfgYAML string) (int, error) {
-	if runtime.GOOS != "linux" {
-		return 0, fmt.Errorf("runtime config without disk is only supported on linux")
-	}
+	log.Printf("[spawn-bot] bot_id=%s, platform=%s", b.ID, runtime.GOOS)
+	
 	// 额外确保目录存在
 	if err := os.MkdirAll(filepath.Dir(b.LogPath), 0o755); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("mkdir log dir: %w", err)
 	}
 	logFile, err := os.OpenFile(b.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("open log file: %w", err)
 	}
 
-	// Create in-memory config file (memfd) and pass via /proc/self/fd/<n>.
-	fd, err := unix.MemfdCreate("gobet-config", 0)
-	if err != nil {
-		_ = logFile.Close()
-		return 0, err
-	}
-	cfgFile := os.NewFile(uintptr(fd), "gobet-config")
-	if cfgFile == nil {
-		_ = logFile.Close()
-		_ = unix.Close(fd)
-		return 0, fmt.Errorf("memfd: os.NewFile failed")
-	}
-	if _, err := io.WriteString(cfgFile, cfgYAML+"\n"); err != nil {
-		_ = logFile.Close()
-		_ = cfgFile.Close()
-		return 0, err
-	}
-	if _, err := cfgFile.Seek(0, 0); err != nil {
-		_ = logFile.Close()
-		_ = cfgFile.Close()
-		return 0, err
+	var cfgFile *os.File
+	var cfgPath string
+
+	if runtime.GOOS == "linux" {
+		// Linux: 使用 memfd（内存文件描述符，不落盘）
+		log.Printf("[spawn-bot] bot_id=%s using memfd (linux)", b.ID)
+		fd, err := createMemfd("gobet-config")
+		if err != nil {
+			_ = logFile.Close()
+			return 0, fmt.Errorf("create memfd: %w", err)
+		}
+		cfgFile = os.NewFile(uintptr(fd), "gobet-config")
+		if cfgFile == nil {
+			_ = logFile.Close()
+			_ = syscall.Close(fd)
+			return 0, fmt.Errorf("memfd: os.NewFile failed")
+		}
+		if _, err := io.WriteString(cfgFile, cfgYAML+"\n"); err != nil {
+			_ = logFile.Close()
+			_ = cfgFile.Close()
+			return 0, fmt.Errorf("write memfd: %w", err)
+		}
+		if _, err := cfgFile.Seek(0, 0); err != nil {
+			_ = logFile.Close()
+			_ = cfgFile.Close()
+			return 0, fmt.Errorf("seek memfd: %w", err)
+		}
+	} else {
+		// 非 Linux 平台：使用临时文件（macOS 等）
+		log.Printf("[spawn-bot] bot_id=%s using temp file (non-linux: %s)", b.ID, runtime.GOOS)
+		tmpDir := os.TempDir()
+		p := filepath.Join(tmpDir, fmt.Sprintf("gobet-config-%s-%d.yaml", b.ID, time.Now().UnixNano()))
+		if err := os.WriteFile(p, []byte(cfgYAML+"\n"), 0o600); err != nil {
+			_ = logFile.Close()
+			return 0, fmt.Errorf("write temp config: %w", err)
+		}
+		cfgPath = p
+		log.Printf("[spawn-bot] bot_id=%s temp config: %s", b.ID, cfgPath)
 	}
 
-	cmd := exec.Command(s.cfg.BotBin) // args set below to compute fd index
+	cmd := exec.Command(s.cfg.BotBin)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	// first ExtraFile becomes fd=3 in child
-	idx := len(cmd.ExtraFiles)
-	cmd.ExtraFiles = append(cmd.ExtraFiles, cfgFile)
-	childFD := 3 + idx
-	cfgPath := fmt.Sprintf("/proc/self/fd/%d", childFD)
-	cmd.Args = []string{s.cfg.BotBin, "-config", cfgPath}
 
-	// 尽量让 bot 与 server 故障域隔离：单独进程组
 	if runtime.GOOS == "linux" {
+		// Linux: 通过 /proc/self/fd/<n> 传递 memfd
+		idx := len(cmd.ExtraFiles)
+		cmd.ExtraFiles = append(cmd.ExtraFiles, cfgFile)
+		childFD := 3 + idx
+		cfgPath = fmt.Sprintf("/proc/self/fd/%d", childFD)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	} else {
+		// 非 Linux: 直接使用临时文件路径
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}
+
+	cmd.Args = []string{s.cfg.BotBin, "-config", cfgPath}
+	log.Printf("[spawn-bot] bot_id=%s executing: %s -config %s", b.ID, s.cfg.BotBin, cfgPath)
 
 	// 注意：Start 后不 Wait，让 bot 常驻运行；server 只记录 pid。
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
-		_ = cfgFile.Close()
-		return 0, err
+		if cfgFile != nil {
+			_ = cfgFile.Close()
+		}
+		if runtime.GOOS != "linux" && cfgPath != "" {
+			_ = os.Remove(cfgPath) // 清理临时文件
+		}
+		return 0, fmt.Errorf("start command: %w", err)
 	}
+	
 	// Parent can close its fd copy; child has its own.
-	_ = cfgFile.Close()
+	if cfgFile != nil {
+		_ = cfgFile.Close()
+	}
 	pid := cmd.Process.Pid
+	log.Printf("[spawn-bot] bot_id=%s started: pid=%d", b.ID, pid)
 
 	// 记录退出信息（不影响 bot 性能：Wait 只在 bot 退出时触发）
+	tempConfigPath := cfgPath // 保存临时文件路径（非 Linux 平台）
 	go func() {
 		waitErr := cmd.Wait()
 		_ = logFile.Close()
+		
+		// 清理临时配置文件（非 Linux 平台）
+		if runtime.GOOS != "linux" && tempConfigPath != "" {
+			if err := os.Remove(tempConfigPath); err != nil {
+				log.Printf("[spawn-bot] bot_id=%s failed to remove temp config: %v", b.ID, err)
+			} else {
+				log.Printf("[spawn-bot] bot_id=%s cleaned up temp config: %s", b.ID, tempConfigPath)
+			}
+		}
 
 		exitCode := 0
 		lastErr := ""
@@ -280,6 +343,9 @@ func (s *Server) spawnBotWithRuntimeConfig(b Bot, cfgYAML string) (int, error) {
 			} else {
 				exitCode = 1
 			}
+			log.Printf("[spawn-bot] bot_id=%s exited with error: %v (exit_code=%d)", b.ID, waitErr, exitCode)
+		} else {
+			log.Printf("[spawn-bot] bot_id=%s exited normally (exit_code=0)", b.ID)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

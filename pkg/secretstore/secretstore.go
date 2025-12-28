@@ -30,7 +30,11 @@ func Open(opts OpenOptions) (*Store, error) {
 		WithLogger(nil).
 		WithReadOnly(opts.ReadOnly)
 	if len(opts.EncryptionKey) > 0 {
-		bopts = bopts.WithEncryptionKey(opts.EncryptionKey)
+		// Badger requires index cache for encrypted workloads
+		// Default cache size: 100MB (100 * 1024 * 1024 bytes)
+		bopts = bopts.
+			WithEncryptionKey(opts.EncryptionKey).
+			WithIndexCacheSize(100 << 20) // 100MB
 	}
 	db, err := badger.Open(bopts)
 	if err != nil {
@@ -106,16 +110,27 @@ func ParseKey(raw string) ([]byte, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	// base64
-	if b, err := base64.StdEncoding.DecodeString(raw); err == nil {
-		if len(b) != 32 {
-			return nil, fmt.Errorf("decoded key length must be 32, got %d", len(b))
+	// Prefer hex if it looks like hex (64 hex chars = 32 bytes)
+	// This avoids misinterpreting hex strings as base64
+	rawHex := strings.TrimPrefix(raw, "0x")
+	if len(rawHex) == 64 {
+		// Check if it's valid hex
+		if b, err := hex.DecodeString(rawHex); err == nil {
+			if len(b) == 32 {
+				return b, nil
+			}
 		}
-		return b, nil
 	}
-	// hex
-	raw = strings.TrimPrefix(raw, "0x")
-	if b, err := hex.DecodeString(raw); err == nil {
+	// Try hex first (even if not 64 chars, might be valid hex)
+	rawHex = strings.TrimPrefix(raw, "0x")
+	if b, err := hex.DecodeString(rawHex); err == nil {
+		if len(b) == 32 {
+			return b, nil
+		}
+		return nil, fmt.Errorf("decoded key length must be 32, got %d", len(b))
+	}
+	// Try base64
+	if b, err := base64.StdEncoding.DecodeString(raw); err == nil {
 		if len(b) != 32 {
 			return nil, fmt.Errorf("decoded key length must be 32, got %d", len(b))
 		}

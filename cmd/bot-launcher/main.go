@@ -21,7 +21,6 @@ import (
 	_ "modernc.org/sqlite"
 
 	hdwallet "github.com/miguelmota/go-ethereum-hdwallet"
-	"golang.org/x/sys/unix"
 	"gopkg.in/yaml.v3"
 )
 
@@ -267,13 +266,13 @@ func startBotWithMemfd(botBin string, cfgYAML string) error {
 		return cmd.Run()
 	}
 
-	fd, err := unix.MemfdCreate("gobet-config", 0)
+	fd, err := createMemfd("gobet-config")
 	if err != nil {
 		return err
 	}
 	cfgFile := os.NewFile(uintptr(fd), "gobet-config")
 	if cfgFile == nil {
-		_ = unix.Close(fd)
+		_ = syscall.Close(fd)
 		return fmt.Errorf("memfd: os.NewFile failed")
 	}
 	defer cfgFile.Close()
