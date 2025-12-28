@@ -1,6 +1,10 @@
 package pricebreak
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/betbot/gobet/internal/strategies/common"
+)
 
 const ID = "pricebreak"
 
@@ -24,12 +28,15 @@ type Config struct {
 	// WarmupMs 预热期（毫秒），启动后等待一段时间再开始交易
 	// 默认 1200ms，避免刚启动时的脏数据
 	WarmupMs int `yaml:"warmupMs" json:"warmupMs"`
+
+	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
 }
 
 func (c *Config) Validate() error {
 	if c == nil {
 		return fmt.Errorf("config 不能为空")
 	}
+	c.AutoMerge.Normalize()
 	if c.BuyThreshold <= 0 || c.BuyThreshold > 100 {
 		return fmt.Errorf("买入阈值必须在 1-100 美分之间（例如 70 表示 70 cents = $0.70）")
 	}

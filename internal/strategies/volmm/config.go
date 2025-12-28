@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/pkg/config"
 )
 
@@ -71,6 +72,8 @@ type Config struct {
 	// ====== 库存倾斜 ======
 	// skew = KDelta * clip(deltaInv/deltaMaxShares, -1, 1) * s
 	KDelta float64 `yaml:"kDelta" json:"kDelta"`
+
+	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
 }
 
 func boolPtr(b bool) *bool { return &b }
@@ -79,6 +82,7 @@ func (c *Config) Validate() error {
 	if c == nil {
 		return fmt.Errorf("config 不能为空")
 	}
+	c.AutoMerge.Normalize()
 
 	// defaults
 	if c.TradeStartAtSeconds < 0 {

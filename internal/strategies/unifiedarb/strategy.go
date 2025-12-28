@@ -65,6 +65,8 @@ type Strategy struct {
 	lastPxMu sync.Mutex
 	lastPx   map[domain.TokenType]domain.Price
 
+	autoMerge common.AutoMergeController
+
 	loopOnce   sync.Once
 	loopCancel context.CancelFunc
 
@@ -169,9 +171,12 @@ func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, newMarket *domai
 	s.priceMu.Unlock()
 }
 
-func (s *Strategy) OnPriceChanged(_ context.Context, e *events.PriceChangedEvent) error {
+func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
 	if e == nil || e.Market == nil {
 		return nil
+	}
+	if s.TradingService != nil {
+		s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof)
 	}
 	s.lastPxMu.Lock()
 	s.lastPx[e.TokenType] = e.NewPrice

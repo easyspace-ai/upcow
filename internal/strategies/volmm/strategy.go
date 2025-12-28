@@ -13,6 +13,7 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/services"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/config"
 	"github.com/sirupsen/logrus"
@@ -42,6 +43,8 @@ type Strategy struct {
 	Config         `yaml:",inline" json:",inline"`
 
 	mu sync.Mutex
+
+	autoMerge common.AutoMergeController
 
 	// rtds (chainlink)
 	rtdsClient *rtds.Client
@@ -215,6 +218,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if e == nil || e.Market == nil || s.TradingService == nil {
 		return nil
 	}
+	s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof)
 
 	// 过滤旧周期事件：确保事件 market 与 TradingService 当前 market 一致
 	if cur := s.TradingService.GetCurrentMarket(); cur != "" && cur != e.Market.Slug {

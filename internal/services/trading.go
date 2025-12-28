@@ -67,6 +67,15 @@ type TradingService struct {
 	inFlightDeduper *execution.InFlightDeduper
 	circuitBreaker  *risk.CircuitBreaker
 
+	// 风控：短时 risk-off（冷静期），用于“错误后降频”，避免 API/WS 抖动时反复撤挂造成更大伤害。
+	// - 只影响 PlaceOrder/ExecuteMultiLeg，不影响 CancelOrder 等风控动作。
+	riskOffUntilUnixMs atomic.Int64
+	riskOffReason      atomic.Value // string
+
+	// “少动原则”：价格纠偏节流（避免 2c 偏差就频繁撤挂）
+	repriceMu    sync.Mutex
+	repriceState map[string]repriceInfo // orderID -> state
+
 	// 多腿执行引擎（队列+并发+自动对冲）
 	execEngine *execution.ExecutionEngine
 
@@ -136,6 +145,7 @@ func NewTradingService(clobClient *client.Client, dryRun bool) *TradingService {
 				DailyLossLimitCents:  0,
 			})
 		}(),
+		repriceState: make(map[string]repriceInfo),
 	}
 	// 统一执行引擎（依赖 TradingService 自身的 PlaceOrder/GetBestPrice 等）
 	service.execEngine = execution.NewExecutionEngine(service)
@@ -155,6 +165,81 @@ func NewTradingService(clobClient *client.Client, dryRun bool) *TradingService {
 	}
 
 	return service
+}
+
+type repriceInfo struct {
+	lastAt time.Time
+	count  int
+}
+
+// allowPlaceOrder implements system-level gating for placing new orders.
+func (s *TradingService) allowPlaceOrder() error {
+	if s == nil {
+		return fmt.Errorf("trading service is nil")
+	}
+	if s.isTradingPaused() {
+		return fmt.Errorf("trading paused: refusing to place order")
+	}
+	// risk-off gate
+	if until, reason, ok := s.riskOff(); ok {
+		if reason == "" {
+			reason = "unknown"
+		}
+		return fmt.Errorf("risk-off active: refusing to place order until=%s reason=%s", until.Format(time.RFC3339), reason)
+	}
+	// circuit breaker gate
+	if s.circuitBreaker != nil {
+		if e := s.circuitBreaker.AllowTrading(); e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+// TriggerRiskOff enters short cooldown window (non-decreasing).
+func (s *TradingService) TriggerRiskOff(d time.Duration, reason string) {
+	if s == nil {
+		return
+	}
+	if d <= 0 {
+		d = 2 * time.Second
+	}
+	now := time.Now()
+	until := now.Add(d)
+	untilMs := until.UnixMilli()
+	for {
+		prev := s.riskOffUntilUnixMs.Load()
+		if prev >= untilMs {
+			break
+		}
+		if s.riskOffUntilUnixMs.CompareAndSwap(prev, untilMs) {
+			break
+		}
+	}
+	if reason != "" {
+		s.riskOffReason.Store(reason)
+	}
+}
+
+func (s *TradingService) riskOff() (until time.Time, reason string, ok bool) {
+	if s == nil {
+		return time.Time{}, "", false
+	}
+	ms := s.riskOffUntilUnixMs.Load()
+	if ms <= 0 {
+		return time.Time{}, "", false
+	}
+	until = time.UnixMilli(ms)
+	if time.Now().Before(until) {
+		ok = true
+		if v := s.riskOffReason.Load(); v != nil {
+			if rs, _ := v.(string); rs != "" {
+				reason = rs
+			}
+		}
+		return until, reason, ok
+	}
+	return time.Time{}, "", false
 }
 
 // IsDryRun 返回是否为纸交易模式

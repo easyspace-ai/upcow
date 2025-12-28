@@ -10,6 +10,7 @@ import (
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/execution"
 	"github.com/betbot/gobet/internal/services"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
 )
@@ -34,6 +35,8 @@ type Strategy struct {
 	cycleStartAt     time.Time // 周期开始时间（用于延迟交易）
 	lastActionAt     time.Time
 	lastPriceLogAt   time.Time // 上次打印价格日志的时间（避免过于频繁）
+
+	autoMerge common.AutoMergeController
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -76,6 +79,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if e == nil || e.Market == nil || s.TradingService == nil {
 		return nil
 	}
+	s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof)
 	if s.firstSeenAt.IsZero() {
 		s.firstSeenAt = time.Now()
 	}

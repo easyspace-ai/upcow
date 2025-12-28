@@ -9,6 +9,7 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/execution"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/bbgo"
@@ -30,6 +31,8 @@ type Strategy struct {
 
 	rounds     int
 	lastAt     time.Time
+
+	autoMerge common.AutoMergeController
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -52,6 +55,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if e == nil || e.Market == nil || s.TradingService == nil {
 		return nil
 	}
+	s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof)
 	m := e.Market
 	if s.rounds >= s.MaxRoundsPerPeriod {
 		return nil

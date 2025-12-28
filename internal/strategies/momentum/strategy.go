@@ -11,6 +11,7 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/execution"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/bbgo"
@@ -31,6 +32,8 @@ type MomentumStrategy struct {
 
 	MomentumStrategyConfig `yaml:",inline" json:",inline"`
 	config                *MomentumStrategyConfig `json:"-" yaml:"-"`
+
+	autoMerge common.AutoMergeController
 
 	loopOnce   sync.Once
 	loopCancel context.CancelFunc
@@ -60,9 +63,12 @@ func (s *MomentumStrategy) Subscribe(session *bbgo.ExchangeSession) {
 }
 
 // OnPriceChanged 只用于保存当前 market
-func (s *MomentumStrategy) OnPriceChanged(_ context.Context, event *events.PriceChangedEvent) error {
+func (s *MomentumStrategy) OnPriceChanged(ctx context.Context, event *events.PriceChangedEvent) error {
 	if event == nil || event.Market == nil {
 		return nil
+	}
+	if s.TradingService != nil {
+		s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, event.Market, s.AutoMerge, log.Infof)
 	}
 	s.mu.Lock()
 	s.currentMarket = event.Market

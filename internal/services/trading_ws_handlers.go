@@ -37,6 +37,10 @@ func (s *TradingService) handleOrderPlaced(order *domain.Order, market *domain.M
 
 // checkAndCorrectOrderPrice 检查订单价格偏差并自动修正
 func (s *TradingService) checkAndCorrectOrderPrice(ctx context.Context, order *domain.Order, market *domain.Market) {
+	// “少动原则”版本：
+	// - 不做高频撤挂（避免 2c 抖动就撤单）
+	// - 只在订单足够“老”、偏差足够大、且同一订单纠偏有节流/次数上限时才执行
+
 	// 获取当前订单簿最佳价格
 	var currentBestPrice float64
 	var err error
@@ -66,8 +70,29 @@ func (s *TradingService) checkAndCorrectOrderPrice(ctx context.Context, order *d
 		priceDeviationCents = -priceDeviationCents
 	}
 
-	// 价格偏差阈值：默认 2 cents
-	deviationThreshold := 2
+	// 价格偏差阈值：从 2c 提升为更保守的 4c（减少 churn）
+	deviationThreshold := 4
+
+	// 订单最小存活时间：太新的订单不纠偏（让市场/WS 有时间稳定）
+	minOrderAge := 10 * time.Second
+	if !order.CreatedAt.IsZero() && time.Since(order.CreatedAt) < minOrderAge {
+		return
+	}
+
+	// per-order 节流：同一订单最小纠偏间隔 + 最大纠偏次数
+	const minRepriceInterval = 30 * time.Second
+	const maxRepriceCount = 2
+	s.repriceMu.Lock()
+	st := s.repriceState[order.OrderID]
+	if st.count >= maxRepriceCount {
+		s.repriceMu.Unlock()
+		return
+	}
+	if !st.lastAt.IsZero() && time.Since(st.lastAt) < minRepriceInterval {
+		s.repriceMu.Unlock()
+		return
+	}
+	s.repriceMu.Unlock()
 
 	// 如果价格偏差超过阈值，撤单并重新下单
 	if priceDeviationCents > deviationThreshold {
@@ -97,15 +122,22 @@ func (s *TradingService) checkAndCorrectOrderPrice(ctx context.Context, order *d
 
 		log.Infof("✅ 已撤单: orderID=%s (价格偏差过大: %dc)", order.OrderID, priceDeviationCents)
 
-		// 等待一小段时间，确保撤单完成
-		time.Sleep(500 * time.Millisecond)
+		// 记录节流状态（撤单成功才计数）
+		s.repriceMu.Lock()
+		st := s.repriceState[order.OrderID]
+		st.lastAt = time.Now()
+		st.count++
+		s.repriceState[order.OrderID] = st
+		s.repriceMu.Unlock()
+
+		// 等待一小段时间，给撤单/WS 回流留出窗口（避免立刻重挂又被策略层撤掉）
+		time.Sleep(150 * time.Millisecond)
 
 		// 使用最新价格重新下单
 		newPrice := domain.PriceFromDecimal(currentBestPrice)
 
-		// 创建新的订单（使用新的订单 ID）
+		// 创建新的订单（让引擎生成本地 ID，最终用 server orderID 回写）
 		newOrder := &domain.Order{
-			OrderID:      fmt.Sprintf("%s-corrected-%d", order.OrderID, time.Now().UnixNano()),
 			MarketSlug:   order.MarketSlug,
 			AssetID:      order.AssetID,
 			Side:         order.Side,
@@ -118,6 +150,9 @@ func (s *TradingService) checkAndCorrectOrderPrice(ctx context.Context, order *d
 			PairOrderID:  order.PairOrderID,
 			Status:       domain.OrderStatusPending,
 			CreatedAt:    time.Now(),
+			OrderType:    order.OrderType,
+			TickSize:     order.TickSize,
+			NegRisk:      order.NegRisk,
 		}
 
 		// 如果是配对订单（entry/hedge），需要同时处理对冲订单
@@ -164,7 +199,6 @@ func (s *TradingService) checkAndCorrectOrderPrice(ctx context.Context, order *d
 							// 创建新的对冲订单（使用最新价格）
 							hedgeNewPrice := domain.PriceFromDecimal(hedgeBestPrice)
 							newHedgeOrder := &domain.Order{
-								OrderID:      fmt.Sprintf("%s-corrected-%d", pairOrder.OrderID, time.Now().UnixNano()),
 								MarketSlug:   pairOrder.MarketSlug,
 								AssetID:      pairOrder.AssetID,
 								Side:         pairOrder.Side,
@@ -177,6 +211,9 @@ func (s *TradingService) checkAndCorrectOrderPrice(ctx context.Context, order *d
 								PairOrderID:  &newOrder.OrderID, // 更新配对订单 ID
 								Status:       domain.OrderStatusPending,
 								CreatedAt:    time.Now(),
+								OrderType:    pairOrder.OrderType,
+								TickSize:     pairOrder.TickSize,
+								NegRisk:      pairOrder.NegRisk,
 							}
 
 							// 更新配对关系

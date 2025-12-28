@@ -1,6 +1,10 @@
 package updown
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/betbot/gobet/internal/strategies/common"
+)
 
 const ID = "updown"
 
@@ -25,12 +29,15 @@ type Config struct {
 	MaxSpreadCents int `yaml:"maxSpreadCents" json:"maxSpreadCents"`
 	// WarmupMs: 启动/周期切换后的预热期（毫秒），预热期内不下单，避免刚连上 WS 时的脏快照误触发。
 	WarmupMs int `yaml:"warmupMs" json:"warmupMs"`
+
+	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
 }
 
 func (c *Config) Validate() error {
 	if c == nil {
 		return fmt.Errorf("config 不能为空")
 	}
+	c.AutoMerge.Normalize()
 	if c.OrderSize <= 0 {
 		return fmt.Errorf("orderSize 必须 > 0")
 	}

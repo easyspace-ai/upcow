@@ -2,6 +2,8 @@ package arbitrage
 
 import (
 	"fmt"
+
+	"github.com/betbot/gobet/internal/strategies/common"
 )
 
 // Config（新架构简化版）：complete-set（买 YES+NO）策略配置
@@ -11,9 +13,12 @@ type Config struct {
 	ProfitTargetCents int    `json:"profitTargetCents" yaml:"profitTargetCents"`
 	MaxRoundsPerPeriod int   `json:"maxRoundsPerPeriod" yaml:"maxRoundsPerPeriod"`
 	CooldownMs       int     `json:"cooldownMs" yaml:"cooldownMs"`
+
+	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
 }
 
 func (c *Config) Validate() error {
+	c.AutoMerge.Normalize()
 	if c.OrderSize <= 0 {
 		return fmt.Errorf("orderSize 必须 > 0")
 	}

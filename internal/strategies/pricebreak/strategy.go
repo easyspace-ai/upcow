@@ -11,6 +11,7 @@ import (
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/execution"
 	"github.com/betbot/gobet/internal/services"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
 )
@@ -42,6 +43,8 @@ type Strategy struct {
 	firstSeenAt      time.Time // 首次看到价格的时间（用于预热）
 	boughtThisCycle  map[string]bool // 本周期已买入的代币（key: assetID）
 	lastActionAt     time.Time // 上次操作时间（用于冷却）
+
+	autoMerge common.AutoMergeController
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -80,6 +83,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if e == nil || e.Market == nil || s.TradingService == nil {
 		return nil
 	}
+	s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof)
 
 	// 系统级安全兜底：仅处理当前周期 market 的事件
 	cur := s.TradingService.GetCurrentMarket()

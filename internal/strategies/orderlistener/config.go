@@ -1,6 +1,10 @@
 package orderlistener
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/betbot/gobet/internal/strategies/common"
+)
 
 const ID = "orderlistener"
 
@@ -8,12 +12,15 @@ const ID = "orderlistener"
 type Config struct {
 	// 止盈利润（分）：当监听到订单成交时，加多少分利润挂止盈单
 	ProfitTargetCents int `yaml:"profitTargetCents" json:"profitTargetCents"`
+
+	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
 }
 
 func (c *Config) Validate() error {
 	if c == nil {
 		return fmt.Errorf("config 不能为空")
 	}
+	c.AutoMerge.Normalize()
 	if c.ProfitTargetCents <= 0 {
 		c.ProfitTargetCents = 3 // 默认3分
 	}
