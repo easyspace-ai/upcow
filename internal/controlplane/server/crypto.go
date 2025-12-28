@@ -10,8 +10,68 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
+
+func mnemonicFilePath() string {
+	if v := strings.TrimSpace(os.Getenv("GOBET_MNEMONIC_FILE")); v != "" {
+		return v
+	}
+	return filepath.Join("data", "mnemonic.enc")
+}
+
+func loadMnemonicFromFile(masterKey []byte) (string, error) {
+	path := mnemonicFilePath()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read mnemonic file failed (%s): %w", path, err)
+	}
+	enc := strings.TrimSpace(string(b))
+	if enc == "" {
+		return "", fmt.Errorf("mnemonic file is empty: %s", path)
+	}
+	mn, err := decryptFromString(masterKey, enc)
+	if err != nil {
+		return "", fmt.Errorf("decrypt mnemonic failed: %w", err)
+	}
+	mn = strings.TrimSpace(mn)
+	if mn == "" {
+		return "", fmt.Errorf("mnemonic decrypted to empty string")
+	}
+	return mn, nil
+}
+
+// loadMnemonicFromSecrets loads plaintext mnemonic from encrypted SecretStore (Badger).
+// The Store must be opened with Badger encryption enabled to avoid plaintext at rest.
+func (s *Server) loadMnemonicFromSecrets() (string, error) {
+	if s == nil || s.secrets == nil {
+		return "", errors.New("secrets store not configured")
+	}
+	mn, ok, err := s.secrets.GetString("mnemonic")
+	if err != nil {
+		return "", err
+	}
+	if !ok || strings.TrimSpace(mn) == "" {
+		return "", fmt.Errorf("mnemonic not found in secrets store (key=mnemonic)")
+	}
+	return strings.TrimSpace(mn), nil
+}
+
+func (s *Server) loadMnemonic() (string, error) {
+	// Prefer badger secrets store.
+	if s != nil && s.secrets != nil {
+		if mn, err := s.loadMnemonicFromSecrets(); err == nil {
+			return mn, nil
+		}
+	}
+	// Fallback legacy: encrypted mnemonic file + GOBET_MASTER_KEY
+	mk, err := loadMasterKey()
+	if err != nil {
+		return "", err
+	}
+	return loadMnemonicFromFile(mk)
+}
 
 func loadMasterKey() ([]byte, error) {
 	raw := strings.TrimSpace(os.Getenv("GOBET_MASTER_KEY"))

@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"time"
 
@@ -66,37 +65,37 @@ func (s *Server) startRedeemAccount(accountID string, trigger string) (int64, er
 }
 
 func (s *Server) doRedeemAccount(ctx context.Context, runID int64, accountID string, trigger string) {
-	bc, err := loadBuilderCredsFromEnv()
+	bc, err := s.loadBuilderCreds()
 	if err != nil {
 		msg := err.Error()
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
 		return
 	}
-	masterKey, err := loadMasterKey()
+	mnemonic, err := s.loadMnemonic()
 	if err != nil {
 		msg := err.Error()
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
 		return
 	}
 
-	baseURL := strings.TrimSpace(os.Getenv("POLYMARKET_API_URL"))
+	baseURL := strings.TrimSpace(s.getenv("POLYMARKET_API_URL"))
 	if baseURL == "" {
 		baseURL = "https://clob.polymarket.com"
 	}
 
-	row, err := s.getAccountRow(ctx, accountID)
-	if err != nil || row == nil {
+	a, err := s.getAccount(ctx, accountID)
+	if err != nil || a == nil {
 		msg := "account not found"
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
 		return
 	}
-	mnemonic, err := decryptFromString(masterKey, row.MnemonicEnc)
+	path, err := derivationPathFromAccountID(accountID)
 	if err != nil {
-		msg := "decrypt mnemonic failed"
+		msg := err.Error()
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
 		return
 	}
-	derived, err := deriveWalletFromMnemonic(mnemonic, row.DerivationPath)
+	derived, err := deriveWalletFromMnemonic(mnemonic, path)
 	if err != nil {
 		msg := "derive failed"
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
@@ -106,13 +105,13 @@ func (s *Server) doRedeemAccount(ctx context.Context, runID int64, accountID str
 	client := sdkapi.NewClient(baseURL)
 	opts := sdkredeem.RunOnceOptions{
 		PrivateKeyHex: derived.PrivateKeyHex,
-		FunderAddress: row.FunderAddress,
+		FunderAddress: a.FunderAddress,
 		BuilderCreds: &sdktypes.BuilderApiKeyCreds{
 			Key:        bc.Key,
 			Secret:     bc.Secret,
 			Passphrase: bc.Passphrase,
 		},
-		RelayerURL: strings.TrimSpace(os.Getenv("POLYMARKET_RELAYER_URL")),
+		RelayerURL: strings.TrimSpace(s.getenv("POLYMARKET_RELAYER_URL")),
 	}
 	res, err := sdkredeem.RunOnce(ctx, client, opts)
 	if err != nil {

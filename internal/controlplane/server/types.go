@@ -16,10 +16,13 @@ type Bot struct {
 }
 
 type BotProcess struct {
-	BotID        string     `json:"bot_id"`
-	PID          *int       `json:"pid,omitempty"`
-	StartedAt    *time.Time `json:"started_at,omitempty"`
-	LastExitAt   *time.Time `json:"last_exit_at,omitempty"`
-	LastExitCode *int       `json:"last_exit_code,omitempty"`
-	LastError    *string    `json:"last_error,omitempty"`
+	BotID           string     `json:"bot_id"`
+	PID             *int       `json:"pid,omitempty"`
+	DesiredRunning  bool       `json:"desired_running"`
+	RestartAttempts int        `json:"restart_attempts"`
+	LastRestartAt   *time.Time `json:"last_restart_at,omitempty"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	LastExitAt      *time.Time `json:"last_exit_at,omitempty"`
+	LastExitCode    *int       `json:"last_exit_code,omitempty"`
+	LastError       *string    `json:"last_error,omitempty"`
 }

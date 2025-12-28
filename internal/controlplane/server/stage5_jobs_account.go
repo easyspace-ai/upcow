@@ -24,7 +24,7 @@ func (s *Server) startTradesSyncAccount(accountID string, trigger string) (int64
 }
 
 func (s *Server) doTradesSyncAccount(ctx context.Context, runID int64, accountID string, trigger string) {
-	masterKey, err := loadMasterKey()
+	mnemonic, err := s.loadMnemonic()
 	if err != nil {
 		msg := err.Error()
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
@@ -36,19 +36,13 @@ func (s *Server) doTradesSyncAccount(ctx context.Context, runID int64, accountID
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
 		return
 	}
-	row, err := s.getAccountRow(ctx, accountID)
-	if err != nil || row == nil {
-		msg := "account not found"
-		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
-		return
-	}
-	mn, err := decryptFromString(masterKey, row.MnemonicEnc)
+	path, err := derivationPathFromAccountID(accountID)
 	if err != nil {
-		msg := "decrypt mnemonic failed"
+		msg := err.Error()
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
 		return
 	}
-	derived, err := deriveWalletFromMnemonic(mn, row.DerivationPath)
+	derived, err := deriveWalletFromMnemonic(mnemonic, path)
 	if err != nil {
 		msg := "derive failed"
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
@@ -117,7 +111,7 @@ func (s *Server) startOpenOrdersSyncAccount(accountID string, trigger string) (i
 }
 
 func (s *Server) doOpenOrdersSyncAccount(ctx context.Context, runID int64, accountID string, trigger string) {
-	masterKey, err := loadMasterKey()
+	mnemonic, err := s.loadMnemonic()
 	if err != nil {
 		msg := err.Error()
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
@@ -129,19 +123,13 @@ func (s *Server) doOpenOrdersSyncAccount(ctx context.Context, runID int64, accou
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
 		return
 	}
-	row, err := s.getAccountRow(ctx, accountID)
-	if err != nil || row == nil {
-		msg := "account not found"
-		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
-		return
-	}
-	mn, err := decryptFromString(masterKey, row.MnemonicEnc)
+	path, err := derivationPathFromAccountID(accountID)
 	if err != nil {
-		msg := "decrypt mnemonic failed"
+		msg := err.Error()
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
 		return
 	}
-	derived, err := deriveWalletFromMnemonic(mn, row.DerivationPath)
+	derived, err := deriveWalletFromMnemonic(mnemonic, path)
 	if err != nil {
 		msg := "derive failed"
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)

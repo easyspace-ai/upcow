@@ -39,7 +39,7 @@ const uiHTML = `<!doctype html>
       <h3 style="margin:0">Bots</h3>
       <button onclick="reloadBots()">刷新</button>
     </div>
-    <div class="muted">提示：先用右侧“创建Bot”提交一份完整配置（包含 wallet/market/exchangeStrategies）。</div>
+    <div class="muted">提示：Bot 配置无需包含 wallet（私钥不会入库）。启动前请先绑定 3 位账号ID（1账号1bot）。</div>
     <div id="bots"></div>
   </div>
   <div class="right">
@@ -72,11 +72,12 @@ const uiHTML = `<!doctype html>
     <div id="jobs" class="muted"></div>
     <h4>创建账号</h4>
     <div class="row">
-      <input id="accName" placeholder="账号名称" style="width:180px"/>
-      <input id="accPath" placeholder="派生路径 (m/...)" style="width:260px" value="m/44'/60'/0'/0/0"/>
-      <input id="accFunder" placeholder="funder/safe 地址 0x..." style="width:360px"/>
+      <input id="accId" placeholder="账号ID(三位数，例如 456)" style="width:220px"/>
+      <input id="accName" placeholder="账号名称(可选)" style="width:220px"/>
     </div>
-    <textarea id="accMnemonic" placeholder="助记词（会加密存储，默认不回显）" style="min-height:100px"></textarea>
+    <div class="muted">
+      助记词不会通过网页提交。请在服务启动前使用 <code>cmd/mnemonic-init</code> 生成本地加密助记词文件（默认 <code>data/mnemonic.enc</code>），并设置 <code>GOBET_MASTER_KEY</code>。
+    </div>
     <div class="row">
       <button onclick="createAccount()">创建账号</button>
     </div>
@@ -107,42 +108,55 @@ function botCard(b) {
 function escapeHTML(s){ return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }
 
 async function reloadBots() {
-  const bots = await api('/api/bots');
   const root = document.getElementById('bots');
   root.innerHTML = '';
-  bots.forEach(b => root.appendChild(botCard(b)));
+  try {
+    const bots = await api('/api/bots');
+    const list = Array.isArray(bots) ? bots : [];
+    if (list.length === 0) { root.innerHTML = '<div class="muted">暂无 bots</div>'; return; }
+    list.forEach(b => root.appendChild(botCard(b)));
+  } catch (e) {
+    root.innerHTML = '<div class="muted">加载 bots 失败：'+escapeHTML(String(e && e.message ? e.message : e))+'</div>';
+  }
 }
 
 async function reloadAccounts() {
-  const accounts = await api('/api/accounts');
-  accountsCache = accounts || [];
   const root = document.getElementById('accounts');
-  if (accountsCache.length === 0) {
-    root.innerHTML = '暂无账号';
-    return;
-  }
-  root.innerHTML = '<div><b>账号列表</b></div>';
-  for (const a of accountsCache) {
-    const div = document.createElement('div');
-    div.className = 'acct';
-    div.onclick = () => selectAccount(a.id);
-    div.innerHTML = '<b>'+escapeHTML(a.name)+'</b><div class="muted">'+escapeHTML(a.id)+'</div><div class="muted">'+escapeHTML(a.eoa_address)+'</div>';
-    root.appendChild(div);
+  try {
+    const accounts = await api('/api/accounts');
+    accountsCache = Array.isArray(accounts) ? accounts : [];
+    if (accountsCache.length === 0) { root.innerHTML = '暂无账号'; return; }
+    root.innerHTML = '<div><b>账号列表</b></div>';
+    for (const a of accountsCache) {
+      const div = document.createElement('div');
+      div.className = 'acct';
+      div.onclick = () => selectAccount(a.id);
+      div.innerHTML = '<b>'+escapeHTML(a.name)+'</b><div class="muted">'+escapeHTML(a.id)+'</div><div class="muted">'+escapeHTML(a.eoa_address)+'</div>';
+      root.appendChild(div);
+    }
+  } catch (e) {
+    accountsCache = [];
+    root.innerHTML = '<div class="muted">加载账号失败：'+escapeHTML(String(e && e.message ? e.message : e))+'</div>';
   }
 }
 
 async function reloadJobRuns() {
   const qs = selectedAccountId ? ('&account_id='+encodeURIComponent(selectedAccountId)) : '';
-  const runs = await api('/api/jobs/runs?limit=30'+qs);
   const root = document.getElementById('jobs');
-  if (!runs || runs.length === 0) { root.innerHTML = '暂无任务记录'; return; }
-  let html = '<div><b>最近任务</b></div><ul>';
-  for (const r of runs) {
-    const ok = (r.ok === true) ? 'OK' : (r.ok === false ? 'FAIL' : 'RUNNING');
-    html += '<li>#'+r.id+' '+escapeHTML(r.job_name)+' ['+escapeHTML(r.scope)+'] '+ok+' <span class="muted">'+escapeHTML(r.started_at||'')+'</span></li>';
+  try {
+    const runs = await api('/api/jobs/runs?limit=30'+qs);
+    const list = Array.isArray(runs) ? runs : [];
+    if (list.length === 0) { root.innerHTML = '暂无任务记录'; return; }
+    let html = '<div><b>最近任务</b></div><ul>';
+    for (const r of list) {
+      const ok = (r.ok === true) ? 'OK' : (r.ok === false ? 'FAIL' : 'RUNNING');
+      html += '<li>#'+r.id+' '+escapeHTML(r.job_name)+' ['+escapeHTML(r.scope)+'] '+ok+' <span class="muted">'+escapeHTML(r.started_at||'')+'</span></li>';
+    }
+    html += '</ul>';
+    root.innerHTML = html;
+  } catch (e) {
+    root.innerHTML = '<div class="muted">加载任务失败：'+escapeHTML(String(e && e.message ? e.message : e))+'</div>';
   }
-  html += '</ul>';
-  root.innerHTML = html;
 }
 
 async function selectAccount(id) {
@@ -291,16 +305,54 @@ async function saveConfig() {
 }
 
 async function startBot() {
-  await api('/api/bots/'+selectedBotId+'/start', {method:'POST', body:'{}'});
-  alert('已触发启动');
+  try {
+    if (!selectedBotId) {
+      alert('请先选择一个 bot');
+      return;
+    }
+    const res = await api('/api/bots/'+selectedBotId+'/start', {method:'POST', body:'{}'});
+    if (res && res.already_running) {
+      alert('Bot 已在运行中 (pid: ' + (res.pid || '-') + ')');
+    } else {
+      alert('Bot 已启动 (pid: ' + (res.pid || '-') + ')');
+    }
+    await selectBot(selectedBotId); // 刷新状态
+  } catch (err) {
+    alert('启动失败：' + err.message);
+    console.error('startBot error:', err);
+  }
 }
 async function stopBot() {
-  await api('/api/bots/'+selectedBotId+'/stop', {method:'POST', body:'{}'});
-  alert('已触发停止');
+  try {
+    if (!selectedBotId) {
+      alert('请先选择一个 bot');
+      return;
+    }
+    const res = await api('/api/bots/'+selectedBotId+'/stop', {method:'POST', body:'{}'});
+    if (res && res.already_stopped) {
+      alert('Bot 已停止');
+    } else {
+      alert('Bot 已停止');
+    }
+    await selectBot(selectedBotId); // 刷新状态
+  } catch (err) {
+    alert('停止失败：' + err.message);
+    console.error('stopBot error:', err);
+  }
 }
 async function restartBot() {
-  await api('/api/bots/'+selectedBotId+'/restart', {method:'POST', body:'{}'});
-  alert('已触发重启');
+  try {
+    if (!selectedBotId) {
+      alert('请先选择一个 bot');
+      return;
+    }
+    const res = await api('/api/bots/'+selectedBotId+'/restart', {method:'POST', body:'{}'});
+    alert('Bot 已重启 (pid: ' + (res.pid || '-') + ')');
+    await selectBot(selectedBotId); // 刷新状态
+  } catch (err) {
+    alert('重启失败：' + err.message);
+    console.error('restartBot error:', err);
+  }
 }
 
 async function loadLogTail() {
@@ -311,14 +363,24 @@ async function loadLogTail() {
 }
 
 async function createAccount() {
-  const name = document.getElementById('accName').value.trim();
-  const mnemonic = document.getElementById('accMnemonic').value.trim();
-  const derivation_path = document.getElementById('accPath').value.trim();
-  const funder_address = document.getElementById('accFunder').value.trim();
-  await api('/api/accounts', {method:'POST', body: JSON.stringify({name, mnemonic, derivation_path, funder_address})});
-  alert('账号已创建');
-  document.getElementById('accMnemonic').value = '';
-  await reloadAccounts();
+  try {
+    const account_id = document.getElementById('accId').value.trim();
+    const name = document.getElementById('accName').value.trim();
+    if (!account_id) {
+      alert('请输入账号ID（三位数，例如 456）');
+      return;
+    }
+    const res = await api('/api/accounts', {method:'POST', body: JSON.stringify({account_id, name})});
+    if (res && res.warning) {
+      alert('账号已创建（有提示）：' + res.warning);
+    } else {
+      alert('账号已创建');
+    }
+    await reloadAccounts();
+  } catch (err) {
+    alert('创建账号失败：' + err.message);
+    console.error('createAccount error:', err);
+  }
 }
 
 async function bindAccount() {
@@ -329,7 +391,7 @@ async function bindAccount() {
   const id = prompt('输入要绑定的 account_id：\\n'+hint);
   if (!id) return;
   const res = await api('/api/bots/'+selectedBotId+'/bind_account', {method:'POST', body: JSON.stringify({account_id: id.trim()})});
-  alert('已绑定，生成新配置版本 v'+res.current_version+'；请手动重启生效');
+  alert('已绑定：account_id='+res.account_id+'；请手动重启生效');
   await selectBot(selectedBotId);
 }
 

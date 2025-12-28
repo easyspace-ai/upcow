@@ -10,12 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/go-chi/chi/v5"
 )
 
 func (s *Server) handleBotConfigVersions(w http.ResponseWriter, r *http.Request) {
-	botID := chi.URLParam(r, "botID")
+	botID := chiURLParam(r, "botID")
 	limit := 50
 	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
@@ -52,7 +50,7 @@ type rollbackRequest struct {
 }
 
 func (s *Server) handleBotConfigRollback(w http.ResponseWriter, r *http.Request) {
-	botID := chi.URLParam(r, "botID")
+	botID := chiURLParam(r, "botID")
 	var req rollbackRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid json body")

@@ -26,7 +26,7 @@ func (s *Server) startTradesSyncBatch(trigger string) (int64, error) {
 }
 
 func (s *Server) doTradesSyncBatch(ctx context.Context, runID int64, trigger string) {
-	masterKey, err := loadMasterKey()
+	mnemonic, err := s.loadMnemonic()
 	if err != nil {
 		msg := err.Error()
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
@@ -42,17 +42,12 @@ func (s *Server) doTradesSyncBatch(ctx context.Context, runID int64, trigger str
 	errCount := 0
 	insertedTotal := 0
 	for _, a := range accounts {
-		row, err := s.getAccountRow(ctx, a.ID)
-		if err != nil || row == nil {
-			errCount++
-			continue
-		}
-		mn, err := decryptFromString(masterKey, row.MnemonicEnc)
+		path, err := derivationPathFromAccountID(a.ID)
 		if err != nil {
 			errCount++
 			continue
 		}
-		derived, err := deriveWalletFromMnemonic(mn, row.DerivationPath)
+		derived, err := deriveWalletFromMnemonic(mnemonic, path)
 		if err != nil {
 			errCount++
 			continue
@@ -126,7 +121,7 @@ func (s *Server) startOpenOrdersSyncBatch(trigger string) (int64, error) {
 }
 
 func (s *Server) doOpenOrdersSyncBatch(ctx context.Context, runID int64, trigger string) {
-	masterKey, err := loadMasterKey()
+	mnemonic, err := s.loadMnemonic()
 	if err != nil {
 		msg := err.Error()
 		_ = s.finishJobRun(ctx, runID, false, &msg, nil)
@@ -143,17 +138,12 @@ func (s *Server) doOpenOrdersSyncBatch(ctx context.Context, runID int64, trigger
 	okCount := 0
 	errCount := 0
 	for _, a := range accounts {
-		row, err := s.getAccountRow(ctx, a.ID)
-		if err != nil || row == nil {
-			errCount++
-			continue
-		}
-		mn, err := decryptFromString(masterKey, row.MnemonicEnc)
+		path, err := derivationPathFromAccountID(a.ID)
 		if err != nil {
 			errCount++
 			continue
 		}
-		derived, err := deriveWalletFromMnemonic(mn, row.DerivationPath)
+		derived, err := deriveWalletFromMnemonic(mnemonic, path)
 		if err != nil {
 			errCount++
 			continue

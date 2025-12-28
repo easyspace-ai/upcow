@@ -11,7 +11,6 @@ import (
 	"time"
 
 	pkgconfig "github.com/betbot/gobet/pkg/config"
-	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
@@ -117,11 +116,15 @@ func (s *Server) handleBotsList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("db list: %v", err))
 		return
 	}
+	// Ensure JSON is [] not null when empty.
+	if bots == nil {
+		bots = []Bot{}
+	}
 	writeJSON(w, http.StatusOK, bots)
 }
 
 func (s *Server) handleBotGet(w http.ResponseWriter, r *http.Request) {
-	botID := chi.URLParam(r, "botID")
+	botID := chiURLParam(r, "botID")
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	b, err := s.getBot(ctx, botID)
@@ -142,7 +145,7 @@ type updateConfigRequest struct {
 }
 
 func (s *Server) handleBotConfigUpdate(w http.ResponseWriter, r *http.Request) {
-	botID := chi.URLParam(r, "botID")
+	botID := chiURLParam(r, "botID")
 	var req updateConfigRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body")
@@ -243,7 +246,19 @@ func validateBotConfigYAMLStrict(yamlText string) error {
 		MinShareSize:   cf.MinShareSize,
 		DryRun:         cf.DryRun,
 	}
-	return cfg.Validate()
+	// 注意：控制台支持“先创建 Bot，再绑定账号注入钱包”。
+	// 因此这里不强制要求 wallet.private_key / wallet.funder_address；
+	// 但会保留 market / exchangeStrategies / minOrderSize 等校验。
+	if _, err := cfg.Market.Spec(); err != nil {
+		return fmt.Errorf("market 配置无效: %w", err)
+	}
+	if len(cfg.ExchangeStrategies) == 0 {
+		return fmt.Errorf("exchangeStrategies 不能为空（请按 bbgo main 风格配置策略）")
+	}
+	if cfg.MinOrderSize > 0 && cfg.MinOrderSize < 1.0 {
+		return fmt.Errorf("minOrderSize 必须 >= 1.0")
+	}
+	return nil
 }
 
 func upsertYAMLKey(yamlText string, key string, value any) (string, error) {

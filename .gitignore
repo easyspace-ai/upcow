@@ -46,3 +46,9 @@ data/market-data.json
 *.a
 
 yml/
+yml/
+data/
+logs/
+docs/
+cache/
+cmd/server/data/

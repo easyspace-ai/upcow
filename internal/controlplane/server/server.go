@@ -1,28 +1,35 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/betbot/gobet/pkg/secretstore"
+	"github.com/gin-gonic/gin"
 	_ "modernc.org/sqlite"
 )
 
 type Config struct {
-	DBPath  string
-	BotBin  string
-	DataDir string
-	LogsDir string
+	DBPath      string
+	BotBin      string
+	DataDir     string
+	LogsDir     string
+	Secrets     *secretstore.Store // if provided, Server will use and close it
+	SecretsPath string             // optional: open secrets db if Secrets is nil
+	SecretsKey  []byte             // 32 bytes; required for encrypted-at-rest secrets
 }
 
 type Server struct {
-	cfg Config
-	db  *sql.DB
+	cfg     Config
+	db      *sql.DB
+	secrets *secretstore.Store
 
 	bgCancel func()
 	bgWG     sync.WaitGroup
@@ -53,8 +60,25 @@ func New(cfg Config) (*Server, error) {
 	db.SetMaxOpenConns(1) // SQLite：单连接更稳定
 	db.SetMaxIdleConns(1)
 
-	s := &Server{cfg: cfg, db: db}
+	ss := cfg.Secrets
+	if ss == nil && strings.TrimSpace(cfg.SecretsPath) != "" {
+		store, err := secretstore.Open(secretstore.OpenOptions{
+			Path:          cfg.SecretsPath,
+			EncryptionKey: cfg.SecretsKey,
+			ReadOnly:      true,
+		})
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("open secrets db: %w", err)
+		}
+		ss = store
+	}
+
+	s := &Server{cfg: cfg, db: db, secrets: ss}
 	if err := s.migrate(); err != nil {
+		if ss != nil {
+			_ = ss.Close()
+		}
 		_ = db.Close()
 		return nil, err
 	}
@@ -67,6 +91,9 @@ func (s *Server) Close() error {
 		s.bgCancel()
 		s.bgWG.Wait()
 	}
+	if s.secrets != nil {
+		_ = s.secrets.Close()
+	}
 	if s.db != nil {
 		return s.db.Close()
 	}
@@ -74,64 +101,78 @@ func (s *Server) Close() error {
 }
 
 func (s *Server) Router() http.Handler {
-	r := chi.NewRouter()
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
 
-	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	r.GET("/healthz", s.wrap(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
 
-	r.Route("/api", func(r chi.Router) {
-		r.Route("/accounts", func(r chi.Router) {
-			r.Get("/", s.handleAccountsList)
-			r.Post("/", s.handleAccountsCreate)
-			r.Route("/{accountID}", func(r chi.Router) {
-				r.Get("/", s.handleAccountGet)
-				r.Put("/", s.handleAccountUpdate)
-				r.Post("/reveal-mnemonic", s.handleAccountRevealMnemonic)
-				r.Post("/sync_balance", s.handleAccountSyncBalance)
-				r.Post("/redeem", s.handleAccountRedeem)
-				r.Post("/sync_trades", s.handleAccountSyncTrades)
-				r.Post("/sync_positions", s.handleAccountSyncPositions)
-				r.Post("/sync_open_orders", s.handleAccountSyncOpenOrders)
-				r.Get("/balances", s.handleAccountBalances)
-				r.Get("/trades", s.handleAccountTrades)
-				r.Get("/positions", s.handleAccountPositions)
-				r.Get("/open_orders", s.handleAccountOpenOrders)
-				r.Get("/stats", s.handleAccountStats)
-				r.Get("/equity", s.handleAccountEquity)
-				r.Post("/equity_snapshot", s.handleAccountEquitySnapshotNow)
-			})
-		})
+	api := r.Group("/api")
 
-		r.Route("/jobs", func(r chi.Router) {
-			r.Get("/runs", s.handleJobRunsList)
-			r.Post("/balance_sync", s.handleJobBalanceSyncNow)
-			r.Post("/redeem", s.handleJobRedeemNow)
-			r.Post("/trades_sync", s.handleJobTradesSyncNow)
-			r.Post("/positions_sync", s.handleJobPositionsSyncNow)
-			r.Post("/open_orders_sync", s.handleJobOpenOrdersSyncNow)
-			r.Post("/equity_snapshot", s.handleJobEquitySnapshotNow)
-		})
+	accounts := api.Group("/accounts")
+	accounts.GET("/", s.wrap(s.handleAccountsList))
+	accounts.POST("/", s.wrap(s.handleAccountsCreate))
+	accountsID := accounts.Group("/:accountID")
+	accountsID.GET("/", s.wrap(s.handleAccountGet))
+	accountsID.PUT("/", s.wrap(s.handleAccountUpdate))
+	accountsID.POST("/reveal-mnemonic", s.wrap(s.handleAccountRevealMnemonic))
+	accountsID.POST("/sync_balance", s.wrap(s.handleAccountSyncBalance))
+	accountsID.POST("/redeem", s.wrap(s.handleAccountRedeem))
+	accountsID.POST("/sync_trades", s.wrap(s.handleAccountSyncTrades))
+	accountsID.POST("/sync_positions", s.wrap(s.handleAccountSyncPositions))
+	accountsID.POST("/sync_open_orders", s.wrap(s.handleAccountSyncOpenOrders))
+	accountsID.GET("/balances", s.wrap(s.handleAccountBalances))
+	accountsID.GET("/trades", s.wrap(s.handleAccountTrades))
+	accountsID.GET("/positions", s.wrap(s.handleAccountPositions))
+	accountsID.GET("/open_orders", s.wrap(s.handleAccountOpenOrders))
+	accountsID.GET("/stats", s.wrap(s.handleAccountStats))
+	accountsID.GET("/equity", s.wrap(s.handleAccountEquity))
+	accountsID.POST("/equity_snapshot", s.wrap(s.handleAccountEquitySnapshotNow))
 
-		r.Route("/bots", func(r chi.Router) {
-			r.Get("/", s.handleBotsList)
-			r.Post("/", s.handleBotsCreate)
-			r.Route("/{botID}", func(r chi.Router) {
-				r.Get("/", s.handleBotGet)
-				r.Put("/config", s.handleBotConfigUpdate) // 保存配置，不重启
-				r.Get("/config/versions", s.handleBotConfigVersions)
-				r.Post("/config/rollback", s.handleBotConfigRollback)
-				r.Post("/bind_account", s.handleBotBindAccount)
-				r.Post("/start", s.handleBotStart)
-				r.Post("/stop", s.handleBotStop)
-				r.Post("/restart", s.handleBotRestart)
-				r.Get("/status", s.handleBotStatus)
-				r.Get("/logs", s.handleBotLogsTail)
-				r.Get("/logs/stream", s.handleBotLogsStream)
-			})
-		})
-	})
+	jobs := api.Group("/jobs")
+	jobs.GET("/runs", s.wrap(s.handleJobRunsList))
+	jobs.POST("/balance_sync", s.wrap(s.handleJobBalanceSyncNow))
+	jobs.POST("/redeem", s.wrap(s.handleJobRedeemNow))
+	jobs.POST("/trades_sync", s.wrap(s.handleJobTradesSyncNow))
+	jobs.POST("/positions_sync", s.wrap(s.handleJobPositionsSyncNow))
+	jobs.POST("/open_orders_sync", s.wrap(s.handleJobOpenOrdersSyncNow))
+	jobs.POST("/equity_snapshot", s.wrap(s.handleJobEquitySnapshotNow))
 
-	// UI：极简单页（阶段1）
-	r.Get("/", s.handleUI)
+	bots := api.Group("/bots")
+	bots.GET("/", s.wrap(s.handleBotsList))
+	bots.POST("/", s.wrap(s.handleBotsCreate))
+	botID := bots.Group("/:botID")
+	botID.GET("/", s.wrap(s.handleBotGet))
+	botID.PUT("/config", s.wrap(s.handleBotConfigUpdate))
+	botID.GET("/config/versions", s.wrap(s.handleBotConfigVersions))
+	botID.POST("/config/rollback", s.wrap(s.handleBotConfigRollback))
+	botID.POST("/bind_account", s.wrap(s.handleBotBindAccount))
+	botID.POST("/start", s.wrap(s.handleBotStart))
+	botID.POST("/stop", s.wrap(s.handleBotStop))
+	botID.POST("/restart", s.wrap(s.handleBotRestart))
+	botID.GET("/status", s.wrap(s.handleBotStatus))
+	botID.GET("/logs", s.wrap(s.handleBotLogsTail))
+	botID.GET("/logs/stream", s.wrap(s.handleBotLogsStream))
+
+	// UI
+	r.GET("/", s.wrap(s.handleUI))
 
 	return r
+}
+
+type paramsKeyType string
+
+const paramsKey paramsKeyType = "gobet_path_params"
+
+// wrap adapts existing net/http handlers to gin, injecting path params into request context.
+func (s *Server) wrap(h func(http.ResponseWriter, *http.Request)) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		m := map[string]string{}
+		for _, p := range c.Params {
+			m[p.Key] = p.Value
+		}
+		ctx := context.WithValue(c.Request.Context(), paramsKey, m)
+		c.Request = c.Request.WithContext(ctx)
+		h(c.Writer, c.Request)
+	}
 }

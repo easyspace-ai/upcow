@@ -5,68 +5,76 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	sdkrelayer "github.com/betbot/gobet/pkg/sdk/relayer"
+	sdktypes "github.com/betbot/gobet/pkg/sdk/types"
+	"github.com/ethereum/go-ethereum/crypto"
+	"math/big"
 )
 
 type createAccountRequest struct {
-	Name           string `json:"name"`
-	Mnemonic       string `json:"mnemonic"`
-	DerivationPath string `json:"derivation_path"`
-	FunderAddress  string `json:"funder_address"`
+	AccountID string `json:"account_id"`
+	Name      string `json:"name"`
 }
 
 func (s *Server) handleAccountsCreate(w http.ResponseWriter, r *http.Request) {
-	masterKey, err := loadMasterKey()
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-
 	var req createAccountRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, 400, "invalid json body")
 		return
 	}
+	req.AccountID = strings.TrimSpace(req.AccountID)
 	req.Name = strings.TrimSpace(req.Name)
-	req.Mnemonic = strings.TrimSpace(req.Mnemonic)
-	req.DerivationPath = strings.TrimSpace(req.DerivationPath)
-	req.FunderAddress = strings.TrimSpace(req.FunderAddress)
 
-	if req.Name == "" || req.Mnemonic == "" || req.DerivationPath == "" || req.FunderAddress == "" {
-		writeError(w, 400, "name, mnemonic, derivation_path, funder_address are required")
+	accountID, err := normalizeAccountID(req.AccountID)
+	if err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	if req.Name == "" {
+		req.Name = accountID
+	}
+
+	mnemonic, err := s.loadMnemonic()
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	derivationPath, err := derivationPathFromAccountID(accountID)
+	if err != nil {
+		writeError(w, 400, err.Error())
 		return
 	}
 
-	derived, err := deriveWalletFromMnemonic(req.Mnemonic, req.DerivationPath)
+	derived, err := deriveWalletFromMnemonic(mnemonic, derivationPath)
 	if err != nil {
 		writeError(w, 400, fmt.Sprintf("derive failed: %v", err))
 		return
 	}
 
-	enc, err := encryptToString(masterKey, req.Mnemonic)
+	// compute expected Safe as funder address (official relayer model)
+	funderAddr, warn, err := s.computeAndEnsureSafe(derived.PrivateKeyHex, derived.EOAAddress)
 	if err != nil {
-		writeError(w, 500, fmt.Sprintf("encrypt failed: %v", err))
+		writeError(w, 500, fmt.Sprintf("register failed: %v", err))
 		return
 	}
 
 	now := time.Now()
-	id := uuid.NewString()
 	row := accountRow{
 		Account: Account{
-			ID:             id,
+			ID:             accountID,
 			Name:           req.Name,
-			DerivationPath: req.DerivationPath,
+			DerivationPath: derivationPath,
 			EOAAddress:     derived.EOAAddress,
-			FunderAddress:  req.FunderAddress,
+			FunderAddress:  funderAddr,
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		},
-		MnemonicEnc: enc,
+		// mnemonic is stored in local encrypted file, not in sqlite
+		MnemonicEnc: "",
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -75,7 +83,11 @@ func (s *Server) handleAccountsCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, fmt.Sprintf("db insert: %v", err))
 		return
 	}
-	writeJSON(w, 201, row.Account)
+	if warn != "" {
+		writeJSON(w, 201, map[string]any{"account": row.Account, "warning": warn})
+		return
+	}
+	writeJSON(w, 201, map[string]any{"account": row.Account})
 }
 
 func (s *Server) handleAccountsList(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +97,10 @@ func (s *Server) handleAccountsList(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, 500, fmt.Sprintf("db list: %v", err))
 		return
+	}
+	// Ensure JSON is [] not null when empty.
+	if accounts == nil {
+		accounts = []Account{}
 	}
 	writeJSON(w, 200, accounts)
 }
@@ -107,10 +123,7 @@ func (s *Server) handleAccountGet(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateAccountRequest struct {
-	Name           string  `json:"name"`
-	Mnemonic       *string `json:"mnemonic,omitempty"`
-	DerivationPath string  `json:"derivation_path"`
-	FunderAddress  string  `json:"funder_address"`
+	Name string `json:"name"`
 }
 
 func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
@@ -122,61 +135,16 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
-	req.DerivationPath = strings.TrimSpace(req.DerivationPath)
-	req.FunderAddress = strings.TrimSpace(req.FunderAddress)
 
-	if req.Name == "" || req.DerivationPath == "" || req.FunderAddress == "" {
-		writeError(w, 400, "name, derivation_path, funder_address are required")
+	if req.Name == "" {
+		writeError(w, 400, "name is required")
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	row, err := s.getAccountRow(ctx, accountID)
-	if err != nil {
-		writeError(w, 500, fmt.Sprintf("db get: %v", err))
-		return
-	}
-	if row == nil {
-		writeError(w, 404, "account not found")
-		return
-	}
-
-	masterKey, err := loadMasterKey()
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-
-	mnemonic := ""
-	var mnemonicEnc *string
-	if req.Mnemonic != nil {
-		mnemonic = strings.TrimSpace(*req.Mnemonic)
-	} else {
-		mnemonic, err = decryptFromString(masterKey, row.MnemonicEnc)
-		if err != nil {
-			writeError(w, 500, fmt.Sprintf("decrypt failed: %v", err))
-			return
-		}
-	}
-
-	derived, err := deriveWalletFromMnemonic(mnemonic, req.DerivationPath)
-	if err != nil {
-		writeError(w, 400, fmt.Sprintf("derive failed: %v", err))
-		return
-	}
-
-	if req.Mnemonic != nil {
-		enc, err := encryptToString(masterKey, mnemonic)
-		if err != nil {
-			writeError(w, 500, fmt.Sprintf("encrypt failed: %v", err))
-			return
-		}
-		mnemonicEnc = &enc
-	}
-
-	if err := s.updateAccount(ctx, accountID, req.Name, mnemonicEnc, req.DerivationPath, derived.EOAAddress, req.FunderAddress); err != nil {
+	if err := s.updateAccountName(ctx, accountID, req.Name); err != nil {
 		writeError(w, 500, fmt.Sprintf("db update: %v", err))
 		return
 	}
@@ -186,40 +154,73 @@ func (s *Server) handleAccountUpdate(w http.ResponseWriter, r *http.Request) {
 
 // reveal-mnemonic：按你要求提供，但需要 admin token（避免默认泄露）
 func (s *Server) handleAccountRevealMnemonic(w http.ResponseWriter, r *http.Request) {
-	adminToken := strings.TrimSpace(os.Getenv("GOBET_ADMIN_TOKEN"))
-	if adminToken == "" {
-		writeError(w, 500, "GOBET_ADMIN_TOKEN not set")
-		return
+	// New security model: mnemonic never flows through HTTP and is never stored in sqlite.
+	// Use cmd/mnemonic-init to provision local encrypted mnemonic file before starting the server.
+	writeError(w, 410, "mnemonic is managed via local encrypted file; HTTP reveal is disabled")
+}
+
+func (s *Server) computeAndEnsureSafe(privateKeyHex string, eoaAddress string) (funderAddress string, warning string, err error) {
+	// Always compute expected safe address as funder.
+	chainID := big.NewInt(137)
+	relayerURL := strings.TrimSpace(s.getenv("POLYMARKET_RELAYER_URL"))
+	if relayerURL == "" {
+		relayerURL = "https://relayer-v2.polymarket.com"
 	}
-	if strings.TrimSpace(r.Header.Get("X-Admin-Token")) != adminToken {
-		writeError(w, 403, "forbidden")
-		return
+	// Minimal client: GetExpectedSafe does not require headers/signing.
+	rc := sdkrelayer.NewClient(relayerURL, chainID, nil, nil)
+	safeAddr, err := rc.GetExpectedSafe(eoaAddress)
+	if err != nil {
+		return "", "", err
 	}
 
-	accountID := strings.TrimSpace(chiURLParam(r, "accountID"))
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	row, err := s.getAccountRow(ctx, accountID)
-	if err != nil {
-		writeError(w, 500, fmt.Sprintf("db get: %v", err))
-		return
-	}
-	if row == nil {
-		writeError(w, 404, "account not found")
-		return
+	// If it's not deployed, try to deploy (recommended for new wallets).
+	deployed, derr := rc.GetDeployed(safeAddr)
+	if derr == nil && deployed.Deployed {
+		return safeAddr, "", nil
 	}
 
-	masterKey, err := loadMasterKey()
+	pk, err := crypto.HexToECDSA(strings.TrimPrefix(strings.TrimSpace(privateKeyHex), "0x"))
 	if err != nil {
-		writeError(w, 500, err.Error())
-		return
+		return safeAddr, "", err
 	}
-	mnemonic, err := decryptFromString(masterKey, row.MnemonicEnc)
+	signFn := func(signer string, digest []byte) ([]byte, error) {
+		_ = signer
+		sig, err := crypto.Sign(digest, pk)
+		if err != nil {
+			return nil, err
+		}
+		if sig[64] < 27 {
+			sig[64] += 27
+		}
+		return sig, nil
+	}
+
+	// If builder creds are missing, we can't deploy, but we still return expected safe as funder.
+	bc, err := s.loadBuilderCreds()
 	if err != nil {
-		writeError(w, 500, fmt.Sprintf("decrypt failed: %v", err))
-		return
+		return safeAddr, "safe not deployed yet; missing builder creds for deploy", nil
 	}
-	writeJSON(w, 200, map[string]any{"mnemonic": mnemonic})
+
+	rc2 := sdkrelayer.NewClient(relayerURL, chainID, signFn, &sdktypes.BuilderApiKeyCreds{
+		Key:        bc.Key,
+		Secret:     bc.Secret,
+		Passphrase: bc.Passphrase,
+	})
+	// deploy (best effort)
+	_, err = rc2.Deploy(&sdktypes.AuthOption{SingerAddress: eoaAddress, FunderAddress: safeAddr})
+	if err != nil {
+		return safeAddr, fmt.Sprintf("safe deploy failed: %v", err), nil
+	}
+	// poll for deployed
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(2 * time.Second)
+		st, err2 := rc2.GetDeployed(safeAddr)
+		if err2 == nil && st.Deployed {
+			return safeAddr, "", nil
+		}
+	}
+	return safeAddr, "safe deploy submitted; not confirmed deployed yet", nil
 }
 
 func (s *Server) handleAccountSyncBalance(w http.ResponseWriter, r *http.Request) {
