@@ -69,6 +69,8 @@ type Strategy struct {
 	validated  bool
 	yesAssetID string
 	noAssetID  string
+
+	autoMerge common.AutoMergeController
 }
 
 type trackedOrderKind string
@@ -174,6 +176,9 @@ func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, newMarket *domai
 func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
 	if e == nil || e.Market == nil {
 		return nil
+	}
+	if s.TradingService != nil {
+		s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof)
 	}
 
 	// 更新当前价格

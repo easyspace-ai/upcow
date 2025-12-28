@@ -1,6 +1,10 @@
 package unifiedarb
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/betbot/gobet/internal/strategies/common"
+)
 
 // Config：统一套利策略（融合 complete-set + pairlock 风控 + 分阶段执行）
 //
@@ -74,9 +78,12 @@ type Config struct {
 	HedgeDelaySeconds         int     `json:"hedgeDelaySeconds" yaml:"hedgeDelaySeconds"`
 	HedgeSellPriceOffsetCents int     `json:"hedgeSellPriceOffsetCents" yaml:"hedgeSellPriceOffsetCents"`
 	MinExposureToHedge        float64 `json:"minExposureToHedge" yaml:"minExposureToHedge"`
+
+	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
 }
 
 func (c *Config) Validate() error {
+	c.AutoMerge.Normalize()
 	if c.OrderSize <= 0 {
 		return fmt.Errorf("orderSize 必须 > 0")
 	}

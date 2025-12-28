@@ -11,6 +11,7 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/execution"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/bbgo"
@@ -33,6 +34,8 @@ type PairLockStrategy struct {
 
 	rounds         int
 	lastTradeAt    time.Time
+
+	autoMerge common.AutoMergeController
 }
 
 func (s *PairLockStrategy) ID() string   { return ID }
@@ -59,6 +62,7 @@ func (s *PairLockStrategy) OnPriceChanged(ctx context.Context, e *events.PriceCh
 	if e == nil || e.Market == nil || s.TradingService == nil {
 		return nil
 	}
+	s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof)
 	m := e.Market
 
 	// 临近结算不再开新轮：降低 WS/撮合延迟导致的单腿裸露风险。

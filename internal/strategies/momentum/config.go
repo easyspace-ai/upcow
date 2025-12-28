@@ -3,6 +3,8 @@ package momentum
 import (
 	"fmt"
 	"strings"
+
+	"github.com/betbot/gobet/internal/strategies/common"
 )
 
 // MomentumStrategyConfig 动量策略配置（来自 pkg/config.MomentumConfig 的适配结果）。
@@ -14,6 +16,8 @@ type MomentumStrategyConfig struct {
 	MinEdgeCents   int     `json:"minEdgeCents" yaml:"minEdgeCents"`
 	CooldownSecs   int     `json:"cooldownSecs" yaml:"cooldownSecs"`
 	UsePolygonFeed bool    `json:"usePolygonFeed" yaml:"usePolygonFeed"`
+
+	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
 }
 
 // GetName 实现 StrategyConfig 接口
@@ -25,6 +29,7 @@ func (c *MomentumStrategyConfig) Validate() error {
 	if c == nil {
 		return fmt.Errorf("配置为空")
 	}
+	c.AutoMerge.Normalize()
 	if strings.TrimSpace(c.Asset) == "" {
 		return fmt.Errorf("asset 不能为空")
 	}

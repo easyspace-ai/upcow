@@ -9,6 +9,7 @@ import (
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/execution"
 	"github.com/betbot/gobet/internal/services"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
 )
@@ -30,6 +31,8 @@ type Strategy struct {
 	tradedThisCycle bool
 	lastTradeAt     time.Time
 	firstSeenAt     time.Time
+
+	autoMerge common.AutoMergeController
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -72,6 +75,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		log.Debugf("⏭️ [updown] 跳过：TradingService 为空")
 		return nil
 	}
+	s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof)
 	log.Debugf("✅ [updown] 通过基础检查: market=%s, token=%s, price=%.4f", 
 		e.Market.Slug, e.TokenType, e.NewPrice.ToDecimal())
 

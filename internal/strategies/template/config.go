@@ -1,6 +1,10 @@
 package template
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/betbot/gobet/internal/strategies/common"
+)
 
 const ID = "template"
 
@@ -18,12 +22,17 @@ type Config struct {
 	// 示例：可以添加更多配置字段
 	// CooldownMs int `yaml:"cooldownMs" json:"cooldownMs"` // 冷却时间（毫秒）
 	// MaxTradesPerCycle int `yaml:"maxTradesPerCycle" json:"maxTradesPerCycle"` // 每周期最大交易次数
+
+	// AutoMerge：可选的“自动合并 complete sets”（YES+NO -> USDC）。
+	// 默认关闭；每个策略可独立控制是否启用与阈值。
+	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
 }
 
 func (c *Config) Validate() error {
 	if c == nil {
 		return fmt.Errorf("config 不能为空")
 	}
+	c.AutoMerge.Normalize()
 	if c.OrderSize <= 0 {
 		return fmt.Errorf("orderSize 必须 > 0")
 	}

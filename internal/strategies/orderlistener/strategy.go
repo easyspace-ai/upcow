@@ -13,6 +13,7 @@ import (
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/execution"
 	"github.com/betbot/gobet/internal/services"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/strategies/orderutil"
 	"github.com/betbot/gobet/pkg/bbgo"
 )
@@ -38,6 +39,8 @@ type Strategy struct {
 	// 追踪已监听到的订单：orderID -> orderMeta
 	tracked   map[string]*orderMeta
 	trackedMu sync.RWMutex
+
+	autoMerge common.AutoMergeController
 }
 
 type orderMeta struct {
@@ -115,9 +118,12 @@ func (s *Strategy) OnOrderUpdate(_ context.Context, order *domain.Order) error {
 	return nil
 }
 
-func (s *Strategy) OnPriceChanged(_ context.Context, e *events.PriceChangedEvent) error {
+func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
 	if e == nil {
 		return nil
+	}
+	if s.TradingService != nil && e.Market != nil {
+		s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof)
 	}
 
 	select {

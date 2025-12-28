@@ -1,6 +1,10 @@
 package pairlock
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/betbot/gobet/internal/strategies/common"
+)
 
 // PairLockStrategyConfig 成对锁定（Complete-Set）滚动策略配置
 //
@@ -64,11 +68,14 @@ type PairLockStrategyConfig struct {
 	// EntryMaxBuySlippageCents 买入滑点保护（分，0=关闭）。
 	// 若启用：bestAsk 必须 <= (最近观测价 + slippage) 才允许下单（两腿都检查）。
 	EntryMaxBuySlippageCents int `json:"entryMaxBuySlippageCents" yaml:"entryMaxBuySlippageCents"`
+
+	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
 }
 
 func (c *PairLockStrategyConfig) GetName() string { return ID }
 
 func (c *PairLockStrategyConfig) Validate() error {
+	c.AutoMerge.Normalize()
 	if c.OrderSize <= 0 {
 		return fmt.Errorf("order_size 必须 > 0")
 	}

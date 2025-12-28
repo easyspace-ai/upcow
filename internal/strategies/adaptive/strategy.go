@@ -39,6 +39,8 @@ type Strategy struct {
 	// RTDS 客户端
 	rtdsClient *rtds.Client
 
+	autoMerge common.AutoMergeController
+
 	// 价格数据
 	binanceFutPrice float64 // Binance 期货价格
 	chainlinkPrice  float64 // Chainlink 价格
@@ -237,6 +239,9 @@ func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, newMarket *domai
 func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
 	if e == nil || e.Market == nil {
 		return nil
+	}
+	if s.TradingService != nil {
+		s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof)
 	}
 
 	// 兜底：如果框架的 OnCycle 尚未来得及初始化 marketInfo（极端竞态），这里做一次性初始化

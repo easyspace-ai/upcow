@@ -1,6 +1,10 @@
 package grid
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/betbot/gobet/internal/strategies/common"
+)
 
 // Config：BTC 15m 网格策略（新架构）
 //
@@ -84,6 +88,8 @@ type Config struct {
 
 	// 空轮次超时（秒）：如果轮次开始后 N 秒内没有下单，允许跳过该轮次（0 表示不超时，一直等待）
 	EmptyRoundTimeoutSeconds int `json:"emptyRoundTimeoutSeconds" yaml:"emptyRoundTimeoutSeconds"`
+
+	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
 }
 
 func (c *Config) WaitForRoundCompleteEnabled() bool {
@@ -102,6 +108,7 @@ func (c *Config) Normalize() {
 
 func (c *Config) Validate() error {
 	c.Normalize()
+	c.AutoMerge.Normalize()
 
 	if c.OrderSize <= 0 {
 		return fmt.Errorf("orderSize 必须 > 0")

@@ -44,6 +44,8 @@ type Strategy struct {
 	// 库存计算器（用于库存偏斜机制）
 	inventoryCalculator *common.InventoryCalculator
 
+	autoMerge common.AutoMergeController
+
 	// 未对冲的 Entry 订单（当 Hedge 订单失败时记录）
 	unhedgedEntries map[string]*domain.Order
 
@@ -541,6 +543,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if e == nil || e.Market == nil || s.TradingService == nil {
 		return nil
 	}
+	s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof)
 
 	// 1. 市场过滤：只处理目标 market + 当前周期 market
 	if !s.shouldHandleMarketEvent(e.Market) {

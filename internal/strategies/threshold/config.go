@@ -2,6 +2,8 @@ package threshold
 
 import (
 	"fmt"
+
+	"github.com/betbot/gobet/internal/strategies/common"
 )
 
 // ThresholdStrategyConfig 价格阈值策略配置
@@ -15,6 +17,8 @@ type ThresholdStrategyConfig struct {
 	StopLossCents       int     `json:"stopLossCents" yaml:"stopLossCents"`            // 止损目标（美分，价格差）
 	MaxBuySlippageCents int     `json:"maxBuySlippageCents" yaml:"maxBuySlippageCents"`
 	MaxSellSlippageCents int     `json:"maxSellSlippageCents" yaml:"maxSellSlippageCents"`
+
+	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
 }
 
 // GetName 实现 StrategyConfig 接口
@@ -24,6 +28,7 @@ func (c *ThresholdStrategyConfig) GetName() string {
 
 // Validate 验证配置
 func (c *ThresholdStrategyConfig) Validate() error {
+	c.AutoMerge.Normalize()
 	if c.BuyThreshold <= 0 || c.BuyThreshold > 100 {
 		return fmt.Errorf("买入阈值必须在 1-100 美分之间（例如 62 表示 62 cents = $0.62）")
 	}

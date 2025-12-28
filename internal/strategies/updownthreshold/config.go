@@ -1,6 +1,10 @@
 package updownthreshold
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/betbot/gobet/internal/strategies/common"
+)
 
 const ID = "updownthreshold"
 
@@ -31,12 +35,15 @@ type Config struct {
 	// DelayedEntryMinutes: 周期开始后延迟多少分钟才开始交易，默认 8
 	// 如果设置了此值，在延迟期间后，只要价格 >= EntryCents 就买入（不需要"越过"逻辑）
 	DelayedEntryMinutes int `yaml:"delayedEntryMinutes" json:"delayedEntryMinutes"`
+
+	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
 }
 
 func (c *Config) Validate() error {
 	if c == nil {
 		return fmt.Errorf("config 不能为空")
 	}
+	c.AutoMerge.Normalize()
 	if c.OrderSize <= 0 {
 		return fmt.Errorf("orderSize 必须 > 0")
 	}

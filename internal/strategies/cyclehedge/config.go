@@ -1,6 +1,10 @@
 package cyclehedge
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/betbot/gobet/internal/strategies/common"
+)
 
 // Config：BTC 15m “周期对冲锁利”策略。
 //
@@ -92,11 +96,14 @@ type Config struct {
 	ReportDir         string `yaml:"reportDir" json:"reportDir"`                 // 默认 data/reports/cyclehedge
 	ReportWriteJSONL  *bool  `yaml:"reportWriteJSONL" json:"reportWriteJSONL"`   // 默认 true：追加到 report.jsonl
 	ReportWritePerCycle *bool `yaml:"reportWritePerCycle" json:"reportWritePerCycle"` // 默认 true：每周期单独一个 JSON
+
+	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
 }
 
 func boolPtr(b bool) *bool { return &b }
 
 func (c *Config) Validate() error {
+	c.AutoMerge.Normalize()
 	if c.CycleDurationSeconds <= 0 {
 		c.CycleDurationSeconds = 15 * 60
 	}

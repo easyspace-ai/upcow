@@ -3,6 +3,8 @@ package ctfendgame
 import (
 	"fmt"
 	"time"
+
+	"github.com/betbot/gobet/internal/strategies/common"
 )
 
 const ID = "ctfendgame"
@@ -70,12 +72,15 @@ type Config struct {
 	HoldingsCheckOnCycleStart *bool `yaml:"holdingsCheckOnCycleStart" json:"holdingsCheckOnCycleStart"`
 	// HoldingsExpectedMinRatio: 校验阈值（min(YES,NO) >= expected*ratio），默认 0.98
 	HoldingsExpectedMinRatio float64 `yaml:"holdingsExpectedMinRatio" json:"holdingsExpectedMinRatio"`
+
+	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
 }
 
 func (c *Config) Validate() error {
 	if c == nil {
 		return fmt.Errorf("config 不能为空")
 	}
+	c.AutoMerge.Normalize()
 	if c.Timeframe == "" {
 		c.Timeframe = "15m"
 	}

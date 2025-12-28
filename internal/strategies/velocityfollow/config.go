@@ -3,6 +3,7 @@ package velocityfollow
 import (
 	"fmt"
 
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/sirupsen/logrus"
 )
 
@@ -106,11 +107,14 @@ type Config struct {
 	EnableTrailingTakeProfit bool `yaml:"enableTrailingTakeProfit" json:"enableTrailingTakeProfit"` // 是否启用追踪止盈
 	TrailStartCents          int  `yaml:"trailStartCents" json:"trailStartCents"`                   // 达到该利润后开始追踪（分，默认 4）
 	TrailDistanceCents       int  `yaml:"trailDistanceCents" json:"trailDistanceCents"`             // 回撤触发距离（分，默认 2）
+
+	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
 }
 
 func boolPtr(b bool) *bool { return &b }
 
 func (c *Config) Validate() error {
+	c.AutoMerge.Normalize()
 	if c.OrderSize <= 0 {
 		return fmt.Errorf("orderSize 必须 > 0")
 	}

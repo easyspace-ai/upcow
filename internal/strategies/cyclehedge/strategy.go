@@ -57,6 +57,8 @@ type Strategy struct {
 
 	// cycle stats (for reporting)
 	stats cycleStats
+
+	autoMerge common.AutoMergeController
 }
 
 type cycleStats struct {
@@ -146,9 +148,12 @@ func (s *Strategy) OnCycle(ctx context.Context, oldMarket *domain.Market, newMar
 	s.resetCycle(ctx, now, newMarket)
 }
 
-func (s *Strategy) OnPriceChanged(_ context.Context, e *events.PriceChangedEvent) error {
+func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
 	if e == nil || e.Market == nil {
 		return nil
+	}
+	if s.TradingService != nil {
+		s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof)
 	}
 	// fast path：只合并事件
 	s.priceMu.Lock()

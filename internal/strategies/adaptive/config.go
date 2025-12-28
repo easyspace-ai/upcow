@@ -1,6 +1,10 @@
 package adaptive
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/betbot/gobet/internal/strategies/common"
+)
 
 const ID = "adaptive"
 
@@ -33,10 +37,13 @@ type Config struct {
 
 	// 市场周期配置（从 CONFIG.MARKET.INTERVAL_SECONDS 获取，默认900秒=15分钟）
 	MarketIntervalSeconds int `yaml:"marketIntervalSeconds" json:"marketIntervalSeconds"` // 市场周期长度（秒）
+
+	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
 }
 
 // Validate 验证配置
 func (c *Config) Validate() error {
+	c.AutoMerge.Normalize()
 	if c.K <= 0 {
 		return fmt.Errorf("k 必须 > 0")
 	}
