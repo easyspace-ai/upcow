@@ -373,6 +373,21 @@ func (s *Strategy) splitCurrentCycleAtStart(market *domain.Market) {
 		amount = s.OrderSize
 	}
 
+	// 先检查是否已经持有本周期 YES+NO（避免重复 split 导致“越拆越多”）
+	checkAddr := crypto.PubkeyToAddress(privateKey.PublicKey)
+	if strings.TrimSpace(gc.Wallet.FunderAddress) != "" {
+		checkAddr = common.HexToAddress(strings.TrimSpace(gc.Wallet.FunderAddress))
+	}
+	if ok, yesBal, noBal, err := s.checkHoldingsOnce(market, checkAddr, amount); err == nil && ok {
+		s.mu.Lock()
+		s.splitDone = true
+		s.holdingsOK = true
+		s.mu.Unlock()
+		log.Infof("✅ [%s] 本周期已持有完整持仓，跳过 split: market=%s addr=%s yes=%.6f no=%.6f",
+			ID, market.Slug, checkAddr.Hex(), yesBal, noBal)
+		return
+	}
+
 	// dry-run：不发链上交易，直接标记持仓 OK（用于演练链路）
 	if gc.DryRun {
 		log.Warnf("📝 [%s] dry-run：跳过真实 split，仅记录计划: market=%s amount=%.6f", ID, market.Slug, amount)
@@ -389,9 +404,20 @@ func (s *Strategy) splitCurrentCycleAtStart(market *domain.Market) {
 	funder := strings.TrimSpace(gc.Wallet.FunderAddress)
 	useRelayer := builderKey != "" && builderSecret != "" && builderPass != "" && funder != ""
 
-	checkAddr := crypto.PubkeyToAddress(privateKey.PublicKey)
 	if useRelayer {
 		checkAddr = common.HexToAddress(funder)
+		// relayer 模式下：提前校验代理地址 USDC 余额 + allowance，避免白发链上请求
+		ctf, err := clobclient.NewCTFClient(s.RPCURL, types.Chain(s.ChainID), privateKey)
+		if err != nil {
+			log.Warnf("⚠️ [%s] 自动 split 失败：创建 CTFClient 失败: %v", ID, err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := ctf.ValidateSplitPositionForAddress(ctx, checkAddr, amount); err != nil {
+			log.Warnf("⚠️ [%s] 自动 split（relayer）前置校验失败: market=%s addr=%s err=%v", ID, market.Slug, checkAddr.Hex(), err)
+			return
+		}
 	}
 
 	// 优先走 relayer（gasless）
