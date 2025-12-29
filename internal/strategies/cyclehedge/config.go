@@ -53,6 +53,21 @@ type Config struct {
 	// 超过该时长仍无法完成对冲，则触发补齐(taker) 或回平(flatten)。
 	UnhedgedTimeoutSeconds int `yaml:"unhedgedTimeoutSeconds" json:"unhedgedTimeoutSeconds"` // 默认 10s
 
+	// ===== maker 优先补齐（裸露风险控制的“第一响应”）=====
+	// 当出现单腿裸露时，先用 maker(GTC) 在缺腿 bestBid 上补齐一段时间；
+	// 若仍未补齐，则再升级到 taker complete / flatten。
+	EnableMakerSupplement bool `yaml:"enableMakerSupplement" json:"enableMakerSupplement"` // 默认 true
+	MakerSupplementWindowSeconds int `yaml:"makerSupplementWindowSeconds" json:"makerSupplementWindowSeconds"` // 默认 3s（尾盘动态缩短）
+	MakerSupplementBumpCents int `yaml:"makerSupplementBumpCents" json:"makerSupplementBumpCents"` // 超过 window 后更激进：bid + bump（仍保证 < ask），默认 1c
+	MakerSupplementMinShares float64 `yaml:"makerSupplementMinShares" json:"makerSupplementMinShares"` // 小裸露也能补：默认 1 share
+	// 更激进但仍保持 maker：在尾盘/接近超时/接近预算时，允许把缺腿挂单价格直接贴到 ask-1（不跨价）。
+	EnableMakerSupplementSnapToAskMinusOne bool `yaml:"enableMakerSupplementSnapToAskMinusOne" json:"enableMakerSupplementSnapToAskMinusOne"` // 默认 true
+
+	// ===== 裸露风险预算（可控激进）=====
+	// 允许的“最大裸露 shares”。超过该预算时，不等待 timeout，直接升级到更激进的补齐/回平路径。
+	// 0 表示关闭该预算（保持兼容）。
+	MaxUnhedgedSharesBudget float64 `yaml:"maxUnhedgedSharesBudget" json:"maxUnhedgedSharesBudget"`
+
 	AllowTakerComplete bool `yaml:"allowTakerComplete" json:"allowTakerComplete"` // 默认 true：优先补齐避免裸奔
 	AllowFlatten       bool `yaml:"allowFlatten" json:"allowFlatten"`             // 默认 true：无法补齐则回平
 
@@ -162,6 +177,35 @@ func (c *Config) Validate() error {
 	}
 	if c.UnhedgedTimeoutSeconds <= 0 {
 		c.UnhedgedTimeoutSeconds = 10
+	}
+	if !c.EnableMakerSupplement {
+		// default true（更符合“只买不卖、尽量不吃单”的观察）
+		c.EnableMakerSupplement = true
+	}
+	if c.MakerSupplementWindowSeconds <= 0 {
+		c.MakerSupplementWindowSeconds = 3
+	}
+	if c.MakerSupplementWindowSeconds < 0 || c.MakerSupplementWindowSeconds > 30 {
+		return fmt.Errorf("makerSupplementWindowSeconds 建议在 [1,30] 秒范围内")
+	}
+	if c.MakerSupplementBumpCents <= 0 {
+		c.MakerSupplementBumpCents = 1
+	}
+	if c.MakerSupplementBumpCents < 0 || c.MakerSupplementBumpCents > 5 {
+		return fmt.Errorf("makerSupplementBumpCents 建议在 [0,5] 范围内")
+	}
+	if c.MakerSupplementMinShares <= 0 {
+		c.MakerSupplementMinShares = 1.0
+	}
+	if c.MakerSupplementMinShares < 0 {
+		return fmt.Errorf("makerSupplementMinShares 不能为负数")
+	}
+	// 默认开启：仅在“接近超时/接近预算/尾盘”触发，仍保持 maker（ask-1）
+	if !c.EnableMakerSupplementSnapToAskMinusOne {
+		c.EnableMakerSupplementSnapToAskMinusOne = true
+	}
+	if c.MaxUnhedgedSharesBudget < 0 {
+		return fmt.Errorf("maxUnhedgedSharesBudget 不能为负数")
 	}
 	if c.MinUnhedgedShares <= 0 {
 		c.MinUnhedgedShares = 1.0

@@ -54,6 +54,9 @@ type Strategy struct {
 	firstFillAt time.Time
 	lastLogAt   time.Time
 	lastCancelAt time.Time // 撤单节流：避免高频重复撤单导致状态乱序/刷爆 API
+	lastQuoteAt  time.Time // 报价节流：用于“动态 requote”，避免固定 tick 下每次都重算/撤挂
+	closeoutActive bool     // 进入 closeout 窗口后置 true（每周期一次），用于避免重复撤单把补齐挂单撤掉
+	lastSupplementAt time.Time // 补齐追价/撤改单节流：避免裸露时 cancel+replace 过频
 
 	// cycle stats (for reporting)
 	stats cycleStats
@@ -129,7 +132,9 @@ func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
 }
 
 func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.ExchangeSession) error {
-	tick := time.Duration(s.RequoteMs) * time.Millisecond
+	// 使用“更短的基础 tick”，在 step 内用 lastQuoteAt 做动态节流（尾盘可加速）。
+	// 这样不需要重启 loop/ticker 就能实现随剩余时间变化的 requote 频率。
+	tick := time.Duration(s.baseLoopTickMs()) * time.Millisecond
 	common.StartLoopOnce(ctx, &s.loopOnce, func(cancel context.CancelFunc) { s.loopCancel = cancel }, tick, s.loop)
 	<-ctx.Done()
 	return ctx.Err()
@@ -229,16 +234,36 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		}
 	}
 
-	// closeout window：临近结算撤单+停止新增
-	if s.EntryCutoffSeconds > 0 && s.withinEntryCutoff(m) {
-		s.cancelMarketOrdersThrottled(ctx, now, m, true)
-		return
+	// closeout window：最后 EntryCutoffSeconds 秒不再“新增建仓/挂单”，但仍允许补齐/回平裸露。
+	// 目的：符合“尾盘时间价值变化更快”的现实，避免继续扩张风险；同时避免“停手=裸奔”导致结算风险。
+	inCloseout := s.EntryCutoffSeconds > 0 && s.withinEntryCutoff(m)
+	if inCloseout {
+		// closeout 只做一次“撤单清场”：避免后续补齐挂单也被重复撤掉，导致永远补不齐只能追 taker。
+		needCancel := false
+		s.stateMu.Lock()
+		if !s.closeoutActive {
+			s.closeoutActive = true
+			needCancel = true
+		}
+		s.stateMu.Unlock()
+		if needCancel {
+			_ = s.cancelMarketOrdersThrottled(ctx, now, m, true)
+		}
+	} else {
+		// 离开 closeout（理论上不会发生在同一周期，但为了健壮性兜底）
+		s.stateMu.Lock()
+		s.closeoutActive = false
+		s.stateMu.Unlock()
 	}
 
-	// 盘口质量 gate（避免 stale/wide spread）
-	if s.EnableMarketQualityGate != nil && *s.EnableMarketQualityGate {
+	// 计算剩余时间（秒）。用于尾盘收敛/动态参数。
+	remainingSeconds := s.remainingSeconds(now, m)
+
+	// 盘口质量 + 有效价：统一从 MarketQuality 获取（可供补齐/风控复用）。
+	var mq *services.MarketQuality
+	{
 		orderCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		mq, err := s.TradingService.GetMarketQuality(orderCtx, m, &services.MarketQualityOptions{
+		got, err := s.TradingService.GetMarketQuality(orderCtx, m, &services.MarketQualityOptions{
 			MaxBookAge:     time.Duration(s.MarketQualityMaxBookAgeMs) * time.Millisecond,
 			MaxSpreadPips:  s.MarketQualityMaxSpreadCents * 100,
 			PreferWS:       true,
@@ -246,8 +271,14 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			AllowPartialWS: true,
 		})
 		cancel()
-		if err != nil || mq == nil || mq.Score < s.MarketQualityMinScore {
-			return
+		if err == nil && got != nil {
+			mq = got
+		}
+		// 质量 gate（避免 stale/wide spread/脏镜像）
+		if s.EnableMarketQualityGate != nil && *s.EnableMarketQualityGate {
+			if mq == nil || mq.Score < s.MarketQualityMinScore {
+				return
+			}
 		}
 	}
 
@@ -270,11 +301,17 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	maxShares := math.Max(upShares, downShares)
 	unhedged := maxShares - minShares
 
+	// closeout 窗口：如果没有裸露，就停止本周期新增（只持有到结算）。
+	// 注意：若有裸露，则继续走下方“补齐/回平”逻辑（其中也会优先在 closeout 时触发）。
+	if inCloseout && unhedged < s.MinUnhedgedShares {
+		return
+	}
+
 	// 每周期最大单向持仓：到阈值则不再扩大规模（只允许补齐/回平）。
 	if s.MaxSingleSideShares > 0 && maxShares >= s.MaxSingleSideShares {
 		// 若没有裸露，撤掉挂单，避免继续被动成交扩大规模
 		if unhedged < s.MinUnhedgedShares {
-			s.cancelMarketOrdersThrottled(ctx, now, m, false)
+			_ = s.cancelMarketOrdersThrottled(ctx, now, m, false)
 		}
 		s.stateMu.Lock()
 		s.stats.MaxSingleSideStops++
@@ -311,84 +348,329 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			s.stateMu.Unlock()
 		}
 		age := now.Sub(firstFillAt)
+		// 尾盘更快：裸露超时随剩余时间收紧（更激进，但更符合尾部波动变快的现实）。
+		timeoutSec := s.dynamicUnhedgedTimeoutSeconds(remainingSeconds)
 
-		// 超时/临近结算：执行“补齐或回平”
-		if age >= time.Duration(s.UnhedgedTimeoutSeconds)*time.Second || s.withinEntryCutoff(m) {
-			// prefer: taker 补齐（只要不亏/仍有最小利润）
-			if s.AllowTakerComplete {
-				minProfit := s.MinProfitAfterCompleteCents
-				if yesAskC+noAskC <= 100-minProfit {
-					need := unhedged
-					need = s.clampOrderSize(need)
-					if need < s.MinUnhedgedShares {
+		// 风险预算：裸露超过预算时，不等待 timeout，直接升级到更激进的补齐/回平路径。
+		force := false
+		if budget := s.dynamicUnhedgedBudgetShares(remainingSeconds); budget > 0 && unhedged >= budget {
+			force = true
+		}
+
+		// 裸露时先止血：撤掉“多出来那一腿”的挂单，避免继续被动成交把裸露放大。
+		// 仅撤 excess leg，不影响 missing leg 的补齐挂单。
+		{
+			excessTok := domain.TokenTypeUp
+			excessOrderID := s.yesOrderID
+			if upShares > downShares {
+				// excess is UP
+			} else {
+				excessTok = domain.TokenTypeDown
+				excessOrderID = s.noOrderID
+			}
+			if excessOrderID != "" {
+				minIntv := time.Duration(s.dynamicSupplementMinIntervalMs(remainingSeconds)) * time.Millisecond
+				s.stateMu.Lock()
+				last := s.lastSupplementAt
+				allow := last.IsZero() || now.Sub(last) >= minIntv
+				if allow {
+					s.lastSupplementAt = now
+				}
+				s.stateMu.Unlock()
+				if allow {
+					cancelCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+					_ = s.TradingService.CancelOrder(cancelCtx, excessOrderID)
+					cancel()
+					s.maybeLog(now, m, fmt.Sprintf("unhedged: cancel excess leg order to cap risk: token=%s orderID=%s", excessTok, excessOrderID))
+					// 不清本地 orderID：等待 OrderEngine 回流终态，避免 canceling 窗口内堆叠
+				}
+			}
+		}
+
+		// maker 补齐（全程优先，而不只是 closeout）：
+		// - 阶段 A（age < window）：缺腿 bestBid 挂单补齐
+		// - 阶段 B（window <= age < timeout）：更激进（bid + bump），但仍保持 maker（< ask）
+		// - 阶段 C（age >= timeout 或 force 或 closeout & 小裸露）：进入 taker/flatten 兜底
+		if s.EnableMakerSupplement && !force && age < time.Duration(timeoutSec)*time.Second && unhedged >= math.Max(s.MinUnhedgedShares, s.MakerSupplementMinShares) {
+			windowSec := s.dynamicMakerSupplementWindowSeconds(remainingSeconds, timeoutSec)
+			bumpC := 0
+			if windowSec > 0 && age >= time.Duration(windowSec)*time.Second {
+				bumpC = s.dynamicMakerSupplementBumpCents(remainingSeconds)
+			}
+
+			missingTok := domain.TokenTypeUp
+			missingAsset := m.YesAssetID
+			missingBidC := yesBidC
+			missingAskC := yesAskC
+			if upShares > downShares {
+				missingTok = domain.TokenTypeDown
+				missingAsset = m.NoAssetID
+				missingBidC = noBidC
+				missingAskC = noAskC
+			}
+
+			// bump 不能跨价：限定在当前 spread 内（保证还是 maker）
+			spreadC := missingAskC - missingBidC
+			if spreadC < 0 {
+				spreadC = -spreadC
+			}
+			bumpCap := spreadC - 1
+			if bumpCap < 0 {
+				bumpCap = 0
+			}
+			// 若接近预算阈值或尾盘，则在 cap 内尽量更积极一点
+			if remainingSeconds > 0 && remainingSeconds <= 180 {
+				if bumpC < 2 {
+					bumpC = 2
+				}
+			}
+			budget := s.dynamicUnhedgedBudgetShares(remainingSeconds)
+			if budget > 0 && unhedged >= budget*0.8 {
+				if bumpC < 1 {
+					bumpC = 1
+				}
+			}
+			if bumpC > bumpCap {
+				bumpC = bumpCap
+			}
+
+			priceC := missingBidC + bumpC
+			// 更激进但仍保持 maker：尾盘/接近超时/接近预算时，允许直接贴到 ask-1
+			if s.EnableMakerSupplementSnapToAskMinusOne && missingAskC > 1 {
+				if s.shouldSnapMakerSupplementToAskMinusOne(remainingSeconds, age, timeoutSec, unhedged, budget) {
+					priceC = missingAskC - 1
+				}
+			}
+			priceC = clampMakerPriceCents(priceC, missingAskC)
+			if priceC > 0 && missingBidC > 0 && missingAskC > 0 {
+				// 如果已有缺腿挂单：支持追价（cancel & replace），避免卡在旧 bid 上补不齐。
+				var missingOrderID string
+				if missingTok == domain.TokenTypeUp {
+					missingOrderID = s.yesOrderID
+				} else {
+					missingOrderID = s.noOrderID
+				}
+				if missingOrderID != "" {
+					if ord, ok := s.TradingService.GetOrder(missingOrderID); ok && ord != nil {
+						if ord.IsFinalStatus() {
+							// 终态：清理本地记录，允许下面重新挂单
+							if missingTok == domain.TokenTypeUp {
+								s.yesOrderID = ""
+							} else {
+								s.noOrderID = ""
+							}
+						} else if ord.Status == domain.OrderStatusCanceling {
+							return
+						} else {
+							curC := ord.Price.ToCents()
+							if curC == priceC {
+								return
+							}
+							minIntv := time.Duration(s.dynamicSupplementMinIntervalMs(remainingSeconds)) * time.Millisecond
+							s.stateMu.Lock()
+							last := s.lastSupplementAt
+							allow := last.IsZero() || now.Sub(last) >= minIntv
+							if allow {
+								s.lastSupplementAt = now
+							}
+							s.stateMu.Unlock()
+							if allow {
+								cancelCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+								_ = s.TradingService.CancelOrder(cancelCtx, missingOrderID)
+								cancel()
+								s.maybeLog(now, m, fmt.Sprintf("maker_supplement reprice: token=%s %dc->%dc (bid=%dc ask=%dc bump=%dc) orderID=%s",
+									missingTok, curC, priceC, missingBidC, missingAskC, bumpC, missingOrderID))
+							}
+							// 不在同一 tick 里立刻下新单：等待 cancel 回流，避免短时间内双挂
+							return
+						}
+					} else {
+						// 查不到：保守清理，允许重新挂单
+						if missingTok == domain.TokenTypeUp {
+							s.yesOrderID = ""
+						} else {
+							s.noOrderID = ""
+						}
+					}
+				}
+
+				size := s.clampOrderSize(unhedged)
+				if size >= s.MinUnhedgedShares {
+					// 节流：避免 cancel->place 或连续 place 过密
+					minIntv := time.Duration(s.dynamicSupplementMinIntervalMs(remainingSeconds)) * time.Millisecond
+					s.stateMu.Lock()
+					last := s.lastSupplementAt
+					allow := last.IsZero() || now.Sub(last) >= minIntv
+					if allow {
+						s.lastSupplementAt = now
+					}
+					s.stateMu.Unlock()
+					if !allow {
 						return
 					}
-					missingTok := domain.TokenTypeUp
-					missingAsset := m.YesAssetID
-					missingAsk := yesAsk
-					if upShares > downShares {
-						// need buy NO
-						missingTok = domain.TokenTypeDown
-						missingAsset = m.NoAssetID
-						missingAsk = noAsk
-					}
-					takerCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-					_, _ = s.TradingService.PlaceOrder(takerCtx, &domain.Order{
+
+					placeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					ord, err := s.TradingService.PlaceOrder(placeCtx, &domain.Order{
 						MarketSlug: m.Slug,
 						AssetID:    missingAsset,
 						TokenType:  missingTok,
 						Side:       types.SideBuy,
-						Price:      missingAsk,
-						Size:       need,
-						OrderType:  types.OrderTypeFAK,
+						Price:      domain.Price{Pips: priceC * 100}, // 1c = 100 pips
+						Size:       size,
+						OrderType:  types.OrderTypeGTC,
 					})
 					cancel()
-					s.stateMu.Lock()
-					s.stats.TakerCompletes++
-					s.stateMu.Unlock()
-					s.maybeLog(now, m, fmt.Sprintf("unhedged->taker_complete: need=%.2f missing=%s ask=%dc minProfit=%dc", need, missingTok, missingAsk.ToCents(), minProfit))
-					return
+					if err == nil && ord != nil && ord.OrderID != "" {
+						if missingTok == domain.TokenTypeUp {
+							s.yesOrderID = ord.OrderID
+							s.stateMu.Lock()
+							s.stats.OrdersPlacedYes++
+							s.stateMu.Unlock()
+						} else {
+							s.noOrderID = ord.OrderID
+							s.stateMu.Lock()
+							s.stats.OrdersPlacedNo++
+							s.stateMu.Unlock()
+						}
+						s.maybeLog(now, m, fmt.Sprintf("unhedged->maker_supplement: missing=%s price=%dc (bid=%dc ask=%dc bump=%dc) size=%.2f age=%s rem=%ds",
+							missingTok, priceC, missingBidC, missingAskC, bumpC, size, age.Truncate(time.Millisecond), remainingSeconds))
+						return
+					}
 				}
 			}
+		}
 
-			// fallback: 回平裸露（卖出多出来的一腿）
-			if s.AllowFlatten {
-				excessTok := domain.TokenTypeUp
-				excessAsset := m.YesAssetID
-				excessBid := yesBid
-				if upShares > downShares {
-					// excess is UP, ok
-				} else {
-					excessTok = domain.TokenTypeDown
-					excessAsset = m.NoAssetID
-					excessBid = noBid
-				}
-				size := s.clampOrderSize(unhedged)
-				if size < s.MinUnhedgedShares {
-					return
-				}
-				flattenCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-				_, _ = s.TradingService.PlaceOrder(flattenCtx, &domain.Order{
+		// 超时/临近结算：执行“补齐或回平”
+		if force || age >= time.Duration(timeoutSec)*time.Second || inCloseout {
+			if force {
+				// 预算触发时先清理挂单，避免继续被动成交扩大裸露
+				_ = s.cancelMarketOrdersThrottled(ctx, now, m, false)
+			}
+			// 风控兜底动作选择：根据“现在补齐 vs 现在回平”的确定性 PnL 估算，选更优的那条路。
+			// - 正常情况下：补齐需要满足 minProfitAfterComplete 门槛
+			// - force(预算触发) 时：允许补齐略微负收益，只要比 flatten 更划算（且能立刻消除方向风险）
+			minProfit := s.dynamicMinProfitAfterCompleteCents(remainingSeconds)
+			size := s.clampOrderSize(unhedged)
+			if size < s.MinUnhedgedShares {
+				return
+			}
+
+			// 当前两腿的平均成本（cents/share）
+			upAvgC, downAvgC := s.currentAvgCostCents(m.Slug)
+
+			missingTok := domain.TokenTypeUp
+			missingAsset := m.YesAssetID
+			missingAsk := yesAsk
+			missingAskC := yesAskC
+			excessTok := domain.TokenTypeUp
+			excessAsset := m.YesAssetID
+			excessBid := yesBid
+			excessBidC := yesBidC
+			excessAvgC := upAvgC
+			if upShares > downShares {
+				// excess is UP (default), missing is DOWN
+				missingTok = domain.TokenTypeDown
+				missingAsset = m.NoAssetID
+				missingAsk = noAsk
+				missingAskC = noAskC
+				excessTok = domain.TokenTypeUp
+				excessAsset = m.YesAssetID
+				excessBid = yesBid
+				excessBidC = yesBidC
+				excessAvgC = upAvgC
+			} else {
+				// excess is DOWN, missing is UP
+				missingTok = domain.TokenTypeUp
+				missingAsset = m.YesAssetID
+				missingAsk = yesAsk
+				missingAskC = yesAskC
+				excessTok = domain.TokenTypeDown
+				excessAsset = m.NoAssetID
+				excessBid = noBid
+				excessBidC = noBidC
+				excessAvgC = downAvgC
+			}
+
+			// 估算（以 unhedged 这部分为对象）：
+			// - complete: 买入 missingAsk，结算得到 $1/份；与 excessAvg 组成一套的锁利（确定性）
+			// - flatten: 立即卖出 excessBid，结束裸露（确定性）
+			completeProfitPerSetC := 100 - excessAvgC - missingAskC
+			completeProfitC := float64(completeProfitPerSetC) * size
+			flattenProfitC := float64(excessBidC-excessAvgC) * size
+
+			// 是否允许 complete（不 force 时要满足最小利润门槛；force 时只要比 flatten 更优即可）
+			allowComplete := s.AllowTakerComplete && (completeProfitPerSetC >= minProfit || (force && completeProfitC >= flattenProfitC))
+			allowFlatten := s.AllowFlatten
+
+			// 选更优动作
+			doComplete := false
+			if allowComplete && allowFlatten {
+				doComplete = completeProfitC >= flattenProfitC
+			} else if allowComplete {
+				doComplete = true
+			} else if allowFlatten {
+				doComplete = false
+			} else {
+				return
+			}
+
+			if doComplete {
+				takerCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+				_, _ = s.TradingService.PlaceOrder(takerCtx, &domain.Order{
 					MarketSlug: m.Slug,
-					AssetID:    excessAsset,
-					TokenType:  excessTok,
-					Side:       types.SideSell,
-					Price:      excessBid,
+					AssetID:    missingAsset,
+					TokenType:  missingTok,
+					Side:       types.SideBuy,
+					Price:      missingAsk,
 					Size:       size,
 					OrderType:  types.OrderTypeFAK,
 				})
 				cancel()
 				s.stateMu.Lock()
-				s.stats.Flattens++
+				s.stats.TakerCompletes++
 				s.stateMu.Unlock()
-				s.maybeLog(now, m, fmt.Sprintf("unhedged->flatten: sell=%.2f token=%s bid=%dc", unhedged, excessTok, excessBid.ToCents()))
+				s.maybeLog(now, m, fmt.Sprintf("unhedged->taker_complete(best): need=%.2f missing=%s ask=%dc excessAvg=%dc minProfit=%dc estComplete=%dc estFlatten=%dc",
+					size, missingTok, missingAskC, excessAvgC, minProfit, int(completeProfitC+0.5), int(flattenProfitC+0.5)))
 				return
 			}
+
+			flattenCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+			_, _ = s.TradingService.PlaceOrder(flattenCtx, &domain.Order{
+				MarketSlug: m.Slug,
+				AssetID:    excessAsset,
+				TokenType:  excessTok,
+				Side:       types.SideSell,
+				Price:      excessBid,
+				Size:       size,
+				OrderType:  types.OrderTypeFAK,
+			})
+			cancel()
+			s.stateMu.Lock()
+			s.stats.Flattens++
+			s.stateMu.Unlock()
+			s.maybeLog(now, m, fmt.Sprintf("unhedged->flatten(best): sell=%.2f token=%s bid=%dc excessAvg=%dc estFlatten=%dc estComplete=%dc",
+				size, excessTok, excessBidC, excessAvgC, int(flattenProfitC+0.5), int(completeProfitC+0.5)))
+			return
+		}
+	}
+
+	// 动态 requote：在 closeout 外，按剩余时间加速报价刷新；但不影响上面的“补齐/回平”风险路径。
+	if !inCloseout {
+		requoteMs := s.dynamicRequoteMs(remainingSeconds)
+		if requoteMs > 0 {
+			s.stateMu.Lock()
+			lastQ := s.lastQuoteAt
+			if !lastQ.IsZero() && now.Sub(lastQ) < time.Duration(requoteMs)*time.Millisecond {
+				s.stateMu.Unlock()
+				return
+			}
+			s.lastQuoteAt = now
+			s.stateMu.Unlock()
 		}
 	}
 
 	// 3) 正常建仓：动态选择 profitCents（收益 vs 成交概率）
-	chosenProfit, chYesBidC, chNoBidC := s.chooseDynamicProfit(yesBidC, yesAskC, noBidC, noAskC)
+	chosenProfit, chYesBidC, chNoBidC := s.chooseDynamicProfit(yesBidC, yesAskC, noBidC, noAskC, remainingSeconds)
 	if chosenProfit == 0 {
 		// 当前盘口没法用 maker 锁 1~5c：先不做（等待更好时机）
 		return
@@ -468,8 +750,10 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	// 如果本次将要下单，先撤掉旧的挂单（避免多单堆叠）
 	// 注：TradingService 层有 in-flight 去重，且 CancelOrdersForMarket 会撤掉本周期挂单（含对侧）。
 	if (needUp >= s.MinUnhedgedShares || needDown >= s.MinUnhedgedShares) && (s.yesOrderID != "" || s.noOrderID != "") {
-		s.cancelMarketOrdersThrottled(ctx, now, m, false)
-		s.yesOrderID, s.noOrderID = "", ""
+		// 只有真的执行了撤单（未被节流）才清理本地 orderID，避免节流窗口内“忘记旧单”导致堆叠挂单。
+		if s.cancelMarketOrdersThrottled(ctx, now, m, false) {
+			s.yesOrderID, s.noOrderID = "", ""
+		}
 	}
 
 	// 下 YES
@@ -523,21 +807,14 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		}
 	}
 
-	// 方向偏好：当需要同时下两腿时，优先下“价格更高且超过阈值”的那一腿，
-	// 目的是在短时间裸露时尽量站在胜率更高的一侧。
+	// 小幅并行：当需要同时下两腿时并发下单，降低“先成交一腿、另一腿来不及挂出”的时间窗。
+	// 风险约束仍由上面的 MaxSingleSideShares + 下方的 unhedged 超时补齐/回平兜底。
 	if needUpOK && needDownOK {
-		if prefer, ok := s.preferHighPriceFirstToken(yesBidC, noBidC); ok {
-			if prefer == domain.TokenTypeUp {
-				placeYes()
-				placeNo()
-			} else {
-				placeNo()
-				placeYes()
-			}
-		} else {
-			placeYes()
-			placeNo()
-		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); placeYes() }()
+		go func() { defer wg.Done(); placeNo() }()
+		wg.Wait()
 	} else if needUpOK {
 		placeYes()
 	} else if needDownOK {
@@ -551,6 +828,121 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		s.maybeLog(now, m, fmt.Sprintf("quote: profit=%dc cost=%dc tn=%.2f shares=%.2f need(up=%.2f down=%.2f) bids(yes=%dc no=%dc) book(yes %d/%d no %d/%d) src=%s",
 			chosenProfit, costCents, tn, shares, needUp, needDown, chYesBidC, chNoBidC, yesBidC, yesAskC, noBidC, noAskC, source))
 	}
+}
+
+func clampMakerPriceCents(priceC, askC int) int {
+	// maker buy 需要 price < ask；无法满足时返回 0 让上层走兜底路径
+	if priceC <= 0 || askC <= 0 {
+		return 0
+	}
+	if priceC >= askC {
+		priceC = askC - 1
+	}
+	if priceC <= 0 {
+		return 0
+	}
+	return priceC
+}
+
+func (s *Strategy) dynamicMakerSupplementWindowSeconds(remainingSeconds, timeoutSec int) int {
+	// window 必须小于 timeout，且尾盘更短（更快升级）
+	w := s.MakerSupplementWindowSeconds
+	if w <= 0 {
+		w = 3
+	}
+	if remainingSeconds > 0 {
+		if remainingSeconds <= 180 {
+			w = 1
+		} else if remainingSeconds <= 300 && w > 2 {
+			w = 2
+		}
+	}
+	if timeoutSec <= 1 {
+		return 0
+	}
+	if w >= timeoutSec {
+		w = timeoutSec - 1
+	}
+	if w <= 0 {
+		w = 1
+	}
+	return w
+}
+
+func (s *Strategy) dynamicMakerSupplementBumpCents(remainingSeconds int) int {
+	b := s.MakerSupplementBumpCents
+	if b < 0 {
+		b = 0
+	}
+	// 尾盘更激进一些（仍会被 <ask 约束）
+	if remainingSeconds > 0 {
+		if remainingSeconds <= 180 {
+			if b < 2 {
+				b = 2
+			}
+		}
+	}
+	return b
+}
+
+func (s *Strategy) dynamicSupplementMinIntervalMs(remainingSeconds int) int {
+	// 裸露补齐追价的节流：比 requote 更保守一些，避免 cancel+place 过于频繁。
+	ms := 700
+	if remainingSeconds > 0 {
+		if remainingSeconds <= 180 {
+			ms = 250
+		} else if remainingSeconds <= 300 {
+			ms = 400
+		}
+	}
+	minMs := s.baseLoopTickMs()
+	if ms < minMs {
+		ms = minMs
+	}
+	return ms
+}
+
+func (s *Strategy) dynamicUnhedgedBudgetShares(remainingSeconds int) float64 {
+	// 裸露预算：越接近结算越小（更快强制去风险）。
+	// - budget=0 表示关闭（保持兼容）
+	b := s.MaxUnhedgedSharesBudget
+	if b <= 0 {
+		return 0
+	}
+	f := 1.0
+	if remainingSeconds > 0 {
+		if remainingSeconds <= 180 {
+			f = 0.25
+		} else if remainingSeconds <= 300 {
+			f = 0.5
+		}
+	}
+	b = b * f
+	if b < s.MinUnhedgedShares {
+		b = s.MinUnhedgedShares
+	}
+	return b
+}
+
+func (s *Strategy) shouldSnapMakerSupplementToAskMinusOne(remainingSeconds int, age time.Duration, timeoutSec int, unhedged float64, budget float64) bool {
+	// 目标：在“必须尽快补齐但又不想吃单”的情况下，把 maker 补齐挂到最激进的 ask-1。
+	// 触发条件（任一满足即可）：
+	// - closeout（<=180s）
+	// - 距离超时很近（剩余 < 1s）
+	// - 接近预算上限（>= 90%）
+	if remainingSeconds > 0 && remainingSeconds <= 180 {
+		return true
+	}
+	if timeoutSec > 0 {
+		remain := time.Duration(timeoutSec)*time.Second - age
+		if remain <= 1*time.Second {
+			return true
+		}
+	}
+	if budget > 0 && unhedged >= budget*0.9 {
+		return true
+	}
+	return false
 }
 
 func (s *Strategy) clampOrderSize(size float64) float64 {
@@ -595,6 +987,9 @@ func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Mark
 	s.firstFillAt = time.Time{}
 	s.lastLogAt = time.Time{}
 	s.lastCancelAt = time.Time{}
+	s.lastQuoteAt = time.Time{}
+	s.closeoutActive = false
+	s.lastSupplementAt = time.Time{}
 
 	// reset stats for new cycle
 	s.stats = cycleStats{
@@ -655,16 +1050,16 @@ func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Mark
 }
 
 // cancelMarketOrdersThrottled 撤单节流：避免在 closeout/锁定阶段每个 tick 都撤一次，造成 API 风暴与状态回退。
-func (s *Strategy) cancelMarketOrdersThrottled(ctx context.Context, now time.Time, m *domain.Market, isCloseout bool) {
+func (s *Strategy) cancelMarketOrdersThrottled(ctx context.Context, now time.Time, m *domain.Market, isCloseout bool) bool {
 	if s == nil || s.TradingService == nil || m == nil || m.Slug == "" {
-		return
+		return false
 	}
 	const minInterval = 2 * time.Second
 	s.stateMu.Lock()
 	last := s.lastCancelAt
 	if !last.IsZero() && now.Sub(last) < minInterval {
 		s.stateMu.Unlock()
-		return
+		return false
 	}
 	s.lastCancelAt = now
 	s.stateMu.Unlock()
@@ -678,7 +1073,7 @@ func (s *Strategy) cancelMarketOrdersThrottled(ctx context.Context, now time.Tim
 		}
 	}
 	if !hasActive {
-		return
+		return false
 	}
 
 	cancelCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -696,6 +1091,7 @@ func (s *Strategy) cancelMarketOrdersThrottled(ctx context.Context, now time.Tim
 	if isCloseout {
 		s.maybeLog(now, m, "closeout: cancel & pause entries")
 	}
+	return true
 }
 
 func (s *Strategy) drainOrders() {
@@ -723,6 +1119,58 @@ func (s *Strategy) currentShares(marketSlug string) (up float64, down float64) {
 		}
 	}
 	return up, down
+}
+
+// currentAvgCostCents 返回当前两腿的“平均成本（cents/share）”。
+// - 优先使用 Position.CostBasis/TotalFilledSize
+// - fallback: AvgPrice 或 EntryPrice
+// 说明：该均价用于风控兜底时比较“补齐 vs 回平”的确定性损益，不要求绝对精确但要稳定、保守。
+func (s *Strategy) currentAvgCostCents(marketSlug string) (upAvgC int, downAvgC int) {
+	if s == nil || s.TradingService == nil || marketSlug == "" {
+		return 0, 0
+	}
+	positions := s.TradingService.GetOpenPositionsForMarket(marketSlug)
+
+	upSize, downSize := 0.0, 0.0
+	upCost, downCost := 0.0, 0.0
+
+	for _, p := range positions {
+		if p == nil || !p.IsOpen() || p.Size <= 0 {
+			continue
+		}
+
+		// 估算该 position 的成本
+		size := p.Size
+		cost := 0.0
+		if p.TotalFilledSize > 0 && p.CostBasis > 0 {
+			// 成本基础更可靠
+			// 注意：TotalFilledSize 可能与 Size 不完全一致（部分平仓/合并等），这里用比例缩放到当前 Size
+			cost = p.CostBasis * (size / p.TotalFilledSize)
+		} else if p.AvgPrice > 0 {
+			cost = p.AvgPrice * size
+		} else if p.EntryPrice.Pips > 0 {
+			cost = p.EntryPrice.ToDecimal() * size
+		} else {
+			continue
+		}
+
+		switch p.TokenType {
+		case domain.TokenTypeUp:
+			upSize += size
+			upCost += cost
+		case domain.TokenTypeDown:
+			downSize += size
+			downCost += cost
+		}
+	}
+
+	if upSize > 0 && upCost > 0 {
+		upAvgC = int(upCost/upSize*100 + 0.5)
+	}
+	if downSize > 0 && downCost > 0 {
+		downAvgC = int(downCost/downSize*100 + 0.5)
+	}
+	return upAvgC, downAvgC
 }
 
 func (s *Strategy) maybeLog(now time.Time, m *domain.Market, msg string) {
@@ -803,14 +1251,113 @@ func (s *Strategy) withinEntryCutoff(m *domain.Market) bool {
 	return time.Until(end) <= time.Duration(s.EntryCutoffSeconds)*time.Second
 }
 
+func (s *Strategy) remainingSeconds(now time.Time, m *domain.Market) int {
+	if s == nil || m == nil || m.Timestamp <= 0 {
+		return 0
+	}
+	durSec := s.CycleDurationSeconds
+	if durSec <= 0 {
+		durSec = 15 * 60
+	}
+	elapsed := int(now.Unix() - m.Timestamp)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	rem := durSec - elapsed
+	if rem < 0 {
+		rem = 0
+	}
+	return rem
+}
+
+func (s *Strategy) baseLoopTickMs() int {
+	// 目标：给动态 requote 留出余地，但避免 loop 过于频繁。
+	// - 默认每 200ms tick 一次；若用户配置更快，则尊重用户配置。
+	ms := s.RequoteMs
+	if ms <= 0 {
+		ms = 800
+	}
+	if ms < 200 {
+		return ms
+	}
+	return 200
+}
+
+func (s *Strategy) dynamicRequoteMs(remainingSeconds int) int {
+	// 基于用户配置的 RequoteMs 做“尾盘加速”。
+	ms := s.RequoteMs
+	if ms <= 0 {
+		ms = 800
+	}
+	// 尾盘：加速（但下限不小于 baseLoopTick）
+	minMs := s.baseLoopTickMs()
+	if remainingSeconds > 0 {
+		if remainingSeconds <= 180 {
+			ms = minMs
+		} else if remainingSeconds <= 300 {
+			ms = ms / 2
+			if ms < minMs {
+				ms = minMs
+			}
+		}
+	}
+	return ms
+}
+
+func (s *Strategy) dynamicUnhedgedTimeoutSeconds(remainingSeconds int) int {
+	// 默认：沿用配置；尾盘收紧（更快补齐/回平）。
+	timeout := s.UnhedgedTimeoutSeconds
+	if timeout <= 0 {
+		timeout = 10
+	}
+	// closeout（用户需求：最后 3 分钟停止新增）窗口内，裸露风险最敏感：更快触发补齐/回平。
+	if remainingSeconds > 0 && s.EntryCutoffSeconds > 0 && remainingSeconds <= s.EntryCutoffSeconds {
+		if timeout > 2 {
+			timeout = 2
+		}
+		return timeout
+	}
+	// 结算前 5 分钟开始收紧
+	if remainingSeconds > 0 && remainingSeconds <= 300 {
+		if timeout > 5 {
+			timeout = 5
+		}
+	}
+	return timeout
+}
+
+func (s *Strategy) dynamicMinProfitAfterCompleteCents(remainingSeconds int) int {
+	// 默认：沿用配置；尾盘更保守一些，避免追单锁亏。
+	minProfit := s.MinProfitAfterCompleteCents
+	if minProfit < 0 {
+		minProfit = 0
+	}
+	if remainingSeconds > 0 && s.EntryCutoffSeconds > 0 && remainingSeconds <= s.EntryCutoffSeconds {
+		// closeout：至少保留 1c（除非用户显式要求更低/更高）
+		if minProfit < 1 {
+			minProfit = 1
+		}
+	}
+	return minProfit
+}
+
 // chooseDynamicProfit 在 profit 区间内根据“收益 vs 成交概率（离盘口距离）”选最优。
 // score = profit - (distancePenaltyBps/100)*maxDistanceCents
-func (s *Strategy) chooseDynamicProfit(yesBidC, yesAskC, noBidC, noAskC int) (chosenProfit, chosenYesBidC, chosenNoBidC int) {
+func (s *Strategy) chooseDynamicProfit(yesBidC, yesAskC, noBidC, noAskC int, remainingSeconds int) (chosenProfit, chosenYesBidC, chosenNoBidC int) {
 	bestScore := -1e9
 	bestProfit := 0
 	bestYes, bestNo := 0, 0
 
 	penaltyPerCent := float64(s.DistancePenaltyBps) / 100.0
+	// 时间敏感：越接近结算，盘口跳变越快、单腿风险越大。
+	// 因此尾盘提高“离盘口距离惩罚”，优先选更贴近 bestBid 的报价（提升成交概率，减少挂得太远导致的无效占用）。
+	if remainingSeconds > 0 {
+		if remainingSeconds <= 180 {
+			penaltyPerCent *= 3.0
+		} else if remainingSeconds <= 300 {
+			penaltyPerCent *= 2.0
+		}
+	}
 	for p := s.ProfitMinCents; p <= s.ProfitMaxCents; p++ {
 		yb, nb, ok := chooseMakerBids(yesBidC, yesAskC, noBidC, noAskC, p)
 		if !ok {
