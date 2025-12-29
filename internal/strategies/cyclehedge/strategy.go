@@ -229,10 +229,12 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		}
 	}
 
-	// closeout window：临近结算撤单+停止新增
-	if s.EntryCutoffSeconds > 0 && s.withinEntryCutoff(m) {
+	// closeout window：最后 EntryCutoffSeconds 秒不再“新增建仓/挂单”，但仍允许补齐/回平裸露。
+	// 目的：符合“尾盘时间价值变化更快”的现实，避免继续扩张风险；同时避免“停手=裸奔”导致结算风险。
+	inCloseout := s.EntryCutoffSeconds > 0 && s.withinEntryCutoff(m)
+	if inCloseout {
+		// 先撤掉未成交挂单，降低被动成交扩大规模的概率（节流撤单，避免 API 风暴）。
 		s.cancelMarketOrdersThrottled(ctx, now, m, true)
-		return
 	}
 
 	// 盘口质量 gate（避免 stale/wide spread）
@@ -269,6 +271,12 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	minShares := math.Min(upShares, downShares)
 	maxShares := math.Max(upShares, downShares)
 	unhedged := maxShares - minShares
+
+	// closeout 窗口：如果没有裸露，就停止本周期新增（只持有到结算）。
+	// 注意：若有裸露，则继续走下方“补齐/回平”逻辑（其中也会优先在 closeout 时触发）。
+	if inCloseout && unhedged < s.MinUnhedgedShares {
+		return
+	}
 
 	// 每周期最大单向持仓：到阈值则不再扩大规模（只允许补齐/回平）。
 	if s.MaxSingleSideShares > 0 && maxShares >= s.MaxSingleSideShares {
@@ -313,7 +321,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		age := now.Sub(firstFillAt)
 
 		// 超时/临近结算：执行“补齐或回平”
-		if age >= time.Duration(s.UnhedgedTimeoutSeconds)*time.Second || s.withinEntryCutoff(m) {
+		if age >= time.Duration(s.UnhedgedTimeoutSeconds)*time.Second || inCloseout {
 			// prefer: taker 补齐（只要不亏/仍有最小利润）
 			if s.AllowTakerComplete {
 				minProfit := s.MinProfitAfterCompleteCents
