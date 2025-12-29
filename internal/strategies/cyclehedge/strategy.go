@@ -55,6 +55,7 @@ type Strategy struct {
 	lastLogAt   time.Time
 	lastCancelAt time.Time // 撤单节流：避免高频重复撤单导致状态乱序/刷爆 API
 	lastQuoteAt  time.Time // 报价节流：用于“动态 requote”，避免固定 tick 下每次都重算/撤挂
+	closeoutActive bool     // 进入 closeout 窗口后置 true（每周期一次），用于避免重复撤单把补齐挂单撤掉
 
 	// cycle stats (for reporting)
 	stats cycleStats
@@ -236,8 +237,22 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	// 目的：符合“尾盘时间价值变化更快”的现实，避免继续扩张风险；同时避免“停手=裸奔”导致结算风险。
 	inCloseout := s.EntryCutoffSeconds > 0 && s.withinEntryCutoff(m)
 	if inCloseout {
-		// 先撤掉未成交挂单，降低被动成交扩大规模的概率（节流撤单，避免 API 风暴）。
-		_ = s.cancelMarketOrdersThrottled(ctx, now, m, true)
+		// closeout 只做一次“撤单清场”：避免后续补齐挂单也被重复撤掉，导致永远补不齐只能追 taker。
+		needCancel := false
+		s.stateMu.Lock()
+		if !s.closeoutActive {
+			s.closeoutActive = true
+			needCancel = true
+		}
+		s.stateMu.Unlock()
+		if needCancel {
+			_ = s.cancelMarketOrdersThrottled(ctx, now, m, true)
+		}
+	} else {
+		// 离开 closeout（理论上不会发生在同一周期，但为了健壮性兜底）
+		s.stateMu.Lock()
+		s.closeoutActive = false
+		s.stateMu.Unlock()
 	}
 
 	// 计算剩余时间（秒）。用于尾盘收敛/动态参数。
@@ -334,6 +349,60 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		age := now.Sub(firstFillAt)
 		// 尾盘更快：裸露超时随剩余时间收紧（更激进，但更符合尾部波动变快的现实）。
 		timeoutSec := s.dynamicUnhedgedTimeoutSeconds(remainingSeconds)
+
+		// closeout 内：先尝试用 maker(GTC) 在缺腿 bid 挂单补齐（更便宜、更像你观察到的机器人）。
+		// - 仅在“还没到硬超时”时尝试；超过硬超时就直接走 taker/flatten。
+		// - 为避免交易所 min-share 自动放大导致过度补齐，这里要求 unhedged >= 5 shares 才尝试 maker 补齐。
+		if inCloseout && age < time.Duration(timeoutSec)*time.Second && unhedged >= 5.0 {
+			missingTok := domain.TokenTypeUp
+			missingAsset := m.YesAssetID
+			missingBidC := yesBidC
+			if upShares > downShares {
+				missingTok = domain.TokenTypeDown
+				missingAsset = m.NoAssetID
+				missingBidC = noBidC
+			}
+			size := s.clampOrderSize(unhedged)
+			if size >= 5.0 {
+				// 仅当当前没有该腿的活跃挂单时才补齐挂单（避免重复挂单/撤挂风暴）。
+				hasMissingOrder := false
+				if missingTok == domain.TokenTypeUp && s.yesOrderID != "" {
+					hasMissingOrder = true
+				}
+				if missingTok == domain.TokenTypeDown && s.noOrderID != "" {
+					hasMissingOrder = true
+				}
+				if !hasMissingOrder && missingBidC > 0 {
+					placeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					ord, err := s.TradingService.PlaceOrder(placeCtx, &domain.Order{
+						MarketSlug: m.Slug,
+						AssetID:    missingAsset,
+						TokenType:  missingTok,
+						Side:       types.SideBuy,
+						Price:      domain.Price{Pips: missingBidC * 100}, // 1c = 100 pips
+						Size:       size,
+						OrderType:  types.OrderTypeGTC,
+					})
+					cancel()
+					if err == nil && ord != nil && ord.OrderID != "" {
+						if missingTok == domain.TokenTypeUp {
+							s.yesOrderID = ord.OrderID
+							s.stateMu.Lock()
+							s.stats.OrdersPlacedYes++
+							s.stateMu.Unlock()
+						} else {
+							s.noOrderID = ord.OrderID
+							s.stateMu.Lock()
+							s.stats.OrdersPlacedNo++
+							s.stateMu.Unlock()
+						}
+						s.maybeLog(now, m, fmt.Sprintf("closeout->maker_supplement: missing=%s bid=%dc size=%.2f age=%s",
+							missingTok, missingBidC, size, age.Truncate(time.Millisecond)))
+						return
+					}
+				}
+			}
+		}
 
 		// 超时/临近结算：执行“补齐或回平”
 		if age >= time.Duration(timeoutSec)*time.Second || inCloseout {
@@ -580,21 +649,14 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		}
 	}
 
-	// 方向偏好：当需要同时下两腿时，优先下“价格更高且超过阈值”的那一腿，
-	// 目的是在短时间裸露时尽量站在胜率更高的一侧。
+	// 小幅并行：当需要同时下两腿时并发下单，降低“先成交一腿、另一腿来不及挂出”的时间窗。
+	// 风险约束仍由上面的 MaxSingleSideShares + 下方的 unhedged 超时补齐/回平兜底。
 	if needUpOK && needDownOK {
-		if prefer, ok := s.preferHighPriceFirstToken(yesBidC, noBidC); ok {
-			if prefer == domain.TokenTypeUp {
-				placeYes()
-				placeNo()
-			} else {
-				placeNo()
-				placeYes()
-			}
-		} else {
-			placeYes()
-			placeNo()
-		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); placeYes() }()
+		go func() { defer wg.Done(); placeNo() }()
+		wg.Wait()
 	} else if needUpOK {
 		placeYes()
 	} else if needDownOK {
@@ -652,6 +714,8 @@ func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Mark
 	s.firstFillAt = time.Time{}
 	s.lastLogAt = time.Time{}
 	s.lastCancelAt = time.Time{}
+	s.lastQuoteAt = time.Time{}
+	s.closeoutActive = false
 
 	// reset stats for new cycle
 	s.stats = cycleStats{
