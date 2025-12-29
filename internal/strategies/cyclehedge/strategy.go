@@ -54,6 +54,7 @@ type Strategy struct {
 	firstFillAt time.Time
 	lastLogAt   time.Time
 	lastCancelAt time.Time // 撤单节流：避免高频重复撤单导致状态乱序/刷爆 API
+	lastQuoteAt  time.Time // 报价节流：用于“动态 requote”，避免固定 tick 下每次都重算/撤挂
 
 	// cycle stats (for reporting)
 	stats cycleStats
@@ -129,7 +130,9 @@ func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
 }
 
 func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.ExchangeSession) error {
-	tick := time.Duration(s.RequoteMs) * time.Millisecond
+	// 使用“更短的基础 tick”，在 step 内用 lastQuoteAt 做动态节流（尾盘可加速）。
+	// 这样不需要重启 loop/ticker 就能实现随剩余时间变化的 requote 频率。
+	tick := time.Duration(s.baseLoopTickMs()) * time.Millisecond
 	common.StartLoopOnce(ctx, &s.loopOnce, func(cancel context.CancelFunc) { s.loopCancel = cancel }, tick, s.loop)
 	<-ctx.Done()
 	return ctx.Err()
@@ -240,10 +243,11 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	// 计算剩余时间（秒）。用于尾盘收敛/动态参数。
 	remainingSeconds := s.remainingSeconds(now, m)
 
-	// 盘口质量 gate（避免 stale/wide spread）
-	if s.EnableMarketQualityGate != nil && *s.EnableMarketQualityGate {
+	// 盘口质量 + 有效价：统一从 MarketQuality 获取（可供补齐/风控复用）。
+	var mq *services.MarketQuality
+	{
 		orderCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		mq, err := s.TradingService.GetMarketQuality(orderCtx, m, &services.MarketQualityOptions{
+		got, err := s.TradingService.GetMarketQuality(orderCtx, m, &services.MarketQualityOptions{
 			MaxBookAge:     time.Duration(s.MarketQualityMaxBookAgeMs) * time.Millisecond,
 			MaxSpreadPips:  s.MarketQualityMaxSpreadCents * 100,
 			PreferWS:       true,
@@ -251,8 +255,14 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			AllowPartialWS: true,
 		})
 		cancel()
-		if err != nil || mq == nil || mq.Score < s.MarketQualityMinScore {
-			return
+		if err == nil && got != nil {
+			mq = got
+		}
+		// 质量 gate（避免 stale/wide spread/脏镜像）
+		if s.EnableMarketQualityGate != nil && *s.EnableMarketQualityGate {
+			if mq == nil || mq.Score < s.MarketQualityMinScore {
+				return
+			}
 		}
 	}
 
@@ -331,7 +341,23 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			if s.AllowTakerComplete {
 				// 尾盘更严格：补齐后仍需保留的最小利润随时间提高（避免尾盘追单锁亏）。
 				minProfit := s.dynamicMinProfitAfterCompleteCents(remainingSeconds)
-				if yesAskC+noAskC <= 100-minProfit {
+				// 优先用“有效价格”判断 complete-set 是否仍满足门槛（处理镜像订单簿口径）。
+				// 说明：有效买入价可能来自对侧镜像（1 - opposite.bid），避免简单 askSum 重复计算。
+				allowComplete := false
+				if mq != nil && mq.Effective.EffectiveBuyYesPips > 0 && mq.Effective.EffectiveBuyNoPips > 0 {
+					costPips := mq.Effective.EffectiveBuyYesPips + mq.Effective.EffectiveBuyNoPips
+					// 门槛：cost <= 1 - minProfitCents
+					thresholdPips := (100 - minProfit) * 100 // 1 cent = 100 pips
+					if costPips <= thresholdPips {
+						allowComplete = true
+					}
+				} else {
+					// fallback：老口径（raw ask sum）
+					if yesAskC+noAskC <= 100-minProfit {
+						allowComplete = true
+					}
+				}
+				if allowComplete {
 					need := unhedged
 					need = s.clampOrderSize(need)
 					if need < s.MinUnhedgedShares {
@@ -398,6 +424,21 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 				s.maybeLog(now, m, fmt.Sprintf("unhedged->flatten: sell=%.2f token=%s bid=%dc", unhedged, excessTok, excessBid.ToCents()))
 				return
 			}
+		}
+	}
+
+	// 动态 requote：在 closeout 外，按剩余时间加速报价刷新；但不影响上面的“补齐/回平”风险路径。
+	if !inCloseout {
+		requoteMs := s.dynamicRequoteMs(remainingSeconds)
+		if requoteMs > 0 {
+			s.stateMu.Lock()
+			lastQ := s.lastQuoteAt
+			if !lastQ.IsZero() && now.Sub(lastQ) < time.Duration(requoteMs)*time.Millisecond {
+				s.stateMu.Unlock()
+				return
+			}
+			s.lastQuoteAt = now
+			s.stateMu.Unlock()
 		}
 	}
 
@@ -834,6 +875,40 @@ func (s *Strategy) remainingSeconds(now time.Time, m *domain.Market) int {
 		rem = 0
 	}
 	return rem
+}
+
+func (s *Strategy) baseLoopTickMs() int {
+	// 目标：给动态 requote 留出余地，但避免 loop 过于频繁。
+	// - 默认每 200ms tick 一次；若用户配置更快，则尊重用户配置。
+	ms := s.RequoteMs
+	if ms <= 0 {
+		ms = 800
+	}
+	if ms < 200 {
+		return ms
+	}
+	return 200
+}
+
+func (s *Strategy) dynamicRequoteMs(remainingSeconds int) int {
+	// 基于用户配置的 RequoteMs 做“尾盘加速”。
+	ms := s.RequoteMs
+	if ms <= 0 {
+		ms = 800
+	}
+	// 尾盘：加速（但下限不小于 baseLoopTick）
+	minMs := s.baseLoopTickMs()
+	if remainingSeconds > 0 {
+		if remainingSeconds <= 180 {
+			ms = minMs
+		} else if remainingSeconds <= 300 {
+			ms = ms / 2
+			if ms < minMs {
+				ms = minMs
+			}
+		}
+	}
+	return ms
 }
 
 func (s *Strategy) dynamicUnhedgedTimeoutSeconds(remainingSeconds int) int {
