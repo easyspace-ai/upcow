@@ -494,14 +494,15 @@ func (s *TradingService) Start(ctx context.Context) error {
 			go s.balances.initializeBalance(ctx)
 		}
 	} else {
-		// 纸交易模式：设置一个很大的初始余额
+		// 纸交易模式：设置初始余额（用于测试）
+		initialBalance := 6000.0 // 纸交易模式初始余额（可调整用于测试）
 		updateCmd := &UpdateBalanceCommand{
 			id:       fmt.Sprintf("init_balance_%d", time.Now().UnixNano()),
-			Balance:  1000000.0, // 纸交易模式使用很大的余额
+			Balance:  initialBalance,
 			Currency: "USDC",
 		}
 		s.orderEngine.SubmitCommand(updateCmd)
-		log.Infof("📊 [余额初始化] 纸交易模式：设置初始余额为 %.2f USDC", 1000000.0)
+		log.Infof("📊 [余额初始化] 纸交易模式：设置初始余额为 %.2f USDC", initialBalance)
 	}
 
 	// 启动定期订单状态同步（如果需要）

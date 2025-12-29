@@ -1102,15 +1102,21 @@ func (e *OrderEngine) updatePositionFromTrade(trade *domain.Trade, order *domain
 	// 更新仓位大小和成本基础
 	if trade.Side == types.SideBuy {
 		// 买入交易：增加仓位
+		oldSize := position.Size
 		position.Size += trade.Size
 		// 累加成本基础（支持多次成交）
 		position.AddFill(trade.Size, trade.Price)
+		orderEngineLog.Infof("📈 [持仓更新] 买入: positionID=%s tokenType=%s oldSize=%.2f tradeSize=%.2f newSize=%.2f marketSlug=%s",
+			positionID, tokenType, oldSize, trade.Size, position.Size, order.MarketSlug)
 	} else {
 		// 卖出交易：减少仓位
+		oldSize := position.Size
 		position.Size -= trade.Size
 		if position.Size < 0 {
 			position.Size = 0
 		}
+		orderEngineLog.Infof("📉 [持仓更新] 卖出: positionID=%s tokenType=%s oldSize=%.2f tradeSize=%.2f newSize=%.2f marketSlug=%s",
+			positionID, tokenType, oldSize, trade.Size, position.Size, order.MarketSlug)
 		// 卖出时也累加成本基础（用于计算平均成本）
 		// 注意：卖出会减少持仓，但成本基础仍然累加（用于计算盈亏）
 		position.AddFill(trade.Size, trade.Price)
@@ -1136,7 +1142,10 @@ func (e *OrderEngine) updatePositionFromTrade(trade *domain.Trade, order *domain
 // getPositionID 获取仓位ID
 func (e *OrderEngine) getPositionID(order *domain.Order) string {
 	// 只管理本周期：positionID 按 MarketSlug 分桶
-	return fmt.Sprintf("%s_%s_%s", order.MarketSlug, order.AssetID, order.TokenType)
+	positionID := fmt.Sprintf("%s_%s_%s", order.MarketSlug, order.AssetID, order.TokenType)
+	orderEngineLog.Debugf("🔍 [持仓ID] orderID=%s marketSlug=%s assetID=%s tokenType=%s positionID=%s",
+		order.OrderID, order.MarketSlug, order.AssetID, order.TokenType, positionID)
+	return positionID
 }
 
 // processPendingTrades 处理待处理的交易

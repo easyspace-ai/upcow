@@ -1,7 +1,7 @@
-# cyclehedge：40U 测试版（BTC 15m）
+# cyclehedge：5000U 测试版（BTC 15m）
 #
 # 说明：
-# - 每周期固定投入 40 USDC（fixedNotionalUSDC）
+# - 每周期固定投入 5000 USDC（fixedNotionalUSDC）
 # - 距离结算 3 分钟（180s）停止开新仓并撤单（entryCutoffSeconds）
 #
 log_level: info
@@ -19,10 +19,10 @@ dry_run: true
 exchangeStrategies:
   - on: polymarket
     cyclehedge:
-      # 资金规模：测试期固定 50 USDC
-      fixedNotionalUSDC: 50
+      # 资金规模：测试期固定 5000 USDC
+      fixedNotionalUSDC: 5000
       minNotionalUSDC: 30
-      maxNotionalUSDC: 60
+      maxNotionalUSDC: 6000
 
       # 目标收益：1-4 cents（动态挑选）
       profitMinCents: 1

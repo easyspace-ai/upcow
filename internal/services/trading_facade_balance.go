@@ -14,6 +14,10 @@ func (s *TradingService) RefreshBalance(ctx context.Context) error {
 	if s == nil || s.balances == nil {
 		return fmt.Errorf("balance service not initialized")
 	}
+	// ⚠️ 纸交易模式下不刷新余额，避免覆盖纸交易模式设置的初始余额
+	if s.dryRun {
+		return nil
+	}
 	s.balances.initializeBalance(ctx)
 	return nil
 }
