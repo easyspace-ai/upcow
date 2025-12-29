@@ -35,9 +35,9 @@ exchangeStrategies:
 
       # 裸露控制（结合你的最小单限制）
       minUnhedgedShares: 5                # 让策略不要去下 <5 shares 的 GTC（避免被自动抬到 5 导致意外放大）
-      unhedgedTimeoutSeconds: 10
+      unhedgedTimeoutSeconds: 10   	# 单腿裸露最长允许时长（秒）。# 超过该时长仍无法完成对冲，则触发补齐(taker) 或回平(flatten)。
       maxUnhedgedSharesBudget: 10         # 裸露预算（策略内部会随时间动态收紧）
-      maxSingleSideShares: 80             # 单边上限，避免只成交一腿越滚越大
+      maxSingleSideShares: 6000  # 调整为6000，确保不会因为持仓达到20就停止下单（目标shares=5208.33）             # 单边上限，避免只成交一腿越滚越大
       maxOrderSizeShares: 10              # 单笔最大 shares（小资金建议保守）
 
       # 补齐：maker 优先 + 追价 + 尾盘可贴 ask-1（仍 maker）
@@ -50,7 +50,11 @@ exchangeStrategies:
       # 兜底：允许 taker 补齐 / 回平（会按“补齐 vs 回平”成本收益自动选择）
       allowTakerComplete: true
       allowFlatten: true
-      minProfitAfterCompleteCents: 1
+
+      # 当需要“补齐对冲（taker）”时允许的最小剩余利润（分）。
+      # 例如设为 0 表示只要不亏就允许补齐；设为 1/2 表示仍要保留一点确定收益。
+      minProfitAfterCompleteCents: 0
+
 
       # 盘口质量 gate（建议开着）
       enableMarketQualityGate: false
@@ -67,3 +71,8 @@ exchangeStrategies:
       # 自动 merge（测试期先关，避免复杂度）
       autoMerge:
         enabled: false
+
+      cycleProfitTargetMinUSDC: 1
+      cycleProfitTargetMaxUSDC: 90
+      # profitMaximizationCutoffSeconds: 180  # 可不配，默认 180
+      profitMaximizationCutoffSeconds: 180

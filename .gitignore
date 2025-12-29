@@ -55,7 +55,7 @@ data/market-data.json
 yml/
 yml/
 data/
-logs/
+
 docs/
 cache/
 cmd/server/data/

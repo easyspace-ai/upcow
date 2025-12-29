@@ -73,8 +73,8 @@ func (e *ioExecutor) PlaceOrderAsync(
 			if result.Order.OrderID == "" {
 				result.Order.OrderID = fmt.Sprintf("dry_run_%d", time.Now().UnixNano())
 			}
-			ioExecutorLog.Infof("📝 [纸交易] 模拟下单（立即成交）: orderID=%s, assetID=%s, side=%s, price=%.4f, size=%.4f, status=%s",
-				result.Order.OrderID, order.AssetID, order.Side, order.Price.ToDecimal(), order.Size, result.Order.Status)
+			ioExecutorLog.Infof("📝 [纸交易] 模拟下单（立即成交）: orderID=%s, assetID=%s, tokenType=%s, side=%s, price=%.4f, size=%.4f, status=%s",
+				result.Order.OrderID, order.AssetID, order.TokenType, order.Side, order.Price.ToDecimal(), order.Size, result.Order.Status)
 			callback(result)
 			return
 		}

@@ -540,10 +540,14 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	pnlUpWinUSDC := upShares - totalCostUSDC
 	pnlDownWinUSDC := downShares - totalCostUSDC
 	worstCasePnLUSDC := math.Min(pnlUpWinUSDC, pnlDownWinUSDC)
+	log.Infof("🔍 [%s] step: 持仓统计 market=%s upShares=%.2f downShares=%.2f upCost=%.4f downCost=%.4f totalCost=%.4f unhedged=%.2f worstPnL=%.4f remainingSeconds=%d", 
+		ID, m.Slug, upShares, downShares, upCostUSDC, downCostUSDC, totalCostUSDC, unhedged, worstCasePnLUSDC, remainingSeconds)
 
 	// closeout 窗口：如果没有裸露，就停止本周期新增（只持有到结算）。
 	// 注意：若有裸露，则继续走下方“补齐/回平”逻辑（其中也会优先在 closeout 时触发）。
 	if inCloseout && unhedged < s.MinUnhedgedShares {
+		log.Infof("🔍 [%s] step: closeout窗口且无裸露，提前返回 inCloseout=%v unhedged=%.2f < minUnhedged=%.2f remainingSeconds=%d", 
+			ID, inCloseout, unhedged, s.MinUnhedgedShares, remainingSeconds)
 		return
 	}
 
@@ -557,9 +561,39 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		s.stats.MaxSingleSideStops++
 		s.stateMu.Unlock()
 		s.maybeLog(now, m, fmt.Sprintf("maxSingleSideShares reached: up=%.2f down=%.2f limit=%.2f", upShares, downShares, s.MaxSingleSideShares))
-		// 若没有裸露风险：直接停止本周期新增挂单/加仓（只持有到结算）
-		if unhedged < s.MinUnhedgedShares {
+		// ⚠️ 关键修复：即使达到maxSingleSideShares，如果worstPnL未达到targetWorst，仍应继续执行目标检查
+		// 先读取targetWorst（在目标检查之前）
+		s.stateMu.Lock()
+		targetWorstCaseProfitUSDC := s.TargetWorstCaseProfitUSDC
+		minCycleProfitUSDC := s.CycleProfitTargetMinUSDC
+		maxCycleProfitUSDC := s.CycleProfitTargetMaxUSDC
+		maximizeCutoffSec := s.ProfitMaximizationCutoffSeconds
+		s.stateMu.Unlock()
+		targetWorst := targetWorstCaseProfitUSDC
+		if minCycleProfitUSDC > 0 || maxCycleProfitUSDC > 0 {
+			if maxCycleProfitUSDC == 0 {
+				maxCycleProfitUSDC = minCycleProfitUSDC
+			}
+			if minCycleProfitUSDC == 0 {
+				minCycleProfitUSDC = maxCycleProfitUSDC
+			}
+			chaseMax := maximizeCutoffSec > 0 && remainingSeconds > maximizeCutoffSec
+			if chaseMax {
+				targetWorst = maxCycleProfitUSDC
+			} else {
+				targetWorst = minCycleProfitUSDC
+			}
+		}
+		// 若没有裸露风险且worstPnL已达到targetWorst：直接停止本周期新增挂单/加仓（只持有到结算）
+		if unhedged < s.MinUnhedgedShares && worstCasePnLUSDC >= targetWorst {
+			log.Infof("🔍 [%s] step: maxSingleSideShares reached且目标已达成，提前返回 up=%.2f down=%.2f worstPnL=%.4f >= targetWorst=%.4f", 
+				ID, upShares, downShares, worstCasePnLUSDC, targetWorst)
 			return
+		}
+		// 若worstPnL未达到targetWorst：继续执行目标检查，允许继续下单
+		if worstCasePnLUSDC < targetWorst {
+			log.Infof("🔍 [%s] step: maxSingleSideShares reached但目标未达成，继续执行 worstPnL=%.4f < targetWorst=%.4f", 
+				ID, worstCasePnLUSDC, targetWorst)
 		}
 		// 若仍有裸露：继续让下方“超时补齐/回平”逻辑处理风险
 	}
@@ -1485,10 +1519,22 @@ func (s *Strategy) currentTotals(marketSlug string) (upShares, downShares, upCos
 		return 0, 0, 0, 0
 	}
 	positions := s.TradingService.GetOpenPositionsForMarket(marketSlug)
+	log.Infof("🔍 [%s] currentTotals: marketSlug=%s 查询到 %d 个持仓", ID, marketSlug, len(positions))
 	for _, p := range positions {
-		if p == nil || !p.IsOpen() || p.Size <= 0 {
+		if p == nil {
+			log.Warnf("🔍 [%s] currentTotals: 发现nil持仓", ID)
 			continue
 		}
+		if !p.IsOpen() {
+			log.Debugf("🔍 [%s] currentTotals: 持仓已关闭 positionID=%s status=%s marketSlug=%s", ID, p.ID, p.Status, p.MarketSlug)
+			continue
+		}
+		if p.Size <= 0 {
+			log.Debugf("🔍 [%s] currentTotals: 持仓大小为0 positionID=%s size=%.2f marketSlug=%s", ID, p.ID, p.Size, p.MarketSlug)
+			continue
+		}
+		log.Infof("🔍 [%s] currentTotals: 持仓 positionID=%s tokenType=%s size=%.2f marketSlug=%s", 
+			ID, p.ID, p.TokenType, p.Size, p.MarketSlug)
 		size := p.Size
 		cost := 0.0
 
@@ -1501,6 +1547,8 @@ func (s *Strategy) currentTotals(marketSlug string) (upShares, downShares, upCos
 			cost = p.EntryPrice.ToDecimal() * size
 		} else {
 			// 无成本信息：跳过（保守，会低估成本 -> 高估PnL）
+			log.Warnf("🔍 [%s] currentTotals: 持仓无成本信息 positionID=%s size=%.2f TotalFilledSize=%.2f CostBasis=%.4f AvgPrice=%.4f EntryPrice=%v", 
+				ID, p.ID, p.Size, p.TotalFilledSize, p.CostBasis, p.AvgPrice, p.EntryPrice)
 			continue
 		}
 
@@ -1513,6 +1561,8 @@ func (s *Strategy) currentTotals(marketSlug string) (upShares, downShares, upCos
 			downCostUSDC += cost
 		}
 	}
+	log.Infof("🔍 [%s] currentTotals: 结果 marketSlug=%s upShares=%.2f downShares=%.2f upCost=%.4f downCost=%.4f", 
+		ID, marketSlug, upShares, downShares, upCostUSDC, downCostUSDC)
 	return upShares, downShares, upCostUSDC, downCostUSDC
 }
 
