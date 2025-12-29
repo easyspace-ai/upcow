@@ -564,20 +564,43 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		// 若仍有裸露：继续让下方“超时补齐/回平”逻辑处理风险
 	}
 
-	// 1) 目标达成：无论 UP/DOWN 胜出都盈利（或达到用户指定阈值），撤单并持有到结算
+	// 1) 目标达成：无论 UP/DOWN 胜出都盈利（worst-case PnL），并支持“每周期利润目标区间 [min,max]”
 	s.stateMu.Lock()
 	targetShares := s.targetShares // legacy: 仍用于日志/报表兼容
 	profitTarget := s.targetProfitCents
 	firstFillAt := s.firstFillAt
-	targetWorstCaseProfitUSDC := s.TargetWorstCaseProfitUSDC
+	targetWorstCaseProfitUSDC := s.TargetWorstCaseProfitUSDC // legacy fallback
+	minCycleProfitUSDC := s.CycleProfitTargetMinUSDC
+	maxCycleProfitUSDC := s.CycleProfitTargetMaxUSDC
+	maximizeCutoffSec := s.ProfitMaximizationCutoffSeconds
 	s.stateMu.Unlock()
-	log.Infof("🔍 [%s] step: 目标检查 targetShares=%.2f minShares=%.2f cost=%.4f pnl(upWin=%.4f downWin=%.4f worst=%.4f) targetWorst=%.4f profitTarget=%dc firstFillAt=%v",
-		ID, targetShares, minShares, totalCostUSDC, pnlUpWinUSDC, pnlDownWinUSDC, worstCasePnLUSDC, targetWorstCaseProfitUSDC, profitTarget, firstFillAt)
+	// 目标选择：
+	// - 若配置了 [min,max]：剩余时间充裕则追 max，否则达到 min 即可收手
+	// - 否则：使用 legacy 的 TargetWorstCaseProfitUSDC（默认 0：不亏即收手）
+	targetWorst := targetWorstCaseProfitUSDC
+	if minCycleProfitUSDC > 0 || maxCycleProfitUSDC > 0 {
+		if maxCycleProfitUSDC == 0 {
+			maxCycleProfitUSDC = minCycleProfitUSDC
+		}
+		if minCycleProfitUSDC == 0 {
+			minCycleProfitUSDC = maxCycleProfitUSDC
+		}
+		// 时间允许：继续争取 max；临近尾盘：只要 >= min 即可
+		chaseMax := maximizeCutoffSec > 0 && remainingSeconds > maximizeCutoffSec
+		if chaseMax {
+			targetWorst = maxCycleProfitUSDC
+		} else {
+			targetWorst = minCycleProfitUSDC
+		}
+	}
 
-	if worstCasePnLUSDC >= targetWorstCaseProfitUSDC {
+	log.Infof("🔍 [%s] step: 目标检查 targetShares=%.2f minShares=%.2f cost=%.4f pnl(upWin=%.4f downWin=%.4f worst=%.4f) targetWorst=%.4f (min=%.2f max=%.2f cutoff=%ds rem=%ds) profitTarget=%dc firstFillAt=%v",
+		ID, targetShares, minShares, totalCostUSDC, pnlUpWinUSDC, pnlDownWinUSDC, worstCasePnLUSDC, targetWorst, minCycleProfitUSDC, maxCycleProfitUSDC, maximizeCutoffSec, remainingSeconds, profitTarget, firstFillAt)
+
+	if worstCasePnLUSDC >= targetWorst {
 		s.cancelMarketOrdersThrottled(ctx, now, m, false)
 		s.maybeLog(now, m, fmt.Sprintf("goal_reached: cost=%.4f up=%.2f down=%.2f pnl(upWin=%.4f downWin=%.4f worst=%.4f) targetWorst=%.4f src=%s",
-			totalCostUSDC, upShares, downShares, pnlUpWinUSDC, pnlDownWinUSDC, worstCasePnLUSDC, targetWorstCaseProfitUSDC, source))
+			totalCostUSDC, upShares, downShares, pnlUpWinUSDC, pnlDownWinUSDC, worstCasePnLUSDC, targetWorst, source))
 		return
 	}
 

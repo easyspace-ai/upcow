@@ -41,6 +41,11 @@ type cycleReport struct {
 	PnLDownWinUSDC    float64 `json:"pnlDownWinUSDC"`
 	WorstCasePnLUSDC  float64 `json:"worstCasePnlUSDC"`
 
+	// 配置：每周期目标利润区间（用于回放/分析）
+	CycleProfitTargetMinUSDC float64 `json:"cycleProfitTargetMinUSDC"`
+	CycleProfitTargetMaxUSDC float64 `json:"cycleProfitTargetMaxUSDC"`
+	ProfitMaximizationCutoffSeconds int `json:"profitMaximizationCutoffSeconds"`
+
 	// counters
 	Quotes int64 `json:"quotes"`
 	OrdersPlacedYes int64 `json:"ordersPlacedYes"`
@@ -136,6 +141,9 @@ func (s *Strategy) finalizeAndReport(ctx context.Context, oldMarket *domain.Mark
 		PnLUpWinUSDC:      pnlUpWinUSDC,
 		PnLDownWinUSDC:    pnlDownWinUSDC,
 		WorstCasePnLUSDC:  worst,
+		CycleProfitTargetMinUSDC: s.CycleProfitTargetMinUSDC,
+		CycleProfitTargetMaxUSDC: s.CycleProfitTargetMaxUSDC,
+		ProfitMaximizationCutoffSeconds: s.ProfitMaximizationCutoffSeconds,
 		Quotes: st.Quotes,
 		OrdersPlacedYes: st.OrdersPlacedYes,
 		OrdersPlacedNo:  st.OrdersPlacedNo,
