@@ -532,10 +532,14 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		ID, m.Slug, yesBidC, yesAskC, yesAskC-yesBidC, effectiveBuyYesC, noBidC, noAskC, noAskC-noBidC, effectiveBuyNoC, remainingSeconds, source)
 
 	// 读取当前持仓（shares）
-	upShares, downShares := s.currentShares(m.Slug)
+	upShares, downShares, upCostUSDC, downCostUSDC := s.currentTotals(m.Slug)
 	minShares := math.Min(upShares, downShares)
 	maxShares := math.Max(upShares, downShares)
 	unhedged := maxShares - minShares
+	totalCostUSDC := upCostUSDC + downCostUSDC
+	pnlUpWinUSDC := upShares - totalCostUSDC
+	pnlDownWinUSDC := downShares - totalCostUSDC
+	worstCasePnLUSDC := math.Min(pnlUpWinUSDC, pnlDownWinUSDC)
 
 	// closeout 窗口：如果没有裸露，就停止本周期新增（只持有到结算）。
 	// 注意：若有裸露，则继续走下方“补齐/回平”逻辑（其中也会优先在 closeout 时触发）。
@@ -560,18 +564,20 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		// 若仍有裸露：继续让下方“超时补齐/回平”逻辑处理风险
 	}
 
-	// 1) 已达到目标：撤单，持有到结算
+	// 1) 目标达成：无论 UP/DOWN 胜出都盈利（或达到用户指定阈值），撤单并持有到结算
 	s.stateMu.Lock()
-	targetShares := s.targetShares
+	targetShares := s.targetShares // legacy: 仍用于日志/报表兼容
 	profitTarget := s.targetProfitCents
 	firstFillAt := s.firstFillAt
+	targetWorstCaseProfitUSDC := s.TargetWorstCaseProfitUSDC
 	s.stateMu.Unlock()
-	log.Infof("🔍 [%s] step: 目标检查 targetShares=%.2f minShares=%.2f profitTarget=%dc firstFillAt=%v", 
-		ID, targetShares, minShares, profitTarget, firstFillAt)
+	log.Infof("🔍 [%s] step: 目标检查 targetShares=%.2f minShares=%.2f cost=%.4f pnl(upWin=%.4f downWin=%.4f worst=%.4f) targetWorst=%.4f profitTarget=%dc firstFillAt=%v",
+		ID, targetShares, minShares, totalCostUSDC, pnlUpWinUSDC, pnlDownWinUSDC, worstCasePnLUSDC, targetWorstCaseProfitUSDC, profitTarget, firstFillAt)
 
-	if targetShares > 0 && minShares >= targetShares {
+	if worstCasePnLUSDC >= targetWorstCaseProfitUSDC {
 		s.cancelMarketOrdersThrottled(ctx, now, m, false)
-		s.maybeLog(now, m, fmt.Sprintf("locked: profit=%dc targetShares=%.2f got(up=%.2f down=%.2f) src=%s", profitTarget, targetShares, upShares, downShares, source))
+		s.maybeLog(now, m, fmt.Sprintf("goal_reached: cost=%.4f up=%.2f down=%.2f pnl(upWin=%.4f downWin=%.4f worst=%.4f) targetWorst=%.4f src=%s",
+			totalCostUSDC, upShares, downShares, pnlUpWinUSDC, pnlDownWinUSDC, worstCasePnLUSDC, targetWorstCaseProfitUSDC, source))
 		return
 	}
 
@@ -960,10 +966,8 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		}
 	}
 
-	// ⚠️ 关键修复：确保同时下两腿，避免只下一腿导致裸露风险
-	// 核心原则：cyclehedge 策略必须同时下两腿，确保两腿同时成交，避免裸露风险
-	// 
-	// 如果已经部分成交且有裸露，只允许补齐到对侧，不再扩大总规模
+	// 新目标：允许两边持仓不完全一致，只要“无论哪边胜出都盈利”达标即可。
+	// 裸露（单腿成交）仍由上方补齐/回平逻辑负责；这里不再强制“每一笔都成对下两腿”。
 	if unhedged >= s.MinUnhedgedShares {
 		log.Debugf("🔍 [%s] 已有裸露: market=%s unhedged=%.2f >= minUnhedged=%.2f", 
 			ID, m.Slug, unhedged, s.MinUnhedgedShares)
@@ -973,27 +977,6 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		} else if downShares > upShares {
 			needDown = 0
 		}
-	} else {
-		// ⚠️ 关键修复：如果没有裸露，必须确保同时下两腿
-		// 即使一腿已经达到目标（need == 0），也应该同时下两腿，确保两腿同时成交
-		// 这样可以避免只下一腿导致裸露风险
-		// 
-		// 修复逻辑：如果只有一腿需要下单（need > 0），但另一腿已经达到目标（need == 0），
-		// 应该强制另一腿也下单（即使 need == 0），确保两腿同时成交
-		if needUp > 0 && needDown == 0 {
-			// UP 需要下单，DOWN 已经达到目标（downShares >= shares）
-			// ⚠️ 修复：强制 DOWN 也下单，确保两腿同时成交
-			// 即使 DOWN 已经达到目标，也应该同时下两腿，避免只下 UP 导致裸露
-			// 设置一个最小单量，确保两腿同时成交
-			needDown = math.Max(s.MinUnhedgedShares, shares*0.1) // 至少下目标 shares 的 10% 或最小单量
-		} else if needDown > 0 && needUp == 0 {
-			// DOWN 需要下单，UP 已经达到目标（upShares >= shares）
-			// ⚠️ 修复：强制 UP 也下单，确保两腿同时成交
-			// 即使 UP 已经达到目标，也应该同时下两腿，避免只下 DOWN 导致裸露
-			// 设置一个最小单量，确保两腿同时成交
-			needUp = math.Max(s.MinUnhedgedShares, shares*0.1) // 至少下目标 shares 的 10% 或最小单量
-		}
-		// 如果两腿都需要下单（needUp > 0 && needDown > 0），这是正常的，同时下两腿
 	}
 
 	// 6) 下两腿 GTC（maker）：价格用 cents 构造
@@ -1467,6 +1450,47 @@ func (s *Strategy) currentShares(marketSlug string) (up float64, down float64) {
 	}
 	log.Infof("🔍 [%s] currentShares: 结果 marketSlug=%s up=%.2f down=%.2f", ID, marketSlug, up, down)
 	return up, down
+}
+
+// currentTotals 计算当前总持仓与总成本（USDC）。
+// 成本口径：
+// - 优先使用 CostBasis/TotalFilledSize（更可靠）
+// - fallback: AvgPrice 或 EntryPrice
+// 说明：该成本用于计算“UP 赢/ DOWN 赢”的情景 PnL（不含手续费等扩展项）。
+func (s *Strategy) currentTotals(marketSlug string) (upShares, downShares, upCostUSDC, downCostUSDC float64) {
+	if s == nil || s.TradingService == nil || marketSlug == "" {
+		return 0, 0, 0, 0
+	}
+	positions := s.TradingService.GetOpenPositionsForMarket(marketSlug)
+	for _, p := range positions {
+		if p == nil || !p.IsOpen() || p.Size <= 0 {
+			continue
+		}
+		size := p.Size
+		cost := 0.0
+
+		if p.TotalFilledSize > 0 && p.CostBasis > 0 {
+			// 以 TotalFilledSize 为基准缩放到当前 Size（可能存在部分平仓/合并等）
+			cost = p.CostBasis * (size / p.TotalFilledSize)
+		} else if p.AvgPrice > 0 {
+			cost = p.AvgPrice * size
+		} else if p.EntryPrice.Pips > 0 {
+			cost = p.EntryPrice.ToDecimal() * size
+		} else {
+			// 无成本信息：跳过（保守，会低估成本 -> 高估PnL）
+			continue
+		}
+
+		switch p.TokenType {
+		case domain.TokenTypeUp:
+			upShares += size
+			upCostUSDC += cost
+		case domain.TokenTypeDown:
+			downShares += size
+			downCostUSDC += cost
+		}
+	}
+	return upShares, downShares, upCostUSDC, downCostUSDC
 }
 
 // currentAvgCostCents 返回当前两腿的“平均成本（cents/share）”。

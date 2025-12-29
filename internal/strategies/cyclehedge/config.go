@@ -106,6 +106,15 @@ type Config struct {
 	EnableDynamicProfit bool `yaml:"enableDynamicProfit" json:"enableDynamicProfit"`
 	DistancePenaltyBps  int  `yaml:"distancePenaltyBps" json:"distancePenaltyBps"` // 默认 30（=0.30c penalty per 1c distance）
 
+	// ===== 目标：无论 UP/DOWN 胜出都盈利 =====
+	// 目标达成条件（以 USDC 计）：
+	//   pnlUpWin   = UpShares*1 - (UpTotalCostUSDC + DownTotalCostUSDC)
+	//   pnlDownWin = DownShares*1 - (UpTotalCostUSDC + DownTotalCostUSDC)
+	// 当 min(pnlUpWin, pnlDownWin) >= TargetWorstCaseProfitUSDC 时视为达标。
+	//
+	// 默认 0：只要“最差情景不亏钱”就停止新增并撤单持有到结算。
+	TargetWorstCaseProfitUSDC float64 `yaml:"targetWorstCaseProfitUSDC" json:"targetWorstCaseProfitUSDC"`
+
 	// ===== 周期报表（写文件）=====
 	EnableReport      *bool  `yaml:"enableReport" json:"enableReport"`           // 默认 true
 	ReportDir         string `yaml:"reportDir" json:"reportDir"`                 // 默认 data/reports/cyclehedge
@@ -248,6 +257,10 @@ func (c *Config) Validate() error {
 	}
 	if c.DistancePenaltyBps < 0 || c.DistancePenaltyBps > 500 {
 		return fmt.Errorf("distancePenaltyBps 建议在 [1,500] 范围内")
+	}
+
+	if c.TargetWorstCaseProfitUSDC < 0 {
+		return fmt.Errorf("targetWorstCaseProfitUSDC 不能为负数")
 	}
 
 	if c.EnableReport == nil {
