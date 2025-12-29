@@ -237,6 +237,9 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		s.cancelMarketOrdersThrottled(ctx, now, m, true)
 	}
 
+	// 计算剩余时间（秒）。用于尾盘收敛/动态参数。
+	remainingSeconds := s.remainingSeconds(now, m)
+
 	// 盘口质量 gate（避免 stale/wide spread）
 	if s.EnableMarketQualityGate != nil && *s.EnableMarketQualityGate {
 		orderCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -319,12 +322,15 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			s.stateMu.Unlock()
 		}
 		age := now.Sub(firstFillAt)
+		// 尾盘更快：裸露超时随剩余时间收紧（更激进，但更符合尾部波动变快的现实）。
+		timeoutSec := s.dynamicUnhedgedTimeoutSeconds(remainingSeconds)
 
 		// 超时/临近结算：执行“补齐或回平”
-		if age >= time.Duration(s.UnhedgedTimeoutSeconds)*time.Second || inCloseout {
+		if age >= time.Duration(timeoutSec)*time.Second || inCloseout {
 			// prefer: taker 补齐（只要不亏/仍有最小利润）
 			if s.AllowTakerComplete {
-				minProfit := s.MinProfitAfterCompleteCents
+				// 尾盘更严格：补齐后仍需保留的最小利润随时间提高（避免尾盘追单锁亏）。
+				minProfit := s.dynamicMinProfitAfterCompleteCents(remainingSeconds)
 				if yesAskC+noAskC <= 100-minProfit {
 					need := unhedged
 					need = s.clampOrderSize(need)
@@ -396,7 +402,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	}
 
 	// 3) 正常建仓：动态选择 profitCents（收益 vs 成交概率）
-	chosenProfit, chYesBidC, chNoBidC := s.chooseDynamicProfit(yesBidC, yesAskC, noBidC, noAskC)
+	chosenProfit, chYesBidC, chNoBidC := s.chooseDynamicProfit(yesBidC, yesAskC, noBidC, noAskC, remainingSeconds)
 	if chosenProfit == 0 {
 		// 当前盘口没法用 maker 锁 1~5c：先不做（等待更好时机）
 		return
@@ -811,14 +817,79 @@ func (s *Strategy) withinEntryCutoff(m *domain.Market) bool {
 	return time.Until(end) <= time.Duration(s.EntryCutoffSeconds)*time.Second
 }
 
+func (s *Strategy) remainingSeconds(now time.Time, m *domain.Market) int {
+	if s == nil || m == nil || m.Timestamp <= 0 {
+		return 0
+	}
+	durSec := s.CycleDurationSeconds
+	if durSec <= 0 {
+		durSec = 15 * 60
+	}
+	elapsed := int(now.Unix() - m.Timestamp)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	rem := durSec - elapsed
+	if rem < 0 {
+		rem = 0
+	}
+	return rem
+}
+
+func (s *Strategy) dynamicUnhedgedTimeoutSeconds(remainingSeconds int) int {
+	// 默认：沿用配置；尾盘收紧（更快补齐/回平）。
+	timeout := s.UnhedgedTimeoutSeconds
+	if timeout <= 0 {
+		timeout = 10
+	}
+	// closeout（用户需求：最后 3 分钟停止新增）窗口内，裸露风险最敏感：更快触发补齐/回平。
+	if remainingSeconds > 0 && s.EntryCutoffSeconds > 0 && remainingSeconds <= s.EntryCutoffSeconds {
+		if timeout > 2 {
+			timeout = 2
+		}
+		return timeout
+	}
+	// 结算前 5 分钟开始收紧
+	if remainingSeconds > 0 && remainingSeconds <= 300 {
+		if timeout > 5 {
+			timeout = 5
+		}
+	}
+	return timeout
+}
+
+func (s *Strategy) dynamicMinProfitAfterCompleteCents(remainingSeconds int) int {
+	// 默认：沿用配置；尾盘更保守一些，避免追单锁亏。
+	minProfit := s.MinProfitAfterCompleteCents
+	if minProfit < 0 {
+		minProfit = 0
+	}
+	if remainingSeconds > 0 && s.EntryCutoffSeconds > 0 && remainingSeconds <= s.EntryCutoffSeconds {
+		// closeout：至少保留 1c（除非用户显式要求更低/更高）
+		if minProfit < 1 {
+			minProfit = 1
+		}
+	}
+	return minProfit
+}
+
 // chooseDynamicProfit 在 profit 区间内根据“收益 vs 成交概率（离盘口距离）”选最优。
 // score = profit - (distancePenaltyBps/100)*maxDistanceCents
-func (s *Strategy) chooseDynamicProfit(yesBidC, yesAskC, noBidC, noAskC int) (chosenProfit, chosenYesBidC, chosenNoBidC int) {
+func (s *Strategy) chooseDynamicProfit(yesBidC, yesAskC, noBidC, noAskC int, remainingSeconds int) (chosenProfit, chosenYesBidC, chosenNoBidC int) {
 	bestScore := -1e9
 	bestProfit := 0
 	bestYes, bestNo := 0, 0
 
 	penaltyPerCent := float64(s.DistancePenaltyBps) / 100.0
+	// 时间敏感：越接近结算，盘口跳变越快、单腿风险越大。
+	// 因此尾盘提高“离盘口距离惩罚”，优先选更贴近 bestBid 的报价（提升成交概率，减少挂得太远导致的无效占用）。
+	if remainingSeconds > 0 {
+		if remainingSeconds <= 180 {
+			penaltyPerCent *= 3.0
+		} else if remainingSeconds <= 300 {
+			penaltyPerCent *= 2.0
+		}
+	}
 	for p := s.ProfitMinCents; p <= s.ProfitMaxCents; p++ {
 		yb, nb, ok := chooseMakerBids(yesBidC, yesAskC, noBidC, noAskC, p)
 		if !ok {
