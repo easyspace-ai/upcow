@@ -52,6 +52,12 @@ type Strategy struct {
 	// 全局约束
 	minOrderSize float64 // USDC
 	minShareSize float64 // GTC 最小 shares
+
+	// 市场精度信息（从配置加载；可选）
+	currentPrecision *MarketPrecisionInfo
+
+	// 监控去重：避免同一 market 重复启动监控 goroutine
+	monitoring map[string]bool
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -63,6 +69,9 @@ func (s *Strategy) Validate() error { return s.Config.Validate() }
 func (s *Strategy) Initialize() error {
 	if s.samples == nil {
 		s.samples = make(map[domain.TokenType][]sample)
+	}
+	if s.monitoring == nil {
+		s.monitoring = make(map[string]bool)
 	}
 
 	gc := config.Get()
@@ -90,6 +99,17 @@ func (s *Strategy) Initialize() error {
 	}
 	if s.minShareSize <= 0 {
 		s.minShareSize = 5.0
+	}
+
+	// 从配置加载市场精度（如果存在）
+	if gc.Market.Precision != nil {
+		s.currentPrecision = &MarketPrecisionInfo{
+			TickSize:     gc.Market.Precision.TickSize,
+			MinOrderSize: gc.Market.Precision.MinOrderSize,
+			NegRisk:      gc.Market.Precision.NegRisk,
+		}
+		log.Infof("✅ [%s] 从配置加载市场精度: tick_size=%s min_order_size=%s neg_risk=%v",
+			ID, s.currentPrecision.TickSize, s.currentPrecision.MinOrderSize, s.currentPrecision.NegRisk)
 	}
 	return nil
 }
@@ -189,8 +209,10 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		now = time.Now()
 	}
 
-	// 有任何持仓时：不再开新仓（我们目标是持有到结算或止损平仓）
-	if hasAnyOpenPosition(s.TradingService.GetOpenPositionsForMarket(e.Market.Slug)) {
+	// ===== 恢复/管理已有持仓（重启后也会在这里接管）=====
+	// - 已对冲：取消残留挂单，持有到结算
+	// - 未对冲：确保 hedge 挂单存在 + 超时/价格止损
+	if s.manageExistingExposure(now, e.Market) {
 		return nil
 	}
 
@@ -443,6 +465,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		Status:       domain.OrderStatusPending,
 		CreatedAt:    time.Now(),
 	}
+	s.attachMarketPrecision(entryOrder)
 	entryRes, entryErr := s.TradingService.PlaceOrder(orderCtx, entryOrder)
 	if entryErr != nil {
 		if isFailSafeRefusal(entryErr) {
@@ -498,6 +521,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		Status:       domain.OrderStatusPending,
 		CreatedAt:    time.Now(),
 	}
+	s.attachMarketPrecision(hedgeOrder)
 	hedgeRes, hedgeErr := s.TradingService.PlaceOrder(orderCtx, hedgeOrder)
 	if hedgeErr != nil {
 		if isFailSafeRefusal(hedgeErr) {
@@ -522,7 +546,13 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		ID, entryRes.OrderID, entryFilledSize, entryAskCents, hedgeRes.OrderID, hedgeLimitCents, unhedgedMax, unhedgedSLCents)
 
 	// 启动监控：直到对冲完成（持有到结算）或触发止损
-	go s.monitorHedgeAndStoploss(context.Background(), market, winner, entryRes.OrderID, entryAskCents, entryFilledSize, hedgeRes.OrderID, hedgeAsset, reorderSec, unhedgedMax, unhedgedSLCents)
+	entryFilledAt := time.Now()
+	if entryRes.FilledAt != nil && !entryRes.FilledAt.IsZero() {
+		entryFilledAt = *entryRes.FilledAt
+	}
+	s.startMonitorIfNeeded(market.Slug, func() {
+		s.monitorHedgeAndStoploss(context.Background(), market, winner, entryRes.OrderID, entryAskCents, entryFilledSize, entryFilledAt, hedgeRes.OrderID, hedgeAsset, reorderSec, unhedgedMax, unhedgedSLCents)
+	})
 
 	return nil
 }
@@ -541,4 +571,44 @@ func hasAnyOpenPosition(positions []*domain.Position) bool {
 		}
 	}
 	return false
+}
+
+func (s *Strategy) startMonitorIfNeeded(marketSlug string, fn func()) {
+	if s == nil || marketSlug == "" || fn == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.monitoring == nil {
+		s.monitoring = make(map[string]bool)
+	}
+	if s.monitoring[marketSlug] {
+		s.mu.Unlock()
+		return
+	}
+	s.monitoring[marketSlug] = true
+	s.mu.Unlock()
+
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			if s.monitoring != nil {
+				s.monitoring[marketSlug] = false
+			}
+			s.mu.Unlock()
+		}()
+		fn()
+	}()
+}
+
+func (s *Strategy) attachMarketPrecision(o *domain.Order) {
+	if s == nil || o == nil {
+		return
+	}
+	if s.currentPrecision == nil {
+		return
+	}
+	if parsed, err := ParseTickSize(s.currentPrecision.TickSize); err == nil {
+		o.TickSize = parsed
+	}
+	o.NegRisk = boolPtr(s.currentPrecision.NegRisk)
 }

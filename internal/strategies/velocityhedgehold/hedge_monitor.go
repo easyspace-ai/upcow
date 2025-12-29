@@ -21,6 +21,7 @@ func (s *Strategy) monitorHedgeAndStoploss(
 	entryOrderID string,
 	entryPriceCents int,
 	entryFilledSize float64,
+	entryFilledAt time.Time,
 	hedgeOrderID string,
 	hedgeAsset string,
 	reorderTimeoutSeconds int,
@@ -33,7 +34,10 @@ func (s *Strategy) monitorHedgeAndStoploss(
 	if entryFilledSize <= 0 {
 		return
 	}
-	start := time.Now()
+	start := entryFilledAt
+	if start.IsZero() {
+		start = time.Now()
+	}
 	deadline := start.Add(time.Duration(unhedgedMaxSeconds) * time.Second)
 
 	reorderEvery := time.Duration(reorderTimeoutSeconds) * time.Second
@@ -41,6 +45,9 @@ func (s *Strategy) monitorHedgeAndStoploss(
 		reorderEvery = 30 * time.Second
 	}
 	nextReorder := start.Add(reorderEvery)
+	if time.Now().After(nextReorder) {
+		nextReorder = time.Now() // 重启后已过重挂周期：立即允许重挂
+	}
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -57,6 +64,21 @@ func (s *Strategy) monitorHedgeAndStoploss(
 			positions := s.TradingService.GetOpenPositionsForMarket(market.Slug)
 			if !hasAnyOpenPosition(positions) {
 				_ = s.TradingService.CancelOrder(context.Background(), hedgeOrderID)
+				return
+			}
+
+			// 若当前仓位已对冲（双边数量几乎相等），停止监控并清理挂单
+			upPos, downPos := splitPositions(positions)
+			upSize, downSize := 0.0, 0.0
+			if upPos != nil {
+				upSize = upPos.Size
+			}
+			if downPos != nil {
+				downSize = downPos.Size
+			}
+			if upSize > 0 && downSize > 0 && nearlyEqualShares(upSize, downSize) {
+				s.TradingService.CancelOrdersForMarket(context.Background(), market.Slug)
+				log.Infof("✅ [%s] 监控结束：仓位已对冲（按持仓判断） up=%.4f down=%.4f market=%s", ID, upSize, downSize, market.Slug)
 				return
 			}
 
@@ -172,6 +194,7 @@ func (s *Strategy) monitorHedgeAndStoploss(
 					Status:       domain.OrderStatusPending,
 					CreatedAt:    time.Now(),
 				}
+				s.attachMarketPrecision(newHedge)
 				placed, err := s.TradingService.PlaceOrder(context.Background(), newHedge)
 				if err != nil {
 					if isFailSafeRefusal(err) {
@@ -275,6 +298,7 @@ func (s *Strategy) forceStoploss(ctx context.Context, market *domain.Market, rea
 			Status:     domain.OrderStatusPending,
 			CreatedAt:  time.Now(),
 		}
+		s.attachMarketPrecision(exit)
 		if _, err := s.TradingService.PlaceOrder(stopCtx, exit); err != nil {
 			log.Warnf("❌ [%s] 止损平仓失败：token=%s size=%.4f bid=%dc err=%v reason=%s market=%s",
 				ID, p.TokenType, p.Size, exitPrice.ToCents(), err, reason, market.Slug)
