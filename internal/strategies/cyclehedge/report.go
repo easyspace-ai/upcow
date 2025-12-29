@@ -45,6 +45,14 @@ type cycleReport struct {
 
 	ProfitChoice map[string]int64 `json:"profitChoice"`
 	LastChosenProfit int `json:"lastChosenProfit"`
+
+	// 成本计算监控统计
+	CostCalculations int64 `json:"costCalculations"`
+	CostCalculationErrors int64 `json:"costCalculationErrors"`
+	CostBasisUsed int64 `json:"costBasisUsed"`
+	CostAvgPriceUsed int64 `json:"costAvgPriceUsed"`
+	CostEntryPriceUsed int64 `json:"costEntryPriceUsed"`
+	CostSizeMismatches int64 `json:"costSizeMismatches"`
 }
 
 func (s *Strategy) finalizeAndReport(ctx context.Context, oldMarket *domain.Market) {
@@ -114,6 +122,12 @@ func (s *Strategy) finalizeAndReport(ctx context.Context, oldMarket *domain.Mark
 		MaxSingleSideStops: st.MaxSingleSideStops,
 		ProfitChoice: pc,
 		LastChosenProfit: st.LastChosenProfit,
+		CostCalculations: st.CostCalculations,
+		CostCalculationErrors: st.CostCalculationErrors,
+		CostBasisUsed: st.CostBasisUsed,
+		CostAvgPriceUsed: st.CostAvgPriceUsed,
+		CostEntryPriceUsed: st.CostEntryPriceUsed,
+		CostSizeMismatches: st.CostSizeMismatches,
 	}
 
 	_ = s.writeReportFiles(ctx, rep)

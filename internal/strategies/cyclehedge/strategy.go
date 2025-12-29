@@ -15,6 +15,7 @@ import (
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/config"
+	"github.com/betbot/gobet/pkg/marketmath"
 	"github.com/sirupsen/logrus"
 )
 
@@ -24,6 +25,14 @@ var log = logrus.WithField("strategy", ID)
 
 func init() { bbgo.RegisterStrategy(ID, &Strategy{}) }
 
+// priceSnapshot 价格状态快照（原子更新，避免事件丢失）
+type priceSnapshot struct {
+	UpPrice   *events.PriceChangedEvent
+	DownPrice *events.PriceChangedEvent
+	Market    *domain.Market
+	UpdatedAt time.Time
+}
+
 // Strategy：每个周期（15m market）里锁定 1~5c 的 complete-set 收益，并按余额滚动放大。
 type Strategy struct {
 	TradingService *services.TradingService
@@ -32,17 +41,19 @@ type Strategy struct {
 	// loop
 	loopOnce  sync.Once
 	loopCancel context.CancelFunc
-	signalC   chan struct{}
+	signalC   chan struct{}  // 可选：用于重要变化触发（但主要依赖 tick）
 	orderC    chan *domain.Order
 
-	priceMu sync.Mutex
-	latest  map[domain.TokenType]*events.PriceChangedEvent
+	// 价格状态快照（状态快照模式：OnPriceChanged 直接更新，step 读取）
+	priceMu sync.RWMutex
+	priceSnapshot priceSnapshot
 
 	stateMu sync.Mutex
 	marketSlugPrefix string
 
 	// per-cycle state
 	currentMarketSlug string
+	currentMarket     *domain.Market // 保存完整的 market 对象（参考 updownthreshold 策略）
 	cycleStartUnix    int64
 	targetNotional    float64
 	targetProfitCents int
@@ -84,6 +95,14 @@ type cycleStats struct {
 
 	ProfitChoice map[int]int64 // profitCents -> count
 	LastChosenProfit int
+
+	// 成本计算监控
+	CostCalculations int64        // 成本计算次数
+	CostCalculationErrors int64   // 成本计算错误次数（无法获取成本）
+	CostBasisUsed int64           // 使用 CostBasis 的次数
+	CostAvgPriceUsed int64        // 使用 AvgPrice 的次数
+	CostEntryPriceUsed int64      // 使用 EntryPrice 的次数
+	CostSizeMismatches int64      // Size 与 TotalFilledSize 不匹配的次数
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -93,13 +112,10 @@ func (s *Strategy) Validate() error { return s.Config.Validate() }
 
 func (s *Strategy) Initialize() error {
 	if s.signalC == nil {
-		s.signalC = make(chan struct{}, 1)
+		s.signalC = make(chan struct{}, 10) // 小缓冲即可，主要用于可选触发（主要依赖 tick）
 	}
 	if s.orderC == nil {
 		s.orderC = make(chan *domain.Order, 256)
-	}
-	if s.latest == nil {
-		s.latest = make(map[domain.TokenType]*events.PriceChangedEvent)
 	}
 	if s.stats.ProfitChoice == nil {
 		s.stats.ProfitChoice = make(map[int]int64)
@@ -151,6 +167,14 @@ func (s *Strategy) OnCycle(ctx context.Context, oldMarket *domain.Market, newMar
 	// 用周期回调快速重置
 	now := time.Now()
 	s.resetCycle(ctx, now, newMarket)
+	
+	// 保存完整的 market 对象（参考 updownthreshold 策略的设计）
+	s.stateMu.Lock()
+	if newMarket != nil {
+		cp := *newMarket
+		s.currentMarket = &cp
+	}
+	s.stateMu.Unlock()
 }
 
 func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
@@ -160,11 +184,41 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if s.TradingService != nil {
 		s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof)
 	}
-	// fast path：只合并事件
+	
+	// 打印价格更新事件
+	priceCents := e.NewPrice.ToCents()
+	log.Infof("📈 [%s] 价格更新: market=%s token=%s price=%dc (%.4f) oldPrice=%v", 
+		ID, e.Market.Slug, e.TokenType, priceCents, e.NewPrice.ToDecimal(), e.OldPrice)
+	
+	// 状态快照模式：直接更新状态快照（原子操作）
 	s.priceMu.Lock()
-	s.latest[e.TokenType] = e
+	if e.TokenType == domain.TokenTypeUp {
+		s.priceSnapshot.UpPrice = e
+	} else if e.TokenType == domain.TokenTypeDown {
+		s.priceSnapshot.DownPrice = e
+	}
+	// 更新 market（取最新的）
+	if s.priceSnapshot.Market == nil || s.priceSnapshot.Market.Slug != e.Market.Slug {
+		cp := *e.Market
+		s.priceSnapshot.Market = &cp
+	}
+	s.priceSnapshot.UpdatedAt = time.Now()
 	s.priceMu.Unlock()
-	common.TrySignal(s.signalC)
+	
+	// 同时更新 currentMarket（用于兼容性）
+	s.stateMu.Lock()
+	if s.currentMarket == nil || s.currentMarket.Slug != e.Market.Slug {
+		cp := *e.Market
+		s.currentMarket = &cp
+	}
+	s.stateMu.Unlock()
+	
+	// 可选：发送信号（但主要依赖 tick，信号丢失也无所谓）
+	select {
+	case s.signalC <- struct{}{}:
+	default:
+		// 信号丢失也无所谓，tick 会保底执行
+	}
 	return nil
 }
 
@@ -181,48 +235,83 @@ func (s *Strategy) OnOrderUpdate(_ context.Context, order *domain.Order) error {
 }
 
 func (s *Strategy) loop(loopCtx context.Context, tickC <-chan time.Time) {
+	log.Infof("🔍 [%s] loop 函数启动 (signalC=%v)", ID, s.signalC != nil)
 	for {
 		select {
 		case <-loopCtx.Done():
+			log.Infof("🔍 [%s] loop: context done，退出", ID)
 			return
 		case <-s.signalC:
+			log.Infof("🔍 [%s] loop: 收到 signalC 信号，调用 step", ID)
 			s.step(loopCtx, time.Now())
 		case <-tickC:
+			log.Infof("🔍 [%s] loop: 收到 tick 信号，调用 step", ID)
 			s.step(loopCtx, time.Now())
 		}
 	}
 }
 
 func (s *Strategy) step(ctx context.Context, now time.Time) {
+	log.Infof("🔍 [%s] step 函数被调用", ID)
+	
 	if s.TradingService == nil {
+		log.Infof("🔍 [%s] step: TradingService is nil，返回", ID)
 		return
 	}
 
-	// 合并行情事件（取最新的 market）
-	s.priceMu.Lock()
-	evUp := s.latest[domain.TokenTypeUp]
-	evDown := s.latest[domain.TokenTypeDown]
-	s.latest = make(map[domain.TokenType]*events.PriceChangedEvent)
-	s.priceMu.Unlock()
+	// 状态快照模式：读取状态快照（原子操作，不丢失数据）
+	s.priceMu.RLock()
+	snapshot := s.priceSnapshot  // 复制快照
+	s.priceMu.RUnlock()
 
+	log.Infof("🔍 [%s] step: 读取价格快照 evUp=%v evDown=%v market=%v", 
+		ID, snapshot.UpPrice != nil, snapshot.DownPrice != nil, snapshot.Market != nil)
+
+	// 使用快照中的 market
 	var m *domain.Market
-	if evUp != nil && evUp.Market != nil {
-		m = evUp.Market
+	if snapshot.Market != nil {
+		// 复制一份，避免竞态
+		cp := *snapshot.Market
+		m = &cp
+		log.Infof("🔍 [%s] step: 使用快照中的 market=%s", ID, m.Slug)
+		
+		// 同步更新 currentMarket（用于兼容性）
+		s.stateMu.Lock()
+		if s.currentMarket == nil || s.currentMarket.Slug != m.Slug {
+			s.currentMarket = &cp
+		}
+		s.stateMu.Unlock()
 	}
-	if m == nil && evDown != nil && evDown.Market != nil {
-		m = evDown.Market
-	}
+	
+	// 如果快照中没有 market，使用保存的 currentMarket 作为 fallback
 	if m == nil {
-		// 仍然消费订单更新，避免堆积
-		s.drainOrders()
-		return
+		s.stateMu.Lock()
+		if s.currentMarket != nil {
+			cp := *s.currentMarket
+			m = &cp
+			log.Infof("🔍 [%s] step: 使用保存的 currentMarket=%s (fallback)", ID, m.Slug)
+		}
+		s.stateMu.Unlock()
+		
+		if m == nil {
+			// 完全没有市场信息，返回
+			log.Infof("🔍 [%s] step: no market from snapshot and no saved market，返回", ID)
+			s.drainOrders()
+			return
+		}
 	}
+	
+	// 注意：快照中的价格事件（snapshot.UpPrice, snapshot.DownPrice）已保存，
+	// 如果需要使用可以在后续逻辑中通过 snapshot 访问
 
 	// 市场过滤
 	if !strings.HasPrefix(strings.ToLower(m.Slug), s.marketSlugPrefix) {
+		log.Infof("🔍 [%s] step: market slug mismatch: slug=%s prefix=%s，返回", ID, m.Slug, s.marketSlugPrefix)
 		s.drainOrders()
 		return
 	}
+	
+	log.Infof("🔍 [%s] step: market=%s 继续执行", ID, m.Slug)
 
 	// 周期检测：优先使用 market.Timestamp（从 slug 解析的 period start）
 	if m.Timestamp > 0 {
@@ -262,38 +351,111 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	// 盘口质量 + 有效价：统一从 MarketQuality 获取（可供补齐/风控复用）。
 	var mq *services.MarketQuality
 	{
+		// 动态调整盘口质量要求：尾盘放宽标准
+		minScore := s.MarketQualityMinScore
+		maxSpreadCents := s.MarketQualityMaxSpreadCents
+		
+		// 尾盘动态调整：结算前 3 分钟放宽标准
+		if remainingSeconds > 0 && remainingSeconds <= 180 {
+			// 降低最低分数要求（最多降低 10 分）
+			if minScore > 60 {
+				minScore = minScore - 10
+			} else {
+				minScore = 60
+			}
+			// 放宽价差限制（增加 1-2 cents）
+			if maxSpreadCents < 10 {
+				maxSpreadCents = maxSpreadCents + 2
+			}
+		} else if remainingSeconds > 0 && remainingSeconds <= 300 {
+			// 结算前 5 分钟适度放宽
+			if minScore > 65 {
+				minScore = minScore - 5
+			}
+			if maxSpreadCents < 8 {
+				maxSpreadCents = maxSpreadCents + 1
+			}
+		}
+		
+		log.Infof("🔍 [%s] 调用 GetMarketQuality: market=%s rem=%ds minScore=%d maxSpread=%dc", 
+			ID, m.Slug, remainingSeconds, minScore, maxSpreadCents)
 		orderCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		got, err := s.TradingService.GetMarketQuality(orderCtx, m, &services.MarketQualityOptions{
 			MaxBookAge:     time.Duration(s.MarketQualityMaxBookAgeMs) * time.Millisecond,
-			MaxSpreadPips:  s.MarketQualityMaxSpreadCents * 100,
+			MaxSpreadPips:  maxSpreadCents * 100,
 			PreferWS:       true,
 			FallbackToREST: true,
 			AllowPartialWS: true,
 		})
 		cancel()
+		if err != nil {
+			log.Infof("🔍 [%s] GetMarketQuality 错误: market=%s err=%v", ID, m.Slug, err)
+		}
 		if err == nil && got != nil {
 			mq = got
+			log.Infof("🔍 [%s] GetMarketQuality 成功: market=%s score=%d rem=%ds", 
+				ID, m.Slug, mq.Score, remainingSeconds)
+		} else {
+			log.Infof("🔍 [%s] GetMarketQuality 返回 nil: market=%s err=%v got=%v", 
+				ID, m.Slug, err, got != nil)
 		}
 		// 质量 gate（避免 stale/wide spread/脏镜像）
 		if s.EnableMarketQualityGate != nil && *s.EnableMarketQualityGate {
-			if mq == nil || mq.Score < s.MarketQualityMinScore {
+			if mq == nil {
+				log.Infof("🔍 [%s] 盘口质量检查失败: market=%s mq=nil rem=%ds", ID, m.Slug, remainingSeconds)
 				return
 			}
+			if mq.Score < minScore {
+				log.Infof("🔍 [%s] 盘口质量检查失败: market=%s score=%d < minScore=%d rem=%ds", 
+					ID, m.Slug, mq.Score, minScore, remainingSeconds)
+				return
+			}
+			log.Infof("🔍 [%s] 盘口质量检查通过: market=%s score=%d >= minScore=%d", 
+				ID, m.Slug, mq.Score, minScore)
 		}
 	}
 
 	// 读取 top-of-book
+	log.Infof("🔍 [%s] 调用 GetTopOfBook: market=%s", ID, m.Slug)
 	orderCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	yesBid, yesAsk, noBid, noAsk, source, err := s.TradingService.GetTopOfBook(orderCtx, m)
 	cancel()
 	if err != nil {
+		log.Infof("🔍 [%s] GetTopOfBook 错误: market=%s err=%v", ID, m.Slug, err)
 		return
 	}
 	yesBidC, yesAskC := yesBid.ToCents(), yesAsk.ToCents()
 	noBidC, noAskC := noBid.ToCents(), noAsk.ToCents()
+	log.Infof("🔍 [%s] GetTopOfBook 成功: market=%s UP(bid=%dc ask=%dc) DOWN(bid=%dc ask=%dc) src=%s", 
+		ID, m.Slug, yesBidC, yesAskC, noBidC, noAskC, source)
 	if yesBidC <= 0 || yesAskC <= 0 || noBidC <= 0 || noAskC <= 0 {
+		log.Infof("🔍 [%s] 盘口数据无效: market=%s UP(bid=%dc ask=%dc) DOWN(bid=%dc ask=%dc)", 
+			ID, m.Slug, yesBidC, yesAskC, noBidC, noAskC)
 		return
 	}
+
+	// 计算有效价格（考虑 Polymarket 订单簿的镜像特性）
+	// 核心等价关系：Buy YES @ P ≡ Sell NO @ (1-P)
+	// 有效买入价格 = min(直接买入价格, 镜像价格)
+	topOfBook := marketmath.TopOfBook{
+		YesBidPips: yesBidC * 100,  // cents -> pips (1 cent = 100 pips)
+		YesAskPips: yesAskC * 100,
+		NoBidPips:  noBidC * 100,
+		NoAskPips:  noAskC * 100,
+	}
+	effectivePrices, err := marketmath.GetEffectivePrices(topOfBook)
+	if err != nil {
+		log.Warnf("⚠️ [%s] 计算有效价格失败: market=%s err=%v", ID, m.Slug, err)
+		return
+	}
+	
+	// 转换为 cents（pips -> cents）
+	effectiveBuyYesC := effectivePrices.EffectiveBuyYesPips / 100
+	effectiveBuyNoC := effectivePrices.EffectiveBuyNoPips / 100
+	
+	// 打印实时盘口报价（包含有效价格）
+	log.Infof("📊 [%s] 实时盘口: market=%s UP(bid=%dc ask=%dc spread=%dc effBuy=%dc) DOWN(bid=%dc ask=%dc spread=%dc effBuy=%dc) rem=%ds src=%s",
+		ID, m.Slug, yesBidC, yesAskC, yesAskC-yesBidC, effectiveBuyYesC, noBidC, noAskC, noAskC-noBidC, effectiveBuyNoC, remainingSeconds, source)
 
 	// 读取当前持仓（shares）
 	upShares, downShares := s.currentShares(m.Slug)
@@ -660,28 +822,41 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		if requoteMs > 0 {
 			s.stateMu.Lock()
 			lastQ := s.lastQuoteAt
-			if !lastQ.IsZero() && now.Sub(lastQ) < time.Duration(requoteMs)*time.Millisecond {
-				s.stateMu.Unlock()
+			timeSinceLastQuote := now.Sub(lastQ)
+			s.stateMu.Unlock()
+			if !lastQ.IsZero() && timeSinceLastQuote < time.Duration(requoteMs)*time.Millisecond {
+				log.Debugf("🔍 [%s] requote节流: market=%s timeSinceLastQuote=%v < requoteMs=%dms", 
+					ID, m.Slug, timeSinceLastQuote, requoteMs)
 				return
 			}
+			s.stateMu.Lock()
 			s.lastQuoteAt = now
 			s.stateMu.Unlock()
 		}
 	}
 
 	// 3) 正常建仓：动态选择 profitCents（收益 vs 成交概率）
-	chosenProfit, chYesBidC, chNoBidC := s.chooseDynamicProfit(yesBidC, yesAskC, noBidC, noAskC, remainingSeconds)
+	// 通过挂 maker 订单（bid 价格）来获取利润，而不是基于有效价格判断
+	log.Infof("🔍 [%s] 调用 chooseDynamicProfit: market=%s UP(bid=%dc ask=%dc) DOWN(bid=%dc ask=%dc) rem=%ds", 
+		ID, m.Slug, yesBidC, yesAskC, noBidC, noAskC, remainingSeconds)
+	chosenProfit, chYesBidC, chNoBidC := s.chooseDynamicProfit(yesBidC, yesAskC, noBidC, noAskC, effectiveBuyYesC, effectiveBuyNoC, remainingSeconds)
 	if chosenProfit == 0 {
 		// 当前盘口没法用 maker 锁 1~5c：先不做（等待更好时机）
+		log.Infof("🔍 [%s] chooseDynamicProfit 返回 0: market=%s UP(bid=%dc ask=%dc) DOWN(bid=%dc ask=%dc) rem=%ds", 
+			ID, m.Slug, yesBidC, yesAskC, noBidC, noAskC, remainingSeconds)
 		return
 	}
+	log.Infof("🔍 [%s] chooseDynamicProfit 成功: market=%s profit=%dc UP(bid=%dc) DOWN(bid=%dc)", 
+		ID, m.Slug, chosenProfit, chYesBidC, chNoBidC)
 
 	// 4) 计算目标 shares：notional / (1 - profit)
 	// 成本 = 100 - profit (cents) => costPerShare = (100-profit)/100
 	s.stateMu.Lock()
 	tn := s.targetNotional
 	s.stateMu.Unlock()
+	log.Infof("🔍 [%s] targetNotional 检查: market=%s tn=%.2f", ID, m.Slug, tn)
 	if tn <= 0 {
+		log.Infof("🔍 [%s] targetNotional <= 0: market=%s tn=%.2f", ID, m.Slug, tn)
 		return
 	}
 	costCents := 100 - chosenProfit
@@ -696,12 +871,16 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	// 5) 计算剩余需要挂的 shares
 	needUp := math.Max(0, shares-upShares)
 	needDown := math.Max(0, shares-downShares)
+	log.Debugf("🔍 [%s] 计算需要挂单: market=%s shares=%.2f needUp=%.2f needDown=%.2f", 
+		ID, m.Slug, shares, needUp, needDown)
 
 	// ⚠️ 关键修复：确保同时下两腿，避免只下一腿导致裸露风险
 	// 核心原则：cyclehedge 策略必须同时下两腿，确保两腿同时成交，避免裸露风险
 	// 
 	// 如果已经部分成交且有裸露，只允许补齐到对侧，不再扩大总规模
 	if unhedged >= s.MinUnhedgedShares {
+		log.Debugf("🔍 [%s] 已有裸露: market=%s unhedged=%.2f >= minUnhedged=%.2f", 
+			ID, m.Slug, unhedged, s.MinUnhedgedShares)
 		// 当已有裸露时，只允许补齐到对侧，不再扩大总规模
 		if upShares > downShares {
 			needUp = 0
@@ -759,13 +938,23 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	// 下 YES
 	needUpOK := needUp >= s.MinUnhedgedShares
 	needDownOK := needDown >= s.MinUnhedgedShares
+	log.Debugf("🔍 [%s] 订单大小检查前: market=%s needUp=%.2f needDown=%.2f needUpOK=%v needDownOK=%v minUnhedged=%.2f", 
+		ID, m.Slug, needUp, needDown, needUpOK, needDownOK, s.MinUnhedgedShares)
 	if needUpOK {
 		needUp = s.clampOrderSize(needUp)
 		needUpOK = needUp >= s.MinUnhedgedShares
+		log.Debugf("🔍 [%s] clampOrderSize UP: market=%s needUp=%.2f needUpOK=%v", 
+			ID, m.Slug, needUp, needUpOK)
 	}
 	if needDownOK {
 		needDown = s.clampOrderSize(needDown)
 		needDownOK = needDown >= s.MinUnhedgedShares
+		log.Debugf("🔍 [%s] clampOrderSize DOWN: market=%s needDown=%.2f needDownOK=%v", 
+			ID, m.Slug, needDown, needDownOK)
+	}
+	if !needUpOK && !needDownOK {
+		log.Debugf("🔍 [%s] 订单大小不足: market=%s needUp=%.2f needDown=%.2f minUnhedged=%.2f", 
+			ID, m.Slug, needUp, needDown, s.MinUnhedgedShares)
 	}
 
 	placeYes := func() {
@@ -979,6 +1168,13 @@ func (s *Strategy) preferHighPriceFirstToken(yesBidC, noBidC int) (domain.TokenT
 func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Market) {
 	s.stateMu.Lock()
 	s.currentMarketSlug = m.Slug
+	// 保存完整的 market 对象（参考 updownthreshold 策略的设计）
+	if m != nil {
+		cp := *m
+		s.currentMarket = &cp
+	} else {
+		s.currentMarket = nil
+	}
 	s.cycleStartUnix = m.Timestamp
 	s.targetNotional = 0
 	s.targetProfitCents = 0
@@ -998,6 +1194,12 @@ func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Mark
 		TargetNotionalUSDC: 0,
 		TargetShares: 0,
 		ProfitChoice: make(map[int]int64),
+		CostCalculations: 0,
+		CostCalculationErrors: 0,
+		CostBasisUsed: 0,
+		CostAvgPriceUsed: 0,
+		CostEntryPriceUsed: 0,
+		CostSizeMismatches: 0,
 	}
 	s.stateMu.Unlock()
 
@@ -1134,6 +1336,9 @@ func (s *Strategy) currentAvgCostCents(marketSlug string) (upAvgC int, downAvgC 
 	upSize, downSize := 0.0, 0.0
 	upCost, downCost := 0.0, 0.0
 
+	// 统计信息
+	var costBasisCount, avgPriceCount, entryPriceCount, errorCount, sizeMismatchCount int64
+
 	for _, p := range positions {
 		if p == nil || !p.IsOpen() || p.Size <= 0 {
 			continue
@@ -1142,15 +1347,23 @@ func (s *Strategy) currentAvgCostCents(marketSlug string) (upAvgC int, downAvgC 
 		// 估算该 position 的成本
 		size := p.Size
 		cost := 0.0
+		
 		if p.TotalFilledSize > 0 && p.CostBasis > 0 {
 			// 成本基础更可靠
 			// 注意：TotalFilledSize 可能与 Size 不完全一致（部分平仓/合并等），这里用比例缩放到当前 Size
+			if math.Abs(size-p.TotalFilledSize) > 0.01 {
+				sizeMismatchCount++
+			}
 			cost = p.CostBasis * (size / p.TotalFilledSize)
+			costBasisCount++
 		} else if p.AvgPrice > 0 {
 			cost = p.AvgPrice * size
+			avgPriceCount++
 		} else if p.EntryPrice.Pips > 0 {
 			cost = p.EntryPrice.ToDecimal() * size
+			entryPriceCount++
 		} else {
+			errorCount++
 			continue
 		}
 
@@ -1164,12 +1377,30 @@ func (s *Strategy) currentAvgCostCents(marketSlug string) (upAvgC int, downAvgC 
 		}
 	}
 
+	// 更新统计信息
+	s.stateMu.Lock()
+	s.stats.CostCalculations++
+	s.stats.CostCalculationErrors += errorCount
+	s.stats.CostBasisUsed += costBasisCount
+	s.stats.CostAvgPriceUsed += avgPriceCount
+	s.stats.CostEntryPriceUsed += entryPriceCount
+	s.stats.CostSizeMismatches += sizeMismatchCount
+	s.stateMu.Unlock()
+
+	// 计算平均成本
 	if upSize > 0 && upCost > 0 {
 		upAvgC = int(upCost/upSize*100 + 0.5)
 	}
 	if downSize > 0 && downCost > 0 {
 		downAvgC = int(downCost/downSize*100 + 0.5)
 	}
+
+	// 记录详细日志（仅在成本计算异常或首次计算时）
+	if errorCount > 0 || sizeMismatchCount > 0 || (upSize > 0 && upAvgC == 0) || (downSize > 0 && downAvgC == 0) {
+		log.Warnf("⚠️ [%s] 成本计算详情: market=%s up(size=%.2f cost=%.2f avg=%dc) down(size=%.2f cost=%.2f avg=%dc) errors=%d mismatches=%d sources(CostBasis=%d AvgPrice=%d EntryPrice=%d)",
+			ID, marketSlug, upSize, upCost, upAvgC, downSize, downCost, downAvgC, errorCount, sizeMismatchCount, costBasisCount, avgPriceCount, entryPriceCount)
+	}
+
 	return upAvgC, downAvgC
 }
 
@@ -1248,7 +1479,21 @@ func (s *Strategy) withinEntryCutoff(m *domain.Market) bool {
 		dur = 15 * time.Minute
 	}
 	end := time.Unix(m.Timestamp, 0).Add(dur)
-	return time.Until(end) <= time.Duration(s.EntryCutoffSeconds)*time.Second
+	remaining := time.Until(end)
+	
+	// 边界情况处理：
+	// 1. 如果周期已结束（remaining <= 0），返回 true（进入 closeout）
+	// 2. 如果剩余时间 <= EntryCutoffSeconds，返回 true
+	// 3. 如果 EntryCutoffSeconds 大于周期时长，则整个周期都在 closeout（异常情况，记录警告）
+	if remaining <= 0 {
+		return true
+	}
+	if s.EntryCutoffSeconds >= s.CycleDurationSeconds {
+		log.Warnf("⚠️ [%s] EntryCutoffSeconds(%d) >= CycleDurationSeconds(%d)，整个周期都在 closeout 窗口",
+			ID, s.EntryCutoffSeconds, s.CycleDurationSeconds)
+		return true
+	}
+	return remaining <= time.Duration(s.EntryCutoffSeconds)*time.Second
 }
 
 func (s *Strategy) remainingSeconds(now time.Time, m *domain.Market) int {
@@ -1343,7 +1588,7 @@ func (s *Strategy) dynamicMinProfitAfterCompleteCents(remainingSeconds int) int 
 
 // chooseDynamicProfit 在 profit 区间内根据“收益 vs 成交概率（离盘口距离）”选最优。
 // score = profit - (distancePenaltyBps/100)*maxDistanceCents
-func (s *Strategy) chooseDynamicProfit(yesBidC, yesAskC, noBidC, noAskC int, remainingSeconds int) (chosenProfit, chosenYesBidC, chosenNoBidC int) {
+func (s *Strategy) chooseDynamicProfit(yesBidC, yesAskC, noBidC, noAskC, effectiveBuyYesC, effectiveBuyNoC int, remainingSeconds int) (chosenProfit, chosenYesBidC, chosenNoBidC int) {
 	bestScore := -1e9
 	bestProfit := 0
 	bestYes, bestNo := 0, 0
@@ -1358,12 +1603,29 @@ func (s *Strategy) chooseDynamicProfit(yesBidC, yesAskC, noBidC, noAskC int, rem
 			penaltyPerCent *= 2.0
 		}
 	}
+	
+	// ⚠️ 重要修正：有效价格是市场最优价格，在有效市场中 profit 接近 0。
+	// 策略的目标是通过挂 maker 订单（低于 ask 的价格）来获取利润。
+	// 因此不需要用有效价格来判断是否有正 profit，而是直接尝试在 profit 范围内选择 maker 订单价格。
+	// chooseMakerBids 会检查：yesBid + noBid = 100 - profitCents，并且 yesBid < yesAsk, noBid < noAsk
+	// 如果 chooseMakerBids 返回 ok=true，说明可以挂 maker 订单来获得该 profit。
+	
+	log.Infof("🔍 [%s] chooseDynamicProfit 开始: profitRange=[%d,%d]c UP(bid=%dc ask=%dc) DOWN(bid=%dc ask=%dc)", 
+		ID, s.ProfitMinCents, s.ProfitMaxCents, yesBidC, yesAskC, noBidC, noAskC)
+	
+	triedCount := 0
 	for p := s.ProfitMinCents; p <= s.ProfitMaxCents; p++ {
 		yb, nb, ok := chooseMakerBids(yesBidC, yesAskC, noBidC, noAskC, p)
+		triedCount++
 		if !ok {
+			log.Infof("🔍 [%s] chooseMakerBids 失败: profit=%dc UP(bid=%dc ask=%dc) DOWN(bid=%dc ask=%dc)", 
+				ID, p, yesBidC, yesAskC, noBidC, noAskC)
 			continue
 		}
-		// 离盘口距离：越远越难成交
+		log.Infof("🔍 [%s] chooseMakerBids 成功: profit=%dc UP(bid=%dc->%dc ask=%dc) DOWN(bid=%dc->%dc ask=%dc)", 
+			ID, p, yesBidC, yb, yesAskC, noBidC, nb, noAskC)
+		// 离当前 best bid 的距离：越远越难成交
+		// 使用原始 bid 价格作为参考，因为我们要挂的是 maker 订单（bid 价格）
 		dYes := absInt(yesBidC - yb)
 		dNo := absInt(noBidC - nb)
 		maxD := dYes
@@ -1380,6 +1642,9 @@ func (s *Strategy) chooseDynamicProfit(yesBidC, yesAskC, noBidC, noAskC int, rem
 			bestProfit = p
 			bestYes, bestNo = yb, nb
 		}
+	}
+	if bestProfit == 0 {
+		log.Infof("🔍 [%s] chooseDynamicProfit 未找到合适profit: 尝试了 %d 个profit值", ID, triedCount)
 	}
 	return bestProfit, bestYes, bestNo
 }

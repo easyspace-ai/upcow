@@ -4,7 +4,8 @@
 # - 每周期固定投入 40 USDC（fixedNotionalUSDC）
 # - 距离结算 3 分钟（180s）停止开新仓并撤单（entryCutoffSeconds）
 #
-
+log_level: info
+persistence_dir: data/state/cyclehedge-test-50
 # 市场配置（可从策略配置文件读取，会覆盖主配置文件中的设置）
 market:
   symbol: "btc"
@@ -15,58 +16,54 @@ market:
 # true = 仅模拟交易，false = 真实交易
 dry_run: true
 
-
 exchangeStrategies:
   - on: polymarket
     cyclehedge:
-      # 周期长度：15m
-      cycleDurationSeconds: 900
-
-      # 锁利目标（分）：测试期建议更偏“容易成交”
-      profitMinCents: 1
-      profitMaxCents: 3
-      enableDynamicProfit: true
-      distancePenaltyBps: 40
-
-      # 每周期资金量（USDC notional）：固定 40U（不随余额滚动）
-      fixedNotionalUSDC: 40
-      # 下方滚动参数在 fixedNotionalUSDC>0 时不会生效，但保留默认值便于切换
+      # 资金规模：测试期固定 50 USDC
+      fixedNotionalUSDC: 50
       minNotionalUSDC: 30
-      maxNotionalUSDC: 3000
-      balanceAllocationPct: 0.8
+      maxNotionalUSDC: 60
 
-      # 距离结算 3 分钟：停止开新仓并撤单
+      # 目标收益：1-4 cents（动态挑选）
+      profitMinCents: 1
+      profitMaxCents: 4
+      enableDynamicProfit: true
+      distancePenaltyBps: 30
+
+      # 最后 3 分钟：不新增，只补齐/去风险 180s
       entryCutoffSeconds: 180
 
-      # 每周期最大单向持仓（shares）：40U 情况下正常在几十 shares 级别，这里给一个保守上限
-      maxSingleSideShares: 50
-      
-      # 单笔最大下单数量（shares）：硬风控，避免单笔失控
-      maxOrderSizeShares: 8
-      
-      # 方向偏好：两腿都要下单时，优先下盘口价格更高且 >= 阈值的一腿（例如 60c）
-      # 用于减少“只成交一腿时拿错方向”的概率。0 表示关闭。
-      preferHighPriceThresholdCents: 60
-
-      # 报价刷新
-      requoteMs: 1000
-
-      # 单腿裸露自救
-      minProfitAfterCompleteCents: 0
+      # 裸露控制（结合你的最小单限制）
+      minUnhedgedShares: 5                # 让策略不要去下 <5 shares 的 GTC（避免被自动抬到 5 导致意外放大）
       unhedgedTimeoutSeconds: 10
+      maxUnhedgedSharesBudget: 10         # 裸露预算（策略内部会随时间动态收紧）
+      maxSingleSideShares: 80             # 单边上限，避免只成交一腿越滚越大
+      maxOrderSizeShares: 10              # 单笔最大 shares（小资金建议保守）
+
+      # 补齐：maker 优先 + 追价 + 尾盘可贴 ask-1（仍 maker）
+      enableMakerSupplement: true
+      makerSupplementWindowSeconds: 3
+      makerSupplementBumpCents: 1
+      makerSupplementMinShares: 5
+      enableMakerSupplementSnapToAskMinusOne: true
+
+      # 兜底：允许 taker 补齐 / 回平（会按“补齐 vs 回平”成本收益自动选择）
       allowTakerComplete: true
       allowFlatten: true
-      minUnhedgedShares: 1
+      minProfitAfterCompleteCents: 1
 
-      # 盘口质量 gate（建议开启）
-      enableMarketQualityGate: true
+      # 盘口质量 gate（建议开着）
+      enableMarketQualityGate: false
       marketQualityMinScore: 70
       marketQualityMaxSpreadCents: 5
       marketQualityMaxBookAgeMs: 3000
 
-      # 周期报表：写入 data/reports/cyclehedge/
+      # 报表（可选）
       enableReport: true
-      reportDir: "data/reports/cyclehedge"
+      reportDir: data/reports/cyclehedge
       reportWriteJSONL: true
       reportWritePerCycle: true
 
+      # 自动 merge（测试期先关，避免复杂度）
+      autoMerge:
+        enabled: false
