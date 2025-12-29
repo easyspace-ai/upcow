@@ -56,6 +56,7 @@ type Strategy struct {
 	lastCancelAt time.Time // 撤单节流：避免高频重复撤单导致状态乱序/刷爆 API
 	lastQuoteAt  time.Time // 报价节流：用于“动态 requote”，避免固定 tick 下每次都重算/撤挂
 	closeoutActive bool     // 进入 closeout 窗口后置 true（每周期一次），用于避免重复撤单把补齐挂单撤掉
+	lastSupplementAt time.Time // 补齐追价/撤改单节流：避免裸露时 cancel+replace 过频
 
 	// cycle stats (for reporting)
 	stats cycleStats
@@ -356,6 +357,36 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			force = true
 		}
 
+		// 裸露时先止血：撤掉“多出来那一腿”的挂单，避免继续被动成交把裸露放大。
+		// 仅撤 excess leg，不影响 missing leg 的补齐挂单。
+		{
+			excessTok := domain.TokenTypeUp
+			excessOrderID := s.yesOrderID
+			if upShares > downShares {
+				// excess is UP
+			} else {
+				excessTok = domain.TokenTypeDown
+				excessOrderID = s.noOrderID
+			}
+			if excessOrderID != "" {
+				minIntv := time.Duration(s.dynamicSupplementMinIntervalMs(remainingSeconds)) * time.Millisecond
+				s.stateMu.Lock()
+				last := s.lastSupplementAt
+				allow := last.IsZero() || now.Sub(last) >= minIntv
+				if allow {
+					s.lastSupplementAt = now
+				}
+				s.stateMu.Unlock()
+				if allow {
+					cancelCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+					_ = s.TradingService.CancelOrder(cancelCtx, excessOrderID)
+					cancel()
+					s.maybeLog(now, m, fmt.Sprintf("unhedged: cancel excess leg order to cap risk: token=%s orderID=%s", excessTok, excessOrderID))
+					// 不清本地 orderID：等待 OrderEngine 回流终态，避免 canceling 窗口内堆叠
+				}
+			}
+		}
+
 		// maker 补齐（全程优先，而不只是 closeout）：
 		// - 阶段 A（age < window）：缺腿 bestBid 挂单补齐
 		// - 阶段 B（window <= age < timeout）：更激进（bid + bump），但仍保持 maker（< ask）
@@ -378,24 +409,75 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 				missingAskC = noAskC
 			}
 
-			// 已经有缺腿挂单：让它继续等（直到 timeout 升级路径生效）
-			hasMissingOrder := false
-			if missingTok == domain.TokenTypeUp && s.yesOrderID != "" {
-				hasMissingOrder = true
-			}
-			if missingTok == domain.TokenTypeDown && s.noOrderID != "" {
-				hasMissingOrder = true
-			}
-			if hasMissingOrder {
-				// 不 return 到永远：这里只在 age<timeout 时生效，超过 timeout 会走下方兜底
-				return
-			}
-
 			priceC := missingBidC + bumpC
 			priceC = clampMakerPriceCents(priceC, missingAskC)
 			if priceC > 0 && missingBidC > 0 && missingAskC > 0 {
+				// 如果已有缺腿挂单：支持追价（cancel & replace），避免卡在旧 bid 上补不齐。
+				var missingOrderID string
+				if missingTok == domain.TokenTypeUp {
+					missingOrderID = s.yesOrderID
+				} else {
+					missingOrderID = s.noOrderID
+				}
+				if missingOrderID != "" {
+					if ord, ok := s.TradingService.GetOrder(missingOrderID); ok && ord != nil {
+						if ord.IsFinalStatus() {
+							// 终态：清理本地记录，允许下面重新挂单
+							if missingTok == domain.TokenTypeUp {
+								s.yesOrderID = ""
+							} else {
+								s.noOrderID = ""
+							}
+						} else if ord.Status == domain.OrderStatusCanceling {
+							return
+						} else {
+							curC := ord.Price.ToCents()
+							if curC == priceC {
+								return
+							}
+							minIntv := time.Duration(s.dynamicSupplementMinIntervalMs(remainingSeconds)) * time.Millisecond
+							s.stateMu.Lock()
+							last := s.lastSupplementAt
+							allow := last.IsZero() || now.Sub(last) >= minIntv
+							if allow {
+								s.lastSupplementAt = now
+							}
+							s.stateMu.Unlock()
+							if allow {
+								cancelCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+								_ = s.TradingService.CancelOrder(cancelCtx, missingOrderID)
+								cancel()
+								s.maybeLog(now, m, fmt.Sprintf("maker_supplement reprice: token=%s %dc->%dc (bid=%dc ask=%dc bump=%dc) orderID=%s",
+									missingTok, curC, priceC, missingBidC, missingAskC, bumpC, missingOrderID))
+							}
+							// 不在同一 tick 里立刻下新单：等待 cancel 回流，避免短时间内双挂
+							return
+						}
+					} else {
+						// 查不到：保守清理，允许重新挂单
+						if missingTok == domain.TokenTypeUp {
+							s.yesOrderID = ""
+						} else {
+							s.noOrderID = ""
+						}
+					}
+				}
+
 				size := s.clampOrderSize(unhedged)
 				if size >= s.MinUnhedgedShares {
+					// 节流：避免 cancel->place 或连续 place 过密
+					minIntv := time.Duration(s.dynamicSupplementMinIntervalMs(remainingSeconds)) * time.Millisecond
+					s.stateMu.Lock()
+					last := s.lastSupplementAt
+					allow := last.IsZero() || now.Sub(last) >= minIntv
+					if allow {
+						s.lastSupplementAt = now
+					}
+					s.stateMu.Unlock()
+					if !allow {
+						return
+					}
+
 					placeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 					ord, err := s.TradingService.PlaceOrder(placeCtx, &domain.Order{
 						MarketSlug: m.Slug,
@@ -754,6 +836,23 @@ func (s *Strategy) dynamicMakerSupplementBumpCents(remainingSeconds int) int {
 	return b
 }
 
+func (s *Strategy) dynamicSupplementMinIntervalMs(remainingSeconds int) int {
+	// 裸露补齐追价的节流：比 requote 更保守一些，避免 cancel+place 过于频繁。
+	ms := 700
+	if remainingSeconds > 0 {
+		if remainingSeconds <= 180 {
+			ms = 250
+		} else if remainingSeconds <= 300 {
+			ms = 400
+		}
+	}
+	minMs := s.baseLoopTickMs()
+	if ms < minMs {
+		ms = minMs
+	}
+	return ms
+}
+
 func (s *Strategy) clampOrderSize(size float64) float64 {
 	if s == nil {
 		return size
@@ -798,6 +897,7 @@ func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Mark
 	s.lastCancelAt = time.Time{}
 	s.lastQuoteAt = time.Time{}
 	s.closeoutActive = false
+	s.lastSupplementAt = time.Time{}
 
 	// reset stats for new cycle
 	s.stats = cycleStats{
