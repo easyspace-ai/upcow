@@ -515,93 +515,111 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 				// 预算触发时先清理挂单，避免继续被动成交扩大裸露
 				_ = s.cancelMarketOrdersThrottled(ctx, now, m, false)
 			}
-			// prefer: taker 补齐（只要不亏/仍有最小利润）
-			if s.AllowTakerComplete {
-				// 尾盘更严格：补齐后仍需保留的最小利润随时间提高（避免尾盘追单锁亏）。
-				minProfit := s.dynamicMinProfitAfterCompleteCents(remainingSeconds)
-				// 优先用“有效价格”判断 complete-set 是否仍满足门槛（处理镜像订单簿口径）。
-				// 说明：有效买入价可能来自对侧镜像（1 - opposite.bid），避免简单 askSum 重复计算。
-				allowComplete := false
-				if mq != nil && mq.Effective.EffectiveBuyYesPips > 0 && mq.Effective.EffectiveBuyNoPips > 0 {
-					costPips := mq.Effective.EffectiveBuyYesPips + mq.Effective.EffectiveBuyNoPips
-					// 门槛：cost <= 1 - minProfitCents
-					thresholdPips := (100 - minProfit) * 100 // 1 cent = 100 pips
-					if costPips <= thresholdPips {
-						allowComplete = true
-					}
-				} else {
-					// fallback：老口径（raw ask sum）
-					if yesAskC+noAskC <= 100-minProfit {
-						allowComplete = true
-					}
-				}
-				if allowComplete {
-					need := unhedged
-					need = s.clampOrderSize(need)
-					if need < s.MinUnhedgedShares {
-						return
-					}
-					missingTok := domain.TokenTypeUp
-					missingAsset := m.YesAssetID
-					missingAsk := yesAsk
-					if upShares > downShares {
-						// need buy NO
-						missingTok = domain.TokenTypeDown
-						missingAsset = m.NoAssetID
-						missingAsk = noAsk
-					}
-					takerCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-					_, _ = s.TradingService.PlaceOrder(takerCtx, &domain.Order{
-						MarketSlug: m.Slug,
-						AssetID:    missingAsset,
-						TokenType:  missingTok,
-						Side:       types.SideBuy,
-						Price:      missingAsk,
-						Size:       need,
-						OrderType:  types.OrderTypeFAK,
-					})
-					cancel()
-					s.stateMu.Lock()
-					s.stats.TakerCompletes++
-					s.stateMu.Unlock()
-					s.maybeLog(now, m, fmt.Sprintf("unhedged->taker_complete: need=%.2f missing=%s ask=%dc minProfit=%dc", need, missingTok, missingAsk.ToCents(), minProfit))
-					return
-				}
+			// 风控兜底动作选择：根据“现在补齐 vs 现在回平”的确定性 PnL 估算，选更优的那条路。
+			// - 正常情况下：补齐需要满足 minProfitAfterComplete 门槛
+			// - force(预算触发) 时：允许补齐略微负收益，只要比 flatten 更划算（且能立刻消除方向风险）
+			minProfit := s.dynamicMinProfitAfterCompleteCents(remainingSeconds)
+			size := s.clampOrderSize(unhedged)
+			if size < s.MinUnhedgedShares {
+				return
 			}
 
-			// fallback: 回平裸露（卖出多出来的一腿）
-			if s.AllowFlatten {
-				excessTok := domain.TokenTypeUp
-				excessAsset := m.YesAssetID
-				excessBid := yesBid
-				if upShares > downShares {
-					// excess is UP, ok
-				} else {
-					excessTok = domain.TokenTypeDown
-					excessAsset = m.NoAssetID
-					excessBid = noBid
-				}
-				size := s.clampOrderSize(unhedged)
-				if size < s.MinUnhedgedShares {
-					return
-				}
-				flattenCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-				_, _ = s.TradingService.PlaceOrder(flattenCtx, &domain.Order{
+			// 当前两腿的平均成本（cents/share）
+			upAvgC, downAvgC := s.currentAvgCostCents(m.Slug)
+
+			missingTok := domain.TokenTypeUp
+			missingAsset := m.YesAssetID
+			missingAsk := yesAsk
+			missingAskC := yesAskC
+			excessTok := domain.TokenTypeUp
+			excessAsset := m.YesAssetID
+			excessBid := yesBid
+			excessBidC := yesBidC
+			excessAvgC := upAvgC
+			if upShares > downShares {
+				// excess is UP (default), missing is DOWN
+				missingTok = domain.TokenTypeDown
+				missingAsset = m.NoAssetID
+				missingAsk = noAsk
+				missingAskC = noAskC
+				excessTok = domain.TokenTypeUp
+				excessAsset = m.YesAssetID
+				excessBid = yesBid
+				excessBidC = yesBidC
+				excessAvgC = upAvgC
+			} else {
+				// excess is DOWN, missing is UP
+				missingTok = domain.TokenTypeUp
+				missingAsset = m.YesAssetID
+				missingAsk = yesAsk
+				missingAskC = yesAskC
+				excessTok = domain.TokenTypeDown
+				excessAsset = m.NoAssetID
+				excessBid = noBid
+				excessBidC = noBidC
+				excessAvgC = downAvgC
+			}
+
+			// 估算（以 unhedged 这部分为对象）：
+			// - complete: 买入 missingAsk，结算得到 $1/份；与 excessAvg 组成一套的锁利（确定性）
+			// - flatten: 立即卖出 excessBid，结束裸露（确定性）
+			completeProfitPerSetC := 100 - excessAvgC - missingAskC
+			completeProfitC := float64(completeProfitPerSetC) * size
+			flattenProfitC := float64(excessBidC-excessAvgC) * size
+
+			// 是否允许 complete（不 force 时要满足最小利润门槛；force 时只要比 flatten 更优即可）
+			allowComplete := s.AllowTakerComplete && (completeProfitPerSetC >= minProfit || (force && completeProfitC >= flattenProfitC))
+			allowFlatten := s.AllowFlatten
+
+			// 选更优动作
+			doComplete := false
+			if allowComplete && allowFlatten {
+				doComplete = completeProfitC >= flattenProfitC
+			} else if allowComplete {
+				doComplete = true
+			} else if allowFlatten {
+				doComplete = false
+			} else {
+				return
+			}
+
+			if doComplete {
+				takerCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+				_, _ = s.TradingService.PlaceOrder(takerCtx, &domain.Order{
 					MarketSlug: m.Slug,
-					AssetID:    excessAsset,
-					TokenType:  excessTok,
-					Side:       types.SideSell,
-					Price:      excessBid,
+					AssetID:    missingAsset,
+					TokenType:  missingTok,
+					Side:       types.SideBuy,
+					Price:      missingAsk,
 					Size:       size,
 					OrderType:  types.OrderTypeFAK,
 				})
 				cancel()
 				s.stateMu.Lock()
-				s.stats.Flattens++
+				s.stats.TakerCompletes++
 				s.stateMu.Unlock()
-				s.maybeLog(now, m, fmt.Sprintf("unhedged->flatten: sell=%.2f token=%s bid=%dc", unhedged, excessTok, excessBid.ToCents()))
+				s.maybeLog(now, m, fmt.Sprintf("unhedged->taker_complete(best): need=%.2f missing=%s ask=%dc excessAvg=%dc minProfit=%dc estComplete=%dc estFlatten=%dc",
+					size, missingTok, missingAskC, excessAvgC, minProfit, int(completeProfitC+0.5), int(flattenProfitC+0.5)))
 				return
 			}
+
+			flattenCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+			_, _ = s.TradingService.PlaceOrder(flattenCtx, &domain.Order{
+				MarketSlug: m.Slug,
+				AssetID:    excessAsset,
+				TokenType:  excessTok,
+				Side:       types.SideSell,
+				Price:      excessBid,
+				Size:       size,
+				OrderType:  types.OrderTypeFAK,
+			})
+			cancel()
+			s.stateMu.Lock()
+			s.stats.Flattens++
+			s.stateMu.Unlock()
+			s.maybeLog(now, m, fmt.Sprintf("unhedged->flatten(best): sell=%.2f token=%s bid=%dc excessAvg=%dc estFlatten=%dc estComplete=%dc",
+				size, excessTok, excessBidC, excessAvgC, int(flattenProfitC+0.5), int(completeProfitC+0.5)))
+			return
 		}
 	}
 
@@ -1027,6 +1045,58 @@ func (s *Strategy) currentShares(marketSlug string) (up float64, down float64) {
 		}
 	}
 	return up, down
+}
+
+// currentAvgCostCents 返回当前两腿的“平均成本（cents/share）”。
+// - 优先使用 Position.CostBasis/TotalFilledSize
+// - fallback: AvgPrice 或 EntryPrice
+// 说明：该均价用于风控兜底时比较“补齐 vs 回平”的确定性损益，不要求绝对精确但要稳定、保守。
+func (s *Strategy) currentAvgCostCents(marketSlug string) (upAvgC int, downAvgC int) {
+	if s == nil || s.TradingService == nil || marketSlug == "" {
+		return 0, 0
+	}
+	positions := s.TradingService.GetOpenPositionsForMarket(marketSlug)
+
+	upSize, downSize := 0.0, 0.0
+	upCost, downCost := 0.0, 0.0
+
+	for _, p := range positions {
+		if p == nil || !p.IsOpen() || p.Size <= 0 {
+			continue
+		}
+
+		// 估算该 position 的成本
+		size := p.Size
+		cost := 0.0
+		if p.TotalFilledSize > 0 && p.CostBasis > 0 {
+			// 成本基础更可靠
+			// 注意：TotalFilledSize 可能与 Size 不完全一致（部分平仓/合并等），这里用比例缩放到当前 Size
+			cost = p.CostBasis * (size / p.TotalFilledSize)
+		} else if p.AvgPrice > 0 {
+			cost = p.AvgPrice * size
+		} else if p.EntryPrice.Pips > 0 {
+			cost = p.EntryPrice.ToDecimal() * size
+		} else {
+			continue
+		}
+
+		switch p.TokenType {
+		case domain.TokenTypeUp:
+			upSize += size
+			upCost += cost
+		case domain.TokenTypeDown:
+			downSize += size
+			downCost += cost
+		}
+	}
+
+	if upSize > 0 && upCost > 0 {
+		upAvgC = int(upCost/upSize*100 + 0.5)
+	}
+	if downSize > 0 && downCost > 0 {
+		downAvgC = int(downCost/downSize*100 + 0.5)
+	}
+	return upAvgC, downAvgC
 }
 
 func (s *Strategy) maybeLog(now time.Time, m *domain.Market, msg string) {
