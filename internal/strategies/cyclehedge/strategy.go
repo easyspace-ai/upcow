@@ -237,7 +237,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	inCloseout := s.EntryCutoffSeconds > 0 && s.withinEntryCutoff(m)
 	if inCloseout {
 		// 先撤掉未成交挂单，降低被动成交扩大规模的概率（节流撤单，避免 API 风暴）。
-		s.cancelMarketOrdersThrottled(ctx, now, m, true)
+		_ = s.cancelMarketOrdersThrottled(ctx, now, m, true)
 	}
 
 	// 计算剩余时间（秒）。用于尾盘收敛/动态参数。
@@ -295,7 +295,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	if s.MaxSingleSideShares > 0 && maxShares >= s.MaxSingleSideShares {
 		// 若没有裸露，撤掉挂单，避免继续被动成交扩大规模
 		if unhedged < s.MinUnhedgedShares {
-			s.cancelMarketOrdersThrottled(ctx, now, m, false)
+			_ = s.cancelMarketOrdersThrottled(ctx, now, m, false)
 		}
 		s.stateMu.Lock()
 		s.stats.MaxSingleSideStops++
@@ -523,8 +523,10 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	// 如果本次将要下单，先撤掉旧的挂单（避免多单堆叠）
 	// 注：TradingService 层有 in-flight 去重，且 CancelOrdersForMarket 会撤掉本周期挂单（含对侧）。
 	if (needUp >= s.MinUnhedgedShares || needDown >= s.MinUnhedgedShares) && (s.yesOrderID != "" || s.noOrderID != "") {
-		s.cancelMarketOrdersThrottled(ctx, now, m, false)
-		s.yesOrderID, s.noOrderID = "", ""
+		// 只有真的执行了撤单（未被节流）才清理本地 orderID，避免节流窗口内“忘记旧单”导致堆叠挂单。
+		if s.cancelMarketOrdersThrottled(ctx, now, m, false) {
+			s.yesOrderID, s.noOrderID = "", ""
+		}
 	}
 
 	// 下 YES
@@ -710,16 +712,16 @@ func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Mark
 }
 
 // cancelMarketOrdersThrottled 撤单节流：避免在 closeout/锁定阶段每个 tick 都撤一次，造成 API 风暴与状态回退。
-func (s *Strategy) cancelMarketOrdersThrottled(ctx context.Context, now time.Time, m *domain.Market, isCloseout bool) {
+func (s *Strategy) cancelMarketOrdersThrottled(ctx context.Context, now time.Time, m *domain.Market, isCloseout bool) bool {
 	if s == nil || s.TradingService == nil || m == nil || m.Slug == "" {
-		return
+		return false
 	}
 	const minInterval = 2 * time.Second
 	s.stateMu.Lock()
 	last := s.lastCancelAt
 	if !last.IsZero() && now.Sub(last) < minInterval {
 		s.stateMu.Unlock()
-		return
+		return false
 	}
 	s.lastCancelAt = now
 	s.stateMu.Unlock()
@@ -733,7 +735,7 @@ func (s *Strategy) cancelMarketOrdersThrottled(ctx context.Context, now time.Tim
 		}
 	}
 	if !hasActive {
-		return
+		return false
 	}
 
 	cancelCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -751,6 +753,7 @@ func (s *Strategy) cancelMarketOrdersThrottled(ctx context.Context, now time.Tim
 	if isCloseout {
 		s.maybeLog(now, m, "closeout: cancel & pause entries")
 	}
+	return true
 }
 
 func (s *Strategy) drainOrders() {
