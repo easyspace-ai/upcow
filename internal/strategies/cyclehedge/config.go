@@ -60,6 +60,8 @@ type Config struct {
 	MakerSupplementWindowSeconds int `yaml:"makerSupplementWindowSeconds" json:"makerSupplementWindowSeconds"` // 默认 3s（尾盘动态缩短）
 	MakerSupplementBumpCents int `yaml:"makerSupplementBumpCents" json:"makerSupplementBumpCents"` // 超过 window 后更激进：bid + bump（仍保证 < ask），默认 1c
 	MakerSupplementMinShares float64 `yaml:"makerSupplementMinShares" json:"makerSupplementMinShares"` // 小裸露也能补：默认 1 share
+	// 更激进但仍保持 maker：在尾盘/接近超时/接近预算时，允许把缺腿挂单价格直接贴到 ask-1（不跨价）。
+	EnableMakerSupplementSnapToAskMinusOne bool `yaml:"enableMakerSupplementSnapToAskMinusOne" json:"enableMakerSupplementSnapToAskMinusOne"` // 默认 true
 
 	// ===== 裸露风险预算（可控激进）=====
 	// 允许的“最大裸露 shares”。超过该预算时，不等待 timeout，直接升级到更激进的补齐/回平路径。
@@ -197,6 +199,10 @@ func (c *Config) Validate() error {
 	}
 	if c.MakerSupplementMinShares < 0 {
 		return fmt.Errorf("makerSupplementMinShares 不能为负数")
+	}
+	// 默认开启：仅在“接近超时/接近预算/尾盘”触发，仍保持 maker（ask-1）
+	if !c.EnableMakerSupplementSnapToAskMinusOne {
+		c.EnableMakerSupplementSnapToAskMinusOne = true
 	}
 	if c.MaxUnhedgedSharesBudget < 0 {
 		return fmt.Errorf("maxUnhedgedSharesBudget 不能为负数")

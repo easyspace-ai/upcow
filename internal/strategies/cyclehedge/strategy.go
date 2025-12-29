@@ -424,7 +424,8 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 					bumpC = 2
 				}
 			}
-			if budget := s.dynamicUnhedgedBudgetShares(remainingSeconds); budget > 0 && unhedged >= budget*0.8 {
+			budget := s.dynamicUnhedgedBudgetShares(remainingSeconds)
+			if budget > 0 && unhedged >= budget*0.8 {
 				if bumpC < 1 {
 					bumpC = 1
 				}
@@ -434,6 +435,12 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			}
 
 			priceC := missingBidC + bumpC
+			// 更激进但仍保持 maker：尾盘/接近超时/接近预算时，允许直接贴到 ask-1
+			if s.EnableMakerSupplementSnapToAskMinusOne && missingAskC > 1 {
+				if s.shouldSnapMakerSupplementToAskMinusOne(remainingSeconds, age, timeoutSec, unhedged, budget) {
+					priceC = missingAskC - 1
+				}
+			}
 			priceC = clampMakerPriceCents(priceC, missingAskC)
 			if priceC > 0 && missingBidC > 0 && missingAskC > 0 {
 				// 如果已有缺腿挂单：支持追价（cancel & replace），避免卡在旧 bid 上补不齐。
@@ -915,6 +922,27 @@ func (s *Strategy) dynamicUnhedgedBudgetShares(remainingSeconds int) float64 {
 		b = s.MinUnhedgedShares
 	}
 	return b
+}
+
+func (s *Strategy) shouldSnapMakerSupplementToAskMinusOne(remainingSeconds int, age time.Duration, timeoutSec int, unhedged float64, budget float64) bool {
+	// 目标：在“必须尽快补齐但又不想吃单”的情况下，把 maker 补齐挂到最激进的 ask-1。
+	// 触发条件（任一满足即可）：
+	// - closeout（<=180s）
+	// - 距离超时很近（剩余 < 1s）
+	// - 接近预算上限（>= 90%）
+	if remainingSeconds > 0 && remainingSeconds <= 180 {
+		return true
+	}
+	if timeoutSec > 0 {
+		remain := time.Duration(timeoutSec)*time.Second - age
+		if remain <= 1*time.Second {
+			return true
+		}
+	}
+	if budget > 0 && unhedged >= budget*0.9 {
+		return true
+	}
+	return false
 }
 
 func (s *Strategy) clampOrderSize(size float64) float64 {
