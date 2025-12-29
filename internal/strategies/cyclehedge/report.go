@@ -33,6 +33,19 @@ type cycleReport struct {
 	LockedProfitCentsPerShare int     `json:"lockedProfitCentsPerShare"`
 	LockedProfitUSDC          float64 `json:"lockedProfitUSDC"`
 
+	// 目标口径：无论 UP/DOWN 胜出都盈利（worst-case PnL）
+	UpTotalCostUSDC   float64 `json:"upTotalCostUSDC"`
+	DownTotalCostUSDC float64 `json:"downTotalCostUSDC"`
+	TotalCostUSDC     float64 `json:"totalCostUSDC"`
+	PnLUpWinUSDC      float64 `json:"pnlUpWinUSDC"`
+	PnLDownWinUSDC    float64 `json:"pnlDownWinUSDC"`
+	WorstCasePnLUSDC  float64 `json:"worstCasePnlUSDC"`
+
+	// 配置：每周期目标利润区间（用于回放/分析）
+	CycleProfitTargetMinUSDC float64 `json:"cycleProfitTargetMinUSDC"`
+	CycleProfitTargetMaxUSDC float64 `json:"cycleProfitTargetMaxUSDC"`
+	ProfitMaximizationCutoffSeconds int `json:"profitMaximizationCutoffSeconds"`
+
 	// counters
 	Quotes int64 `json:"quotes"`
 	OrdersPlacedYes int64 `json:"ordersPlacedYes"`
@@ -90,6 +103,16 @@ func (s *Strategy) finalizeAndReport(ctx context.Context, oldMarket *domain.Mark
 		lockedProfitUSDC = minShares * float64(lockedProfitCents) / 100.0
 	}
 
+	// 新目标：按“总成本 & 两种胜出情景”计算 PnL（以 USDC 计）
+	upShares, downShares, upCostUSDC, downCostUSDC := s.currentTotals(oldMarket.Slug)
+	totalCostUSDC := upCostUSDC + downCostUSDC
+	pnlUpWinUSDC := upShares - totalCostUSDC
+	pnlDownWinUSDC := downShares - totalCostUSDC
+	worst := pnlUpWinUSDC
+	if pnlDownWinUSDC < worst {
+		worst = pnlDownWinUSDC
+	}
+
 	pc := make(map[string]int64, len(st.ProfitChoice))
 	for k, v := range st.ProfitChoice {
 		pc[fmt.Sprintf("%dc", k)] = v
@@ -112,6 +135,15 @@ func (s *Strategy) finalizeAndReport(ctx context.Context, oldMarket *domain.Mark
 		DownAvgPrice: downPos.avg,
 		LockedProfitCentsPerShare: lockedProfitCents,
 		LockedProfitUSDC:          lockedProfitUSDC,
+		UpTotalCostUSDC:   upCostUSDC,
+		DownTotalCostUSDC: downCostUSDC,
+		TotalCostUSDC:     totalCostUSDC,
+		PnLUpWinUSDC:      pnlUpWinUSDC,
+		PnLDownWinUSDC:    pnlDownWinUSDC,
+		WorstCasePnLUSDC:  worst,
+		CycleProfitTargetMinUSDC: s.CycleProfitTargetMinUSDC,
+		CycleProfitTargetMaxUSDC: s.CycleProfitTargetMaxUSDC,
+		ProfitMaximizationCutoffSeconds: s.ProfitMaximizationCutoffSeconds,
 		Quotes: st.Quotes,
 		OrdersPlacedYes: st.OrdersPlacedYes,
 		OrdersPlacedNo:  st.OrdersPlacedNo,
@@ -200,8 +232,8 @@ func (s *Strategy) writeReportFiles(ctx context.Context, rep cycleReport) error 
 		_, _ = f.Write(append(line, '\n'))
 	}
 
-	log.Infof("📊 [%s] 周期报表已写入: market=%s dir=%s lockedProfit=%dc/share est=%.2f",
-		ID, rep.MarketSlug, dir, rep.LockedProfitCentsPerShare, rep.LockedProfitUSDC)
+	log.Infof("📊 [%s] 周期报表已写入: market=%s dir=%s lockedProfit=%dc/share est=%.2f worstPnL=%.4f",
+		ID, rep.MarketSlug, dir, rep.LockedProfitCentsPerShare, rep.LockedProfitUSDC, rep.WorstCasePnLUSDC)
 	return nil
 }
 

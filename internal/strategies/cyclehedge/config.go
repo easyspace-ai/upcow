@@ -106,6 +106,26 @@ type Config struct {
 	EnableDynamicProfit bool `yaml:"enableDynamicProfit" json:"enableDynamicProfit"`
 	DistancePenaltyBps  int  `yaml:"distancePenaltyBps" json:"distancePenaltyBps"` // 默认 30（=0.30c penalty per 1c distance）
 
+	// ===== 目标：无论 UP/DOWN 胜出都盈利 =====
+	// 目标达成条件（以 USDC 计）：
+	//   pnlUpWin   = UpShares*1 - (UpTotalCostUSDC + DownTotalCostUSDC)
+	//   pnlDownWin = DownShares*1 - (UpTotalCostUSDC + DownTotalCostUSDC)
+	// 当 min(pnlUpWin, pnlDownWin) >= TargetWorstCaseProfitUSDC 时视为达标。
+	//
+	// 默认 0：只要“最差情景不亏钱”就停止新增并撤单持有到结算。
+	TargetWorstCaseProfitUSDC float64 `yaml:"targetWorstCaseProfitUSDC" json:"targetWorstCaseProfitUSDC"`
+
+	// ===== 每周期利润目标区间（USDC）=====
+	// 目标：worstCasePnL（无论 UP/DOWN 胜出都盈利的最差情景 PnL）达到区间。
+	// - 当 worstCasePnL >= CycleProfitTargetMinUSDC：达到“底线目标”
+	// - 若剩余时间仍充裕（> ProfitMaximizationCutoffSeconds）：继续争取到 CycleProfitTargetMaxUSDC（利润最大化）
+	// - 临近尾盘（<= ProfitMaximizationCutoffSeconds）：不再强求 max，只要 >= min 即可撤单收手
+	//
+	// 设为 0 表示关闭该区间逻辑（回退到 TargetWorstCaseProfitUSDC）。
+	CycleProfitTargetMinUSDC float64 `yaml:"cycleProfitTargetMinUSDC" json:"cycleProfitTargetMinUSDC"`
+	CycleProfitTargetMaxUSDC float64 `yaml:"cycleProfitTargetMaxUSDC" json:"cycleProfitTargetMaxUSDC"`
+	ProfitMaximizationCutoffSeconds int `yaml:"profitMaximizationCutoffSeconds" json:"profitMaximizationCutoffSeconds"`
+
 	// ===== 周期报表（写文件）=====
 	EnableReport      *bool  `yaml:"enableReport" json:"enableReport"`           // 默认 true
 	ReportDir         string `yaml:"reportDir" json:"reportDir"`                 // 默认 data/reports/cyclehedge
@@ -248,6 +268,32 @@ func (c *Config) Validate() error {
 	}
 	if c.DistancePenaltyBps < 0 || c.DistancePenaltyBps > 500 {
 		return fmt.Errorf("distancePenaltyBps 建议在 [1,500] 范围内")
+	}
+
+	if c.TargetWorstCaseProfitUSDC < 0 {
+		return fmt.Errorf("targetWorstCaseProfitUSDC 不能为负数")
+	}
+	if c.CycleProfitTargetMinUSDC < 0 || c.CycleProfitTargetMaxUSDC < 0 {
+		return fmt.Errorf("cycleProfitTargetMinUSDC/cycleProfitTargetMaxUSDC 不能为负数")
+	}
+	if c.CycleProfitTargetMinUSDC > 0 || c.CycleProfitTargetMaxUSDC > 0 {
+		// 允许只配 min：此时 max=min
+		if c.CycleProfitTargetMaxUSDC == 0 {
+			c.CycleProfitTargetMaxUSDC = c.CycleProfitTargetMinUSDC
+		}
+		if c.CycleProfitTargetMinUSDC == 0 {
+			c.CycleProfitTargetMinUSDC = c.CycleProfitTargetMaxUSDC
+		}
+		if c.CycleProfitTargetMinUSDC > c.CycleProfitTargetMaxUSDC {
+			return fmt.Errorf("cycleProfitTargetMinUSDC 不能大于 cycleProfitTargetMaxUSDC")
+		}
+		// 默认：剩余 <= 180s（3分钟）不再强求 max
+		if c.ProfitMaximizationCutoffSeconds <= 0 {
+			c.ProfitMaximizationCutoffSeconds = 180
+		}
+		if c.ProfitMaximizationCutoffSeconds < 0 || c.ProfitMaximizationCutoffSeconds > c.CycleDurationSeconds {
+			return fmt.Errorf("profitMaximizationCutoffSeconds 必须在 [0, cycleDurationSeconds] 范围内")
+		}
 	}
 
 	if c.EnableReport == nil {
