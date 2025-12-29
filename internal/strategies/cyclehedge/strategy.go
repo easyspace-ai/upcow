@@ -350,36 +350,59 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		// 尾盘更快：裸露超时随剩余时间收紧（更激进，但更符合尾部波动变快的现实）。
 		timeoutSec := s.dynamicUnhedgedTimeoutSeconds(remainingSeconds)
 
-		// closeout 内：先尝试用 maker(GTC) 在缺腿 bid 挂单补齐（更便宜、更像你观察到的机器人）。
-		// - 仅在“还没到硬超时”时尝试；超过硬超时就直接走 taker/flatten。
-		// - 为避免交易所 min-share 自动放大导致过度补齐，这里要求 unhedged >= 5 shares 才尝试 maker 补齐。
-		if inCloseout && age < time.Duration(timeoutSec)*time.Second && unhedged >= 5.0 {
+		// 风险预算：裸露超过预算时，不等待 timeout，直接升级到更激进的补齐/回平路径。
+		force := false
+		if s.MaxUnhedgedSharesBudget > 0 && unhedged >= s.MaxUnhedgedSharesBudget {
+			force = true
+		}
+
+		// maker 补齐（全程优先，而不只是 closeout）：
+		// - 阶段 A（age < window）：缺腿 bestBid 挂单补齐
+		// - 阶段 B（window <= age < timeout）：更激进（bid + bump），但仍保持 maker（< ask）
+		// - 阶段 C（age >= timeout 或 force 或 closeout & 小裸露）：进入 taker/flatten 兜底
+		if s.EnableMakerSupplement && !force && age < time.Duration(timeoutSec)*time.Second && unhedged >= math.Max(s.MinUnhedgedShares, s.MakerSupplementMinShares) {
+			windowSec := s.dynamicMakerSupplementWindowSeconds(remainingSeconds, timeoutSec)
+			bumpC := 0
+			if windowSec > 0 && age >= time.Duration(windowSec)*time.Second {
+				bumpC = s.dynamicMakerSupplementBumpCents(remainingSeconds)
+			}
+
 			missingTok := domain.TokenTypeUp
 			missingAsset := m.YesAssetID
 			missingBidC := yesBidC
+			missingAskC := yesAskC
 			if upShares > downShares {
 				missingTok = domain.TokenTypeDown
 				missingAsset = m.NoAssetID
 				missingBidC = noBidC
+				missingAskC = noAskC
 			}
-			size := s.clampOrderSize(unhedged)
-			if size >= 5.0 {
-				// 仅当当前没有该腿的活跃挂单时才补齐挂单（避免重复挂单/撤挂风暴）。
-				hasMissingOrder := false
-				if missingTok == domain.TokenTypeUp && s.yesOrderID != "" {
-					hasMissingOrder = true
-				}
-				if missingTok == domain.TokenTypeDown && s.noOrderID != "" {
-					hasMissingOrder = true
-				}
-				if !hasMissingOrder && missingBidC > 0 {
+
+			// 已经有缺腿挂单：让它继续等（直到 timeout 升级路径生效）
+			hasMissingOrder := false
+			if missingTok == domain.TokenTypeUp && s.yesOrderID != "" {
+				hasMissingOrder = true
+			}
+			if missingTok == domain.TokenTypeDown && s.noOrderID != "" {
+				hasMissingOrder = true
+			}
+			if hasMissingOrder {
+				// 不 return 到永远：这里只在 age<timeout 时生效，超过 timeout 会走下方兜底
+				return
+			}
+
+			priceC := missingBidC + bumpC
+			priceC = clampMakerPriceCents(priceC, missingAskC)
+			if priceC > 0 && missingBidC > 0 && missingAskC > 0 {
+				size := s.clampOrderSize(unhedged)
+				if size >= s.MinUnhedgedShares {
 					placeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 					ord, err := s.TradingService.PlaceOrder(placeCtx, &domain.Order{
 						MarketSlug: m.Slug,
 						AssetID:    missingAsset,
 						TokenType:  missingTok,
 						Side:       types.SideBuy,
-						Price:      domain.Price{Pips: missingBidC * 100}, // 1c = 100 pips
+						Price:      domain.Price{Pips: priceC * 100}, // 1c = 100 pips
 						Size:       size,
 						OrderType:  types.OrderTypeGTC,
 					})
@@ -396,8 +419,8 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 							s.stats.OrdersPlacedNo++
 							s.stateMu.Unlock()
 						}
-						s.maybeLog(now, m, fmt.Sprintf("closeout->maker_supplement: missing=%s bid=%dc size=%.2f age=%s",
-							missingTok, missingBidC, size, age.Truncate(time.Millisecond)))
+						s.maybeLog(now, m, fmt.Sprintf("unhedged->maker_supplement: missing=%s price=%dc (bid=%dc ask=%dc bump=%dc) size=%.2f age=%s rem=%ds",
+							missingTok, priceC, missingBidC, missingAskC, bumpC, size, age.Truncate(time.Millisecond), remainingSeconds))
 						return
 					}
 				}
@@ -405,7 +428,11 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		}
 
 		// 超时/临近结算：执行“补齐或回平”
-		if age >= time.Duration(timeoutSec)*time.Second || inCloseout {
+		if force || age >= time.Duration(timeoutSec)*time.Second || inCloseout {
+			if force {
+				// 预算触发时先清理挂单，避免继续被动成交扩大裸露
+				_ = s.cancelMarketOrdersThrottled(ctx, now, m, false)
+			}
 			// prefer: taker 补齐（只要不亏/仍有最小利润）
 			if s.AllowTakerComplete {
 				// 尾盘更严格：补齐后仍需保留的最小利润随时间提高（避免尾盘追单锁亏）。
@@ -670,6 +697,61 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		s.maybeLog(now, m, fmt.Sprintf("quote: profit=%dc cost=%dc tn=%.2f shares=%.2f need(up=%.2f down=%.2f) bids(yes=%dc no=%dc) book(yes %d/%d no %d/%d) src=%s",
 			chosenProfit, costCents, tn, shares, needUp, needDown, chYesBidC, chNoBidC, yesBidC, yesAskC, noBidC, noAskC, source))
 	}
+}
+
+func clampMakerPriceCents(priceC, askC int) int {
+	// maker buy 需要 price < ask；无法满足时返回 0 让上层走兜底路径
+	if priceC <= 0 || askC <= 0 {
+		return 0
+	}
+	if priceC >= askC {
+		priceC = askC - 1
+	}
+	if priceC <= 0 {
+		return 0
+	}
+	return priceC
+}
+
+func (s *Strategy) dynamicMakerSupplementWindowSeconds(remainingSeconds, timeoutSec int) int {
+	// window 必须小于 timeout，且尾盘更短（更快升级）
+	w := s.MakerSupplementWindowSeconds
+	if w <= 0 {
+		w = 3
+	}
+	if remainingSeconds > 0 {
+		if remainingSeconds <= 180 {
+			w = 1
+		} else if remainingSeconds <= 300 && w > 2 {
+			w = 2
+		}
+	}
+	if timeoutSec <= 1 {
+		return 0
+	}
+	if w >= timeoutSec {
+		w = timeoutSec - 1
+	}
+	if w <= 0 {
+		w = 1
+	}
+	return w
+}
+
+func (s *Strategy) dynamicMakerSupplementBumpCents(remainingSeconds int) int {
+	b := s.MakerSupplementBumpCents
+	if b < 0 {
+		b = 0
+	}
+	// 尾盘更激进一些（仍会被 <ask 约束）
+	if remainingSeconds > 0 {
+		if remainingSeconds <= 180 {
+			if b < 2 {
+				b = 2
+			}
+		}
+	}
+	return b
 }
 
 func (s *Strategy) clampOrderSize(size float64) float64 {
