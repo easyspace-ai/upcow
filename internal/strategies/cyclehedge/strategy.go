@@ -148,11 +148,46 @@ func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
 }
 
 func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.ExchangeSession) error {
+	// ⚠️ 重要：Trader 在“周期切换 / session 切换”时会 cancel 旧的 Run(ctx)，然后再次调用 Run(ctx)。
+	// 因此这里必须支持“可重启”：每次 Run 都要启动新的 loop goroutine。
+	//
+	// 之前使用 loopOnce 会导致：
+	// - 第一次 Run 启动 loop
+	// - 周期切换时旧 ctx 被 cancel，loop 退出
+	// - 新的 Run(ctx) 因为 loopOnce 已经 Do 过，不会再启动 loop
+	// => 策略表面仍在（能收到 OnPriceChanged 日志），但核心 step 不再运行，表现为“不再按要求持续开单”
+
+	// 若存在上一次 Run 启动的 loop，先停止（防御：避免框架层异常导致双 loop）
+	s.stateMu.Lock()
+	prevCancel := s.loopCancel
+	s.loopCancel = nil
+	s.stateMu.Unlock()
+	if prevCancel != nil {
+		prevCancel()
+	}
+
 	// 使用“更短的基础 tick”，在 step 内用 lastQuoteAt 做动态节流（尾盘可加速）。
-	// 这样不需要重启 loop/ticker 就能实现随剩余时间变化的 requote 频率。
 	tick := time.Duration(s.baseLoopTickMs()) * time.Millisecond
-	common.StartLoopOnce(ctx, &s.loopOnce, func(cancel context.CancelFunc) { s.loopCancel = cancel }, tick, s.loop)
+	loopCtx, cancel := context.WithCancel(ctx)
+	s.stateMu.Lock()
+	s.loopCancel = cancel
+	s.stateMu.Unlock()
+
+	var tickC <-chan time.Time
+	var ticker *time.Ticker
+	if tick > 0 {
+		ticker = time.NewTicker(tick)
+		tickC = ticker.C
+	}
+	go func() {
+		if ticker != nil {
+			defer ticker.Stop()
+		}
+		s.loop(loopCtx, tickC)
+	}()
+
 	<-ctx.Done()
+	cancel()
 	return ctx.Err()
 }
 
