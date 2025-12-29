@@ -353,7 +353,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 
 		// 风险预算：裸露超过预算时，不等待 timeout，直接升级到更激进的补齐/回平路径。
 		force := false
-		if s.MaxUnhedgedSharesBudget > 0 && unhedged >= s.MaxUnhedgedSharesBudget {
+		if budget := s.dynamicUnhedgedBudgetShares(remainingSeconds); budget > 0 && unhedged >= budget {
 			force = true
 		}
 
@@ -407,6 +407,30 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 				missingAsset = m.NoAssetID
 				missingBidC = noBidC
 				missingAskC = noAskC
+			}
+
+			// bump 不能跨价：限定在当前 spread 内（保证还是 maker）
+			spreadC := missingAskC - missingBidC
+			if spreadC < 0 {
+				spreadC = -spreadC
+			}
+			bumpCap := spreadC - 1
+			if bumpCap < 0 {
+				bumpCap = 0
+			}
+			// 若接近预算阈值或尾盘，则在 cap 内尽量更积极一点
+			if remainingSeconds > 0 && remainingSeconds <= 180 {
+				if bumpC < 2 {
+					bumpC = 2
+				}
+			}
+			if budget := s.dynamicUnhedgedBudgetShares(remainingSeconds); budget > 0 && unhedged >= budget*0.8 {
+				if bumpC < 1 {
+					bumpC = 1
+				}
+			}
+			if bumpC > bumpCap {
+				bumpC = bumpCap
 			}
 
 			priceC := missingBidC + bumpC
@@ -869,6 +893,28 @@ func (s *Strategy) dynamicSupplementMinIntervalMs(remainingSeconds int) int {
 		ms = minMs
 	}
 	return ms
+}
+
+func (s *Strategy) dynamicUnhedgedBudgetShares(remainingSeconds int) float64 {
+	// 裸露预算：越接近结算越小（更快强制去风险）。
+	// - budget=0 表示关闭（保持兼容）
+	b := s.MaxUnhedgedSharesBudget
+	if b <= 0 {
+		return 0
+	}
+	f := 1.0
+	if remainingSeconds > 0 {
+		if remainingSeconds <= 180 {
+			f = 0.25
+		} else if remainingSeconds <= 300 {
+			f = 0.5
+		}
+	}
+	b = b * f
+	if b < s.MinUnhedgedShares {
+		b = s.MinUnhedgedShares
+	}
+	return b
 }
 
 func (s *Strategy) clampOrderSize(size float64) float64 {
