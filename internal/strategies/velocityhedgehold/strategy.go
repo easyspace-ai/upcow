@@ -67,6 +67,29 @@ type Strategy struct {
 
 	// 监控去重：避免同一 market 重复启动监控 goroutine
 	monitoring map[string]bool
+
+	// 待处理的 Entry 订单：等待成交后提交 Hedge
+	// key: entryOrderID, value: pendingEntryInfo
+	pendingEntries   map[string]*pendingEntryInfo
+	pendingEntriesMu sync.Mutex
+}
+
+// pendingEntryInfo 存储待处理 Entry 订单的信息，用于在订单成交后提交 Hedge
+type pendingEntryInfo struct {
+	market          *domain.Market
+	winner          domain.TokenType
+	entryAskCents   int
+	hedgeLimitCents int
+	hedgePrice      domain.Price
+	hedgeAsset      string
+	entryShares     float64
+	hedgeOffset     int
+	minOrderSize    float64
+	minShareSize    float64
+	unhedgedMax     int
+	unhedgedSLCents int
+	reorderSec      int
+	createdAt       time.Time
 }
 
 func (s *Strategy) ID() string   { return ID }
@@ -81,6 +104,9 @@ func (s *Strategy) Initialize() error {
 	}
 	if s.monitoring == nil {
 		s.monitoring = make(map[string]bool)
+	}
+	if s.pendingEntries == nil {
+		s.pendingEntries = make(map[string]*pendingEntryInfo)
 	}
 
 	gc := config.Get()
@@ -125,7 +151,15 @@ func (s *Strategy) Initialize() error {
 
 func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
 	session.OnPriceChanged(s)
-	log.Infof("✅ [%s] 策略已订阅价格变化事件 (session=%s)", ID, session.Name)
+	session.OnOrderUpdate(s)
+	log.Infof("✅ [%s] 策略已订阅价格变化和订单更新事件 (session=%s)", ID, session.Name)
+
+	// 注册 TradingService 的订单更新回调（兜底）
+	if s.TradingService != nil {
+		handler := services.OrderUpdateHandlerFunc(s.OnOrderUpdate)
+		s.TradingService.OnOrderUpdate(handler)
+		log.Infof("✅ [%s] 已注册 TradingService 订单更新回调", ID)
+	}
 }
 
 func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.ExchangeSession) error {
@@ -150,6 +184,11 @@ func (s *Strategy) OnCycle(ctx context.Context, _ *domain.Market, _ *domain.Mark
 	s.fastBiasUpdatedAt = time.Time{}
 	// 不清 lastTriggerAt：避免周期切换瞬间重复触发
 	log.Infof("🔄 [%s] 周期切换：交易计数器已重置 tradesCount=0 maxTradesPerCycle=%d", ID, s.MaxTradesPerCycle)
+
+	// 清理待处理的 Entry 订单（周期切换时清理）
+	s.pendingEntriesMu.Lock()
+	s.pendingEntries = make(map[string]*pendingEntryInfo)
+	s.pendingEntriesMu.Unlock()
 }
 
 func (s *Strategy) shouldHandleMarketEvent(m *domain.Market) bool {
@@ -288,15 +327,20 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if e == nil || e.Market == nil || s.TradingService == nil {
 		return nil
 	}
-	
-	// 🔍 调试日志：记录所有收到的价格事件
-	log.Debugf("🔍 [%s] OnPriceChanged 收到价格事件: token=%s price=%.4f market=%s", ID, e.TokenType, e.NewPrice.ToDecimal(), func() string {
+	log.Infof("🔍 [%s] OnPriceChanged 收到价格事件: token=%s price=%.4f market=%s", ID, e.TokenType, e.NewPrice.ToDecimal(), func() string {
 		if e.Market != nil {
 			return e.Market.Slug
 		}
 		return "nil"
 	}())
-	
+	// 🔍 调试日志：记录所有收到的价格事件
+	//log.Debugf("🔍 [%s] OnPriceChanged 收到价格事件: token=%s price=%.4f market=%s", ID, e.TokenType, e.NewPrice.ToDecimal(), func() string {
+	//	if e.Market != nil {
+	//		return e.Market.Slug
+	//	}
+	//	return "nil"
+	//}())
+
 	s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof)
 
 	if !s.shouldHandleMarketEvent(e.Market) {
@@ -471,7 +515,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	} else {
 		downVelStr = "vel=N/A (insufficient data)"
 	}
-	
+
 	// 格式化价格显示（显示样本数量）
 	var upPriceStr, downPriceStr string
 	if upPrice == 0 {
@@ -491,7 +535,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 
 	// 盘口快照（监控/风控）：来自 WS bestBook（零 IO），用于观测 bid/ask 是否镜像与是否过旧
 	bookStr := s.bestBookLogStr(now)
-	
+
 	log.Infof("📊 [%s] 价格更新: token=%s price=%dc | UP: price=%s %s [req: move>=%dc vel>=%.3f] qualified=%v | DOWN: price=%s %s [req: move>=%dc vel>=%.3f] qualified=%v | %s | market=%s",
 		ID, e.TokenType, priceCents,
 		upPriceStr, upVelStr, reqMoveUp, reqVelUp, upQualified,
@@ -582,8 +626,8 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	unhedgedMax := s.UnhedgedMaxSeconds
 	unhedgedSLCents := s.UnhedgedStopLossCents
 	reorderSec := s.HedgeReorderTimeoutSeconds
-		biasTok := activeBiasTok
-		biasReason := activeBiasReason
+	biasTok := activeBiasTok
+	biasReason := activeBiasReason
 	currentTradesCount := s.tradesCountThisCycle
 	maxTradesLimit := s.MaxTradesPerCycle
 	s.mu.Unlock()
@@ -653,7 +697,6 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	hedgePrice := domain.Price{Pips: hedgeLimitCents * 100}
 
 	entryPriceDec := entryPrice.ToDecimal()
-	hedgePriceDec := hedgePrice.ToDecimal()
 
 	// 下单 shares：Entry 先按期望 size，最终以实际成交为准；Hedge 以后续 entryFilledSize 为准
 	entryShares := ensureMinOrderSize(s.OrderSize, entryPriceDec, minOrderSize)
@@ -700,25 +743,72 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		}
 	}
 	if entryFilledSize <= 0 {
-		// FAK 未成交：直接结束
+		// FAK 未立即成交：保存订单信息，等待订单更新事件触发 Hedge 提交
+		s.pendingEntriesMu.Lock()
+		s.pendingEntries[entryRes.OrderID] = &pendingEntryInfo{
+			market:          market,
+			winner:          winner,
+			entryAskCents:   entryAskCents,
+			hedgeLimitCents: hedgeLimitCents,
+			hedgePrice:      hedgePrice,
+			hedgeAsset:      hedgeAsset,
+			entryShares:     entryShares,
+			hedgeOffset:     hedgeOffset,
+			minOrderSize:    minOrderSize,
+			minShareSize:    minShareSize,
+			unhedgedMax:     unhedgedMax,
+			unhedgedSLCents: unhedgedSLCents,
+			reorderSec:      reorderSec,
+			createdAt:       now,
+		}
+		s.pendingEntriesMu.Unlock()
+		log.Infof("⏳ [%s] Entry 订单未立即成交，已保存待处理信息，等待订单更新事件: orderID=%s market=%s", ID, entryRes.OrderID, market.Slug)
 		return nil
 	}
+	// 提交 Hedge 订单（提取为独立函数，可在 OnOrderUpdate 中复用）
+	return s.submitHedgeOrder(ctx, orderCtx, market, winner, entryRes.OrderID, entryFilledSize, entryAskCents, hedgeLimitCents, hedgePrice, hedgeAsset, minOrderSize, minShareSize, unhedgedMax, unhedgedSLCents, reorderSec, now, entryRes.FilledAt)
+}
+
+// submitHedgeOrder 提交 Hedge 订单的通用逻辑
+func (s *Strategy) submitHedgeOrder(ctx context.Context, orderCtx context.Context, market *domain.Market, winner domain.TokenType, entryOrderID string, entryFilledSize float64, entryAskCents int, hedgeLimitCents int, hedgePrice domain.Price, hedgeAsset string, minOrderSize float64, minShareSize float64, unhedgedMax int, unhedgedSLCents int, reorderSec int, now time.Time, entryFilledAt *time.Time) error {
 	if entryFilledSize < minShareSize {
 		// 不能满足 GTC 最小份额：立即止损平掉碎仓，避免留下无法对冲的敞口
-		go s.forceStoploss(context.Background(), market, "entry_fill_too_small", entryRes.OrderID, "")
+		go s.forceStoploss(context.Background(), market, "entry_fill_too_small", entryOrderID, "")
 		return nil
 	}
 
+	hedgePriceDec := hedgePrice.ToDecimal()
 	// Hedge size 按 Entry 实际成交量计算，并做精度/最小金额修正（仍以不超量为原则）
 	hedgeShares := entryFilledSize
 	if hedgeShares*hedgePriceDec < minOrderSize {
 		// 如果最小金额要求导致需要放大 hedgeShares，会造成“过度对冲”；这里选择直接止损退出
-		go s.forceStoploss(context.Background(), market, "hedge_min_notional_would_oversize", entryRes.OrderID, "")
-		return nil
+		if s.AllowModerateOverHedge {
+			// 允许适度过度对冲：计算需要放大的倍数
+			requiredMultiplier := minOrderSize / (hedgeShares * hedgePriceDec)
+			enlargedHedgeShares := hedgeShares * requiredMultiplier
+
+			// 检查是否在允许的过度对冲范围内
+			maxAllowedHedgeShares := entryFilledSize * (1.0 + s.MaxOverHedgeRatio)
+			if enlargedHedgeShares <= maxAllowedHedgeShares {
+				hedgeShares = enlargedHedgeShares
+				log.Infof("⚠️ [%s] 允许适度过度对冲以满足最小金额：entry=%.4f hedge=%.4f (放大%.1f%%, 过度对冲%.1f%%) entryOrderID=%s market=%s",
+					ID, entryFilledSize, hedgeShares, (requiredMultiplier-1)*100, ((hedgeShares-entryFilledSize)/entryFilledSize)*100, entryOrderID, market.Slug)
+			} else {
+				// 过度对冲超过允许范围，仍然止损
+				log.Warnf("🚨 [%s] 过度对冲超过允许范围：entry=%.4f required=%.4f maxAllowed=%.4f (%.1f%%) entryOrderID=%s market=%s",
+					ID, entryFilledSize, enlargedHedgeShares, maxAllowedHedgeShares, s.MaxOverHedgeRatio*100, entryOrderID, market.Slug)
+				go s.forceStoploss(context.Background(), market, "hedge_min_notional_would_oversize", entryOrderID, "")
+				return nil
+			}
+		} else {
+			// 不允许过度对冲：直接止损退出（保守策略）
+			go s.forceStoploss(context.Background(), market, "hedge_min_notional_would_oversize", entryOrderID, "")
+			return nil
+		}
 	}
 	hedgeShares = adjustSizeForMakerAmountPrecision(hedgeShares, hedgePriceDec)
 	if hedgeShares < minShareSize {
-		go s.forceStoploss(context.Background(), market, "hedge_size_precision_too_small", entryRes.OrderID, "")
+		go s.forceStoploss(context.Background(), market, "hedge_size_precision_too_small", entryOrderID, "")
 		return nil
 	}
 
@@ -731,53 +821,139 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		Size:         hedgeShares,
 		OrderType:    types.OrderTypeGTC,
 		IsEntryOrder: false,
-		HedgeOrderID: &entryRes.OrderID,
+		HedgeOrderID: &entryOrderID,
 		Status:       domain.OrderStatusPending,
 		CreatedAt:    time.Now(),
 	}
 	s.attachMarketPrecision(hedgeOrder)
 	log.Infof("🛡️ [%s] 准备触发 Hedge 订单: side=%s hedgeLimit=%dc size=%.4f entryOrderID=%s entryFilled=%.4f market=%s",
-		ID, opposite(winner), hedgeLimitCents, hedgeShares, entryRes.OrderID, entryFilledSize, market.Slug)
+		ID, opposite(winner), hedgeLimitCents, hedgeShares, entryOrderID, entryFilledSize, market.Slug)
 	hedgeRes, hedgeErr := s.TradingService.PlaceOrder(orderCtx, hedgeOrder)
-	if hedgeErr != nil {
-		if isFailSafeRefusal(hedgeErr) {
-			// 系统拒绝：保守处理，立即止损退出，避免裸露
-			log.Warnf("⚠️ [%s] Hedge 下单失败（系统拒绝）: err=%v entryOrderID=%s market=%s", ID, hedgeErr, entryRes.OrderID, market.Slug)
-			go s.forceStoploss(context.Background(), market, "hedge_refused_by_failsafe", entryRes.OrderID, "")
-			return nil
-		}
-		log.Warnf("⚠️ [%s] Hedge 下单失败: err=%v entryOrderID=%s hedgePrice=%dc size=%.4f market=%s", ID, hedgeErr, entryRes.OrderID, hedgeLimitCents, hedgeShares, market.Slug)
-		go s.forceStoploss(context.Background(), market, "hedge_place_failed", entryRes.OrderID, "")
-		return nil
-	}
-	if hedgeRes == nil || hedgeRes.OrderID == "" {
-		log.Warnf("⚠️ [%s] Hedge 订单ID为空: entryOrderID=%s market=%s", ID, entryRes.OrderID, market.Slug)
-		go s.forceStoploss(context.Background(), market, "hedge_order_id_empty", entryRes.OrderID, "")
-		return nil
-	}
-	log.Infof("✅ [%s] Hedge 订单已提交: orderID=%s side=%s price=%dc size=%.4f entryOrderID=%s market=%s",
-		ID, hedgeRes.OrderID, opposite(winner), hedgeLimitCents, hedgeShares, entryRes.OrderID, market.Slug)
 
+	// 无论Hedge订单是否成功，Entry订单已成交，都应该递增交易计数
 	s.mu.Lock()
-	// lastTriggerAt 已在前面更新，这里只需要更新交易计数
 	s.tradesCountThisCycle++
 	currentCount := s.tradesCountThisCycle
 	maxTrades := s.MaxTradesPerCycle
 	s.mu.Unlock()
 
+	if hedgeErr != nil {
+		if isFailSafeRefusal(hedgeErr) {
+			// 系统拒绝：保守处理，立即止损退出，避免裸露
+			log.Warnf("⚠️ [%s] Hedge 下单失败（系统拒绝）: err=%v entryOrderID=%s market=%s tradesCount=%d/%d", ID, hedgeErr, entryOrderID, market.Slug, currentCount, maxTrades)
+			go s.forceStoploss(context.Background(), market, "hedge_refused_by_failsafe", entryOrderID, "")
+			return nil
+		}
+		log.Warnf("⚠️ [%s] Hedge 下单失败: err=%v entryOrderID=%s hedgePrice=%dc size=%.4f market=%s tradesCount=%d/%d", ID, hedgeErr, entryOrderID, hedgeLimitCents, hedgeShares, market.Slug, currentCount, maxTrades)
+		// Hedge订单提交失败，启动监控以处理未对冲持仓
+		entryFilledAtTime := now
+		if entryFilledAt != nil && !entryFilledAt.IsZero() {
+			entryFilledAtTime = *entryFilledAt
+		}
+		s.startMonitorIfNeeded(market.Slug, func() {
+			// Hedge订单ID为空，监控会检测到未对冲并触发止损
+			s.monitorHedgeAndStoploss(context.Background(), market, winner, entryOrderID, entryAskCents, entryFilledSize, entryFilledAtTime, "", hedgeAsset, reorderSec, unhedgedMax, unhedgedSLCents)
+		})
+		go s.forceStoploss(context.Background(), market, "hedge_place_failed", entryOrderID, "")
+		return nil
+	}
+	if hedgeRes == nil || hedgeRes.OrderID == "" {
+		log.Warnf("⚠️ [%s] Hedge 订单ID为空: entryOrderID=%s market=%s tradesCount=%d/%d", ID, entryOrderID, market.Slug, currentCount, maxTrades)
+		// Hedge订单ID为空，启动监控以处理未对冲持仓
+		entryFilledAtTime := now
+		if entryFilledAt != nil && !entryFilledAt.IsZero() {
+			entryFilledAtTime = *entryFilledAt
+		}
+		s.startMonitorIfNeeded(market.Slug, func() {
+			// Hedge订单ID为空，监控会检测到未对冲并触发止损
+			s.monitorHedgeAndStoploss(context.Background(), market, winner, entryOrderID, entryAskCents, entryFilledSize, entryFilledAtTime, "", hedgeAsset, reorderSec, unhedgedMax, unhedgedSLCents)
+		})
+		go s.forceStoploss(context.Background(), market, "hedge_order_id_empty", entryOrderID, "")
+		return nil
+	}
+	log.Infof("✅ [%s] Hedge 订单已提交: orderID=%s side=%s price=%dc size=%.4f entryOrderID=%s market=%s",
+		ID, hedgeRes.OrderID, opposite(winner), hedgeLimitCents, hedgeShares, entryOrderID, market.Slug)
+
 	log.Infof("✅ [%s] Entry 已成交并已挂 Hedge: entryID=%s filled=%.4f@%dc hedgeID=%s limit=%dc unhedgedMax=%ds sl=%dc tradesCount=%d/%d",
-		ID, entryRes.OrderID, entryFilledSize, entryAskCents, hedgeRes.OrderID, hedgeLimitCents, unhedgedMax, unhedgedSLCents, currentCount, maxTrades)
+		ID, entryOrderID, entryFilledSize, entryAskCents, hedgeRes.OrderID, hedgeLimitCents, unhedgedMax, unhedgedSLCents, currentCount, maxTrades)
 
 	// 启动监控：直到对冲完成（持有到结算）或触发止损
-	entryFilledAt := time.Now()
-	if entryRes.FilledAt != nil && !entryRes.FilledAt.IsZero() {
-		entryFilledAt = *entryRes.FilledAt
+	entryFilledAtTime := now
+	if entryFilledAt != nil && !entryFilledAt.IsZero() {
+		entryFilledAtTime = *entryFilledAt
 	}
 	s.startMonitorIfNeeded(market.Slug, func() {
-		s.monitorHedgeAndStoploss(context.Background(), market, winner, entryRes.OrderID, entryAskCents, entryFilledSize, entryFilledAt, hedgeRes.OrderID, hedgeAsset, reorderSec, unhedgedMax, unhedgedSLCents)
+		s.monitorHedgeAndStoploss(context.Background(), market, winner, entryOrderID, entryAskCents, entryFilledSize, entryFilledAtTime, hedgeRes.OrderID, hedgeAsset, reorderSec, unhedgedMax, unhedgedSLCents)
 	})
 
 	return nil
+}
+
+// OnOrderUpdate 处理订单更新事件，当 Entry 订单成交时自动提交 Hedge 订单
+func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
+	if order == nil || order.OrderID == "" {
+		return nil
+	}
+
+	// 只处理 Entry 订单
+	if !order.IsEntryOrder {
+		return nil
+	}
+
+	// 只处理当前市场的订单
+	if order.MarketSlug != "" && !strings.HasPrefix(strings.ToLower(order.MarketSlug), s.marketSlugPrefix) {
+		return nil
+	}
+
+	// 检查是否有待处理的 Entry 订单信息
+	s.pendingEntriesMu.Lock()
+	pendingInfo, exists := s.pendingEntries[order.OrderID]
+	s.pendingEntriesMu.Unlock()
+
+	if !exists {
+		// 没有待处理信息，说明订单在提交时已立即成交，已在 OnPriceChanged 中处理
+		return nil
+	}
+
+	// 只处理成交的订单
+	if order.Status != domain.OrderStatusFilled || order.FilledSize <= 0 {
+		return nil
+	}
+
+	entryFilledSize := order.FilledSize
+	log.Infof("✅ [%s] Entry 订单已成交（通过订单更新回调）: orderID=%s filledSize=%.4f market=%s", ID, order.OrderID, entryFilledSize, order.MarketSlug)
+
+	// 从待处理信息中获取参数
+	market := pendingInfo.market
+	winner := pendingInfo.winner
+	entryAskCents := pendingInfo.entryAskCents
+	hedgeLimitCents := pendingInfo.hedgeLimitCents
+	hedgePrice := pendingInfo.hedgePrice
+	hedgeAsset := pendingInfo.hedgeAsset
+	minOrderSize := pendingInfo.minOrderSize
+	minShareSize := pendingInfo.minShareSize
+	unhedgedMax := pendingInfo.unhedgedMax
+	unhedgedSLCents := pendingInfo.unhedgedSLCents
+	reorderSec := pendingInfo.reorderSec
+
+	// 创建订单上下文（使用独立的context，避免使用已取消的ctx）
+	orderCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 提交 Hedge 订单
+	entryFilledAt := order.FilledAt
+	if entryFilledAt == nil {
+		t := time.Now()
+		entryFilledAt = &t
+	}
+	err := s.submitHedgeOrder(context.Background(), orderCtx, market, winner, order.OrderID, entryFilledSize, entryAskCents, hedgeLimitCents, hedgePrice, hedgeAsset, minOrderSize, minShareSize, unhedgedMax, unhedgedSLCents, reorderSec, time.Now(), entryFilledAt)
+
+	// 清理待处理信息
+	s.pendingEntriesMu.Lock()
+	delete(s.pendingEntries, order.OrderID)
+	s.pendingEntriesMu.Unlock()
+
+	return err
 }
 
 func (s *Strategy) pruneSignalLocked(now time.Time) {

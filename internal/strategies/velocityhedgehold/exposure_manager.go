@@ -34,12 +34,15 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 		return true
 	}
 
-	// 1) 已对冲：两边数量几乎相等 -> 持有到结算；并清理残留挂单，避免额外被动成交
+	// 1) 已对冲：两边数量几乎相等 -> 清理残留挂单，避免额外被动成交
+	// 注意：返回 false，让 maxTradesPerCycle 来控制是否继续开新仓
+	// 这样即使已对冲，只要 tradesCount < maxTradesPerCycle，仍可以继续开新仓
 	if upSize > 0 && downSize > 0 && nearlyEqualShares(upSize, downSize) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		s.TradingService.CancelOrdersForMarket(ctx, market.Slug)
-		return true
+		// 返回 false，允许 maxTradesPerCycle 控制是否继续开新仓
+		return false
 	}
 
 	// 2) 未对冲：确定 entry/hedge 方向与剩余量
@@ -55,7 +58,8 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 	}
 	remaining := target - hedgedSoFar
 	if remaining <= 0 {
-		return true
+		// 已完全对冲：返回 false，让 maxTradesPerCycle 控制是否继续开新仓
+		return false
 	}
 
 	// Entry time / price（用于超时与互补价上界）
@@ -280,7 +284,9 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 		})
 	}
 
-	return true
+	// 返回 false，让 maxTradesPerCycle 控制是否继续开新仓
+	// 即使有未对冲持仓，只要 tradesCount < maxTradesPerCycle，仍可以继续开新仓
+	return false
 }
 
 func splitPositions(positions []*domain.Position) (up *domain.Position, down *domain.Position) {

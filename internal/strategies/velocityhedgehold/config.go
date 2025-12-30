@@ -49,6 +49,14 @@ type Config struct {
 	// 对冲重挂：若在该时间内未成交，撤单重挂（仍遵守互补价上界 + 不穿价）。
 	HedgeReorderTimeoutSeconds int `yaml:"hedgeReorderTimeoutSeconds" json:"hedgeReorderTimeoutSeconds"`
 
+	// ===== 过度对冲控制 =====
+	// 当 Hedge 订单金额 < minOrderSize 时，是否允许适度过度对冲以满足最小金额要求
+	// true：允许适度过度对冲（不超过 MaxOverHedgeRatio）
+	// false：直接止损（保守策略）
+	AllowModerateOverHedge bool `yaml:"allowModerateOverHedge" json:"allowModerateOverHedge"`
+	// 最大过度对冲比例（例如 0.1 表示允许 hedgeShares 最多比 entryFilledSize 多 10%）
+	MaxOverHedgeRatio float64 `yaml:"maxOverHedgeRatio" json:"maxOverHedgeRatio"`
+
 	// ===== 未对冲止损（唯一出场）=====
 	// 从 Entry 成交时刻开始计时，超过该时间仍未完成“等量对冲”，触发止损平仓。
 	UnhedgedMaxSeconds int `yaml:"unhedgedMaxSeconds" json:"unhedgedMaxSeconds"`
@@ -156,6 +164,13 @@ func (c *Config) Validate() error {
 	}
 	if c.HedgeReorderTimeoutSeconds <= 0 {
 		c.HedgeReorderTimeoutSeconds = 30
+	}
+	// 过度对冲控制默认值
+	if c.MaxOverHedgeRatio <= 0 {
+		c.MaxOverHedgeRatio = 0.1 // 默认允许 10% 的过度对冲
+	}
+	if c.MaxOverHedgeRatio > 0.5 {
+		return fmt.Errorf("maxOverHedgeRatio 不能超过 0.5（50%%）")
 	}
 	if c.UnhedgedMaxSeconds <= 0 {
 		c.UnhedgedMaxSeconds = 120
