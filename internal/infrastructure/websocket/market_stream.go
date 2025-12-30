@@ -1604,28 +1604,33 @@ func (m *MarketStream) handlePriceChangeFast(ctx context.Context, message []byte
 		}
 		assetID := string(assetIDb)
 
-		// 检查 asset_id 是否在订阅列表中（支持多市场场景）
-		m.subscribedAssetsMu.RLock()
-		isSubscribed := m.subscribedAssets[assetID]
-		// 获取订阅列表中的所有 asset_id（用于调试）
-		subscribedList := make([]string, 0, len(m.subscribedAssets))
-		for aid := range m.subscribedAssets {
-			subscribedList = append(subscribedList, aid)
-		}
-		m.subscribedAssetsMu.RUnlock()
-
-		// 🔍 调试日志：订阅列表检查
-		marketLog.Debugf("🔍 [handlePriceChange] 订阅列表检查: assetID=%s isSubscribed=%v subscribedAssets=%v yesID=%s noID=%s market=%s",
-			assetID, isSubscribed, subscribedList, yesID, noID, currentMarketSlug)
-
-		// 如果不在订阅列表中，跳过（即使 market 匹配也不处理）
-		if !isSubscribed {
-			marketLog.Debugf("⏭️ [handlePriceChange] 跳过价格事件（不在订阅列表）: assetID=%s market=%s", assetID, currentMarketSlug)
-			continue
-		}
-
+		// 先判断是否为当前 market 的 YES/NO（重要：官方行为是“订阅任一侧也会回推两侧”）
+		// 因此对当前 market 的 YES/NO 不应受 subscribedAssets 约束，否则会把另一侧（常见是 DOWN）错误过滤掉。
 		isUp := bytes.Equal(assetIDb, []byte(yesID))
 		isDown := bytes.Equal(assetIDb, []byte(noID))
+
+		// 对非当前 market 的资产，才用 subscribedAssets 做多市场过滤
+		isSubscribed := true
+		var subscribedList []string
+		if !isUp && !isDown {
+			m.subscribedAssetsMu.RLock()
+			isSubscribed = m.subscribedAssets[assetID]
+			// 获取订阅列表中的所有 asset_id（用于调试）
+			subscribedList = make([]string, 0, len(m.subscribedAssets))
+			for aid := range m.subscribedAssets {
+				subscribedList = append(subscribedList, aid)
+			}
+			m.subscribedAssetsMu.RUnlock()
+
+			// 🔍 调试日志：订阅列表检查（仅对“非当前 YES/NO”资产打印，避免刷屏）
+			marketLog.Debugf("🔍 [handlePriceChange] 订阅列表检查(非YES/NO): assetID=%s isSubscribed=%v subscribedAssets=%v yesID=%s noID=%s market=%s",
+				assetID, isSubscribed, subscribedList, yesID, noID, currentMarketSlug)
+
+			if !isSubscribed {
+				marketLog.Debugf("⏭️ [handlePriceChange] 跳过价格事件（不在订阅列表）: assetID=%s market=%s", assetID, currentMarketSlug)
+				continue
+			}
+		}
 		
 		// 🔍 调试日志：asset_id 识别
 		marketLog.Debugf("🔍 [handlePriceChange] asset_id 识别: assetID=%s yesID=%s isUp=%v noID=%s isDown=%v market=%s",
