@@ -18,6 +18,11 @@ type Config struct {
 	// ===== 交易参数 =====
 	OrderSize float64 `yaml:"orderSize" json:"orderSize"` // Entry 期望下单 shares（最终以实际成交为准）
 
+	// SkipBalanceCheck：跳过本地下单前的 USDC 余额预检查（OrderEngine 内）。
+	// 用于解决“启动/周期切换时余额尚未初始化，短暂显示 0 导致误拒单”的问题。
+	// 注意：这只是跳过本地检查；若账户确实没钱，交易所仍会拒单。
+	SkipBalanceCheck bool `yaml:"skipBalanceCheck" json:"skipBalanceCheck"`
+
 	// ===== 动量信号参数 =====
 	WindowSeconds          int     `yaml:"windowSeconds" json:"windowSeconds"`                   // 速度计算窗口（秒）
 	MinMoveCents           int     `yaml:"minMoveCents" json:"minMoveCents"`                     // 窗口内最小上行位移（分）
@@ -93,8 +98,8 @@ type Config struct {
 	// - BiasMode=hard：只允许顺着 fast bias 方向开仓（更像“胜率过滤器”）
 	// - BiasMode=soft：只对逆势方向提高阈值（更像“降噪/降频”）
 	UseBinanceFastBias     bool `yaml:"useBinanceFastBias" json:"useBinanceFastBias"`
-	FastBiasWindowSeconds  int  `yaml:"fastBiasWindowSeconds" json:"fastBiasWindowSeconds"` // 计算窗口（秒），默认 30
-	FastBiasMinMoveBps     int  `yaml:"fastBiasMinMoveBps" json:"fastBiasMinMoveBps"`       // 触发 bias 的最小底层波动（bps），默认 15
+	FastBiasWindowSeconds  int  `yaml:"fastBiasWindowSeconds" json:"fastBiasWindowSeconds"`   // 计算窗口（秒），默认 30
+	FastBiasMinMoveBps     int  `yaml:"fastBiasMinMoveBps" json:"fastBiasMinMoveBps"`         // 触发 bias 的最小底层波动（bps），默认 15
 	FastBiasMinHoldSeconds int  `yaml:"fastBiasMinHoldSeconds" json:"fastBiasMinHoldSeconds"` // bias 最小保持时间（秒），默认 2（抗抖）
 
 	UseBinanceMoveConfirm    bool `yaml:"useBinanceMoveConfirm" json:"useBinanceMoveConfirm"`

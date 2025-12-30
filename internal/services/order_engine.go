@@ -416,7 +416,7 @@ func (e *OrderEngine) handlePlaceOrder(cmd *PlaceOrderCommand) {
 	// 2. 更新状态（预留资金）
 	requiredAmount := cmd.Order.Price.ToDecimal() * cmd.Order.Size
 	// 在纸模式下跳过余额检查，或者设置一个很大的初始余额
-	if !e.dryRun && e.balance < requiredAmount {
+	if !e.dryRun && cmd.Order != nil && cmd.Order.Side == types.SideBuy && !cmd.Order.SkipBalanceCheck && e.balance < requiredAmount {
 		// 使用非阻塞发送，避免阻塞 OrderEngine 主循环
 		select {
 		case cmd.Reply <- &PlaceOrderResult{
@@ -433,7 +433,7 @@ func (e *OrderEngine) handlePlaceOrder(cmd *PlaceOrderCommand) {
 	}
 
 	// 预留资金（纸模式下不实际扣除）
-	if !e.dryRun {
+	if !e.dryRun && cmd.Order != nil && cmd.Order.Side == types.SideBuy {
 		e.balance -= requiredAmount
 	}
 

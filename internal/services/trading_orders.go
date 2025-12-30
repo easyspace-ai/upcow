@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -141,7 +142,7 @@ func (o *OrdersService) PlaceOrder(ctx context.Context, order *domain.Order) (cr
 		metrics.PlaceOrderBlockedInvalidInput.Add(1)
 		return nil, fmt.Errorf("trading service not initialized")
 	}
-	if e := s.allowPlaceOrder(); e != nil {
+	if e := s.allowPlaceOrder(order); e != nil {
 		metrics.PlaceOrderBlockedCircuit.Add(1)
 		return nil, e
 	}
@@ -227,18 +228,31 @@ func (o *OrdersService) PlaceOrder(ctx context.Context, order *domain.Order) (cr
 	// 指标 + 风控：错误计数
 	if err != nil {
 		metrics.PlaceOrderErrors.Add(1)
-		if s.circuitBreaker != nil {
-			s.circuitBreaker.OnError()
+		// 分类：以下错误属于“预期/本地门控/风控拒绝”，不应触发 circuit breaker / risk-off：
+		// - duplicate in-flight（本地去重）
+		// - 余额不足（本地余额未同步/或确实不足，属于“业务拒绝”）
+		// - risk-off/paused/market mismatch/stale cycle（系统门控）
+		msgLower := strings.ToLower(err.Error())
+		isDedup := errors.Is(err, execution.ErrDuplicateInFlight)
+		isBalance := strings.Contains(err.Error(), "余额不足")
+		isGate := strings.Contains(msgLower, "risk-off active") ||
+			strings.Contains(msgLower, "trading paused") ||
+			strings.Contains(msgLower, "order market mismatch") ||
+			strings.Contains(msgLower, "stale cycle command")
+
+		if !isDedup && !isBalance && !isGate {
+			if s.circuitBreaker != nil {
+				s.circuitBreaker.OnError()
+			}
+			// risk-off：错误后短暂冷静，避免持续重试放大损失/限流
+			// - 保守：默认 2s；若疑似限流/网络抖动，提高到 5s
+			d := 2 * time.Second
+			if strings.Contains(msgLower, "429") || strings.Contains(msgLower, "rate") || strings.Contains(msgLower, "timeout") ||
+				strings.Contains(msgLower, "temporarily") || strings.Contains(msgLower, "too many") {
+				d = 5 * time.Second
+			}
+			s.TriggerRiskOff(d, "place_order_error")
 		}
-		// risk-off：错误后短暂冷静，避免持续重试放大损失/限流
-		// - 保守：默认 2s；若疑似限流/网络抖动，提高到 5s
-		d := 2 * time.Second
-		msg := strings.ToLower(err.Error())
-		if strings.Contains(msg, "429") || strings.Contains(msg, "rate") || strings.Contains(msg, "timeout") ||
-			strings.Contains(msg, "temporarily") || strings.Contains(msg, "too many") {
-			d = 5 * time.Second
-		}
-		s.TriggerRiskOff(d, "place_order_error")
 		return created, err
 	}
 	if s.circuitBreaker != nil {

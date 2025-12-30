@@ -89,7 +89,7 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 			// 尝试查找 entryOrderID 和 hedgeOrderID
 			entryOrderID := ""
 			hedgeOrderID := ""
-			
+
 			// 查找 entryOrderID：从持仓的关联订单或活跃订单中查找
 			if entryPos != nil && entryPos.Size > 0 {
 				// 尝试从活跃订单中查找 entry 订单
@@ -113,7 +113,7 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 					}
 				}
 			}
-			
+
 			// 查找 hedgeOrderID（如果还没找到）
 			if hedgeOrderID == "" {
 				orders := s.TradingService.GetActiveOrders()
@@ -139,7 +139,7 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 					}
 				}
 			}
-			
+
 			log.Warnf("🚨 [%s] 未对冲止损触发（超时-恢复场景）：elapsed=%.1fs max=%ds entryToken=%s entrySize=%.4f entryPrice=%dc entryAt=%s entryOrderID=%s hedgeOrderID=%s upSize=%.4f downSize=%.4f remaining=%.4f market=%s",
 				ID, elapsed.Seconds(), s.UnhedgedMaxSeconds, entryTok, target, entryPriceCents, entryAt.Format(time.RFC3339), entryOrderID, hedgeOrderID, upSize, downSize, remaining, market.Slug)
 			s.forceStoploss(context.Background(), market, "unhedged_timeout_stoploss(recover)", entryOrderID, hedgeOrderID)
@@ -153,7 +153,7 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 			// 尝试查找 entryOrderID 和 hedgeOrderID
 			entryOrderID := ""
 			hedgeOrderID := ""
-			
+
 			if entryPos != nil && entryPos.Size > 0 {
 				orders := s.TradingService.GetActiveOrders()
 				for _, o := range orders {
@@ -175,7 +175,7 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 					}
 				}
 			}
-			
+
 			log.Warnf("🚨 [%s] 未对冲止损触发（价格-恢复场景）：diff=%dc sl=%dc entryToken=%s entrySize=%.4f entryPrice=%dc entryOrderID=%s hedgeOrderID=%s upSize=%.4f downSize=%.4f remaining=%.4f market=%s",
 				ID, diff, s.UnhedgedStopLossCents, entryTok, target, entryPriceCents, entryOrderID, hedgeOrderID, upSize, downSize, remaining, market.Slug)
 			s.forceStoploss(context.Background(), market, "unhedged_price_stoploss(recover)", entryOrderID, hedgeOrderID)
@@ -260,15 +260,17 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 		}
 
 		o := &domain.Order{
-			MarketSlug: market.Slug,
-			AssetID:    hedgeAsset,
-			TokenType:  hedgeTok,
-			Side:       types.SideBuy,
-			Price:      price,
-			Size:       remaining,
-			OrderType:  types.OrderTypeGTC,
-			Status:     domain.OrderStatusPending,
-			CreatedAt:  time.Now(),
+			MarketSlug:       market.Slug,
+			AssetID:          hedgeAsset,
+			TokenType:        hedgeTok,
+			Side:             types.SideBuy,
+			Price:            price,
+			Size:             remaining,
+			OrderType:        types.OrderTypeGTC,
+			BypassRiskOff:    true,
+			SkipBalanceCheck: s.SkipBalanceCheck,
+			Status:           domain.OrderStatusPending,
+			CreatedAt:        time.Now(),
 		}
 		s.attachMarketPrecision(o)
 		placed, err := s.TradingService.PlaceOrder(context.Background(), o)
