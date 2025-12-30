@@ -1152,6 +1152,7 @@ var (
 	keyMarket       = []byte(`"market"`)
 	keyPriceChanges = []byte(`"price_changes"`)
 	keyAssetID      = []byte(`"asset_id"`)
+	keyPrice        = []byte(`"price"`)
 	keyBestBid      = []byte(`"best_bid"`)
 	keyBestAsk      = []byte(`"best_ask"`)
 )
@@ -1648,38 +1649,55 @@ func (m *MarketStream) handlePriceChangeFast(ctx context.Context, message []byte
 		}
 
 		// 事件触发使用 mid（双边 + 价差 gate）
-		if bidCents == 0 || askCents == 0 {
-			continue
-		}
-		spread := askCents - bidCents
-		if spread < 0 {
-			spread = -spread
-		}
-		if spread > marketDataMaxSpreadCents {
-			assetID := string(assetIDb) // only on warn path
-			if m.shouldLogWideSpreadWarn(assetID) {
-				aid := assetID
-				if len(aid) > 12 {
-					aid = aid[:12] + "..."
-				}
-				// 获取完整的 UP/DOWN bid/ask 数据
-				var upBidCents, upAskCents, downBidCents, downAskCents int
-				if m.bestBook != nil {
-					snap := m.bestBook.Load()
-					upBidCents = pipsToCents(int(snap.YesBidPips))
-					upAskCents = pipsToCents(int(snap.YesAskPips))
-					downBidCents = pipsToCents(int(snap.NoBidPips))
-					downAskCents = pipsToCents(int(snap.NoAskPips))
-				}
-				marketLog.Warnf("⚠️ [price_change->price] 盘口价差过大，忽略价格事件: assetID=%s bid=%dc ask=%dc spread=%dc market=%s | UP: bid=%dc ask=%dc DOWN: bid=%dc ask=%dc",
-					aid, bidCents, askCents, spread, currentMarketSlug, upBidCents, upAskCents, downBidCents, downAskCents)
+		// 说明：
+		// - 默认优先用 mid(best_bid/best_ask) 作为价格（更贴近可成交区间）
+		// - 但线上实践表明：某一侧（常见 DOWN）可能长期出现单边/宽价差，若严格 gate 会导致策略“永远收不到该侧价格”
+		// - 因此增加 price 字段兜底：当 bid/ask 不可用或价差过大时，使用 msg.price（最后成交价）触发事件
+		var newPrice domain.Price
+		usePriceFallback := false
+		if bidCents != 0 && askCents != 0 {
+			spread := askCents - bidCents
+			if spread < 0 {
+				spread = -spread
 			}
+			if spread <= marketDataMaxSpreadCents {
+				mid := bidCents + askCents
+				mid = (mid + 1) / 2
+				newPrice = domain.Price{Pips: mid * 100} // 1 cent = 100 pips
+			} else {
+				usePriceFallback = true
+				assetID := string(assetIDb) // only on warn path
+				if m.shouldLogWideSpreadWarn(assetID) {
+					aid := assetID
+					if len(aid) > 12 {
+						aid = aid[:12] + "..."
+					}
+					// 获取完整的 UP/DOWN bid/ask 数据
+					var upBidCents, upAskCents, downBidCents, downAskCents int
+					if m.bestBook != nil {
+						snap := m.bestBook.Load()
+						upBidCents = pipsToCents(int(snap.YesBidPips))
+						upAskCents = pipsToCents(int(snap.YesAskPips))
+						downBidCents = pipsToCents(int(snap.NoBidPips))
+						downAskCents = pipsToCents(int(snap.NoAskPips))
+					}
+					marketLog.Warnf("⚠️ [price_change->price] 盘口价差过大，改用 trade price 兜底: assetID=%s bid=%dc ask=%dc spread=%dc market=%s | UP: bid=%dc ask=%dc DOWN: bid=%dc ask=%dc",
+						aid, bidCents, askCents, spread, currentMarketSlug, upBidCents, upAskCents, downBidCents, downAskCents)
+				}
+			}
+		} else {
+			usePriceFallback = true
+		}
+		if usePriceFallback {
+			if pb, ok := findJSONStringValue(obj, keyPrice); ok && len(pb) > 0 {
+				if p, err := parsePriceBytes(pb); err == nil && p.Pips > 0 {
+					newPrice = p
+				}
+			}
+		}
+		if newPrice.Pips <= 0 {
 			continue
 		}
-
-		mid := bidCents + askCents
-		mid = (mid + 1) / 2
-		newPrice := domain.Price{Pips: mid * 100} // 1 cent = 100 pips
 
 		if isUp {
 			upPrice = newPrice
@@ -1706,6 +1724,7 @@ func (m *MarketStream) handlePriceChangeFast(ctx context.Context, message []byte
 func (m *MarketStream) handlePriceChangeSlow(ctx context.Context, message []byte) {
 	type priceChange struct {
 		AssetID string `json:"asset_id"`
+		Price   string `json:"price"`
 		BestBid string `json:"best_bid"`
 		BestAsk string `json:"best_ask"`
 	}
@@ -1802,38 +1821,49 @@ func (m *MarketStream) handlePriceChangeSlow(ctx context.Context, message []byte
 			}
 		}
 
-		// 事件触发使用 mid（双边 + 价差 gate）
-		if bidCents == 0 || askCents == 0 {
-			continue
-		}
-		spread := askCents - bidCents
-		if spread < 0 {
-			spread = -spread
-		}
-		if spread > marketDataMaxSpreadCents {
-			if m.shouldLogWideSpreadWarn(assetID) {
-				aid := assetID
-				if len(aid) > 12 {
-					aid = aid[:12] + "..."
-				}
-				// 获取完整的 UP/DOWN bid/ask 数据
-				var upBidCents, upAskCents, downBidCents, downAskCents int
-				if m.bestBook != nil {
-					snap := m.bestBook.Load()
-					upBidCents = pipsToCents(int(snap.YesBidPips))
-					upAskCents = pipsToCents(int(snap.YesAskPips))
-					downBidCents = pipsToCents(int(snap.NoBidPips))
-					downAskCents = pipsToCents(int(snap.NoAskPips))
-				}
-				marketLog.Warnf("⚠️ [price_change->price] 盘口价差过大，忽略价格事件: assetID=%s bid=%dc ask=%dc spread=%dc market=%s | UP: bid=%dc ask=%dc DOWN: bid=%dc ask=%dc",
-					aid, bidCents, askCents, spread, currentMarketSlug, upBidCents, upAskCents, downBidCents, downAskCents)
+		// 事件触发：优先 mid(best_bid/best_ask)，否则 fallback 到 trade price(pm.Price)
+		var newPrice domain.Price
+		usePriceFallback := false
+		if bidCents != 0 && askCents != 0 {
+			spread := askCents - bidCents
+			if spread < 0 {
+				spread = -spread
 			}
+			if spread <= marketDataMaxSpreadCents {
+				mid := bidCents + askCents
+				mid = (mid + 1) / 2
+				newPrice = domain.Price{Pips: mid * 100} // 1 cent = 100 pips
+			} else {
+				usePriceFallback = true
+				if m.shouldLogWideSpreadWarn(assetID) {
+					aid := assetID
+					if len(aid) > 12 {
+						aid = aid[:12] + "..."
+					}
+					// 获取完整的 UP/DOWN bid/ask 数据
+					var upBidCents, upAskCents, downBidCents, downAskCents int
+					if m.bestBook != nil {
+						snap := m.bestBook.Load()
+						upBidCents = pipsToCents(int(snap.YesBidPips))
+						upAskCents = pipsToCents(int(snap.YesAskPips))
+						downBidCents = pipsToCents(int(snap.NoBidPips))
+						downAskCents = pipsToCents(int(snap.NoAskPips))
+					}
+					marketLog.Warnf("⚠️ [price_change->price] 盘口价差过大，改用 trade price 兜底: assetID=%s bid=%dc ask=%dc spread=%dc market=%s | UP: bid=%dc ask=%dc DOWN: bid=%dc ask=%dc",
+						aid, bidCents, askCents, spread, currentMarketSlug, upBidCents, upAskCents, downBidCents, downAskCents)
+				}
+			}
+		} else {
+			usePriceFallback = true
+		}
+		if usePriceFallback && ch.Price != "" {
+			if p, err := parsePriceString(ch.Price); err == nil && p.Pips > 0 {
+				newPrice = p
+			}
+		}
+		if newPrice.Pips <= 0 {
 			continue
 		}
-
-		mid := bidCents + askCents
-		mid = (mid + 1) / 2
-		newPrice := domain.Price{Pips: mid * 100} // 1 cent = 100 pips
 
 		if isUp {
 			upPrice = newPrice
