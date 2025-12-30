@@ -27,6 +27,20 @@ type Config struct {
 	MaxTradesPerCycle      int     `yaml:"maxTradesPerCycle" json:"maxTradesPerCycle"`           // 每周期最多触发次数（0=不设限）
 	OncePerCycle           bool    `yaml:"oncePerCycle" json:"oncePerCycle"`                     // [兼容] 已废弃
 
+	// ===== 信号模式（为“绝对变化/双向变化/盘口跳变”服务）=====
+	// signalMode:
+	// - "abs"：单边价格的绝对变化（双向）；delta>0 买 signalToken，delta<0 买 opposite(signalToken)
+	// - "legacy"：旧逻辑（分别计算 UP/DOWN 的上行速度，只在 delta>0 时触发）
+	SignalMode string `yaml:"signalMode" json:"signalMode"`
+	// signalToken: "up" | "down"（仅在 signalMode=abs 时生效；表示你盯哪一边做信号）
+	SignalToken string `yaml:"signalToken" json:"signalToken"`
+	// signalSource:
+	// - "event"：使用 PriceChangedEvent.NewPrice（最后成交价/中间价兜底）
+	// - "best_mid"：使用 WS best_bid/best_ask 的 mid（盘口跳变更敏感）
+	// - "best_ask"：使用 WS best_ask（更贴近 taker 成本）
+	// - "best_bid"：使用 WS best_bid（更贴近可卖出价）
+	SignalSource string `yaml:"signalSource" json:"signalSource"`
+
 	// ===== 对冲定价参数 =====
 	// Hedge 互补挂单价 = 100 - entryPriceCents - hedgeOffsetCents
 	// 理论上：若 Hedge 以该价成交，则两腿总成本 <= 100 - hedgeOffsetCents（cents）。
@@ -89,6 +103,30 @@ func (c *Config) Validate() error {
 	}
 	if c.MinVelocityCentsPerSec <= 0 {
 		c.MinVelocityCentsPerSec = float64(c.MinMoveCents) / float64(c.WindowSeconds)
+	}
+
+	// 信号模式默认：按你的需求启用“绝对变化/双向变化”；并默认用盘口 mid 作为信号源
+	if c.SignalMode == "" {
+		c.SignalMode = "abs"
+	}
+	switch c.SignalMode {
+	case "abs", "legacy":
+	default:
+		return fmt.Errorf("signalMode 必须是 abs 或 legacy")
+	}
+	if c.SignalToken == "" {
+		c.SignalToken = "up"
+	}
+	if c.SignalToken != "up" && c.SignalToken != "down" {
+		return fmt.Errorf("signalToken 必须是 up 或 down")
+	}
+	if c.SignalSource == "" {
+		c.SignalSource = "best_mid"
+	}
+	switch c.SignalSource {
+	case "event", "best_mid", "best_ask", "best_bid":
+	default:
+		return fmt.Errorf("signalSource 必须是 event/best_mid/best_ask/best_bid")
 	}
 	if c.CooldownMs <= 0 {
 		c.CooldownMs = 1500
