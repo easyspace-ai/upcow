@@ -76,116 +76,8 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 		}
 	}
 	if entryPriceCents <= 0 || entryPriceCents >= 100 {
-		// 兜底：用当前 bestBid 近似
-		if p := s.TradingService.GetOpenPositionsForMarket(market.Slug); len(p) > 0 {
-			// no-op, keep 0 => 后续会走止损（保守）
-		}
-	}
-
-	// 2.1 超时止损（重启后依然有效）
-	if s.UnhedgedMaxSeconds > 0 && !entryAt.IsZero() {
-		elapsed := now.Sub(entryAt)
-		if elapsed >= time.Duration(s.UnhedgedMaxSeconds)*time.Second {
-			// 尝试查找 entryOrderID 和 hedgeOrderID
-			entryOrderID := ""
-			hedgeOrderID := ""
-			
-			// 查找 entryOrderID：从持仓的关联订单或活跃订单中查找
-			if entryPos != nil && entryPos.Size > 0 {
-				// 尝试从活跃订单中查找 entry 订单
-				orders := s.TradingService.GetActiveOrders()
-				for _, o := range orders {
-					if o == nil || o.OrderID == "" {
-						continue
-					}
-					if o.MarketSlug != market.Slug {
-						continue
-					}
-					if o.TokenType == entryTok && o.Side == types.SideBuy {
-						if entryOrderID == "" {
-							entryOrderID = o.OrderID
-						}
-					}
-					if o.TokenType == hedgeTok && o.Side == types.SideBuy && o.OrderType == types.OrderTypeGTC {
-						if hedgeOrderID == "" {
-							hedgeOrderID = o.OrderID
-						}
-					}
-				}
-			}
-			
-			// 查找 hedgeOrderID（如果还没找到）
-			if hedgeOrderID == "" {
-				orders := s.TradingService.GetActiveOrders()
-				for _, o := range orders {
-					if o == nil || o.OrderID == "" {
-						continue
-					}
-					if o.MarketSlug != market.Slug {
-						continue
-					}
-					if o.Side != types.SideBuy {
-						continue
-					}
-					if o.TokenType != hedgeTok {
-						continue
-					}
-					if o.OrderType != types.OrderTypeGTC {
-						continue
-					}
-					if hedgeOrderID == "" {
-						hedgeOrderID = o.OrderID
-						break
-					}
-				}
-			}
-			
-			log.Warnf("🚨 [%s] 未对冲止损触发（超时-恢复场景）：elapsed=%.1fs max=%ds entryToken=%s entrySize=%.4f entryPrice=%dc entryAt=%s entryOrderID=%s hedgeOrderID=%s upSize=%.4f downSize=%.4f remaining=%.4f market=%s",
-				ID, elapsed.Seconds(), s.UnhedgedMaxSeconds, entryTok, target, entryPriceCents, entryAt.Format(time.RFC3339), entryOrderID, hedgeOrderID, upSize, downSize, remaining, market.Slug)
-			s.forceStoploss(context.Background(), market, "unhedged_timeout_stoploss(recover)", entryOrderID, hedgeOrderID)
-			return true
-		}
-	}
-
-	// 2.2 价格止损（可选）
-	if s.UnhedgedStopLossCents > 0 {
-		if hit, diff := s.unhedgedStopLossHit(market, entryTok, s.UnhedgedStopLossCents); hit {
-			// 尝试查找 entryOrderID 和 hedgeOrderID
-			entryOrderID := ""
-			hedgeOrderID := ""
-			
-			if entryPos != nil && entryPos.Size > 0 {
-				orders := s.TradingService.GetActiveOrders()
-				for _, o := range orders {
-					if o == nil || o.OrderID == "" {
-						continue
-					}
-					if o.MarketSlug != market.Slug {
-						continue
-					}
-					if o.TokenType == entryTok && o.Side == types.SideBuy {
-						if entryOrderID == "" {
-							entryOrderID = o.OrderID
-						}
-					}
-					if o.TokenType == hedgeTok && o.Side == types.SideBuy && o.OrderType == types.OrderTypeGTC {
-						if hedgeOrderID == "" {
-							hedgeOrderID = o.OrderID
-						}
-					}
-				}
-			}
-			
-			log.Warnf("🚨 [%s] 未对冲止损触发（价格-恢复场景）：diff=%dc sl=%dc entryToken=%s entrySize=%.4f entryPrice=%dc entryOrderID=%s hedgeOrderID=%s upSize=%.4f downSize=%.4f remaining=%.4f market=%s",
-				ID, diff, s.UnhedgedStopLossCents, entryTok, target, entryPriceCents, entryOrderID, hedgeOrderID, upSize, downSize, remaining, market.Slug)
-			s.forceStoploss(context.Background(), market, "unhedged_price_stoploss(recover)", entryOrderID, hedgeOrderID)
-			return true
-		}
-	}
-
-	// 2.3 确保 hedge 挂单存在（恢复/兜底）
-	if remaining < s.minShareSize {
-		s.forceStoploss(context.Background(), market, "unhedged_remaining_too_small(recover)", "", "")
+		// 无法推导 entry 价格：无法计算互补价上界，保守地只做“观察”，等待后续持仓/价格信息补齐
+		log.Warnf("⚠️ [%s] 恢复场景无法获取 entryPriceCents，暂不重挂对冲单：entryTok=%s remaining=%.4f market=%s", ID, entryTok, remaining, market.Slug)
 		return true
 	}
 
@@ -237,7 +129,6 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 			maxHedgeCents = 100 - entryPriceCents - s.HedgeOffsetCents
 		}
 		if maxHedgeCents <= 0 {
-			s.forceStoploss(context.Background(), market, "entry_price_unknown_cannot_hedge(recover)", "", "")
 			return true
 		}
 		limitCents := maxHedgeCents
@@ -249,26 +140,50 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 		}
 		price := domain.Price{Pips: limitCents * 100}
 		px := price.ToDecimal()
-		if remaining*px < s.minOrderSize {
-			s.forceStoploss(context.Background(), market, "unhedged_remaining_notional_too_small(recover)", "", "")
-			return true
-		}
 		remaining = adjustSizeForMakerAmountPrecision(remaining, px)
-		if remaining < s.minShareSize {
-			s.forceStoploss(context.Background(), market, "unhedged_remaining_precision_too_small(recover)", "", "")
+		// 若无法以 maker(GTC) 完成对冲（shares 或金额不足），则不止损；改为尝试 taker(FAK) 对冲或等待后续条件满足。
+		if remaining*px < s.minOrderSize || remaining < s.minShareSize {
+			takerAsk := yesAsk
+			if hedgeTok == domain.TokenTypeDown {
+				takerAsk = noAsk
+			}
+			if takerAsk.Pips > 0 && remaining*takerAsk.ToDecimal() >= s.minOrderSize {
+				fak := &domain.Order{
+					MarketSlug:        market.Slug,
+					AssetID:           hedgeAsset,
+					TokenType:         hedgeTok,
+					Side:              types.SideBuy,
+					Price:             takerAsk,
+					Size:              remaining,
+					OrderType:         types.OrderTypeFAK,
+					BypassRiskOff:     true,
+					SkipBalanceCheck:  s.SkipBalanceCheck,
+					DisableSizeAdjust: (s.StrictOneToOneHedge == nil || *s.StrictOneToOneHedge),
+					Status:            domain.OrderStatusPending,
+					CreatedAt:         time.Now(),
+				}
+				s.attachMarketPrecision(fak)
+				if placed, e := s.TradingService.PlaceOrder(context.Background(), fak); e == nil && placed != nil && placed.OrderID != "" {
+					hedgeOrderID = placed.OrderID
+				}
+			}
+			// 无论是否成功，都不止损；交给后续 tick/监控继续尝试
 			return true
 		}
 
 		o := &domain.Order{
-			MarketSlug: market.Slug,
-			AssetID:    hedgeAsset,
-			TokenType:  hedgeTok,
-			Side:       types.SideBuy,
-			Price:      price,
-			Size:       remaining,
-			OrderType:  types.OrderTypeGTC,
-			Status:     domain.OrderStatusPending,
-			CreatedAt:  time.Now(),
+			MarketSlug:        market.Slug,
+			AssetID:           hedgeAsset,
+			TokenType:         hedgeTok,
+			Side:              types.SideBuy,
+			Price:             price,
+			Size:              remaining,
+			OrderType:         types.OrderTypeGTC,
+			BypassRiskOff:     true,
+			SkipBalanceCheck:  s.SkipBalanceCheck,
+			DisableSizeAdjust: (s.StrictOneToOneHedge == nil || *s.StrictOneToOneHedge),
+			Status:            domain.OrderStatusPending,
+			CreatedAt:         time.Now(),
 		}
 		s.attachMarketPrecision(o)
 		placed, err := s.TradingService.PlaceOrder(context.Background(), o)
@@ -280,7 +195,7 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 	// 启动监控（重启恢复）：用 position 的 entryAt 作为计时基准
 	if hedgeOrderID != "" && entryPriceCents > 0 {
 		s.startMonitorIfNeeded(market.Slug, func() {
-			s.monitorHedgeAndStoploss(context.Background(), market, entryTok, "", entryPriceCents, target, entryAt, hedgeOrderID, hedgeAsset, s.HedgeReorderTimeoutSeconds, s.UnhedgedMaxSeconds, s.UnhedgedStopLossCents)
+			s.monitorHedge(context.Background(), market, entryTok, "", entryPriceCents, target, entryAt, hedgeOrderID, hedgeAsset, s.HedgeReorderTimeoutSeconds)
 		})
 	}
 

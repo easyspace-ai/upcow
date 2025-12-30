@@ -1,9 +1,9 @@
 package domain
 
 import (
+	"github.com/betbot/gobet/clob/types"
 	"math"
 	"time"
-	"github.com/betbot/gobet/clob/types"
 )
 
 // Order 订单领域模型
@@ -18,7 +18,7 @@ type Order struct {
 	FilledPrice  *Price          // 实际成交价格（从 Trade 消息获取，可选）
 	GridLevel    int             // 网格层级（分）
 	TokenType    TokenType       // Token 类型
-	HedgeOrderID *string        // 对冲订单 ID（可选）
+	HedgeOrderID *string         // 对冲订单 ID（可选）
 	CreatedAt    time.Time       // 创建时间
 	FilledAt     *time.Time      // 成交时间（可选）
 	CanceledAt   *time.Time      // 取消时间（可选）
@@ -28,6 +28,18 @@ type Order struct {
 	OrderType    types.OrderType // 订单类型（GTC/FAK/FOK，默认GTC）
 	TickSize     types.TickSize  // 价格精度（可选，如果未设置则使用默认值）
 	NegRisk      *bool           // 是否为负风险市场（可选）
+
+	// SkipBalanceCheck：跳过 OrderEngine 的本地 USDC 余额检查（仅对 BUY 有意义）。
+	// 典型用途：启动/周期切换时余额异步初始化，避免“余额暂时为 0”导致误拒单。
+	SkipBalanceCheck bool
+
+	// BypassRiskOff：绕过 TradingService 的短时 risk-off 冷却（用于风控动作/减仓动作，例如对冲或止损平仓）。
+	// 注意：仅应由策略在“降低风险/退出”路径使用，避免在 risk-off 期间继续加仓。
+	BypassRiskOff bool
+
+	// DisableSizeAdjust：禁用 OrdersService 的自动 size 调整（minOrderSize/minShareSize）。
+	// 用途：在严格“一对一对冲”时，避免系统为了满足最小金额而放大 BUY size，导致过度对冲。
+	DisableSizeAdjust bool
 }
 
 // OrderStatus 订单状态
@@ -35,12 +47,12 @@ type OrderStatus string
 
 const (
 	OrderStatusPending   OrderStatus = "pending"   // 待处理
-	OrderStatusOpen      OrderStatus = "open"     // 开放中
-	OrderStatusPartial   OrderStatus = "partial"  // 部分成交
+	OrderStatusOpen      OrderStatus = "open"      // 开放中
+	OrderStatusPartial   OrderStatus = "partial"   // 部分成交
 	OrderStatusCanceling OrderStatus = "canceling" // 取消中（已发起撤单请求，等待确认）
-	OrderStatusFilled    OrderStatus = "filled"   // 已成交
-	OrderStatusCanceled  OrderStatus = "canceled" // 已取消
-	OrderStatusFailed    OrderStatus = "failed"   // 失败
+	OrderStatusFilled    OrderStatus = "filled"    // 已成交
+	OrderStatusCanceled  OrderStatus = "canceled"  // 已取消
+	OrderStatusFailed    OrderStatus = "failed"    // 失败
 )
 
 // IsFilled 检查订单是否已成交
@@ -146,4 +158,3 @@ func (p Price) GreaterThanOrEqual(other Price) bool {
 func (p Price) LessThanOrEqual(other Price) bool {
 	return p.Pips <= other.Pips
 }
-

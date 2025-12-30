@@ -19,13 +19,13 @@ import (
 // MergeCompleteSetsViaRelayer merges YES+NO complete sets back to USDC for a given conditionId.
 //
 // Requirements:
-// - TradingService must have wallet.funder_address set (Safe/proxy wallet).
-// - Environment must provide Builder credentials:
-//   BUILDER_API_KEY, BUILDER_SECRET, BUILDER_PASS_PHRASE
+//   - TradingService must have wallet.funder_address set (Safe/proxy wallet).
+//   - Environment must provide Builder credentials:
+//     BUILDER_API_KEY, BUILDER_SECRET, BUILDER_PASS_PHRASE
 //
 // Notes:
-// - This is a "manual/explicit action" API by default. Balance checks are not performed here
-//   because they require RPC access; callers should decide the amount to merge.
+//   - This is a "manual/explicit action" API by default. Balance checks are not performed here
+//     because they require RPC access; callers should decide the amount to merge.
 func (s *TradingService) MergeCompleteSetsViaRelayer(ctx context.Context, conditionID string, amount float64, metadata string) (txHash string, err error) {
 	if s == nil || s.clobClient == nil {
 		return "", fmt.Errorf("trading service not initialized")
@@ -42,7 +42,7 @@ func (s *TradingService) MergeCompleteSetsViaRelayer(ctx context.Context, condit
 	}
 
 	// fail-safe: do not merge while system paused (same spirit as other "trade-like" actions)
-	if e := s.allowPlaceOrder(); e != nil {
+	if e := s.allowPlaceOrder(nil); e != nil {
 		return "", e
 	}
 
@@ -162,4 +162,3 @@ func round6(v float64) float64 {
 	out, _ := ff.Float64()
 	return out
 }
-

@@ -190,7 +190,7 @@ type repriceInfo struct {
 }
 
 // allowPlaceOrder implements system-level gating for placing new orders.
-func (s *TradingService) allowPlaceOrder() error {
+func (s *TradingService) allowPlaceOrder(order *domain.Order) error {
 	if s == nil {
 		return fmt.Errorf("trading service is nil")
 	}
@@ -199,10 +199,30 @@ func (s *TradingService) allowPlaceOrder() error {
 	}
 	// risk-off gate
 	if until, reason, ok := s.riskOff(); ok {
+		// 风控动作/减仓动作：允许绕过 risk-off，避免“出不了场”导致敞口失控。
+		// - SELL 默认允许（平仓/止损）
+		// - 明确标记 BypassRiskOff 的订单允许（例如 hedge/强制减仓）
+		if order != nil {
+			if order.BypassRiskOff {
+				// allow
+			} else if order.Side == types.SideSell {
+				// allow
+			} else {
+				if reason == "" {
+					reason = "unknown"
+				}
+				return fmt.Errorf("risk-off active: refusing to place order until=%s reason=%s", until.Format(time.RFC3339), reason)
+			}
+		} else {
+			// 没有订单上下文时保守拒绝
+			if reason == "" {
+				reason = "unknown"
+			}
+			return fmt.Errorf("risk-off active: refusing to place order until=%s reason=%s", until.Format(time.RFC3339), reason)
+		}
 		if reason == "" {
 			reason = "unknown"
 		}
-		return fmt.Errorf("risk-off active: refusing to place order until=%s reason=%s", until.Format(time.RFC3339), reason)
 	}
 	// circuit breaker gate
 	if s.circuitBreaker != nil {
