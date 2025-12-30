@@ -11,10 +11,11 @@ import (
 	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
-	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/internal/services"
+	"github.com/betbot/gobet/internal/strategies/common"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/config"
+	"github.com/betbot/gobet/pkg/logger"
 	"github.com/betbot/gobet/pkg/marketmath"
 	"github.com/sirupsen/logrus"
 )
@@ -39,16 +40,16 @@ type Strategy struct {
 	Config         `yaml:",inline" json:",inline"`
 
 	// loop
-	loopOnce  sync.Once
+	loopOnce   sync.Once
 	loopCancel context.CancelFunc
-	signalC   chan struct{}  // 可选：用于重要变化触发（但主要依赖 tick）
-	orderC    chan *domain.Order
+	signalC    chan struct{} // 可选：用于重要变化触发（但主要依赖 tick）
+	orderC     chan *domain.Order
 
 	// 价格状态快照（状态快照模式：OnPriceChanged 直接更新，step 读取）
-	priceMu sync.RWMutex
+	priceMu       sync.RWMutex
 	priceSnapshot priceSnapshot
 
-	stateMu sync.Mutex
+	stateMu          sync.Mutex
 	marketSlugPrefix string
 
 	// per-cycle state
@@ -62,11 +63,11 @@ type Strategy struct {
 	yesOrderID string
 	noOrderID  string
 
-	firstFillAt time.Time
-	lastLogAt   time.Time
-	lastCancelAt time.Time // 撤单节流：避免高频重复撤单导致状态乱序/刷爆 API
-	lastQuoteAt  time.Time // 报价节流：用于“动态 requote”，避免固定 tick 下每次都重算/撤挂
-	closeoutActive bool     // 进入 closeout 窗口后置 true（每周期一次），用于避免重复撤单把补齐挂单撤掉
+	firstFillAt      time.Time
+	lastLogAt        time.Time
+	lastCancelAt     time.Time // 撤单节流：避免高频重复撤单导致状态乱序/刷爆 API
+	lastQuoteAt      time.Time // 报价节流：用于“动态 requote”，避免固定 tick 下每次都重算/撤挂
+	closeoutActive   bool      // 进入 closeout 窗口后置 true（每周期一次），用于避免重复撤单把补齐挂单撤掉
 	lastSupplementAt time.Time // 补齐追价/撤改单节流：避免裸露时 cancel+replace 过频
 
 	// cycle stats (for reporting)
@@ -76,39 +77,100 @@ type Strategy struct {
 }
 
 type cycleStats struct {
-	MarketSlug string
+	MarketSlug     string
 	CycleStartUnix int64
 	CycleEndUnix   int64
 
 	TargetNotionalUSDC float64
 	TargetShares       float64
 
-	Quotes int64
+	Quotes          int64
 	OrdersPlacedYes int64
 	OrdersPlacedNo  int64
 	Cancels         int64
 
-	TakerCompletes  int64
-	Flattens        int64
-	CloseoutCancels int64
+	TakerCompletes     int64
+	Flattens           int64
+	CloseoutCancels    int64
 	MaxSingleSideStops int64
 
-	ProfitChoice map[int]int64 // profitCents -> count
+	ProfitChoice     map[int]int64 // profitCents -> count
 	LastChosenProfit int
 
 	// 成本计算监控
-	CostCalculations int64        // 成本计算次数
-	CostCalculationErrors int64   // 成本计算错误次数（无法获取成本）
-	CostBasisUsed int64           // 使用 CostBasis 的次数
-	CostAvgPriceUsed int64        // 使用 AvgPrice 的次数
-	CostEntryPriceUsed int64      // 使用 EntryPrice 的次数
-	CostSizeMismatches int64      // Size 与 TotalFilledSize 不匹配的次数
+	CostCalculations      int64 // 成本计算次数
+	CostCalculationErrors int64 // 成本计算错误次数（无法获取成本）
+	CostBasisUsed         int64 // 使用 CostBasis 的次数
+	CostAvgPriceUsed      int64 // 使用 AvgPrice 的次数
+	CostEntryPriceUsed    int64 // 使用 EntryPrice 的次数
+	CostSizeMismatches    int64 // Size 与 TotalFilledSize 不匹配的次数
 }
 
-func (s *Strategy) ID() string   { return ID }
-func (s *Strategy) Name() string { return ID }
+func (s *Strategy) ID() string      { return ID }
+func (s *Strategy) Name() string    { return ID }
 func (s *Strategy) Defaults() error { return nil }
 func (s *Strategy) Validate() error { return s.Config.Validate() }
+
+func (s *Strategy) ensureCycleLogFile(m *domain.Market) {
+	if s == nil || m == nil || m.Slug == "" || m.Timestamp <= 0 {
+		return
+	}
+
+	// Best-effort：确保 logger 按 {marketSlug}.log 命名。
+	// 避免“订单日志其实写在别的文件里”，导致误判为“没下单”。
+	logger.SetMarketInfo(m.Slug, m.Timestamp)
+
+	dur := time.Duration(s.CycleDurationSeconds) * time.Second
+	if dur <= 0 {
+		dur = 15 * time.Minute
+	}
+	// 不强制轮转：只有检测到周期变化/需要切换时才切换，避免频繁重置输出。
+	_ = logger.CheckAndRotateLogWithForce(logger.Config{
+		LogByCycle:    true,
+		CycleDuration: dur,
+		// OutputFile="" 表示复用 logger.Init 时保存的 baseLogFile
+		OutputFile: "",
+	}, false)
+}
+
+func (s *Strategy) logOrderError(action string, m *domain.Market, orderReq *domain.Order, err error) {
+	if s == nil || err == nil {
+		return
+	}
+	market := ""
+	if m != nil {
+		market = m.Slug
+	}
+
+	curMarket := ""
+	dry := false
+	if s.TradingService != nil {
+		curMarket = s.TradingService.GetCurrentMarket()
+		dry = s.TradingService.IsDryRun()
+	}
+
+	reqMarket := ""
+	reqID := ""
+	reqAsset := ""
+	reqTok := ""
+	reqSide := ""
+	reqPriceC := 0
+	reqSize := 0.0
+	if orderReq != nil {
+		reqMarket = orderReq.MarketSlug
+		reqID = orderReq.OrderID
+		reqAsset = orderReq.AssetID
+		reqTok = string(orderReq.TokenType)
+		reqSide = string(orderReq.Side)
+		reqPriceC = orderReq.Price.ToCents()
+		reqSize = orderReq.Size
+	}
+
+	// ⚠️ cyclehedge 之前大量 place/cancel 都是静默吞错，导致“看起来像没下单”。
+	// 这里把 TradingService 的拒单原因（paused/market mismatch/risk-off）完整打印出来。
+	log.Warnf("❌ [%s] 订单操作失败: action=%s err=%v dryRun=%v curMarket=%s market=%s req(market=%s id=%s asset=%s tok=%s side=%s price=%dc size=%.4f)",
+		ID, action, err, dry, curMarket, market, reqMarket, reqID, reqAsset, reqTok, reqSide, reqPriceC, reqSize)
+}
 
 func (s *Strategy) Initialize() error {
 	if s.signalC == nil {
@@ -202,7 +264,7 @@ func (s *Strategy) OnCycle(ctx context.Context, oldMarket *domain.Market, newMar
 	// 用周期回调快速重置
 	now := time.Now()
 	s.resetCycle(ctx, now, newMarket)
-	
+
 	// 保存完整的 market 对象（参考 updownthreshold 策略的设计）
 	s.stateMu.Lock()
 	if newMarket != nil {
@@ -219,12 +281,12 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if s.TradingService != nil {
 		s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof)
 	}
-	
+
 	// 打印价格更新事件
 	priceCents := e.NewPrice.ToCents()
-	log.Infof("📈 [%s] 价格更新: market=%s token=%s price=%dc (%.4f) oldPrice=%v", 
+	log.Infof("📈 [%s] 价格更新: market=%s token=%s price=%dc (%.4f) oldPrice=%v",
 		ID, e.Market.Slug, e.TokenType, priceCents, e.NewPrice.ToDecimal(), e.OldPrice)
-	
+
 	// 状态快照模式：直接更新状态快照（原子操作）
 	s.priceMu.Lock()
 	if e.TokenType == domain.TokenTypeUp {
@@ -239,7 +301,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	}
 	s.priceSnapshot.UpdatedAt = time.Now()
 	s.priceMu.Unlock()
-	
+
 	// 同时更新 currentMarket（用于兼容性）
 	s.stateMu.Lock()
 	if s.currentMarket == nil || s.currentMarket.Slug != e.Market.Slug {
@@ -247,7 +309,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		s.currentMarket = &cp
 	}
 	s.stateMu.Unlock()
-	
+
 	// 可选：发送信号（但主要依赖 tick，信号丢失也无所谓）
 	select {
 	case s.signalC <- struct{}{}:
@@ -273,7 +335,7 @@ func (s *Strategy) loop(loopCtx context.Context, tickC <-chan time.Time) {
 	tickCount := int64(0)
 	signalCount := int64(0)
 	lastLogTime := time.Now()
-	
+
 	log.Infof("🔍 [%s] loop 函数启动 (signalC=%v tickC=%v)", ID, s.signalC != nil, tickC != nil)
 	for {
 		select {
@@ -283,7 +345,7 @@ func (s *Strategy) loop(loopCtx context.Context, tickC <-chan time.Time) {
 		case <-s.signalC:
 			signalCount++
 			now := time.Now()
-			log.Infof("🔍 [%s] loop: 收到 signalC 信号 #%d，调用 step (距离上次日志=%v)", 
+			log.Infof("🔍 [%s] loop: 收到 signalC 信号 #%d，调用 step (距离上次日志=%v)",
 				ID, signalCount, now.Sub(lastLogTime))
 			lastLogTime = now
 			s.step(loopCtx, now)
@@ -292,7 +354,7 @@ func (s *Strategy) loop(loopCtx context.Context, tickC <-chan time.Time) {
 			now := time.Now()
 			// 每10次tick打印一次统计，避免日志过多
 			if tickCount%10 == 0 || time.Since(lastLogTime) > 5*time.Second {
-				log.Infof("🔍 [%s] loop: 收到 tick 信号 #%d，调用 step (signalCount=%d 距离上次日志=%v)", 
+				log.Infof("🔍 [%s] loop: 收到 tick 信号 #%d，调用 step (signalCount=%d 距离上次日志=%v)",
 					ID, tickCount, signalCount, now.Sub(lastLogTime))
 				lastLogTime = now
 			}
@@ -303,7 +365,7 @@ func (s *Strategy) loop(loopCtx context.Context, tickC <-chan time.Time) {
 
 func (s *Strategy) step(ctx context.Context, now time.Time) {
 	log.Infof("🔍 [%s] step 函数被调用 (now=%s)", ID, now.Format("15:04:05.000"))
-	
+
 	if s.TradingService == nil {
 		log.Infof("🔍 [%s] step: TradingService is nil，返回", ID)
 		return
@@ -311,18 +373,18 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 
 	// 状态快照模式：读取状态快照（原子操作，不丢失数据）
 	s.priceMu.RLock()
-	snapshot := s.priceSnapshot  // 复制快照
+	snapshot := s.priceSnapshot // 复制快照
 	s.priceMu.RUnlock()
 
 	snapshotAge := time.Since(snapshot.UpdatedAt)
-	log.Infof("🔍 [%s] step: 读取价格快照 evUp=%v evDown=%v market=%v snapshotAge=%v", 
+	log.Infof("🔍 [%s] step: 读取价格快照 evUp=%v evDown=%v market=%v snapshotAge=%v",
 		ID, snapshot.UpPrice != nil, snapshot.DownPrice != nil, snapshot.Market != nil, snapshotAge)
 	if snapshot.UpPrice != nil {
-		log.Infof("🔍 [%s] step: 快照 UP 价格=%dc market=%s", 
+		log.Infof("🔍 [%s] step: 快照 UP 价格=%dc market=%s",
 			ID, snapshot.UpPrice.NewPrice.ToCents(), snapshot.UpPrice.Market.Slug)
 	}
 	if snapshot.DownPrice != nil {
-		log.Infof("🔍 [%s] step: 快照 DOWN 价格=%dc market=%s", 
+		log.Infof("🔍 [%s] step: 快照 DOWN 价格=%dc market=%s",
 			ID, snapshot.DownPrice.NewPrice.ToCents(), snapshot.DownPrice.Market.Slug)
 	}
 
@@ -333,7 +395,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		cp := *snapshot.Market
 		m = &cp
 		log.Infof("🔍 [%s] step: 使用快照中的 market=%s", ID, m.Slug)
-		
+
 		// 同步更新 currentMarket（用于兼容性）
 		s.stateMu.Lock()
 		if s.currentMarket == nil || s.currentMarket.Slug != m.Slug {
@@ -341,7 +403,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		}
 		s.stateMu.Unlock()
 	}
-	
+
 	// 如果快照中没有 market，使用保存的 currentMarket 作为 fallback
 	if m == nil {
 		s.stateMu.Lock()
@@ -351,7 +413,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			log.Infof("🔍 [%s] step: 使用保存的 currentMarket=%s (fallback)", ID, m.Slug)
 		}
 		s.stateMu.Unlock()
-		
+
 		if m == nil {
 			// 完全没有市场信息，返回
 			log.Infof("🔍 [%s] step: no market from snapshot and no saved market，返回", ID)
@@ -359,7 +421,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			return
 		}
 	}
-	
+
 	// 注意：快照中的价格事件（snapshot.UpPrice, snapshot.DownPrice）已保存，
 	// 如果需要使用可以在后续逻辑中通过 snapshot 访问
 
@@ -369,7 +431,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		s.drainOrders()
 		return
 	}
-	
+
 	log.Infof("🔍 [%s] step: market=%s 继续执行", ID, m.Slug)
 
 	// 周期检测：优先使用 market.Timestamp（从 slug 解析的 period start）
@@ -379,7 +441,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		currentCycleStart := s.cycleStartUnix
 		currentSlug := s.currentMarketSlug
 		s.stateMu.Unlock()
-		log.Infof("🔍 [%s] step: 周期检测 market=%s timestamp=%d currentCycleStart=%d currentSlug=%s needReset=%v", 
+		log.Infof("🔍 [%s] step: 周期检测 market=%s timestamp=%d currentCycleStart=%d currentSlug=%s needReset=%v",
 			ID, m.Slug, m.Timestamp, currentCycleStart, currentSlug, needReset)
 		if needReset {
 			log.Infof("🔍 [%s] step: 需要重置周期，调用 resetCycle", ID)
@@ -420,7 +482,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		// 动态调整盘口质量要求：尾盘放宽标准
 		minScore := s.MarketQualityMinScore
 		maxSpreadCents := s.MarketQualityMaxSpreadCents
-		
+
 		// 尾盘动态调整：结算前 3 分钟放宽标准
 		if remainingSeconds > 0 && remainingSeconds <= 180 {
 			// 降低最低分数要求（最多降低 10 分）
@@ -442,8 +504,8 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 				maxSpreadCents = maxSpreadCents + 1
 			}
 		}
-		
-		log.Infof("🔍 [%s] 调用 GetMarketQuality: market=%s rem=%ds minScore=%d maxSpread=%dc", 
+
+		log.Infof("🔍 [%s] 调用 GetMarketQuality: market=%s rem=%ds minScore=%d maxSpread=%dc",
 			ID, m.Slug, remainingSeconds, minScore, maxSpreadCents)
 		orderCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		got, err := s.TradingService.GetMarketQuality(orderCtx, m, &services.MarketQualityOptions{
@@ -459,10 +521,10 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		}
 		if err == nil && got != nil {
 			mq = got
-			log.Infof("🔍 [%s] GetMarketQuality 成功: market=%s score=%d rem=%ds", 
+			log.Infof("🔍 [%s] GetMarketQuality 成功: market=%s score=%d rem=%ds",
 				ID, m.Slug, mq.Score, remainingSeconds)
 		} else {
-			log.Infof("🔍 [%s] GetMarketQuality 返回 nil: market=%s err=%v got=%v", 
+			log.Infof("🔍 [%s] GetMarketQuality 返回 nil: market=%s err=%v got=%v",
 				ID, m.Slug, err, got != nil)
 		}
 		// 质量 gate（避免 stale/wide spread/脏镜像）
@@ -472,11 +534,11 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 				return
 			}
 			if mq.Score < minScore {
-				log.Infof("🔍 [%s] 盘口质量检查失败: market=%s score=%d < minScore=%d rem=%ds", 
+				log.Infof("🔍 [%s] 盘口质量检查失败: market=%s score=%d < minScore=%d rem=%ds",
 					ID, m.Slug, mq.Score, minScore, remainingSeconds)
 				return
 			}
-			log.Infof("🔍 [%s] 盘口质量检查通过: market=%s score=%d >= minScore=%d", 
+			log.Infof("🔍 [%s] 盘口质量检查通过: market=%s score=%d >= minScore=%d",
 				ID, m.Slug, mq.Score, minScore)
 		}
 	}
@@ -489,7 +551,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	cancel()
 	topOfBookDuration := time.Since(topOfBookStartTime)
 	if err != nil {
-		log.Warnf("⚠️ [%s] GetTopOfBook 错误: market=%s err=%v duration=%v remainingSeconds=%d", 
+		log.Warnf("⚠️ [%s] GetTopOfBook 错误: market=%s err=%v duration=%v remainingSeconds=%d",
 			ID, m.Slug, err, topOfBookDuration, remainingSeconds)
 		// 不立即返回，尝试使用缓存或继续执行（如果可能）
 		log.Infof("🔍 [%s] step: GetTopOfBook 失败，但继续执行后续逻辑（可能使用缓存数据）", ID)
@@ -499,10 +561,10 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	}
 	yesBidC, yesAskC := yesBid.ToCents(), yesAsk.ToCents()
 	noBidC, noAskC := noBid.ToCents(), noAsk.ToCents()
-	log.Infof("✅ [%s] GetTopOfBook 成功: market=%s UP(bid=%dc ask=%dc) DOWN(bid=%dc ask=%dc) src=%s duration=%v", 
+	log.Infof("✅ [%s] GetTopOfBook 成功: market=%s UP(bid=%dc ask=%dc) DOWN(bid=%dc ask=%dc) src=%s duration=%v",
 		ID, m.Slug, yesBidC, yesAskC, noBidC, noAskC, source, topOfBookDuration)
 	if yesBidC <= 0 || yesAskC <= 0 || noBidC <= 0 || noAskC <= 0 {
-		log.Warnf("⚠️ [%s] 盘口数据无效: market=%s UP(bid=%dc ask=%dc) DOWN(bid=%dc ask=%dc) remainingSeconds=%d", 
+		log.Warnf("⚠️ [%s] 盘口数据无效: market=%s UP(bid=%dc ask=%dc) DOWN(bid=%dc ask=%dc) remainingSeconds=%d",
 			ID, m.Slug, yesBidC, yesAskC, noBidC, noAskC, remainingSeconds)
 		log.Infof("🔍 [%s] step: 盘口数据无效，返回", ID)
 		return
@@ -512,7 +574,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	// 核心等价关系：Buy YES @ P ≡ Sell NO @ (1-P)
 	// 有效买入价格 = min(直接买入价格, 镜像价格)
 	topOfBook := marketmath.TopOfBook{
-		YesBidPips: yesBidC * 100,  // cents -> pips (1 cent = 100 pips)
+		YesBidPips: yesBidC * 100, // cents -> pips (1 cent = 100 pips)
 		YesAskPips: yesAskC * 100,
 		NoBidPips:  noBidC * 100,
 		NoAskPips:  noAskC * 100,
@@ -522,11 +584,11 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		log.Warnf("⚠️ [%s] 计算有效价格失败: market=%s err=%v", ID, m.Slug, err)
 		return
 	}
-	
+
 	// 转换为 cents（pips -> cents）
 	effectiveBuyYesC := effectivePrices.EffectiveBuyYesPips / 100
 	effectiveBuyNoC := effectivePrices.EffectiveBuyNoPips / 100
-	
+
 	// 打印实时盘口报价（包含有效价格）
 	log.Infof("📊 [%s] 实时盘口: market=%s UP(bid=%dc ask=%dc spread=%dc effBuy=%dc) DOWN(bid=%dc ask=%dc spread=%dc effBuy=%dc) rem=%ds src=%s",
 		ID, m.Slug, yesBidC, yesAskC, yesAskC-yesBidC, effectiveBuyYesC, noBidC, noAskC, noAskC-noBidC, effectiveBuyNoC, remainingSeconds, source)
@@ -540,13 +602,13 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	pnlUpWinUSDC := upShares - totalCostUSDC
 	pnlDownWinUSDC := downShares - totalCostUSDC
 	worstCasePnLUSDC := math.Min(pnlUpWinUSDC, pnlDownWinUSDC)
-	log.Infof("🔍 [%s] step: 持仓统计 market=%s upShares=%.2f downShares=%.2f upCost=%.4f downCost=%.4f totalCost=%.4f unhedged=%.2f worstPnL=%.4f remainingSeconds=%d", 
+	log.Infof("🔍 [%s] step: 持仓统计 market=%s upShares=%.2f downShares=%.2f upCost=%.4f downCost=%.4f totalCost=%.4f unhedged=%.2f worstPnL=%.4f remainingSeconds=%d",
 		ID, m.Slug, upShares, downShares, upCostUSDC, downCostUSDC, totalCostUSDC, unhedged, worstCasePnLUSDC, remainingSeconds)
 
 	// closeout 窗口：如果没有裸露，就停止本周期新增（只持有到结算）。
 	// 注意：若有裸露，则继续走下方“补齐/回平”逻辑（其中也会优先在 closeout 时触发）。
 	if inCloseout && unhedged < s.MinUnhedgedShares {
-		log.Infof("🔍 [%s] step: closeout窗口且无裸露，提前返回 inCloseout=%v unhedged=%.2f < minUnhedged=%.2f remainingSeconds=%d", 
+		log.Infof("🔍 [%s] step: closeout窗口且无裸露，提前返回 inCloseout=%v unhedged=%.2f < minUnhedged=%.2f remainingSeconds=%d",
 			ID, inCloseout, unhedged, s.MinUnhedgedShares, remainingSeconds)
 		return
 	}
@@ -586,13 +648,13 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		}
 		// 若没有裸露风险且worstPnL已达到targetWorst：直接停止本周期新增挂单/加仓（只持有到结算）
 		if unhedged < s.MinUnhedgedShares && worstCasePnLUSDC >= targetWorst {
-			log.Infof("🔍 [%s] step: maxSingleSideShares reached且目标已达成，提前返回 up=%.2f down=%.2f worstPnL=%.4f >= targetWorst=%.4f", 
+			log.Infof("🔍 [%s] step: maxSingleSideShares reached且目标已达成，提前返回 up=%.2f down=%.2f worstPnL=%.4f >= targetWorst=%.4f",
 				ID, upShares, downShares, worstCasePnLUSDC, targetWorst)
 			return
 		}
 		// 若worstPnL未达到targetWorst：继续执行目标检查，允许继续下单
 		if worstCasePnLUSDC < targetWorst {
-			log.Infof("🔍 [%s] step: maxSingleSideShares reached但目标未达成，继续执行 worstPnL=%.4f < targetWorst=%.4f", 
+			log.Infof("🔍 [%s] step: maxSingleSideShares reached但目标未达成，继续执行 worstPnL=%.4f < targetWorst=%.4f",
 				ID, worstCasePnLUSDC, targetWorst)
 		}
 		// 若仍有裸露：继续让下方“超时补齐/回平”逻辑处理风险
@@ -680,7 +742,18 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 				s.stateMu.Unlock()
 				if allow {
 					cancelCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-					_ = s.TradingService.CancelOrder(cancelCtx, excessOrderID)
+					if err := s.TradingService.CancelOrder(cancelCtx, excessOrderID); err != nil {
+						s.logOrderError("cancel_excess_leg", m, &domain.Order{
+							MarketSlug: m.Slug,
+							AssetID:    "",
+							TokenType:  excessTok,
+							Side:       types.SideBuy,
+							Price:      domain.Price{},
+							Size:       0,
+							OrderType:  "",
+							OrderID:    excessOrderID,
+						}, err)
+					}
 					cancel()
 					s.maybeLog(now, m, fmt.Sprintf("unhedged: cancel excess leg order to cap risk: token=%s orderID=%s", excessTok, excessOrderID))
 					// 不清本地 orderID：等待 OrderEngine 回流终态，避免 canceling 窗口内堆叠
@@ -777,7 +850,18 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 							s.stateMu.Unlock()
 							if allow {
 								cancelCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-								_ = s.TradingService.CancelOrder(cancelCtx, missingOrderID)
+								if err := s.TradingService.CancelOrder(cancelCtx, missingOrderID); err != nil {
+									s.logOrderError("cancel_reprice_missing_leg", m, &domain.Order{
+										MarketSlug: m.Slug,
+										AssetID:    missingAsset,
+										TokenType:  missingTok,
+										Side:       types.SideBuy,
+										Price:      domain.Price{Pips: priceC * 100},
+										Size:       unhedged,
+										OrderType:  types.OrderTypeGTC,
+										OrderID:    missingOrderID,
+									}, err)
+								}
 								cancel()
 								s.maybeLog(now, m, fmt.Sprintf("maker_supplement reprice: token=%s %dc->%dc (bid=%dc ask=%dc bump=%dc) orderID=%s",
 									missingTok, curC, priceC, missingBidC, missingAskC, bumpC, missingOrderID))
@@ -810,8 +894,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 						return
 					}
 
-					placeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-					ord, err := s.TradingService.PlaceOrder(placeCtx, &domain.Order{
+					orderReq := &domain.Order{
 						MarketSlug: m.Slug,
 						AssetID:    missingAsset,
 						TokenType:  missingTok,
@@ -819,7 +902,9 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 						Price:      domain.Price{Pips: priceC * 100}, // 1c = 100 pips
 						Size:       size,
 						OrderType:  types.OrderTypeGTC,
-					})
+					}
+					placeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					ord, err := s.TradingService.PlaceOrder(placeCtx, orderReq)
 					cancel()
 					if err == nil && ord != nil && ord.OrderID != "" {
 						if missingTok == domain.TokenTypeUp {
@@ -837,6 +922,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 							missingTok, priceC, missingBidC, missingAskC, bumpC, size, age.Truncate(time.Millisecond), remainingSeconds))
 						return
 					}
+					s.logOrderError("place_maker_supplement_gtc", m, orderReq, err)
 				}
 			}
 		}
@@ -916,8 +1002,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			}
 
 			if doComplete {
-				takerCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-				_, _ = s.TradingService.PlaceOrder(takerCtx, &domain.Order{
+				orderReq := &domain.Order{
 					MarketSlug: m.Slug,
 					AssetID:    missingAsset,
 					TokenType:  missingTok,
@@ -925,8 +1010,13 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 					Price:      missingAsk,
 					Size:       size,
 					OrderType:  types.OrderTypeFAK,
-				})
+				}
+				takerCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+				_, err := s.TradingService.PlaceOrder(takerCtx, orderReq)
 				cancel()
+				if err != nil {
+					s.logOrderError("place_taker_complete_fak", m, orderReq, err)
+				}
 				s.stateMu.Lock()
 				s.stats.TakerCompletes++
 				s.stateMu.Unlock()
@@ -935,8 +1025,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 				return
 			}
 
-			flattenCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-			_, _ = s.TradingService.PlaceOrder(flattenCtx, &domain.Order{
+			orderReq := &domain.Order{
 				MarketSlug: m.Slug,
 				AssetID:    excessAsset,
 				TokenType:  excessTok,
@@ -944,8 +1033,13 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 				Price:      excessBid,
 				Size:       size,
 				OrderType:  types.OrderTypeFAK,
-			})
+			}
+			flattenCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+			_, err := s.TradingService.PlaceOrder(flattenCtx, orderReq)
 			cancel()
+			if err != nil {
+				s.logOrderError("place_flatten_fak", m, orderReq, err)
+			}
 			s.stateMu.Lock()
 			s.stats.Flattens++
 			s.stateMu.Unlock()
@@ -998,9 +1092,9 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	// 5) 计算剩余需要挂的 shares
 	needUp := math.Max(0, shares-upShares)
 	needDown := math.Max(0, shares-downShares)
-	log.Infof("🔍 [%s] 计算需要挂单: market=%s targetShares=%.2f upShares=%.2f downShares=%.2f needUp=%.2f needDown=%.2f", 
+	log.Infof("🔍 [%s] 计算需要挂单: market=%s targetShares=%.2f upShares=%.2f downShares=%.2f needUp=%.2f needDown=%.2f",
 		ID, m.Slug, shares, upShares, downShares, needUp, needDown)
-	
+
 	// ⚠️ 关键修复：在计算needUp/needDown之后，检查是否需要继续下单
 	// 如果需要继续下单（持仓未达到目标），不受requote节流限制
 	needContinueOrdering := (needUp > 0 || needDown > 0)
@@ -1013,9 +1107,9 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			lastQ := s.lastQuoteAt
 			timeSinceLastQuote := now.Sub(lastQ)
 			s.stateMu.Unlock()
-			
+
 			if !lastQ.IsZero() && timeSinceLastQuote < time.Duration(requoteMs)*time.Millisecond {
-				log.Debugf("🔍 [%s] requote节流: market=%s timeSinceLastQuote=%v < requoteMs=%dms (已达成目标，可以节流)", 
+				log.Debugf("🔍 [%s] requote节流: market=%s timeSinceLastQuote=%v < requoteMs=%dms (已达成目标，可以节流)",
 					ID, m.Slug, timeSinceLastQuote, requoteMs)
 				// 已达成目标，可以节流，直接返回
 				return
@@ -1026,7 +1120,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	// 新目标：允许两边持仓不完全一致，只要“无论哪边胜出都盈利”达标即可。
 	// 裸露（单腿成交）仍由上方补齐/回平逻辑负责；这里不再强制“每一笔都成对下两腿”。
 	if unhedged >= s.MinUnhedgedShares {
-		log.Debugf("🔍 [%s] 已有裸露: market=%s unhedged=%.2f >= minUnhedged=%.2f", 
+		log.Debugf("🔍 [%s] 已有裸露: market=%s unhedged=%.2f >= minUnhedged=%.2f",
 			ID, m.Slug, unhedged, s.MinUnhedgedShares)
 		// 当已有裸露时，只允许补齐到对侧，不再扩大总规模
 		if upShares > downShares {
@@ -1064,31 +1158,30 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	// ⚠️ 关键修复：MinUnhedgedShares只用于"裸露风险控制"，不用于"建仓限制"
 	// 如果needUp > 0 或 needDown > 0，就应该下单（即使 < MinUnhedgedShares）
 	// 这样可以持续下单直到达到targetShares
-	needUpOK := needUp > 0  // 只要需要，就下单
-	needDownOK := needDown > 0  // 只要需要，就下单
-	log.Infof("🔍 [%s] 订单大小检查前: market=%s needUp=%.2f needDown=%.2f needUpOK=%v needDownOK=%v minUnhedged=%.2f", 
+	needUpOK := needUp > 0     // 只要需要，就下单
+	needDownOK := needDown > 0 // 只要需要，就下单
+	log.Infof("🔍 [%s] 订单大小检查前: market=%s needUp=%.2f needDown=%.2f needUpOK=%v needDownOK=%v minUnhedged=%.2f",
 		ID, m.Slug, needUp, needDown, needUpOK, needDownOK, s.MinUnhedgedShares)
 	if needUpOK {
 		needUp = s.clampOrderSize(needUp)
-		needUpOK = needUp > 0  // 检查clamp后是否还有剩余
-		log.Infof("🔍 [%s] clampOrderSize UP: market=%s needUp=%.2f needUpOK=%v", 
+		needUpOK = needUp > 0 // 检查clamp后是否还有剩余
+		log.Infof("🔍 [%s] clampOrderSize UP: market=%s needUp=%.2f needUpOK=%v",
 			ID, m.Slug, needUp, needUpOK)
 	}
 	if needDownOK {
 		needDown = s.clampOrderSize(needDown)
-		needDownOK = needDown > 0  // 检查clamp后是否还有剩余
-		log.Infof("🔍 [%s] clampOrderSize DOWN: market=%s needDown=%.2f needDownOK=%v", 
+		needDownOK = needDown > 0 // 检查clamp后是否还有剩余
+		log.Infof("🔍 [%s] clampOrderSize DOWN: market=%s needDown=%.2f needDownOK=%v",
 			ID, m.Slug, needDown, needDownOK)
 	}
 	if !needUpOK && !needDownOK {
-		log.Infof("🔍 [%s] 订单大小不足: market=%s needUp=%.2f needDown=%.2f (已达成目标或无需下单)", 
+		log.Infof("🔍 [%s] 订单大小不足: market=%s needUp=%.2f needDown=%.2f (已达成目标或无需下单)",
 			ID, m.Slug, needUp, needDown)
 		// ⚠️ 不return，继续执行（可能还有其他逻辑，如更新lastQuoteAt）
 	}
 
 	placeYes := func() {
-		placeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		ord, err := s.TradingService.PlaceOrder(placeCtx, &domain.Order{
+		orderReq := &domain.Order{
 			MarketSlug: m.Slug,
 			AssetID:    m.YesAssetID,
 			TokenType:  domain.TokenTypeUp,
@@ -1096,18 +1189,21 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			Price:      yesPrice,
 			Size:       needUp,
 			OrderType:  types.OrderTypeGTC,
-		})
+		}
+		placeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		ord, err := s.TradingService.PlaceOrder(placeCtx, orderReq)
 		cancel()
 		if err == nil && ord != nil {
 			s.yesOrderID = ord.OrderID
 			s.stateMu.Lock()
 			s.stats.OrdersPlacedYes++
 			s.stateMu.Unlock()
+			return
 		}
+		s.logOrderError("place_yes_gtc", m, orderReq, err)
 	}
 	placeNo := func() {
-		placeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		ord, err := s.TradingService.PlaceOrder(placeCtx, &domain.Order{
+		orderReq := &domain.Order{
 			MarketSlug: m.Slug,
 			AssetID:    m.NoAssetID,
 			TokenType:  domain.TokenTypeDown,
@@ -1115,14 +1211,18 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			Price:      noPrice,
 			Size:       needDown,
 			OrderType:  types.OrderTypeGTC,
-		})
+		}
+		placeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		ord, err := s.TradingService.PlaceOrder(placeCtx, orderReq)
 		cancel()
 		if err == nil && ord != nil {
 			s.noOrderID = ord.OrderID
 			s.stateMu.Lock()
 			s.stats.OrdersPlacedNo++
 			s.stateMu.Unlock()
+			return
 		}
+		s.logOrderError("place_no_gtc", m, orderReq, err)
 	}
 
 	// 小幅并行：当需要同时下两腿时并发下单，降低“先成交一腿、另一腿来不及挂出”的时间窗。
@@ -1147,7 +1247,7 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		s.maybeLog(now, m, fmt.Sprintf("quote: profit=%dc cost=%dc tn=%.2f shares=%.2f need(up=%.2f down=%.2f) bids(yes=%dc no=%dc) book(yes %d/%d no %d/%d) src=%s",
 			chosenProfit, costCents, tn, shares, needUp, needDown, chYesBidC, chNoBidC, yesBidC, yesAskC, noBidC, noAskC, source))
 	}
-	
+
 	// ⚠️ 关键修复：在下单之后更新lastQuoteAt，并应用requote节流
 	// 核心原则：如果持仓未达到目标（needUp > 0 或 needDown > 0），应该继续下单，不受requote节流限制
 	// 只有在"已达成目标"时才应用requote节流
@@ -1156,14 +1256,14 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 		if requoteMs > 0 {
 			// 检查是否需要继续下单（持仓未达到目标）
 			needContinueOrdering := (needUp > 0 || needDown > 0)
-			
+
 			if needContinueOrdering {
 				// ⚠️ 关键修复：如果需要继续下单，立即更新lastQuoteAt，确保下次step调用时不受requote节流限制
 				// 这样可以持续下单直到达到targetShares
 				s.stateMu.Lock()
 				s.lastQuoteAt = now
 				s.stateMu.Unlock()
-				log.Infof("🔍 [%s] 需要继续下单，更新lastQuoteAt: market=%s needUp=%.2f needDown=%.2f targetShares=%.2f minShares=%.2f", 
+				log.Infof("🔍 [%s] 需要继续下单，更新lastQuoteAt: market=%s needUp=%.2f needDown=%.2f targetShares=%.2f minShares=%.2f",
 					ID, m.Slug, needUp, needDown, shares, minShares)
 			} else {
 				// 如果不需要继续下单（已达成目标），应用requote节流
@@ -1171,9 +1271,9 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 				lastQ := s.lastQuoteAt
 				timeSinceLastQuote := now.Sub(lastQ)
 				s.stateMu.Unlock()
-				
+
 				if !lastQ.IsZero() && timeSinceLastQuote < time.Duration(requoteMs)*time.Millisecond {
-					log.Debugf("🔍 [%s] requote节流: market=%s timeSinceLastQuote=%v < requoteMs=%dms (已达成目标，可以节流)", 
+					log.Debugf("🔍 [%s] requote节流: market=%s timeSinceLastQuote=%v < requoteMs=%dms (已达成目标，可以节流)",
 						ID, m.Slug, timeSinceLastQuote, requoteMs)
 					// 不需要继续下单，可以节流（但这次已经执行了，所以不影响）
 				} else {
@@ -1334,6 +1434,10 @@ func (s *Strategy) preferHighPriceFirstToken(yesBidC, noBidC int) (domain.TokenT
 }
 
 func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Market) {
+	// Best-effort：尽早对齐日志文件（在任何下单发生之前）。
+	// 这样本周期的下单/成交/风控动作更不容易“写到别的日志文件里”。
+	s.ensureCycleLogFile(m)
+
 	s.stateMu.Lock()
 	s.currentMarketSlug = m.Slug
 	// 保存完整的 market 对象（参考 updownthreshold 策略的设计）
@@ -1357,17 +1461,17 @@ func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Mark
 
 	// reset stats for new cycle
 	s.stats = cycleStats{
-		MarketSlug: m.Slug,
-		CycleStartUnix: m.Timestamp,
-		TargetNotionalUSDC: 0,
-		TargetShares: 0,
-		ProfitChoice: make(map[int]int64),
-		CostCalculations: 0,
+		MarketSlug:            m.Slug,
+		CycleStartUnix:        m.Timestamp,
+		TargetNotionalUSDC:    0,
+		TargetShares:          0,
+		ProfitChoice:          make(map[int]int64),
+		CostCalculations:      0,
 		CostCalculationErrors: 0,
-		CostBasisUsed: 0,
-		CostAvgPriceUsed: 0,
-		CostEntryPriceUsed: 0,
-		CostSizeMismatches: 0,
+		CostBasisUsed:         0,
+		CostAvgPriceUsed:      0,
+		CostEntryPriceUsed:    0,
+		CostSizeMismatches:    0,
 	}
 	s.stateMu.Unlock()
 
@@ -1494,7 +1598,7 @@ func (s *Strategy) currentShares(marketSlug string) (up float64, down float64) {
 			log.Debugf("🔍 [%s] currentShares: 持仓大小为0 positionID=%s size=%.2f", ID, p.ID, p.Size)
 			continue
 		}
-		log.Infof("🔍 [%s] currentShares: 持仓 positionID=%s tokenType=%s size=%.2f marketSlug=%s", 
+		log.Infof("🔍 [%s] currentShares: 持仓 positionID=%s tokenType=%s size=%.2f marketSlug=%s",
 			ID, p.ID, p.TokenType, p.Size, p.MarketSlug)
 		switch p.TokenType {
 		case domain.TokenTypeUp:
@@ -1533,7 +1637,7 @@ func (s *Strategy) currentTotals(marketSlug string) (upShares, downShares, upCos
 			log.Debugf("🔍 [%s] currentTotals: 持仓大小为0 positionID=%s size=%.2f marketSlug=%s", ID, p.ID, p.Size, p.MarketSlug)
 			continue
 		}
-		log.Infof("🔍 [%s] currentTotals: 持仓 positionID=%s tokenType=%s size=%.2f marketSlug=%s", 
+		log.Infof("🔍 [%s] currentTotals: 持仓 positionID=%s tokenType=%s size=%.2f marketSlug=%s",
 			ID, p.ID, p.TokenType, p.Size, p.MarketSlug)
 		size := p.Size
 		cost := 0.0
@@ -1547,7 +1651,7 @@ func (s *Strategy) currentTotals(marketSlug string) (upShares, downShares, upCos
 			cost = p.EntryPrice.ToDecimal() * size
 		} else {
 			// 无成本信息：跳过（保守，会低估成本 -> 高估PnL）
-			log.Warnf("🔍 [%s] currentTotals: 持仓无成本信息 positionID=%s size=%.2f TotalFilledSize=%.2f CostBasis=%.4f AvgPrice=%.4f EntryPrice=%v", 
+			log.Warnf("🔍 [%s] currentTotals: 持仓无成本信息 positionID=%s size=%.2f TotalFilledSize=%.2f CostBasis=%.4f AvgPrice=%.4f EntryPrice=%v",
 				ID, p.ID, p.Size, p.TotalFilledSize, p.CostBasis, p.AvgPrice, p.EntryPrice)
 			continue
 		}
@@ -1561,7 +1665,7 @@ func (s *Strategy) currentTotals(marketSlug string) (upShares, downShares, upCos
 			downCostUSDC += cost
 		}
 	}
-	log.Infof("🔍 [%s] currentTotals: 结果 marketSlug=%s upShares=%.2f downShares=%.2f upCost=%.4f downCost=%.4f", 
+	log.Infof("🔍 [%s] currentTotals: 结果 marketSlug=%s upShares=%.2f downShares=%.2f upCost=%.4f downCost=%.4f",
 		ID, marketSlug, upShares, downShares, upCostUSDC, downCostUSDC)
 	return upShares, downShares, upCostUSDC, downCostUSDC
 }
@@ -1590,7 +1694,7 @@ func (s *Strategy) currentAvgCostCents(marketSlug string) (upAvgC int, downAvgC 
 		// 估算该 position 的成本
 		size := p.Size
 		cost := 0.0
-		
+
 		if p.TotalFilledSize > 0 && p.CostBasis > 0 {
 			// 成本基础更可靠
 			// 注意：TotalFilledSize 可能与 Size 不完全一致（部分平仓/合并等），这里用比例缩放到当前 Size
@@ -1723,7 +1827,7 @@ func (s *Strategy) withinEntryCutoff(m *domain.Market) bool {
 	}
 	end := time.Unix(m.Timestamp, 0).Add(dur)
 	remaining := time.Until(end)
-	
+
 	// 边界情况处理：
 	// 1. 如果周期已结束（remaining <= 0），返回 true（进入 closeout）
 	// 2. 如果剩余时间 <= EntryCutoffSeconds，返回 true
@@ -1846,26 +1950,26 @@ func (s *Strategy) chooseDynamicProfit(yesBidC, yesAskC, noBidC, noAskC, effecti
 			penaltyPerCent *= 2.0
 		}
 	}
-	
+
 	// ⚠️ 重要修正：有效价格是市场最优价格，在有效市场中 profit 接近 0。
 	// 策略的目标是通过挂 maker 订单（低于 ask 的价格）来获取利润。
 	// 因此不需要用有效价格来判断是否有正 profit，而是直接尝试在 profit 范围内选择 maker 订单价格。
 	// chooseMakerBids 会检查：yesBid + noBid = 100 - profitCents，并且 yesBid < yesAsk, noBid < noAsk
 	// 如果 chooseMakerBids 返回 ok=true，说明可以挂 maker 订单来获得该 profit。
-	
-	log.Infof("🔍 [%s] chooseDynamicProfit 开始: profitRange=[%d,%d]c UP(bid=%dc ask=%dc) DOWN(bid=%dc ask=%dc)", 
+
+	log.Infof("🔍 [%s] chooseDynamicProfit 开始: profitRange=[%d,%d]c UP(bid=%dc ask=%dc) DOWN(bid=%dc ask=%dc)",
 		ID, s.ProfitMinCents, s.ProfitMaxCents, yesBidC, yesAskC, noBidC, noAskC)
-	
+
 	triedCount := 0
 	for p := s.ProfitMinCents; p <= s.ProfitMaxCents; p++ {
 		yb, nb, ok := chooseMakerBids(yesBidC, yesAskC, noBidC, noAskC, p)
 		triedCount++
 		if !ok {
-			log.Infof("🔍 [%s] chooseMakerBids 失败: profit=%dc UP(bid=%dc ask=%dc) DOWN(bid=%dc ask=%dc)", 
+			log.Infof("🔍 [%s] chooseMakerBids 失败: profit=%dc UP(bid=%dc ask=%dc) DOWN(bid=%dc ask=%dc)",
 				ID, p, yesBidC, yesAskC, noBidC, noAskC)
 			continue
 		}
-		log.Infof("🔍 [%s] chooseMakerBids 成功: profit=%dc UP(bid=%dc->%dc ask=%dc) DOWN(bid=%dc->%dc ask=%dc)", 
+		log.Infof("🔍 [%s] chooseMakerBids 成功: profit=%dc UP(bid=%dc->%dc ask=%dc) DOWN(bid=%dc->%dc ask=%dc)",
 			ID, p, yesBidC, yb, yesAskC, noBidC, nb, noAskC)
 		// 离当前 best bid 的距离：越远越难成交
 		// 使用原始 bid 价格作为参考，因为我们要挂的是 maker 订单（bid 价格）
@@ -1898,4 +2002,3 @@ func absInt(x int) int {
 	}
 	return x
 }
-

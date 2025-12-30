@@ -82,6 +82,9 @@ func (ss *SnapshotService) loadSnapshot() {
 LOADED:
 	metrics.SnapshotLoads.Add(1)
 
+	log.Infof("🔄 [快照恢复] 已加载交易快照: market=%s gen=%d tag=%s (dryRun=%v)",
+		s.GetCurrentMarket(), s.currentEngineGeneration(), tag, s.dryRun)
+
 	// 恢复余额/订单/仓位（快速热启动），后续会由对账循环纠偏
 	if snap.Balance > 0 {
 		s.orderEngine.SubmitCommand(&UpdateBalanceCommand{
@@ -118,6 +121,7 @@ LOADED:
 		log.Infof("🔄 [快照恢复] 恢复订单: 当前周期=%d, 跳过旧周期=%d", restoredCount, skippedCount)
 	}
 
+	restoredPos := 0
 	for _, p := range snap.Positions {
 		if p == nil || p.ID == "" {
 			continue
@@ -136,7 +140,14 @@ LOADED:
 				continue
 			}
 		}
-		_ = s.CreatePosition(context.Background(), p)
+		if err := s.CreatePosition(context.Background(), p); err == nil {
+			restoredPos++
+		}
+	}
+
+	if restoredPos > 0 {
+		log.Warnf("⚠️ [快照恢复] 已恢复仓位（本轮并非新下单产生）: positions=%d market=%s gen=%d",
+			restoredPos, currentMarketSlug, currentGen)
 	}
 }
 
@@ -201,10 +212,10 @@ func (ss *SnapshotService) bootstrapOpenOrdersFromExchange(ctx context.Context) 
 	if s.dryRun {
 		return
 	}
-	
+
 	// 获取当前市场（只恢复当前周期的订单）
 	currentMarketSlug := s.GetCurrentMarket()
-	
+
 	openOrdersResp, err := s.clobClient.GetOpenOrders(ctx, nil)
 	if err != nil {
 		log.Warnf("🔄 [重启恢复] 获取 open orders 失败: %v", err)
@@ -213,7 +224,7 @@ func (ss *SnapshotService) bootstrapOpenOrdersFromExchange(ctx context.Context) 
 	if len(openOrdersResp) == 0 {
 		return
 	}
-	
+
 	// 只恢复当前周期的订单
 	restoredCount := 0
 	skippedCount := 0
