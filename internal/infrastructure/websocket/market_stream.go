@@ -1569,22 +1569,55 @@ func (m *MarketStream) handlePriceChangeFast(ctx context.Context, message []byte
 		// 检查 asset_id 是否在订阅列表中（支持多市场场景）
 		m.subscribedAssetsMu.RLock()
 		isSubscribed := m.subscribedAssets[assetID]
+		// 获取订阅列表中的所有 asset_id（用于调试）
+		subscribedList := make([]string, 0, len(m.subscribedAssets))
+		for aid := range m.subscribedAssets {
+			subscribedList = append(subscribedList, aid)
+		}
 		m.subscribedAssetsMu.RUnlock()
+
+		// 🔍 调试日志：订阅列表检查
+		marketLog.Debugf("🔍 [handlePriceChange] 订阅列表检查: assetID=%s isSubscribed=%v subscribedAssets=%v yesID=%s noID=%s market=%s",
+			assetID, isSubscribed, subscribedList, yesID, noID, currentMarketSlug)
 
 		// 如果不在订阅列表中，跳过（即使 market 匹配也不处理）
 		if !isSubscribed {
+			marketLog.Debugf("⏭️ [handlePriceChange] 跳过价格事件（不在订阅列表）: assetID=%s market=%s", assetID, currentMarketSlug)
 			continue
 		}
 
 		isUp := bytes.Equal(assetIDb, []byte(yesID))
 		isDown := bytes.Equal(assetIDb, []byte(noID))
+		
+		// 🔍 调试日志：asset_id 识别
+		marketLog.Debugf("🔍 [handlePriceChange] asset_id 识别: assetID=%s yesID=%s isUp=%v noID=%s isDown=%v market=%s",
+			assetID, yesID, isUp, noID, isDown, currentMarketSlug)
+		
 		if !isUp && !isDown {
 			// asset_id 在订阅列表中，但不是当前市场的 YES/NO，可能是其他市场的资产
 			// 这种情况下，我们仍然处理（支持多市场场景）
 			// 但需要确保 market 匹配
 			if m.market == nil || !bytes.EqualFold(marketBytes, []byte(m.market.ConditionID)) {
+				marketLog.Debugf("⏭️ [handlePriceChange] 跳过价格事件（market 不匹配）: assetID=%s market=%s expected=%s",
+					assetID, string(marketBytes), func() string {
+						if m.market != nil {
+							return m.market.ConditionID
+						}
+						return "nil"
+					}())
 				continue
 			}
+		}
+		
+		// 🔍 调试日志：记录收到的价格数据
+		if isUp || isDown {
+			marketLog.Debugf("🔍 [handlePriceChange] 收到价格数据: token=%s assetID=%s market=%s",
+				func() string {
+					if isUp {
+						return "UP"
+					}
+					return "DOWN"
+				}(), assetID, currentMarketSlug)
 		}
 
 		// 解析 bid/ask（pips/cents），允许单边更新 bestBook
@@ -1629,8 +1662,17 @@ func (m *MarketStream) handlePriceChangeFast(ctx context.Context, message []byte
 				if len(aid) > 12 {
 					aid = aid[:12] + "..."
 				}
-				marketLog.Warnf("⚠️ [price_change->price] 盘口价差过大，忽略价格事件: assetID=%s bid=%dc ask=%dc spread=%dc market=%s",
-					aid, bidCents, askCents, spread, currentMarketSlug)
+				// 获取完整的 UP/DOWN bid/ask 数据
+				var upBidCents, upAskCents, downBidCents, downAskCents int
+				if m.bestBook != nil {
+					snap := m.bestBook.Load()
+					upBidCents = pipsToCents(int(snap.YesBidPips))
+					upAskCents = pipsToCents(int(snap.YesAskPips))
+					downBidCents = pipsToCents(int(snap.NoBidPips))
+					downAskCents = pipsToCents(int(snap.NoAskPips))
+				}
+				marketLog.Warnf("⚠️ [price_change->price] 盘口价差过大，忽略价格事件: assetID=%s bid=%dc ask=%dc spread=%dc market=%s | UP: bid=%dc ask=%dc DOWN: bid=%dc ask=%dc",
+					aid, bidCents, askCents, spread, currentMarketSlug, upBidCents, upAskCents, downBidCents, downAskCents)
 			}
 			continue
 		}
@@ -1650,9 +1692,13 @@ func (m *MarketStream) handlePriceChangeFast(ctx context.Context, message []byte
 
 	if upOK {
 		m.emitPriceChanged(ctx, domain.TokenTypeUp, upPrice, currentMarketSlug)
+	} else {
+		marketLog.Debugf("⏭️ [handlePriceChange] UP 价格事件未触发: upOK=false market=%s", currentMarketSlug)
 	}
 	if downOK {
 		m.emitPriceChanged(ctx, domain.TokenTypeDown, downPrice, currentMarketSlug)
+	} else {
+		marketLog.Debugf("⏭️ [handlePriceChange] DOWN 价格事件未触发: downOK=false market=%s", currentMarketSlug)
 	}
 	return true
 }
@@ -1770,8 +1816,17 @@ func (m *MarketStream) handlePriceChangeSlow(ctx context.Context, message []byte
 				if len(aid) > 12 {
 					aid = aid[:12] + "..."
 				}
-				marketLog.Warnf("⚠️ [price_change->price] 盘口价差过大，忽略价格事件: assetID=%s bid=%dc ask=%dc spread=%dc market=%s",
-					aid, bidCents, askCents, spread, currentMarketSlug)
+				// 获取完整的 UP/DOWN bid/ask 数据
+				var upBidCents, upAskCents, downBidCents, downAskCents int
+				if m.bestBook != nil {
+					snap := m.bestBook.Load()
+					upBidCents = pipsToCents(int(snap.YesBidPips))
+					upAskCents = pipsToCents(int(snap.YesAskPips))
+					downBidCents = pipsToCents(int(snap.NoBidPips))
+					downAskCents = pipsToCents(int(snap.NoAskPips))
+				}
+				marketLog.Warnf("⚠️ [price_change->price] 盘口价差过大，忽略价格事件: assetID=%s bid=%dc ask=%dc spread=%dc market=%s | UP: bid=%dc ask=%dc DOWN: bid=%dc ask=%dc",
+					aid, bidCents, askCents, spread, currentMarketSlug, upBidCents, upAskCents, downBidCents, downAskCents)
 			}
 			continue
 		}
@@ -1792,9 +1847,13 @@ func (m *MarketStream) handlePriceChangeSlow(ctx context.Context, message []byte
 	// 触发回调（最多 2 次）
 	if upOK {
 		m.emitPriceChanged(ctx, domain.TokenTypeUp, upPrice, currentMarketSlug)
+	} else {
+		marketLog.Debugf("⏭️ [handlePriceChangeSlow] UP 价格事件未触发: upOK=false market=%s", currentMarketSlug)
 	}
 	if downOK {
 		m.emitPriceChanged(ctx, domain.TokenTypeDown, downPrice, currentMarketSlug)
+	} else {
+		marketLog.Debugf("⏭️ [handlePriceChangeSlow] DOWN 价格事件未触发: downOK=false market=%s", currentMarketSlug)
 	}
 }
 
@@ -1815,6 +1874,10 @@ func (m *MarketStream) emitPriceChanged(ctx context.Context, tokenType domain.To
 		return
 	default:
 	}
+
+	// 🔍 调试日志：记录所有发出的价格事件
+	marketLog.Debugf("🔍 [emitPriceChanged] 发出价格事件: token=%s price=%.4f market=%s handlers=%d",
+		tokenType, price.ToDecimal(), marketSlug, m.handlers.Count())
 
 	// 在发送事件前，检查 handlers 是否为空（关闭过程中会被清空）
 	handlerCount := m.handlers.Count()

@@ -134,6 +134,7 @@ func (s *Strategy) OnCycle(ctx context.Context, _ *domain.Market, _ *domain.Mark
 	s.biasToken = ""
 	s.biasReason = ""
 	// 不清 lastTriggerAt：避免周期切换瞬间重复触发
+	log.Infof("🔄 [%s] 周期切换：交易计数器已重置 tradesCount=0 maxTradesPerCycle=%d", ID, s.MaxTradesPerCycle)
 }
 
 func (s *Strategy) shouldHandleMarketEvent(m *domain.Market) bool {
@@ -199,9 +200,24 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if e == nil || e.Market == nil || s.TradingService == nil {
 		return nil
 	}
+	
+	// 🔍 调试日志：记录所有收到的价格事件
+	log.Debugf("🔍 [%s] OnPriceChanged 收到价格事件: token=%s price=%.4f market=%s", ID, e.TokenType, e.NewPrice.ToDecimal(), func() string {
+		if e.Market != nil {
+			return e.Market.Slug
+		}
+		return "nil"
+	}())
+	
 	s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof)
 
 	if !s.shouldHandleMarketEvent(e.Market) {
+		log.Debugf("⏭️ [%s] 跳过价格事件（市场不匹配）: token=%s market=%s", ID, e.TokenType, func() string {
+			if e.Market != nil {
+				return e.Market.Slug
+			}
+			return "nil"
+		}())
 		return nil
 	}
 	now := e.Timestamp
@@ -247,13 +263,20 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	}
 
 	if s.MaxTradesPerCycle > 0 && s.tradesCountThisCycle >= s.MaxTradesPerCycle {
+		log.Debugf("⏸️ [%s] 已达到每周期最大交易次数限制: count=%d max=%d market=%s", ID, s.tradesCountThisCycle, s.MaxTradesPerCycle, e.Market.Slug)
 		s.mu.Unlock()
 		return nil
 	}
 	if !s.lastTriggerAt.IsZero() && now.Sub(s.lastTriggerAt) < time.Duration(s.CooldownMs)*time.Millisecond {
+		elapsed := now.Sub(s.lastTriggerAt)
+		log.Debugf("⏸️ [%s] 冷却时间未到，跳过触发: elapsed=%dms cooldown=%dms market=%s",
+			ID, elapsed.Milliseconds(), s.CooldownMs, e.Market.Slug)
 		s.mu.Unlock()
 		return nil
 	}
+	// ✅ 立即更新 lastTriggerAt，防止并发价格事件通过冷却时间检查
+	// 注意：即使后续下单失败，冷却时间仍然生效（保守策略）
+	s.lastTriggerAt = now
 
 	priceCents := e.NewPrice.ToCents()
 	if priceCents <= 0 || priceCents >= 100 {
@@ -265,6 +288,12 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 
 	mUp := s.computeLocked(domain.TokenTypeUp)
 	mDown := s.computeLocked(domain.TokenTypeDown)
+
+	// 获取最新价格用于日志（从样本中获取）
+	upPrice := latestPriceCents(s.samples[domain.TokenTypeUp])
+	downPrice := latestPriceCents(s.samples[domain.TokenTypeDown])
+	upSamplesCount := len(s.samples[domain.TokenTypeUp])
+	downSamplesCount := len(s.samples[domain.TokenTypeDown])
 
 	// bias 调整阈值（soft）或直接只允许 bias 方向（hard）
 	reqMoveUp := s.MinMoveCents
@@ -290,12 +319,41 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	upQualified := allowUp && mUp.ok && mUp.delta >= reqMoveUp && mUp.velocity >= reqVelUp
 	downQualified := allowDown && mDown.ok && mDown.delta >= reqMoveDown && mDown.velocity >= reqVelDown
 
+	// 📊 实时价格和速率日志
+	var upVelStr, downVelStr string
+	if mUp.ok {
+		upVelStr = fmt.Sprintf("vel=%.3f(c/s) delta=%dc/%0.1fs", mUp.velocity, mUp.delta, mUp.seconds)
+	} else {
+		upVelStr = "vel=N/A (insufficient data)"
+	}
+	if mDown.ok {
+		downVelStr = fmt.Sprintf("vel=%.3f(c/s) delta=%dc/%0.1fs", mDown.velocity, mDown.delta, mDown.seconds)
+	} else {
+		downVelStr = "vel=N/A (insufficient data)"
+	}
+	
+	// 格式化价格显示（显示样本数量）
+	var upPriceStr, downPriceStr string
+	if upPrice == 0 {
+		upPriceStr = fmt.Sprintf("0c (samples=%d)", upSamplesCount)
+	} else {
+		upPriceStr = fmt.Sprintf("%dc (samples=%d)", upPrice, upSamplesCount)
+	}
+	if downPrice == 0 {
+		downPriceStr = fmt.Sprintf("0c (samples=%d, 未收到DOWN价格更新)", downSamplesCount)
+	} else {
+		downPriceStr = fmt.Sprintf("%dc (samples=%d)", downPrice, downSamplesCount)
+	}
+	
+	log.Infof("📊 [%s] 价格更新: token=%s price=%dc | UP: price=%s %s [req: move>=%dc vel>=%.3f] qualified=%v | DOWN: price=%s %s [req: move>=%dc vel>=%.3f] qualified=%v | market=%s",
+		ID, e.TokenType, priceCents,
+		upPriceStr, upVelStr, reqMoveUp, reqVelUp, upQualified,
+		downPriceStr, downVelStr, reqMoveDown, reqVelDown, downQualified,
+		e.Market.Slug)
+
 	// 选 winner（与 velocityfollow 同步：可选 PreferHigherPrice）
 	winner := domain.TokenType("")
 	winMet := metrics{}
-
-	upPrice := latestPriceCents(s.samples[domain.TokenTypeUp])
-	downPrice := latestPriceCents(s.samples[domain.TokenTypeDown])
 	if s.PreferHigherPrice && upQualified && downQualified {
 		if upPrice > downPrice {
 			winner, winMet = domain.TokenTypeUp, mUp
@@ -339,6 +397,10 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		return nil
 	}
 
+	// 🎯 触发条件满足，准备下单
+	log.Infof("🎯 [%s] 触发条件满足: winner=%s vel=%.3f(c/s) delta=%dc/%0.1fs price=%dc market=%s",
+		ID, winner, winMet.velocity, winMet.delta, winMet.seconds, latestPriceCents(s.samples[winner]), e.Market.Slug)
+
 	// Binance 1s confirm（可选）
 	if s.UseBinanceMoveConfirm {
 		if s.BinanceFuturesKlines == nil {
@@ -374,6 +436,8 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	reorderSec := s.HedgeReorderTimeoutSeconds
 	biasTok := s.biasToken
 	biasReason := s.biasReason
+	currentTradesCount := s.tradesCountThisCycle
+	maxTradesLimit := s.MaxTradesPerCycle
 	s.mu.Unlock()
 
 	// 市场质量 gate
@@ -450,8 +514,8 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	}
 	entryShares = adjustSizeForMakerAmountPrecision(entryShares, entryPriceDec)
 
-	log.Infof("⚡ [%s] 准备触发: side=%s entryAsk=%dc hedgeLimit=%dc vel=%.3f(c/s) move=%dc/%0.1fs market=%s (source=%s) bias=%s(%s)",
-		ID, winner, entryAskCents, hedgeLimitCents, winMet.velocity, winMet.delta, winMet.seconds, market.Slug, source, string(biasTok), biasReason)
+	log.Infof("⚡ [%s] 准备触发 Entry 订单: side=%s entryAsk=%dc hedgeLimit=%dc vel=%.3f(c/s) move=%dc/%0.1fs market=%s (source=%s) bias=%s(%s) tradesCount=%d/%d",
+		ID, winner, entryAskCents, hedgeLimitCents, winMet.velocity, winMet.delta, winMet.seconds, market.Slug, source, string(biasTok), biasReason, currentTradesCount, maxTradesLimit)
 
 	entryOrder := &domain.Order{
 		MarketSlug:   market.Slug,
@@ -471,12 +535,14 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		if isFailSafeRefusal(entryErr) {
 			return nil
 		}
-		log.Warnf("⚠️ [%s] Entry 下单失败: err=%v market=%s side=%s", ID, entryErr, market.Slug, winner)
+		log.Warnf("⚠️ [%s] Entry 下单失败: err=%v market=%s side=%s entryPrice=%dc size=%.4f", ID, entryErr, market.Slug, winner, entryAskCents, entryShares)
 		return nil
 	}
 	if entryRes == nil || entryRes.OrderID == "" {
 		return nil
 	}
+	log.Infof("✅ [%s] Entry 订单已提交: orderID=%s side=%s price=%dc size=%.4f market=%s",
+		ID, entryRes.OrderID, winner, entryAskCents, entryShares, market.Slug)
 
 	// 获取 Entry 实际成交量（必须以此作为 Hedge 目标）
 	entryFilledSize := entryRes.FilledSize
@@ -522,28 +588,37 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		CreatedAt:    time.Now(),
 	}
 	s.attachMarketPrecision(hedgeOrder)
+	log.Infof("🛡️ [%s] 准备触发 Hedge 订单: side=%s hedgeLimit=%dc size=%.4f entryOrderID=%s entryFilled=%.4f market=%s",
+		ID, opposite(winner), hedgeLimitCents, hedgeShares, entryRes.OrderID, entryFilledSize, market.Slug)
 	hedgeRes, hedgeErr := s.TradingService.PlaceOrder(orderCtx, hedgeOrder)
 	if hedgeErr != nil {
 		if isFailSafeRefusal(hedgeErr) {
 			// 系统拒绝：保守处理，立即止损退出，避免裸露
+			log.Warnf("⚠️ [%s] Hedge 下单失败（系统拒绝）: err=%v entryOrderID=%s market=%s", ID, hedgeErr, entryRes.OrderID, market.Slug)
 			go s.forceStoploss(context.Background(), market, "hedge_refused_by_failsafe", entryRes.OrderID, "")
 			return nil
 		}
+		log.Warnf("⚠️ [%s] Hedge 下单失败: err=%v entryOrderID=%s hedgePrice=%dc size=%.4f market=%s", ID, hedgeErr, entryRes.OrderID, hedgeLimitCents, hedgeShares, market.Slug)
 		go s.forceStoploss(context.Background(), market, "hedge_place_failed", entryRes.OrderID, "")
 		return nil
 	}
 	if hedgeRes == nil || hedgeRes.OrderID == "" {
+		log.Warnf("⚠️ [%s] Hedge 订单ID为空: entryOrderID=%s market=%s", ID, entryRes.OrderID, market.Slug)
 		go s.forceStoploss(context.Background(), market, "hedge_order_id_empty", entryRes.OrderID, "")
 		return nil
 	}
+	log.Infof("✅ [%s] Hedge 订单已提交: orderID=%s side=%s price=%dc size=%.4f entryOrderID=%s market=%s",
+		ID, hedgeRes.OrderID, opposite(winner), hedgeLimitCents, hedgeShares, entryRes.OrderID, market.Slug)
 
 	s.mu.Lock()
-	s.lastTriggerAt = time.Now()
+	// lastTriggerAt 已在前面更新，这里只需要更新交易计数
 	s.tradesCountThisCycle++
+	currentCount := s.tradesCountThisCycle
+	maxTrades := s.MaxTradesPerCycle
 	s.mu.Unlock()
 
-	log.Infof("✅ [%s] Entry 已成交并已挂 Hedge: entryID=%s filled=%.4f@%dc hedgeID=%s limit=%dc unhedgedMax=%ds sl=%dc",
-		ID, entryRes.OrderID, entryFilledSize, entryAskCents, hedgeRes.OrderID, hedgeLimitCents, unhedgedMax, unhedgedSLCents)
+	log.Infof("✅ [%s] Entry 已成交并已挂 Hedge: entryID=%s filled=%.4f@%dc hedgeID=%s limit=%dc unhedgedMax=%ds sl=%dc tradesCount=%d/%d",
+		ID, entryRes.OrderID, entryFilledSize, entryAskCents, hedgeRes.OrderID, hedgeLimitCents, unhedgedMax, unhedgedSLCents, currentCount, maxTrades)
 
 	// 启动监控：直到对冲完成（持有到结算）或触发止损
 	entryFilledAt := time.Now()

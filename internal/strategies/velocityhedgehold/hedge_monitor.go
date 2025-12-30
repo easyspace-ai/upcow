@@ -2,6 +2,7 @@ package velocityhedgehold
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"time"
 
@@ -263,17 +264,90 @@ func (s *Strategy) forceStoploss(ctx context.Context, market *domain.Market, rea
 	stopCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
+	// 记录止损触发时的详细上下文信息
+	positions := s.TradingService.GetOpenPositionsForMarket(market.Slug)
+	activeOrders := s.TradingService.GetActiveOrders()
+	
+	var upPos *domain.Position
+	var upSize, downSize float64
+	for _, p := range positions {
+		if p == nil || !p.IsOpen() || p.Size <= 0 {
+			continue
+		}
+		if p.TokenType == domain.TokenTypeUp {
+			upPos = p
+			upSize = p.Size
+		} else if p.TokenType == domain.TokenTypeDown {
+			downSize = p.Size
+		}
+	}
+	
+	var activeOrderIDs []string
+	var hedgeOrderStatus string
+	var entryOrderStatus string
+	for _, o := range activeOrders {
+		if o == nil || o.OrderID == "" {
+			continue
+		}
+		if o.MarketSlug != market.Slug {
+			continue
+		}
+		activeOrderIDs = append(activeOrderIDs, o.OrderID)
+		if o.OrderID == hedgeOrderID {
+			hedgeOrderStatus = string(o.Status)
+		}
+		if o.OrderID == entryOrderID {
+			entryOrderStatus = string(o.Status)
+		}
+	}
+	
+	// 如果 entryOrderID 或 hedgeOrderID 为空，尝试从订单中查找
+	if entryOrderID == "" && upPos != nil {
+		// 尝试查找 entry 订单
+		for _, o := range activeOrders {
+			if o != nil && o.MarketSlug == market.Slug && o.TokenType == domain.TokenTypeUp && o.Side == types.SideBuy {
+				entryOrderID = o.OrderID
+				entryOrderStatus = string(o.Status)
+				break
+			}
+		}
+	}
+	if hedgeOrderID == "" {
+		// 尝试查找 hedge 订单
+		for _, o := range activeOrders {
+			if o != nil && o.MarketSlug == market.Slug && o.Side == types.SideBuy && o.OrderType == types.OrderTypeGTC {
+				if (upSize > downSize && o.TokenType == domain.TokenTypeDown) || (downSize > upSize && o.TokenType == domain.TokenTypeUp) {
+					hedgeOrderID = o.OrderID
+					hedgeOrderStatus = string(o.Status)
+					break
+				}
+			}
+		}
+	}
+	
+	log.Warnf("🚨 [%s] 止损触发详情：reason=%s entryOrderID=%s entryOrderStatus=%s hedgeOrderID=%s hedgeOrderStatus=%s upSize=%.4f downSize=%.4f activeOrders=%d market=%s",
+		ID, reason, entryOrderID, entryOrderStatus, hedgeOrderID, hedgeOrderStatus, upSize, downSize, len(activeOrderIDs), market.Slug)
+	
+	if len(activeOrderIDs) > 0 {
+		log.Debugf("📋 [%s] 止损时的活跃订单：orderIDs=%v market=%s", ID, activeOrderIDs, market.Slug)
+	}
+
 	// 1) 先取消本市场所有挂单，避免平仓过程中被动成交造成反向敞口
 	s.TradingService.CancelOrdersForMarket(stopCtx, market.Slug)
 
 	// 2) 拉 bid 并平掉所有持仓（UP/DOWN 都平，确保净敞口=0）
 	yesBid, _, noBid, _, _, err := s.TradingService.GetTopOfBook(stopCtx, market)
 	if err != nil {
-		log.Warnf("⚠️ [%s] 止损获取盘口失败：reason=%s err=%v market=%s", ID, reason, err, market.Slug)
+		log.Warnf("⚠️ [%s] 止损获取盘口失败：reason=%s err=%v entryOrderID=%s hedgeOrderID=%s upSize=%.4f downSize=%.4f market=%s",
+			ID, reason, err, entryOrderID, hedgeOrderID, upSize, downSize, market.Slug)
 		return
 	}
+	
+	log.Debugf("📊 [%s] 止损时盘口价格：yesBid=%dc noBid=%dc reason=%s market=%s",
+		ID, yesBid.ToCents(), noBid.ToCents(), reason, market.Slug)
 
-	positions := s.TradingService.GetOpenPositionsForMarket(market.Slug)
+	positions = s.TradingService.GetOpenPositionsForMarket(market.Slug)
+	flattenedCount := 0
 	for _, p := range positions {
 		if p == nil || !p.IsOpen() || p.Size <= 0 {
 			continue
@@ -285,8 +359,23 @@ func (s *Strategy) forceStoploss(ctx context.Context, market *domain.Market, rea
 			exitAsset = market.NoAssetID
 		}
 		if exitPrice.Pips <= 0 {
+			log.Warnf("⚠️ [%s] 止损平仓跳过：token=%s size=%.4f exitPrice=0 reason=%s market=%s",
+				ID, p.TokenType, p.Size, reason, market.Slug)
 			continue
 		}
+		
+		// 记录持仓详情
+		entryPriceInfo := ""
+		if p.AvgPrice > 0 {
+			entryPriceInfo = fmt.Sprintf("avgPrice=%.4f", p.AvgPrice)
+		} else if p.EntryPrice.Pips > 0 {
+			entryPriceInfo = fmt.Sprintf("entryPrice=%dc", p.EntryPrice.ToCents())
+		}
+		entryTimeInfo := ""
+		if !p.EntryTime.IsZero() {
+			entryTimeInfo = fmt.Sprintf("entryTime=%s elapsed=%.1fs", p.EntryTime.Format(time.RFC3339), time.Since(p.EntryTime).Seconds())
+		}
+		
 		exit := &domain.Order{
 			MarketSlug: market.Slug,
 			AssetID:    exitAsset,
@@ -300,12 +389,18 @@ func (s *Strategy) forceStoploss(ctx context.Context, market *domain.Market, rea
 		}
 		s.attachMarketPrecision(exit)
 		if _, err := s.TradingService.PlaceOrder(stopCtx, exit); err != nil {
-			log.Warnf("❌ [%s] 止损平仓失败：token=%s size=%.4f bid=%dc err=%v reason=%s market=%s",
-				ID, p.TokenType, p.Size, exitPrice.ToCents(), err, reason, market.Slug)
+			log.Warnf("❌ [%s] 止损平仓失败：token=%s size=%.4f bid=%dc %s %s err=%v reason=%s entryOrderID=%s hedgeOrderID=%s market=%s",
+				ID, p.TokenType, p.Size, exitPrice.ToCents(), entryPriceInfo, entryTimeInfo, err, reason, entryOrderID, hedgeOrderID, market.Slug)
 		} else {
-			log.Warnf("✅ [%s] 止损平仓：token=%s size=%.4f bid=%dc reason=%s entryOrderID=%s hedgeOrderID=%s market=%s",
-				ID, p.TokenType, p.Size, exitPrice.ToCents(), reason, entryOrderID, hedgeOrderID, market.Slug)
+			flattenedCount++
+			log.Warnf("✅ [%s] 止损平仓：token=%s size=%.4f bid=%dc %s %s reason=%s entryOrderID=%s hedgeOrderID=%s market=%s",
+				ID, p.TokenType, p.Size, exitPrice.ToCents(), entryPriceInfo, entryTimeInfo, reason, entryOrderID, hedgeOrderID, market.Slug)
 		}
+	}
+	
+	if flattenedCount == 0 && (upSize > 0 || downSize > 0) {
+		log.Warnf("⚠️ [%s] 止损平仓警告：检测到持仓但未成功平仓任何仓位 upSize=%.4f downSize=%.4f reason=%s market=%s",
+			ID, upSize, downSize, reason, market.Slug)
 	}
 }
 

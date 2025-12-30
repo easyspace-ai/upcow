@@ -80,8 +80,65 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 
 	// 2.1 超时止损（重启后依然有效）
 	if s.UnhedgedMaxSeconds > 0 && !entryAt.IsZero() {
-		if now.Sub(entryAt) >= time.Duration(s.UnhedgedMaxSeconds)*time.Second {
-			s.forceStoploss(context.Background(), market, "unhedged_timeout_stoploss(recover)", "", "")
+		elapsed := now.Sub(entryAt)
+		if elapsed >= time.Duration(s.UnhedgedMaxSeconds)*time.Second {
+			// 尝试查找 entryOrderID 和 hedgeOrderID
+			entryOrderID := ""
+			hedgeOrderID := ""
+			
+			// 查找 entryOrderID：从持仓的关联订单或活跃订单中查找
+			if entryPos != nil && entryPos.Size > 0 {
+				// 尝试从活跃订单中查找 entry 订单
+				orders := s.TradingService.GetActiveOrders()
+				for _, o := range orders {
+					if o == nil || o.OrderID == "" {
+						continue
+					}
+					if o.MarketSlug != market.Slug {
+						continue
+					}
+					if o.TokenType == entryTok && o.Side == types.SideBuy {
+						if entryOrderID == "" {
+							entryOrderID = o.OrderID
+						}
+					}
+					if o.TokenType == hedgeTok && o.Side == types.SideBuy && o.OrderType == types.OrderTypeGTC {
+						if hedgeOrderID == "" {
+							hedgeOrderID = o.OrderID
+						}
+					}
+				}
+			}
+			
+			// 查找 hedgeOrderID（如果还没找到）
+			if hedgeOrderID == "" {
+				orders := s.TradingService.GetActiveOrders()
+				for _, o := range orders {
+					if o == nil || o.OrderID == "" {
+						continue
+					}
+					if o.MarketSlug != market.Slug {
+						continue
+					}
+					if o.Side != types.SideBuy {
+						continue
+					}
+					if o.TokenType != hedgeTok {
+						continue
+					}
+					if o.OrderType != types.OrderTypeGTC {
+						continue
+					}
+					if hedgeOrderID == "" {
+						hedgeOrderID = o.OrderID
+						break
+					}
+				}
+			}
+			
+			log.Warnf("🚨 [%s] 未对冲止损触发（超时-恢复场景）：elapsed=%.1fs max=%ds entryToken=%s entrySize=%.4f entryPrice=%dc entryAt=%s entryOrderID=%s hedgeOrderID=%s upSize=%.4f downSize=%.4f remaining=%.4f market=%s",
+				ID, elapsed.Seconds(), s.UnhedgedMaxSeconds, entryTok, target, entryPriceCents, entryAt.Format(time.RFC3339), entryOrderID, hedgeOrderID, upSize, downSize, remaining, market.Slug)
+			s.forceStoploss(context.Background(), market, "unhedged_timeout_stoploss(recover)", entryOrderID, hedgeOrderID)
 			return true
 		}
 	}
@@ -89,8 +146,35 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 	// 2.2 价格止损（可选）
 	if s.UnhedgedStopLossCents > 0 {
 		if hit, diff := s.unhedgedStopLossHit(market, entryTok, s.UnhedgedStopLossCents); hit {
-			_ = diff
-			s.forceStoploss(context.Background(), market, "unhedged_price_stoploss(recover)", "", "")
+			// 尝试查找 entryOrderID 和 hedgeOrderID
+			entryOrderID := ""
+			hedgeOrderID := ""
+			
+			if entryPos != nil && entryPos.Size > 0 {
+				orders := s.TradingService.GetActiveOrders()
+				for _, o := range orders {
+					if o == nil || o.OrderID == "" {
+						continue
+					}
+					if o.MarketSlug != market.Slug {
+						continue
+					}
+					if o.TokenType == entryTok && o.Side == types.SideBuy {
+						if entryOrderID == "" {
+							entryOrderID = o.OrderID
+						}
+					}
+					if o.TokenType == hedgeTok && o.Side == types.SideBuy && o.OrderType == types.OrderTypeGTC {
+						if hedgeOrderID == "" {
+							hedgeOrderID = o.OrderID
+						}
+					}
+				}
+			}
+			
+			log.Warnf("🚨 [%s] 未对冲止损触发（价格-恢复场景）：diff=%dc sl=%dc entryToken=%s entrySize=%.4f entryPrice=%dc entryOrderID=%s hedgeOrderID=%s upSize=%.4f downSize=%.4f remaining=%.4f market=%s",
+				ID, diff, s.UnhedgedStopLossCents, entryTok, target, entryPriceCents, entryOrderID, hedgeOrderID, upSize, downSize, remaining, market.Slug)
+			s.forceStoploss(context.Background(), market, "unhedged_price_stoploss(recover)", entryOrderID, hedgeOrderID)
 			return true
 		}
 	}

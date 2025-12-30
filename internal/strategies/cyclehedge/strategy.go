@@ -67,8 +67,9 @@ type Strategy struct {
 	lastLogAt        time.Time
 	lastCancelAt     time.Time // 撤单节流：避免高频重复撤单导致状态乱序/刷爆 API
 	lastQuoteAt      time.Time // 报价节流：用于“动态 requote”，避免固定 tick 下每次都重算/撤挂
-	closeoutActive   bool      // 进入 closeout 窗口后置 true（每周期一次），用于避免重复撤单把补齐挂单撤掉
-	lastSupplementAt time.Time // 补齐追价/撤改单节流：避免裸露时 cancel+replace 过频
+	closeoutActive    bool      // 进入 closeout 窗口后置 true（每周期一次），用于避免重复撤单把补齐挂单撤掉
+	lastSupplementAt  time.Time // 补齐追价/撤改单节流：避免裸露时 cancel+replace 过频
+	lastTakerActionAt time.Time // Taker补齐/回平节流：避免重复下单导致 duplicate in-flight
 
 	// cycle stats (for reporting)
 	stats cycleStats
@@ -1002,6 +1003,19 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 			}
 
 			if doComplete {
+				// ⚠️ 修复 duplicate in-flight：添加节流，避免短时间内重复下单
+				const takerActionMinInterval = 2 * time.Second
+				s.stateMu.Lock()
+				lastTakerAction := s.lastTakerActionAt
+				if !lastTakerAction.IsZero() && now.Sub(lastTakerAction) < takerActionMinInterval {
+					s.stateMu.Unlock()
+					log.Debugf("🔍 [%s] Taker补齐节流: market=%s timeSinceLastAction=%v < %v (跳过重复下单)",
+						ID, m.Slug, now.Sub(lastTakerAction), takerActionMinInterval)
+					return
+				}
+				s.lastTakerActionAt = now
+				s.stateMu.Unlock()
+				
 				orderReq := &domain.Order{
 					MarketSlug: m.Slug,
 					AssetID:    missingAsset,
@@ -1025,6 +1039,19 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 				return
 			}
 
+			// ⚠️ 修复 duplicate in-flight：添加节流，避免短时间内重复下单
+			const takerActionMinInterval = 2 * time.Second
+			s.stateMu.Lock()
+			lastTakerAction := s.lastTakerActionAt
+			if !lastTakerAction.IsZero() && now.Sub(lastTakerAction) < takerActionMinInterval {
+				s.stateMu.Unlock()
+				log.Debugf("🔍 [%s] Taker回平节流: market=%s timeSinceLastAction=%v < %v (跳过重复下单)",
+					ID, m.Slug, now.Sub(lastTakerAction), takerActionMinInterval)
+				return
+			}
+			s.lastTakerActionAt = now
+			s.stateMu.Unlock()
+			
 			orderReq := &domain.Order{
 				MarketSlug: m.Slug,
 				AssetID:    excessAsset,
@@ -1148,7 +1175,9 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 
 	// 如果本次将要下单，先撤掉旧的挂单（避免多单堆叠）
 	// 注：TradingService 层有 in-flight 去重，且 CancelOrdersForMarket 会撤掉本周期挂单（含对侧）。
-	if (needUp >= s.MinUnhedgedShares || needDown >= s.MinUnhedgedShares) && (s.yesOrderID != "" || s.noOrderID != "") {
+	// ⚠️ 修复：只要需要下单（needUp > 0 或 needDown > 0）且有旧订单，就应该撤单
+	// 不再限制为 needUp >= MinUnhedgedShares，因为现在 needUp > 0 就会下单
+	if (needUp > 0 || needDown > 0) && (s.yesOrderID != "" || s.noOrderID != "") {
 		// 只有真的执行了撤单（未被节流）才清理本地 orderID，避免节流窗口内“忘记旧单”导致堆叠挂单。
 		if s.cancelMarketOrdersThrottled(ctx, now, m, false) {
 			s.yesOrderID, s.noOrderID = "", ""
@@ -1160,6 +1189,32 @@ func (s *Strategy) step(ctx context.Context, now time.Time) {
 	// 这样可以持续下单直到达到targetShares
 	needUpOK := needUp > 0     // 只要需要，就下单
 	needDownOK := needDown > 0 // 只要需要，就下单
+	
+	// ⚠️ 修复 duplicate in-flight 错误：如果已有订单正在处理中，跳过重复下单
+	// 这可以避免在订单完成前（2秒in-flight窗口内）重复下单导致的 duplicate in-flight 错误
+	if needUpOK && s.yesOrderID != "" {
+		// 检查订单是否仍然存在（可能已经成交或取消）
+		if ord, ok := s.TradingService.GetOrder(s.yesOrderID); ok && ord != nil && !ord.IsFinalStatus() {
+			log.Debugf("🔍 [%s] UP订单正在处理中，跳过重复下单: orderID=%s status=%s market=%s",
+				ID, s.yesOrderID, ord.Status, m.Slug)
+			needUpOK = false
+		} else {
+			// 订单已不存在或已终态，清空 orderID 允许重新下单
+			s.yesOrderID = ""
+		}
+	}
+	if needDownOK && s.noOrderID != "" {
+		// 检查订单是否仍然存在（可能已经成交或取消）
+		if ord, ok := s.TradingService.GetOrder(s.noOrderID); ok && ord != nil && !ord.IsFinalStatus() {
+			log.Debugf("🔍 [%s] DOWN订单正在处理中，跳过重复下单: orderID=%s status=%s market=%s",
+				ID, s.noOrderID, ord.Status, m.Slug)
+			needDownOK = false
+		} else {
+			// 订单已不存在或已终态，清空 orderID 允许重新下单
+			s.noOrderID = ""
+		}
+	}
+	
 	log.Infof("🔍 [%s] 订单大小检查前: market=%s needUp=%.2f needDown=%.2f needUpOK=%v needDownOK=%v minUnhedged=%.2f",
 		ID, m.Slug, needUp, needDown, needUpOK, needDownOK, s.MinUnhedgedShares)
 	if needUpOK {
@@ -1458,6 +1513,7 @@ func (s *Strategy) resetCycle(ctx context.Context, now time.Time, m *domain.Mark
 	s.lastQuoteAt = time.Time{}
 	s.closeoutActive = false
 	s.lastSupplementAt = time.Time{}
+	s.lastTakerActionAt = time.Time{}
 
 	// reset stats for new cycle
 	s.stats = cycleStats{
