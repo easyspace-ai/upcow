@@ -34,6 +34,8 @@ type Strategy struct {
 
 	// samples：用于速度计算
 	samples map[domain.TokenType][]sample
+	// signalSamples：用于“单边绝对变化/盘口跳变”信号计算（避免依赖两边都必须到达）
+	signalSamples []sample
 
 	// 周期状态
 	firstSeenAt          time.Time
@@ -45,6 +47,13 @@ type Strategy struct {
 	biasReady    bool
 	biasToken    domain.TokenType
 	biasReason   string
+
+	// Binance fast bias（秒级）状态：用于“胜率更高的一方”优先过滤
+	fastBiasReady     bool
+	fastBiasToken     domain.TokenType
+	fastBiasReason    string
+	fastBiasRetBps    int
+	fastBiasUpdatedAt time.Time
 
 	// 市场过滤
 	marketSlugPrefix string
@@ -128,11 +137,17 @@ func (s *Strategy) OnCycle(ctx context.Context, _ *domain.Market, _ *domain.Mark
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.samples = make(map[domain.TokenType][]sample)
+	s.signalSamples = nil
 	s.firstSeenAt = time.Now()
 	s.tradesCountThisCycle = 0
 	s.biasReady = false
 	s.biasToken = ""
 	s.biasReason = ""
+	s.fastBiasReady = false
+	s.fastBiasToken = ""
+	s.fastBiasReason = ""
+	s.fastBiasRetBps = 0
+	s.fastBiasUpdatedAt = time.Time{}
 	// 不清 lastTriggerAt：避免周期切换瞬间重复触发
 	log.Infof("🔄 [%s] 周期切换：交易计数器已重置 tradesCount=0 maxTradesPerCycle=%d", ID, s.MaxTradesPerCycle)
 }
@@ -165,7 +180,7 @@ func (s *Strategy) updateCycleStartLocked(market *domain.Market) {
 }
 
 func (s *Strategy) shouldSkipUntilBiasReadyLocked(now time.Time) bool {
-	if !s.UseBinanceOpen1mBias {
+	if !s.UseBinanceOpen1mBias && !s.UseBinanceFastBias {
 		return false
 	}
 	if !s.biasReady && s.cycleStartMs > 0 && s.Open1mMaxWaitSeconds > 0 {
@@ -193,7 +208,80 @@ func (s *Strategy) shouldSkipUntilBiasReadyLocked(now time.Time) bool {
 			}
 		}
 	}
+	// fast bias：只要我们至少计算过一次（无论 token 是否为空），就认为 ready（用于启动期门控）
+	if s.UseBinanceFastBias && s.fastBiasReady {
+		return false
+	}
 	return s.RequireBiasReady && !s.biasReady
+}
+
+// activeBiasLocked 选择当前使用的 bias（优先 fast bias，其次 open1m bias）。
+func (s *Strategy) activeBiasLocked(now time.Time) (domain.TokenType, string) {
+	if s == nil {
+		return "", ""
+	}
+	if s.UseBinanceFastBias && s.fastBiasToken != "" {
+		return s.fastBiasToken, s.fastBiasReason
+	}
+	if s.UseBinanceOpen1mBias && s.biasToken != "" {
+		return s.biasToken, s.biasReason
+	}
+	return "", ""
+}
+
+// updateFastBiasLocked 使用 Binance 1s Kline 计算短窗方向 bias（用于“胜率更高一方”过滤）。
+func (s *Strategy) updateFastBiasLocked(now time.Time) {
+	if s == nil || !s.UseBinanceFastBias || s.BinanceFuturesKlines == nil {
+		return
+	}
+	// 标记 ready：只要尝试过计算（避免 RequireBiasReady 卡死在“永远等不到 1m 收盘”）
+	s.fastBiasReady = true
+
+	win := s.FastBiasWindowSeconds
+	if win <= 0 {
+		win = 30
+	}
+	minBps := s.FastBiasMinMoveBps
+	if minBps <= 0 {
+		minBps = 15
+	}
+	hold := s.FastBiasMinHoldSeconds
+	if hold <= 0 {
+		hold = 2
+	}
+
+	cur, okCur := s.BinanceFuturesKlines.Latest("1s")
+	past, okPast := s.BinanceFuturesKlines.NearestAtOrBefore("1s", now.UnixMilli()-int64(win)*1000)
+	if !okCur || !okPast || past.Close <= 0 || cur.Close <= 0 {
+		return
+	}
+
+	ret := (cur.Close - past.Close) / past.Close
+	retBps := int(math.Abs(ret)*10000 + 0.5)
+	dir := domain.TokenTypeDown
+	if ret >= 0 {
+		dir = domain.TokenTypeUp
+	}
+
+	// 抗抖：bias 至少保持 hold 秒，避免 1s 噪声来回翻转造成过度交易
+	if s.fastBiasToken != "" && !s.fastBiasUpdatedAt.IsZero() && now.Sub(s.fastBiasUpdatedAt) < time.Duration(hold)*time.Second {
+		// 在 hold 时间内，只更新强度，不换方向（除非完全清空）
+		s.fastBiasRetBps = retBps
+		s.fastBiasReason = "fast_bias_hold"
+		return
+	}
+
+	if retBps >= minBps {
+		s.fastBiasToken = dir
+		s.fastBiasReason = "fast_bias_ok"
+		s.fastBiasRetBps = retBps
+		s.fastBiasUpdatedAt = now
+	} else {
+		s.fastBiasToken = ""
+		s.fastBiasReason = "fast_bias_too_small"
+		s.fastBiasRetBps = retBps
+		s.fastBiasUpdatedAt = now
+	}
 }
 
 func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
@@ -228,15 +316,16 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	// ===== 恢复/管理已有持仓（重启后也会在这里接管）=====
 	// - 已对冲：取消残留挂单，持有到结算
 	// - 未对冲：确保 hedge 挂单存在 + 超时/价格止损
-	if s.manageExistingExposure(now, e.Market) {
-		return nil
-	}
+	// 注意：即使当前有持仓需要管理，我们也希望“监控日志”能持续拿到 book/signal 信息。
+	// entry 逻辑会在稍后根据 manageExistingExposure 决定是否继续。
 
 	s.mu.Lock()
 	if s.firstSeenAt.IsZero() {
 		s.firstSeenAt = now
 	}
 	s.updateCycleStartLocked(e.Market)
+	// 秒级 fast bias：每次 tick 都尝试更新（不要求“等到 1m 收盘”）
+	s.updateFastBiasLocked(now)
 	if s.shouldSkipUntilBiasReadyLocked(now) {
 		s.mu.Unlock()
 		return nil
@@ -278,16 +367,47 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	// 注意：即使后续下单失败，冷却时间仍然生效（保守策略）
 	s.lastTriggerAt = now
 
+	// 1) 记录原始 event price（用于兼容日志/双边统计）
 	priceCents := e.NewPrice.ToCents()
-	if priceCents <= 0 || priceCents >= 100 {
-		s.mu.Unlock()
-		return nil
+	if priceCents > 0 && priceCents < 100 {
+		s.samples[e.TokenType] = append(s.samples[e.TokenType], sample{ts: now, priceCents: priceCents})
 	}
-	s.samples[e.TokenType] = append(s.samples[e.TokenType], sample{ts: now, priceCents: priceCents})
-	s.pruneLocked(now)
 
-	mUp := s.computeLocked(domain.TokenTypeUp)
-	mDown := s.computeLocked(domain.TokenTypeDown)
+	// 2) 构造“信号侧价格”（可来自 bestBook 或 event，单边绝对变化）
+	signalTok := domain.TokenTypeUp
+	if strings.EqualFold(s.SignalToken, "down") {
+		signalTok = domain.TokenTypeDown
+	}
+	signalCents := s.signalPriceCentsLocked(now, signalTok, e)
+	if signalCents > 0 && signalCents < 100 {
+		s.signalSamples = append(s.signalSamples, sample{ts: now, priceCents: signalCents})
+	}
+
+	s.pruneLocked(now)
+	s.pruneSignalLocked(now)
+
+	// 3) 若有持仓需要管理，先走管理逻辑（不进入开仓/加仓触发）
+	if s.manageExistingExposure(now, e.Market) {
+		// 仍然会继续走日志输出（监控），但不触发交易
+	}
+
+	// 4) 计算信号
+	var mUp, mDown metrics
+	winner := domain.TokenType("")
+	winMet := metrics{}
+	if strings.EqualFold(s.SignalMode, "legacy") {
+		// 旧逻辑：分别计算 UP/DOWN 的上行速度
+		mUp = s.computeLocked(domain.TokenTypeUp)
+		mDown = s.computeLocked(domain.TokenTypeDown)
+	} else {
+		// 新逻辑：单边绝对变化（双向）/盘口跳变
+		win, met := s.computeSignalLocked(signalTok)
+		winner = win
+		winMet = met
+		// 为保持日志结构，mUp/mDown 仍给出“是否可用”的占位（不作为触发依据）
+		mUp = metrics{}
+		mDown = metrics{}
+	}
 
 	// 获取最新价格用于日志（从样本中获取）
 	upPrice := latestPriceCents(s.samples[domain.TokenTypeUp])
@@ -295,29 +415,49 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	upSamplesCount := len(s.samples[domain.TokenTypeUp])
 	downSamplesCount := len(s.samples[domain.TokenTypeDown])
 
+	// 如果 DOWN 未到达但 UP 有值，给出“镜像推导”监控（不参与下单）
+	impliedDown := 0
+	if downSamplesCount == 0 && upPrice > 0 && upPrice < 100 {
+		impliedDown = 100 - upPrice
+	}
+
+	// 选择当前“方向 bias”（优先 fast bias，其次 open1m bias）
+	activeBiasTok, activeBiasReason := s.activeBiasLocked(now)
+
 	// bias 调整阈值（soft）或直接只允许 bias 方向（hard）
 	reqMoveUp := s.MinMoveCents
 	reqMoveDown := s.MinMoveCents
 	reqVelUp := s.MinVelocityCentsPerSec
 	reqVelDown := s.MinVelocityCentsPerSec
-	if s.UseBinanceOpen1mBias && s.biasToken != "" && s.BiasMode == "soft" {
-		if s.biasToken == domain.TokenTypeUp {
+	if (s.UseBinanceFastBias || s.UseBinanceOpen1mBias) && activeBiasTok != "" && s.BiasMode == "soft" {
+		if activeBiasTok == domain.TokenTypeUp {
 			reqMoveDown += s.OppositeBiasMinMoveExtraCents
 			reqVelDown *= s.OppositeBiasVelocityMultiplier
-		} else if s.biasToken == domain.TokenTypeDown {
+		} else if activeBiasTok == domain.TokenTypeDown {
 			reqMoveUp += s.OppositeBiasMinMoveExtraCents
 			reqVelUp *= s.OppositeBiasVelocityMultiplier
 		}
 	}
 	allowUp := true
 	allowDown := true
-	if s.UseBinanceOpen1mBias && s.biasToken != "" && s.BiasMode == "hard" {
-		allowUp = s.biasToken == domain.TokenTypeUp
-		allowDown = s.biasToken == domain.TokenTypeDown
+	if (s.UseBinanceFastBias || s.UseBinanceOpen1mBias) && activeBiasTok != "" && s.BiasMode == "hard" {
+		allowUp = activeBiasTok == domain.TokenTypeUp
+		allowDown = activeBiasTok == domain.TokenTypeDown
 	}
 
 	upQualified := allowUp && mUp.ok && mUp.delta >= reqMoveUp && mUp.velocity >= reqVelUp
 	downQualified := allowDown && mDown.ok && mDown.delta >= reqMoveDown && mDown.velocity >= reqVelDown
+
+	// 新信号模式：用 winMet/winner 覆盖 qualified 判定
+	if !strings.EqualFold(s.SignalMode, "legacy") {
+		upQualified = false
+		downQualified = false
+		if winner == domain.TokenTypeUp {
+			upQualified = winMet.ok && winMet.delta >= s.MinMoveCents && winMet.velocity >= s.MinVelocityCentsPerSec
+		} else if winner == domain.TokenTypeDown {
+			downQualified = winMet.ok && winMet.delta >= s.MinMoveCents && winMet.velocity >= s.MinVelocityCentsPerSec
+		}
+	}
 
 	// 📊 实时价格和速率日志
 	var upVelStr, downVelStr string
@@ -340,55 +480,63 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		upPriceStr = fmt.Sprintf("%dc (samples=%d)", upPrice, upSamplesCount)
 	}
 	if downPrice == 0 {
-		downPriceStr = fmt.Sprintf("0c (samples=%d, 未收到DOWN价格更新)", downSamplesCount)
+		if impliedDown > 0 {
+			downPriceStr = fmt.Sprintf("0c (samples=%d, implied=%dc)", downSamplesCount, impliedDown)
+		} else {
+			downPriceStr = fmt.Sprintf("0c (samples=%d, 未收到DOWN价格更新)", downSamplesCount)
+		}
 	} else {
 		downPriceStr = fmt.Sprintf("%dc (samples=%d)", downPrice, downSamplesCount)
 	}
+
+	// 盘口快照（监控/风控）：来自 WS bestBook（零 IO），用于观测 bid/ask 是否镜像与是否过旧
+	bookStr := s.bestBookLogStr(now)
 	
-	log.Infof("📊 [%s] 价格更新: token=%s price=%dc | UP: price=%s %s [req: move>=%dc vel>=%.3f] qualified=%v | DOWN: price=%s %s [req: move>=%dc vel>=%.3f] qualified=%v | market=%s",
+	log.Infof("📊 [%s] 价格更新: token=%s price=%dc | UP: price=%s %s [req: move>=%dc vel>=%.3f] qualified=%v | DOWN: price=%s %s [req: move>=%dc vel>=%.3f] qualified=%v | %s | market=%s",
 		ID, e.TokenType, priceCents,
 		upPriceStr, upVelStr, reqMoveUp, reqVelUp, upQualified,
 		downPriceStr, downVelStr, reqMoveDown, reqVelDown, downQualified,
-		e.Market.Slug)
+		bookStr, e.Market.Slug)
 
-	// 选 winner（与 velocityfollow 同步：可选 PreferHigherPrice）
-	winner := domain.TokenType("")
-	winMet := metrics{}
-	if s.PreferHigherPrice && upQualified && downQualified {
-		if upPrice > downPrice {
-			winner, winMet = domain.TokenTypeUp, mUp
-		} else if downPrice > upPrice {
-			winner, winMet = domain.TokenTypeDown, mDown
-		} else if mUp.velocity >= mDown.velocity {
-			winner, winMet = domain.TokenTypeUp, mUp
-		} else {
-			winner, winMet = domain.TokenTypeDown, mDown
-		}
-		if s.MinPreferredPriceCents > 0 {
-			wp := upPrice
-			if winner == domain.TokenTypeDown {
-				wp = downPrice
-			}
-			if wp < s.MinPreferredPriceCents {
-				winner = ""
-			}
-		}
-	} else {
-		if upQualified {
-			winner, winMet = domain.TokenTypeUp, mUp
-		}
-		if downQualified {
-			if winner == "" || mDown.velocity > winMet.velocity {
+	// 选 winner
+	if strings.EqualFold(s.SignalMode, "legacy") {
+		// legacy：与 velocityfollow 同步：可选 PreferHigherPrice
+		if s.PreferHigherPrice && upQualified && downQualified {
+			if upPrice > downPrice {
+				winner, winMet = domain.TokenTypeUp, mUp
+			} else if downPrice > upPrice {
+				winner, winMet = domain.TokenTypeDown, mDown
+			} else if mUp.velocity >= mDown.velocity {
+				winner, winMet = domain.TokenTypeUp, mUp
+			} else {
 				winner, winMet = domain.TokenTypeDown, mDown
 			}
-		}
-		if s.PreferHigherPrice && winner != "" && s.MinPreferredPriceCents > 0 {
-			wp := upPrice
-			if winner == domain.TokenTypeDown {
-				wp = downPrice
+			if s.MinPreferredPriceCents > 0 {
+				wp := upPrice
+				if winner == domain.TokenTypeDown {
+					wp = downPrice
+				}
+				if wp < s.MinPreferredPriceCents {
+					winner = ""
+				}
 			}
-			if wp < s.MinPreferredPriceCents {
-				winner = ""
+		} else {
+			if upQualified {
+				winner, winMet = domain.TokenTypeUp, mUp
+			}
+			if downQualified {
+				if winner == "" || mDown.velocity > winMet.velocity {
+					winner, winMet = domain.TokenTypeDown, mDown
+				}
+			}
+			if s.PreferHigherPrice && winner != "" && s.MinPreferredPriceCents > 0 {
+				wp := upPrice
+				if winner == domain.TokenTypeDown {
+					wp = downPrice
+				}
+				if wp < s.MinPreferredPriceCents {
+					winner = ""
+				}
 			}
 		}
 	}
@@ -434,8 +582,8 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	unhedgedMax := s.UnhedgedMaxSeconds
 	unhedgedSLCents := s.UnhedgedStopLossCents
 	reorderSec := s.HedgeReorderTimeoutSeconds
-	biasTok := s.biasToken
-	biasReason := s.biasReason
+		biasTok := activeBiasTok
+		biasReason := activeBiasReason
 	currentTradesCount := s.tradesCountThisCycle
 	maxTradesLimit := s.MaxTradesPerCycle
 	s.mu.Unlock()
@@ -630,6 +778,159 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	})
 
 	return nil
+}
+
+func (s *Strategy) pruneSignalLocked(now time.Time) {
+	window := time.Duration(s.WindowSeconds) * time.Second
+	if window <= 0 {
+		window = 10 * time.Second
+	}
+	cut := now.Add(-window)
+	arr := s.signalSamples
+	i := 0
+	for i < len(arr) && arr[i].ts.Before(cut) {
+		i++
+	}
+	if i > 0 {
+		arr = arr[i:]
+	}
+	if len(arr) > 512 {
+		arr = arr[len(arr)-512:]
+	}
+	s.signalSamples = arr
+}
+
+// computeSignalLocked: 单边绝对变化（双向）
+// - delta>0：买 signalTok
+// - delta<0：买 opposite(signalTok)
+// - velocity 用 abs(delta)/dt
+func (s *Strategy) computeSignalLocked(signalTok domain.TokenType) (winner domain.TokenType, met metrics) {
+	arr := s.signalSamples
+	if len(arr) < 2 {
+		return "", metrics{}
+	}
+	first := arr[0]
+	last := arr[len(arr)-1]
+	dt := last.ts.Sub(first.ts).Seconds()
+	if dt <= 0.001 {
+		return "", metrics{}
+	}
+	rawDelta := last.priceCents - first.priceCents
+	if rawDelta == 0 {
+		return "", metrics{}
+	}
+	absDelta := rawDelta
+	if absDelta < 0 {
+		absDelta = -absDelta
+	}
+	vel := float64(absDelta) / dt
+	if math.IsNaN(vel) || math.IsInf(vel, 0) {
+		return "", metrics{}
+	}
+	winner = signalTok
+	if rawDelta < 0 {
+		winner = opposite(signalTok)
+	}
+	return winner, metrics{ok: true, delta: absDelta, seconds: dt, velocity: vel}
+}
+
+func (s *Strategy) bestBookLogStr(now time.Time) string {
+	if s == nil || s.TradingService == nil {
+		return "book=na"
+	}
+	snap, ok := s.TradingService.BestBookSnapshot()
+	if !ok {
+		return "book=na"
+	}
+	// pips -> cents（四舍五入到 1c）
+	p2c := func(p uint16) int {
+		if p == 0 {
+			return 0
+		}
+		return (int(p) + 50) / 100
+	}
+	upBid := p2c(snap.YesBidPips)
+	upAsk := p2c(snap.YesAskPips)
+	downBid := p2c(snap.NoBidPips)
+	downAsk := p2c(snap.NoAskPips)
+	ageMs := int64(0)
+	if !snap.UpdatedAt.IsZero() {
+		ageMs = now.Sub(snap.UpdatedAt).Milliseconds()
+	}
+	// 镜像偏离（监控）：NO_bid 应≈100-YES_ask，NO_ask 应≈100-YES_bid
+	d1 := 0
+	d2 := 0
+	if upAsk > 0 && downBid > 0 {
+		d1 = downBid - (100 - upAsk)
+		if d1 < 0 {
+			d1 = -d1
+		}
+	}
+	if upBid > 0 && downAsk > 0 {
+		d2 = downAsk - (100 - upBid)
+		if d2 < 0 {
+			d2 = -d2
+		}
+	}
+	return fmt.Sprintf("book: UP bid/ask=%d/%d DOWN bid/ask=%d/%d age=%dms mirrorΔ=%d/%d",
+		upBid, upAsk, downBid, downAsk, ageMs, d1, d2)
+}
+
+// signalPriceCentsLocked 根据 signalSource 选择“信号侧价格”。
+// - best_*：来自 WS bestBook（盘口跳变）
+// - event：来自 PriceChangedEvent.NewPrice（或在收到对侧事件时按互补推导）
+func (s *Strategy) signalPriceCentsLocked(now time.Time, signalTok domain.TokenType, e *events.PriceChangedEvent) int {
+	// 1) bestBook 路径（盘口跳变）
+	if strings.HasPrefix(strings.ToLower(s.SignalSource), "best_") && s.TradingService != nil {
+		snap, ok := s.TradingService.BestBookSnapshot()
+		if ok {
+			p2c := func(p uint16) int {
+				if p == 0 {
+					return 0
+				}
+				return (int(p) + 50) / 100
+			}
+			switch strings.ToLower(s.SignalSource) {
+			case "best_bid":
+				if signalTok == domain.TokenTypeUp {
+					return p2c(snap.YesBidPips)
+				}
+				return p2c(snap.NoBidPips)
+			case "best_ask":
+				if signalTok == domain.TokenTypeUp {
+					return p2c(snap.YesAskPips)
+				}
+				return p2c(snap.NoAskPips)
+			default: // best_mid
+				var bid, ask int
+				if signalTok == domain.TokenTypeUp {
+					bid = p2c(snap.YesBidPips)
+					ask = p2c(snap.YesAskPips)
+				} else {
+					bid = p2c(snap.NoBidPips)
+					ask = p2c(snap.NoAskPips)
+				}
+				if bid > 0 && ask > 0 {
+					return (bid + ask + 1) / 2
+				}
+				// 单边盘口时：退回 event（避免永远 0）
+			}
+		}
+	}
+
+	// 2) event 路径（含互补推导）
+	if e == nil {
+		return 0
+	}
+	c := e.NewPrice.ToCents()
+	if c <= 0 || c >= 100 {
+		return 0
+	}
+	if e.TokenType == signalTok {
+		return c
+	}
+	// 收到对侧事件时，用互补推导当前信号侧价格（允许“只盯一边”也能连续更新）
+	return 100 - c
 }
 
 func latestPriceCents(arr []sample) int {

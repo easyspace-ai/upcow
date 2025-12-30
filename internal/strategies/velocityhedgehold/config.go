@@ -27,6 +27,20 @@ type Config struct {
 	MaxTradesPerCycle      int     `yaml:"maxTradesPerCycle" json:"maxTradesPerCycle"`           // 每周期最多触发次数（0=不设限）
 	OncePerCycle           bool    `yaml:"oncePerCycle" json:"oncePerCycle"`                     // [兼容] 已废弃
 
+	// ===== 信号模式（为“绝对变化/双向变化/盘口跳变”服务）=====
+	// signalMode:
+	// - "abs"：单边价格的绝对变化（双向）；delta>0 买 signalToken，delta<0 买 opposite(signalToken)
+	// - "legacy"：旧逻辑（分别计算 UP/DOWN 的上行速度，只在 delta>0 时触发）
+	SignalMode string `yaml:"signalMode" json:"signalMode"`
+	// signalToken: "up" | "down"（仅在 signalMode=abs 时生效；表示你盯哪一边做信号）
+	SignalToken string `yaml:"signalToken" json:"signalToken"`
+	// signalSource:
+	// - "event"：使用 PriceChangedEvent.NewPrice（最后成交价/中间价兜底）
+	// - "best_mid"：使用 WS best_bid/best_ask 的 mid（盘口跳变更敏感）
+	// - "best_ask"：使用 WS best_ask（更贴近 taker 成本）
+	// - "best_bid"：使用 WS best_bid（更贴近可卖出价）
+	SignalSource string `yaml:"signalSource" json:"signalSource"`
+
 	// ===== 对冲定价参数 =====
 	// Hedge 互补挂单价 = 100 - entryPriceCents - hedgeOffsetCents
 	// 理论上：若 Hedge 以该价成交，则两腿总成本 <= 100 - hedgeOffsetCents（cents）。
@@ -66,6 +80,15 @@ type Config struct {
 	OppositeBiasVelocityMultiplier float64 `yaml:"oppositeBiasVelocityMultiplier" json:"oppositeBiasVelocityMultiplier"`
 	OppositeBiasMinMoveExtraCents  int     `yaml:"oppositeBiasMinMoveExtraCents" json:"oppositeBiasMinMoveExtraCents"`
 
+	// 秒级方向 bias：用 Binance 1s Kline 的短窗方向作为“胜率更高一方”的优先判定。
+	// 典型用法：
+	// - BiasMode=hard：只允许顺着 fast bias 方向开仓（更像“胜率过滤器”）
+	// - BiasMode=soft：只对逆势方向提高阈值（更像“降噪/降频”）
+	UseBinanceFastBias     bool `yaml:"useBinanceFastBias" json:"useBinanceFastBias"`
+	FastBiasWindowSeconds  int  `yaml:"fastBiasWindowSeconds" json:"fastBiasWindowSeconds"` // 计算窗口（秒），默认 30
+	FastBiasMinMoveBps     int  `yaml:"fastBiasMinMoveBps" json:"fastBiasMinMoveBps"`       // 触发 bias 的最小底层波动（bps），默认 15
+	FastBiasMinHoldSeconds int  `yaml:"fastBiasMinHoldSeconds" json:"fastBiasMinHoldSeconds"` // bias 最小保持时间（秒），默认 2（抗抖）
+
 	UseBinanceMoveConfirm    bool `yaml:"useBinanceMoveConfirm" json:"useBinanceMoveConfirm"`
 	MoveConfirmWindowSeconds int  `yaml:"moveConfirmWindowSeconds" json:"moveConfirmWindowSeconds"`
 	MinUnderlyingMoveBps     int  `yaml:"minUnderlyingMoveBps" json:"minUnderlyingMoveBps"`
@@ -89,6 +112,30 @@ func (c *Config) Validate() error {
 	}
 	if c.MinVelocityCentsPerSec <= 0 {
 		c.MinVelocityCentsPerSec = float64(c.MinMoveCents) / float64(c.WindowSeconds)
+	}
+
+	// 信号模式默认：按你的需求启用“绝对变化/双向变化”；并默认用盘口 mid 作为信号源
+	if c.SignalMode == "" {
+		c.SignalMode = "abs"
+	}
+	switch c.SignalMode {
+	case "abs", "legacy":
+	default:
+		return fmt.Errorf("signalMode 必须是 abs 或 legacy")
+	}
+	if c.SignalToken == "" {
+		c.SignalToken = "up"
+	}
+	if c.SignalToken != "up" && c.SignalToken != "down" {
+		return fmt.Errorf("signalToken 必须是 up 或 down")
+	}
+	if c.SignalSource == "" {
+		c.SignalSource = "best_mid"
+	}
+	switch c.SignalSource {
+	case "event", "best_mid", "best_ask", "best_bid":
+	default:
+		return fmt.Errorf("signalSource 必须是 event/best_mid/best_ask/best_bid")
 	}
 	if c.CooldownMs <= 0 {
 		c.CooldownMs = 1500
@@ -164,6 +211,18 @@ func (c *Config) Validate() error {
 	if c.OppositeBiasMinMoveExtraCents < 0 {
 		c.OppositeBiasMinMoveExtraCents = 0
 	}
+
+	// Binance fast bias defaults
+	if c.FastBiasWindowSeconds <= 0 {
+		c.FastBiasWindowSeconds = 30
+	}
+	if c.FastBiasMinMoveBps <= 0 {
+		c.FastBiasMinMoveBps = 15
+	}
+	if c.FastBiasMinHoldSeconds <= 0 {
+		c.FastBiasMinHoldSeconds = 2
+	}
+	// fast bias 与 move confirm 独立，不做联动默认值
 
 	// Binance move confirm defaults
 	if c.MoveConfirmWindowSeconds <= 0 {

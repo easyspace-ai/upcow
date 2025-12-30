@@ -103,6 +103,23 @@ type TradingService struct {
 	tradingPaused atomic.Bool
 }
 
+// BestBookSnapshot 返回当前 WS 注入的 top-of-book 快照（用于策略高频监控/风控）。
+// - ok=false 表示尚未有任何有效快照（例如尚未收到 book/price_change 或 WS 未连接）。
+func (s *TradingService) BestBookSnapshot() (marketstate.BestBookSnapshot, bool) {
+	if s == nil {
+		return marketstate.BestBookSnapshot{}, false
+	}
+	book := s.getBestBook()
+	if book == nil {
+		return marketstate.BestBookSnapshot{}, false
+	}
+	snap := book.Load()
+	if snap.UpdatedAt.IsZero() {
+		return snap, false
+	}
+	return snap, true
+}
+
 // NewTradingService 创建新的交易服务（使用 OrderEngine）
 func NewTradingService(clobClient *client.Client, dryRun bool) *TradingService {
 	ctx, cancel := context.WithCancel(context.Background())
