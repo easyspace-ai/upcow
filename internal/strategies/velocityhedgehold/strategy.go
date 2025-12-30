@@ -705,17 +705,18 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		ID, winner, entryAskCents, hedgeLimitCents, winMet.velocity, winMet.delta, winMet.seconds, market.Slug, source, string(biasTok), biasReason, currentTradesCount, maxTradesLimit)
 
 	entryOrder := &domain.Order{
-		MarketSlug:       market.Slug,
-		AssetID:          entryAsset,
-		TokenType:        winner,
-		Side:             types.SideBuy,
-		Price:            entryPrice,
-		Size:             entryShares,
-		OrderType:        types.OrderTypeFAK,
-		IsEntryOrder:     true,
-		SkipBalanceCheck: s.SkipBalanceCheck,
-		Status:           domain.OrderStatusPending,
-		CreatedAt:        time.Now(),
+		MarketSlug:        market.Slug,
+		AssetID:           entryAsset,
+		TokenType:         winner,
+		Side:              types.SideBuy,
+		Price:             entryPrice,
+		Size:              entryShares,
+		OrderType:         types.OrderTypeFAK,
+		IsEntryOrder:      true,
+		SkipBalanceCheck:  s.SkipBalanceCheck,
+		DisableSizeAdjust: (s.StrictOneToOneHedge == nil || *s.StrictOneToOneHedge),
+		Status:            domain.OrderStatusPending,
+		CreatedAt:         time.Now(),
 	}
 	s.attachMarketPrecision(entryOrder)
 	entryRes, entryErr := s.TradingService.PlaceOrder(orderCtx, entryOrder)
@@ -812,19 +813,20 @@ func (s *Strategy) submitHedgeOrder(ctx context.Context, orderCtx context.Contex
 			}
 			if takerAsk.Pips > 0 && hedgeShares*takerAsk.ToDecimal() >= minOrderSize {
 				fak := &domain.Order{
-					MarketSlug:       market.Slug,
-					AssetID:          hedgeAsset,
-					TokenType:        opposite(winner),
-					Side:             types.SideBuy,
-					Price:            takerAsk,
-					Size:             hedgeShares,
-					OrderType:        types.OrderTypeFAK,
-					IsEntryOrder:     false,
-					HedgeOrderID:     &entryOrderID,
-					BypassRiskOff:    true,
-					SkipBalanceCheck: s.SkipBalanceCheck,
-					Status:           domain.OrderStatusPending,
-					CreatedAt:        time.Now(),
+					MarketSlug:        market.Slug,
+					AssetID:           hedgeAsset,
+					TokenType:         opposite(winner),
+					Side:              types.SideBuy,
+					Price:             takerAsk,
+					Size:              hedgeShares,
+					OrderType:         types.OrderTypeFAK,
+					IsEntryOrder:      false,
+					HedgeOrderID:      &entryOrderID,
+					BypassRiskOff:     true,
+					SkipBalanceCheck:  s.SkipBalanceCheck,
+					DisableSizeAdjust: (s.StrictOneToOneHedge == nil || *s.StrictOneToOneHedge),
+					Status:            domain.OrderStatusPending,
+					CreatedAt:         time.Now(),
 				}
 				s.attachMarketPrecision(fak)
 				if placed, e2 := s.TradingService.PlaceOrder(orderCtx, fak); e2 == nil && placed != nil && placed.OrderID != "" {
@@ -846,19 +848,20 @@ func (s *Strategy) submitHedgeOrder(ctx context.Context, orderCtx context.Contex
 	}
 
 	hedgeOrder := &domain.Order{
-		MarketSlug:       market.Slug,
-		AssetID:          hedgeAsset,
-		TokenType:        opposite(winner),
-		Side:             types.SideBuy,
-		Price:            hedgePrice,
-		Size:             hedgeShares,
-		OrderType:        types.OrderTypeGTC,
-		IsEntryOrder:     false,
-		HedgeOrderID:     &entryOrderID,
-		BypassRiskOff:    true,
-		SkipBalanceCheck: s.SkipBalanceCheck,
-		Status:           domain.OrderStatusPending,
-		CreatedAt:        time.Now(),
+		MarketSlug:        market.Slug,
+		AssetID:           hedgeAsset,
+		TokenType:         opposite(winner),
+		Side:              types.SideBuy,
+		Price:             hedgePrice,
+		Size:              hedgeShares,
+		OrderType:         types.OrderTypeGTC,
+		IsEntryOrder:      false,
+		HedgeOrderID:      &entryOrderID,
+		BypassRiskOff:     true,
+		SkipBalanceCheck:  s.SkipBalanceCheck,
+		DisableSizeAdjust: (s.StrictOneToOneHedge == nil || *s.StrictOneToOneHedge),
+		Status:            domain.OrderStatusPending,
+		CreatedAt:         time.Now(),
 	}
 	s.attachMarketPrecision(hedgeOrder)
 	log.Infof("🛡️ [%s] 准备触发 Hedge 订单: side=%s hedgeLimit=%dc size=%.4f entryOrderID=%s entryFilled=%.4f market=%s",

@@ -149,17 +149,18 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 			}
 			if takerAsk.Pips > 0 && remaining*takerAsk.ToDecimal() >= s.minOrderSize {
 				fak := &domain.Order{
-					MarketSlug:       market.Slug,
-					AssetID:          hedgeAsset,
-					TokenType:        hedgeTok,
-					Side:             types.SideBuy,
-					Price:            takerAsk,
-					Size:             remaining,
-					OrderType:        types.OrderTypeFAK,
-					BypassRiskOff:    true,
-					SkipBalanceCheck: s.SkipBalanceCheck,
-					Status:           domain.OrderStatusPending,
-					CreatedAt:        time.Now(),
+					MarketSlug:        market.Slug,
+					AssetID:           hedgeAsset,
+					TokenType:         hedgeTok,
+					Side:              types.SideBuy,
+					Price:             takerAsk,
+					Size:              remaining,
+					OrderType:         types.OrderTypeFAK,
+					BypassRiskOff:     true,
+					SkipBalanceCheck:  s.SkipBalanceCheck,
+					DisableSizeAdjust: (s.StrictOneToOneHedge == nil || *s.StrictOneToOneHedge),
+					Status:            domain.OrderStatusPending,
+					CreatedAt:         time.Now(),
 				}
 				s.attachMarketPrecision(fak)
 				if placed, e := s.TradingService.PlaceOrder(context.Background(), fak); e == nil && placed != nil && placed.OrderID != "" {
@@ -171,17 +172,18 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 		}
 
 		o := &domain.Order{
-			MarketSlug:       market.Slug,
-			AssetID:          hedgeAsset,
-			TokenType:        hedgeTok,
-			Side:             types.SideBuy,
-			Price:            price,
-			Size:             remaining,
-			OrderType:        types.OrderTypeGTC,
-			BypassRiskOff:    true,
-			SkipBalanceCheck: s.SkipBalanceCheck,
-			Status:           domain.OrderStatusPending,
-			CreatedAt:        time.Now(),
+			MarketSlug:        market.Slug,
+			AssetID:           hedgeAsset,
+			TokenType:         hedgeTok,
+			Side:              types.SideBuy,
+			Price:             price,
+			Size:              remaining,
+			OrderType:         types.OrderTypeGTC,
+			BypassRiskOff:     true,
+			SkipBalanceCheck:  s.SkipBalanceCheck,
+			DisableSizeAdjust: (s.StrictOneToOneHedge == nil || *s.StrictOneToOneHedge),
+			Status:            domain.OrderStatusPending,
+			CreatedAt:         time.Now(),
 		}
 		s.attachMarketPrecision(o)
 		placed, err := s.TradingService.PlaceOrder(context.Background(), o)

@@ -273,6 +273,10 @@ func (o *OrdersService) adjustOrderSize(order *domain.Order) *domain.Order {
 	if adjustedOrder.OrderType == "" {
 		adjustedOrder.OrderType = types.OrderTypeGTC
 	}
+	// 严格模式：不做任何自动放大（用于“一对一对冲”）
+	if adjustedOrder.DisableSizeAdjust {
+		return &adjustedOrder
+	}
 
 	// 计算订单所需金额（USDC）
 	requiredAmount := adjustedOrder.Price.ToDecimal() * adjustedOrder.Size

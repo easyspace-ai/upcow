@@ -36,6 +36,10 @@ type Order struct {
 	// BypassRiskOff：绕过 TradingService 的短时 risk-off 冷却（用于风控动作/减仓动作，例如对冲或止损平仓）。
 	// 注意：仅应由策略在“降低风险/退出”路径使用，避免在 risk-off 期间继续加仓。
 	BypassRiskOff bool
+
+	// DisableSizeAdjust：禁用 OrdersService 的自动 size 调整（minOrderSize/minShareSize）。
+	// 用途：在严格“一对一对冲”时，避免系统为了满足最小金额而放大 BUY size，导致过度对冲。
+	DisableSizeAdjust bool
 }
 
 // OrderStatus 订单状态

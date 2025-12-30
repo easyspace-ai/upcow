@@ -47,7 +47,14 @@ func (s *Strategy) monitorHedge(
 		nextReorder = time.Now() // 重启后已过重挂周期：立即允许重挂
 	}
 
-	ticker := time.NewTicker(1 * time.Second)
+	interval := time.Duration(s.HedgeMonitorIntervalMs) * time.Millisecond
+	if interval <= 0 {
+		interval = 1 * time.Second
+	}
+	if interval < 100*time.Millisecond {
+		interval = 100 * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	target := entryFilledSize
@@ -61,7 +68,9 @@ func (s *Strategy) monitorHedge(
 			// 如果持仓已不存在（例如外部手动处理），停止并清掉 hedge 挂单
 			positions := s.TradingService.GetOpenPositionsForMarket(market.Slug)
 			if !hasAnyOpenPosition(positions) {
-				_ = s.TradingService.CancelOrder(context.Background(), hedgeOrderID)
+				if hedgeOrderID != "" {
+					_ = s.TradingService.CancelOrder(context.Background(), hedgeOrderID)
+				}
 				return
 			}
 
@@ -107,7 +116,9 @@ func (s *Strategy) monitorHedge(
 				}
 
 				// 取消旧 hedge 单（best effort）
-				_ = s.TradingService.CancelOrder(context.Background(), hedgeOrderID)
+				if hedgeOrderID != "" {
+					_ = s.TradingService.CancelOrder(context.Background(), hedgeOrderID)
+				}
 
 				reorderCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				_, yesAsk, _, noAsk, source, err := s.TradingService.GetTopOfBook(reorderCtx, market)
@@ -143,7 +154,11 @@ func (s *Strategy) monitorHedge(
 				remaining = adjustSizeForMakerAmountPrecision(remaining, hedgePriceDec)
 				// 若 maker 挂单金额不足，OrdersService 会自动放大 BUY size（破坏“一对一对冲”）。
 				// 因此这里不下 maker 单，优先尝试用 taker(FOK/FAK) 对冲；若仍不满足最小金额则等待。
+				enableTaker := s.EnableHedgeTakerFallback == nil || *s.EnableHedgeTakerFallback
 				if remaining*hedgePriceDec < s.minOrderSize {
+					if !enableTaker {
+						continue
+					}
 					takerAsk := yesAsk
 					if entryToken == domain.TokenTypeUp {
 						takerAsk = noAsk
@@ -157,19 +172,20 @@ func (s *Strategy) monitorHedge(
 						continue
 					}
 					fak := &domain.Order{
-						MarketSlug:       market.Slug,
-						AssetID:          hedgeAsset,
-						TokenType:        opposite(entryToken),
-						Side:             types.SideBuy,
-						Price:            takerAsk,
-						Size:             remaining,
-						OrderType:        types.OrderTypeFAK,
-						IsEntryOrder:     false,
-						HedgeOrderID:     &entryOrderID,
-						BypassRiskOff:    true,
-						SkipBalanceCheck: s.SkipBalanceCheck,
-						Status:           domain.OrderStatusPending,
-						CreatedAt:        time.Now(),
+						MarketSlug:        market.Slug,
+						AssetID:           hedgeAsset,
+						TokenType:         opposite(entryToken),
+						Side:              types.SideBuy,
+						Price:             takerAsk,
+						Size:              remaining,
+						OrderType:         types.OrderTypeFAK,
+						IsEntryOrder:      false,
+						HedgeOrderID:      &entryOrderID,
+						BypassRiskOff:     true,
+						SkipBalanceCheck:  s.SkipBalanceCheck,
+						DisableSizeAdjust: (s.StrictOneToOneHedge == nil || *s.StrictOneToOneHedge),
+						Status:            domain.OrderStatusPending,
+						CreatedAt:         time.Now(),
 					}
 					s.attachMarketPrecision(fak)
 					if placed, e := s.TradingService.PlaceOrder(context.Background(), fak); e == nil && placed != nil && placed.OrderID != "" {
@@ -181,6 +197,9 @@ func (s *Strategy) monitorHedge(
 				}
 				// 若剩余量太小导致无法用 GTC 完成对冲，尝试用 FAK 对冲（不受 minShareSize 限制）。
 				if remaining < s.minShareSize {
+					if !enableTaker {
+						continue
+					}
 					// taker price：对冲侧 ask
 					takerAsk := yesAsk
 					if entryToken == domain.TokenTypeUp {
@@ -197,19 +216,20 @@ func (s *Strategy) monitorHedge(
 						continue
 					}
 					fak := &domain.Order{
-						MarketSlug:       market.Slug,
-						AssetID:          hedgeAsset,
-						TokenType:        opposite(entryToken),
-						Side:             types.SideBuy,
-						Price:            takerAsk,
-						Size:             remaining,
-						OrderType:        types.OrderTypeFAK,
-						IsEntryOrder:     false,
-						HedgeOrderID:     &entryOrderID,
-						BypassRiskOff:    true,
-						SkipBalanceCheck: s.SkipBalanceCheck,
-						Status:           domain.OrderStatusPending,
-						CreatedAt:        time.Now(),
+						MarketSlug:        market.Slug,
+						AssetID:           hedgeAsset,
+						TokenType:         opposite(entryToken),
+						Side:              types.SideBuy,
+						Price:             takerAsk,
+						Size:              remaining,
+						OrderType:         types.OrderTypeFAK,
+						IsEntryOrder:      false,
+						HedgeOrderID:      &entryOrderID,
+						BypassRiskOff:     true,
+						SkipBalanceCheck:  s.SkipBalanceCheck,
+						DisableSizeAdjust: (s.StrictOneToOneHedge == nil || *s.StrictOneToOneHedge),
+						Status:            domain.OrderStatusPending,
+						CreatedAt:         time.Now(),
 					}
 					s.attachMarketPrecision(fak)
 					if placed, e := s.TradingService.PlaceOrder(context.Background(), fak); e == nil && placed != nil && placed.OrderID != "" {
@@ -221,19 +241,20 @@ func (s *Strategy) monitorHedge(
 				}
 
 				newHedge := &domain.Order{
-					MarketSlug:       market.Slug,
-					AssetID:          hedgeAsset,
-					TokenType:        opposite(entryToken),
-					Side:             types.SideBuy,
-					Price:            hedgePrice,
-					Size:             remaining,
-					OrderType:        types.OrderTypeGTC,
-					IsEntryOrder:     false,
-					HedgeOrderID:     &entryOrderID,
-					BypassRiskOff:    true,
-					SkipBalanceCheck: s.SkipBalanceCheck,
-					Status:           domain.OrderStatusPending,
-					CreatedAt:        time.Now(),
+					MarketSlug:        market.Slug,
+					AssetID:           hedgeAsset,
+					TokenType:         opposite(entryToken),
+					Side:              types.SideBuy,
+					Price:             hedgePrice,
+					Size:              remaining,
+					OrderType:         types.OrderTypeGTC,
+					IsEntryOrder:      false,
+					HedgeOrderID:      &entryOrderID,
+					BypassRiskOff:     true,
+					SkipBalanceCheck:  s.SkipBalanceCheck,
+					DisableSizeAdjust: (s.StrictOneToOneHedge == nil || *s.StrictOneToOneHedge),
+					Status:            domain.OrderStatusPending,
+					CreatedAt:         time.Now(),
 				}
 				s.attachMarketPrecision(newHedge)
 				placed, err := s.TradingService.PlaceOrder(context.Background(), newHedge)

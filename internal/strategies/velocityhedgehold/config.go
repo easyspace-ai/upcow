@@ -13,7 +13,7 @@ const ID = "velocityhedgehold"
 //
 // 策略目标：
 // - Hedge 成功：双边等量持仓，持有到结算（不做止盈/主动出场）。
-// - Hedge 超时/未对冲风险过大：执行止损（取消挂单 + SELL FAK 平掉所有持仓）。
+// - 注意：按当前策略版本/配置，本策略默认不做止损（只做对冲与重挂）。
 type Config struct {
 	// ===== 交易参数 =====
 	OrderSize float64 `yaml:"orderSize" json:"orderSize"` // Entry 期望下单 shares（最终以实际成交为准）
@@ -22,6 +22,17 @@ type Config struct {
 	// 用于解决“启动/周期切换时余额尚未初始化，短暂显示 0 导致误拒单”的问题。
 	// 注意：这只是跳过本地检查；若账户确实没钱，交易所仍会拒单。
 	SkipBalanceCheck bool `yaml:"skipBalanceCheck" json:"skipBalanceCheck"`
+
+	// StrictOneToOneHedge：严格“一对一对冲”。
+	// - true：对冲单不会被系统自动放大（禁用 minOrderSize/minShareSize 自动调整）；若达不到最小金额则不下单并持续重试。
+	// - false：允许系统为满足最小金额/最小份额自动调整（可能导致过度对冲）。
+	StrictOneToOneHedge *bool `yaml:"strictOneToOneHedge" json:"strictOneToOneHedge"`
+
+	// EnableHedgeTakerFallback：当剩余对冲量太小无法用 GTC 完成时，是否允许用 FAK(taker) 做小额兜底对冲。
+	EnableHedgeTakerFallback *bool `yaml:"enableHedgeTakerFallback" json:"enableHedgeTakerFallback"`
+
+	// HedgeMonitorIntervalMs：对冲监控轮询间隔（毫秒）。越小对冲越积极，但 IO/撤单会更频繁。
+	HedgeMonitorIntervalMs int `yaml:"hedgeMonitorIntervalMs" json:"hedgeMonitorIntervalMs"`
 
 	// ===== 动量信号参数 =====
 	WindowSeconds          int     `yaml:"windowSeconds" json:"windowSeconds"`                   // 速度计算窗口（秒）
@@ -62,11 +73,9 @@ type Config struct {
 	// 最大过度对冲比例（例如 0.1 表示允许 hedgeShares 最多比 entryFilledSize 多 10%）
 	MaxOverHedgeRatio float64 `yaml:"maxOverHedgeRatio" json:"maxOverHedgeRatio"`
 
-	// ===== 未对冲止损（唯一出场）=====
-	// 从 Entry 成交时刻开始计时，超过该时间仍未完成“等量对冲”，触发止损平仓。
-	UnhedgedMaxSeconds int `yaml:"unhedgedMaxSeconds" json:"unhedgedMaxSeconds"`
-	// 可选：未对冲期间的价格止损（按当前 bestBid 相对入场均价的价差，cents）。
-	// diff = bestBidCents - entryAvgCents；当 diff <= -unhedgedStopLossCents 触发止损。
+	// ===== 未对冲止损（已废弃/禁用）=====
+	// 兼容保留：当前版本按用户要求不做止损，仅做持续对冲。
+	UnhedgedMaxSeconds    int `yaml:"unhedgedMaxSeconds" json:"unhedgedMaxSeconds"`
 	UnhedgedStopLossCents int `yaml:"unhedgedStopLossCents" json:"unhedgedStopLossCents"`
 
 	// ===== 周期尾部保护 =====
@@ -169,6 +178,20 @@ func (c *Config) Validate() error {
 	}
 	if c.HedgeReorderTimeoutSeconds <= 0 {
 		c.HedgeReorderTimeoutSeconds = 30
+	}
+
+	// 对冲行为默认值（按“只对冲/尽量一对一”偏保守）
+	if c.StrictOneToOneHedge == nil {
+		c.StrictOneToOneHedge = boolPtr(true)
+	}
+	if c.EnableHedgeTakerFallback == nil {
+		c.EnableHedgeTakerFallback = boolPtr(true)
+	}
+	if c.HedgeMonitorIntervalMs <= 0 {
+		c.HedgeMonitorIntervalMs = 1000
+	}
+	if c.HedgeMonitorIntervalMs < 100 {
+		c.HedgeMonitorIntervalMs = 100
 	}
 	// 过度对冲控制默认值
 	if c.MaxOverHedgeRatio <= 0 {
