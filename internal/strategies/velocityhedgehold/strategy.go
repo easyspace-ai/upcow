@@ -48,6 +48,13 @@ type Strategy struct {
 	biasToken    domain.TokenType
 	biasReason   string
 
+	// Binance fast bias（秒级）状态：用于“胜率更高的一方”优先过滤
+	fastBiasReady     bool
+	fastBiasToken     domain.TokenType
+	fastBiasReason    string
+	fastBiasRetBps    int
+	fastBiasUpdatedAt time.Time
+
 	// 市场过滤
 	marketSlugPrefix string
 
@@ -136,6 +143,11 @@ func (s *Strategy) OnCycle(ctx context.Context, _ *domain.Market, _ *domain.Mark
 	s.biasReady = false
 	s.biasToken = ""
 	s.biasReason = ""
+	s.fastBiasReady = false
+	s.fastBiasToken = ""
+	s.fastBiasReason = ""
+	s.fastBiasRetBps = 0
+	s.fastBiasUpdatedAt = time.Time{}
 	// 不清 lastTriggerAt：避免周期切换瞬间重复触发
 	log.Infof("🔄 [%s] 周期切换：交易计数器已重置 tradesCount=0 maxTradesPerCycle=%d", ID, s.MaxTradesPerCycle)
 }
@@ -168,7 +180,7 @@ func (s *Strategy) updateCycleStartLocked(market *domain.Market) {
 }
 
 func (s *Strategy) shouldSkipUntilBiasReadyLocked(now time.Time) bool {
-	if !s.UseBinanceOpen1mBias {
+	if !s.UseBinanceOpen1mBias && !s.UseBinanceFastBias {
 		return false
 	}
 	if !s.biasReady && s.cycleStartMs > 0 && s.Open1mMaxWaitSeconds > 0 {
@@ -196,7 +208,80 @@ func (s *Strategy) shouldSkipUntilBiasReadyLocked(now time.Time) bool {
 			}
 		}
 	}
+	// fast bias：只要我们至少计算过一次（无论 token 是否为空），就认为 ready（用于启动期门控）
+	if s.UseBinanceFastBias && s.fastBiasReady {
+		return false
+	}
 	return s.RequireBiasReady && !s.biasReady
+}
+
+// activeBiasLocked 选择当前使用的 bias（优先 fast bias，其次 open1m bias）。
+func (s *Strategy) activeBiasLocked(now time.Time) (domain.TokenType, string) {
+	if s == nil {
+		return "", ""
+	}
+	if s.UseBinanceFastBias && s.fastBiasToken != "" {
+		return s.fastBiasToken, s.fastBiasReason
+	}
+	if s.UseBinanceOpen1mBias && s.biasToken != "" {
+		return s.biasToken, s.biasReason
+	}
+	return "", ""
+}
+
+// updateFastBiasLocked 使用 Binance 1s Kline 计算短窗方向 bias（用于“胜率更高一方”过滤）。
+func (s *Strategy) updateFastBiasLocked(now time.Time) {
+	if s == nil || !s.UseBinanceFastBias || s.BinanceFuturesKlines == nil {
+		return
+	}
+	// 标记 ready：只要尝试过计算（避免 RequireBiasReady 卡死在“永远等不到 1m 收盘”）
+	s.fastBiasReady = true
+
+	win := s.FastBiasWindowSeconds
+	if win <= 0 {
+		win = 30
+	}
+	minBps := s.FastBiasMinMoveBps
+	if minBps <= 0 {
+		minBps = 15
+	}
+	hold := s.FastBiasMinHoldSeconds
+	if hold <= 0 {
+		hold = 2
+	}
+
+	cur, okCur := s.BinanceFuturesKlines.Latest("1s")
+	past, okPast := s.BinanceFuturesKlines.NearestAtOrBefore("1s", now.UnixMilli()-int64(win)*1000)
+	if !okCur || !okPast || past.Close <= 0 || cur.Close <= 0 {
+		return
+	}
+
+	ret := (cur.Close - past.Close) / past.Close
+	retBps := int(math.Abs(ret)*10000 + 0.5)
+	dir := domain.TokenTypeDown
+	if ret >= 0 {
+		dir = domain.TokenTypeUp
+	}
+
+	// 抗抖：bias 至少保持 hold 秒，避免 1s 噪声来回翻转造成过度交易
+	if s.fastBiasToken != "" && !s.fastBiasUpdatedAt.IsZero() && now.Sub(s.fastBiasUpdatedAt) < time.Duration(hold)*time.Second {
+		// 在 hold 时间内，只更新强度，不换方向（除非完全清空）
+		s.fastBiasRetBps = retBps
+		s.fastBiasReason = "fast_bias_hold"
+		return
+	}
+
+	if retBps >= minBps {
+		s.fastBiasToken = dir
+		s.fastBiasReason = "fast_bias_ok"
+		s.fastBiasRetBps = retBps
+		s.fastBiasUpdatedAt = now
+	} else {
+		s.fastBiasToken = ""
+		s.fastBiasReason = "fast_bias_too_small"
+		s.fastBiasRetBps = retBps
+		s.fastBiasUpdatedAt = now
+	}
 }
 
 func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) error {
@@ -239,6 +324,8 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		s.firstSeenAt = now
 	}
 	s.updateCycleStartLocked(e.Market)
+	// 秒级 fast bias：每次 tick 都尝试更新（不要求“等到 1m 收盘”）
+	s.updateFastBiasLocked(now)
 	if s.shouldSkipUntilBiasReadyLocked(now) {
 		s.mu.Unlock()
 		return nil
@@ -334,25 +421,28 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		impliedDown = 100 - upPrice
 	}
 
+	// 选择当前“方向 bias”（优先 fast bias，其次 open1m bias）
+	activeBiasTok, activeBiasReason := s.activeBiasLocked(now)
+
 	// bias 调整阈值（soft）或直接只允许 bias 方向（hard）
 	reqMoveUp := s.MinMoveCents
 	reqMoveDown := s.MinMoveCents
 	reqVelUp := s.MinVelocityCentsPerSec
 	reqVelDown := s.MinVelocityCentsPerSec
-	if s.UseBinanceOpen1mBias && s.biasToken != "" && s.BiasMode == "soft" {
-		if s.biasToken == domain.TokenTypeUp {
+	if (s.UseBinanceFastBias || s.UseBinanceOpen1mBias) && activeBiasTok != "" && s.BiasMode == "soft" {
+		if activeBiasTok == domain.TokenTypeUp {
 			reqMoveDown += s.OppositeBiasMinMoveExtraCents
 			reqVelDown *= s.OppositeBiasVelocityMultiplier
-		} else if s.biasToken == domain.TokenTypeDown {
+		} else if activeBiasTok == domain.TokenTypeDown {
 			reqMoveUp += s.OppositeBiasMinMoveExtraCents
 			reqVelUp *= s.OppositeBiasVelocityMultiplier
 		}
 	}
 	allowUp := true
 	allowDown := true
-	if s.UseBinanceOpen1mBias && s.biasToken != "" && s.BiasMode == "hard" {
-		allowUp = s.biasToken == domain.TokenTypeUp
-		allowDown = s.biasToken == domain.TokenTypeDown
+	if (s.UseBinanceFastBias || s.UseBinanceOpen1mBias) && activeBiasTok != "" && s.BiasMode == "hard" {
+		allowUp = activeBiasTok == domain.TokenTypeUp
+		allowDown = activeBiasTok == domain.TokenTypeDown
 	}
 
 	upQualified := allowUp && mUp.ok && mUp.delta >= reqMoveUp && mUp.velocity >= reqVelUp
@@ -492,8 +582,8 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	unhedgedMax := s.UnhedgedMaxSeconds
 	unhedgedSLCents := s.UnhedgedStopLossCents
 	reorderSec := s.HedgeReorderTimeoutSeconds
-	biasTok := s.biasToken
-	biasReason := s.biasReason
+		biasTok := activeBiasTok
+		biasReason := activeBiasReason
 	currentTradesCount := s.tradesCountThisCycle
 	maxTradesLimit := s.MaxTradesPerCycle
 	s.mu.Unlock()

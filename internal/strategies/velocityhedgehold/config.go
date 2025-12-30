@@ -80,6 +80,15 @@ type Config struct {
 	OppositeBiasVelocityMultiplier float64 `yaml:"oppositeBiasVelocityMultiplier" json:"oppositeBiasVelocityMultiplier"`
 	OppositeBiasMinMoveExtraCents  int     `yaml:"oppositeBiasMinMoveExtraCents" json:"oppositeBiasMinMoveExtraCents"`
 
+	// 秒级方向 bias：用 Binance 1s Kline 的短窗方向作为“胜率更高一方”的优先判定。
+	// 典型用法：
+	// - BiasMode=hard：只允许顺着 fast bias 方向开仓（更像“胜率过滤器”）
+	// - BiasMode=soft：只对逆势方向提高阈值（更像“降噪/降频”）
+	UseBinanceFastBias     bool `yaml:"useBinanceFastBias" json:"useBinanceFastBias"`
+	FastBiasWindowSeconds  int  `yaml:"fastBiasWindowSeconds" json:"fastBiasWindowSeconds"` // 计算窗口（秒），默认 30
+	FastBiasMinMoveBps     int  `yaml:"fastBiasMinMoveBps" json:"fastBiasMinMoveBps"`       // 触发 bias 的最小底层波动（bps），默认 15
+	FastBiasMinHoldSeconds int  `yaml:"fastBiasMinHoldSeconds" json:"fastBiasMinHoldSeconds"` // bias 最小保持时间（秒），默认 2（抗抖）
+
 	UseBinanceMoveConfirm    bool `yaml:"useBinanceMoveConfirm" json:"useBinanceMoveConfirm"`
 	MoveConfirmWindowSeconds int  `yaml:"moveConfirmWindowSeconds" json:"moveConfirmWindowSeconds"`
 	MinUnderlyingMoveBps     int  `yaml:"minUnderlyingMoveBps" json:"minUnderlyingMoveBps"`
@@ -202,6 +211,18 @@ func (c *Config) Validate() error {
 	if c.OppositeBiasMinMoveExtraCents < 0 {
 		c.OppositeBiasMinMoveExtraCents = 0
 	}
+
+	// Binance fast bias defaults
+	if c.FastBiasWindowSeconds <= 0 {
+		c.FastBiasWindowSeconds = 30
+	}
+	if c.FastBiasMinMoveBps <= 0 {
+		c.FastBiasMinMoveBps = 15
+	}
+	if c.FastBiasMinHoldSeconds <= 0 {
+		c.FastBiasMinHoldSeconds = 2
+	}
+	// fast bias 与 move confirm 独立，不做联动默认值
 
 	// Binance move confirm defaults
 	if c.MoveConfirmWindowSeconds <= 0 {
