@@ -141,25 +141,32 @@ func (ctl *AutoMergeController) MaybeAutoMerge(
 		return
 	}
 
-	txHash, err := ts.MergeCompleteSetsViaRelayer(ctx, market.ConditionID, amount, cfg.Metadata)
-	if err != nil {
-		logf("⚠️ autoMerge failed: market=%s amount=%.6f err=%v", market.Slug, amount, err)
-		return
-	}
-	logf("✅ autoMerge submitted: market=%s amount=%.6f complete=%.6f tx=%s", market.Slug, amount, complete, txHash)
+	// 异步执行合并操作，避免阻塞价格事件处理
+	go func() {
+		// 使用独立的 context，避免使用已取消的 ctx
+		mergeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 
-	// best-effort reconcile (Data API lags; optional polling)
-	if cfg.ReconcileAfterMerge {
-		_ = ts.ReconcileMarketPositionsFromDataAPI(ctx, market)
-		maxWait := time.Duration(cfg.ReconcileMaxWaitSeconds) * time.Second
-		if maxWait <= 0 {
+		txHash, err := ts.MergeCompleteSetsViaRelayer(mergeCtx, market.ConditionID, amount, cfg.Metadata)
+		if err != nil {
+			logf("⚠️ autoMerge failed: market=%s amount=%.6f err=%v", market.Slug, amount, err)
 			return
 		}
-		deadline := time.Now().Add(maxWait)
-		for time.Now().Before(deadline) {
-			time.Sleep(3 * time.Second)
-			_ = ts.ReconcileMarketPositionsFromDataAPI(ctx, market)
+		logf("✅ autoMerge submitted: market=%s amount=%.6f complete=%.6f tx=%s", market.Slug, amount, complete, txHash)
+
+		// best-effort reconcile (Data API lags; optional polling)
+		if cfg.ReconcileAfterMerge {
+			_ = ts.ReconcileMarketPositionsFromDataAPI(mergeCtx, market)
+			maxWait := time.Duration(cfg.ReconcileMaxWaitSeconds) * time.Second
+			if maxWait <= 0 {
+				return
+			}
+			deadline := time.Now().Add(maxWait)
+			for time.Now().Before(deadline) {
+				time.Sleep(3 * time.Second)
+				_ = ts.ReconcileMarketPositionsFromDataAPI(mergeCtx, market)
+			}
 		}
-	}
+	}()
 }
 

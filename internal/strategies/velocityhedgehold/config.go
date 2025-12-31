@@ -23,6 +23,16 @@ type Config struct {
 	// 注意：这只是跳过本地检查；若账户确实没钱，交易所仍会拒单。
 	SkipBalanceCheck bool `yaml:"skipBalanceCheck" json:"skipBalanceCheck"`
 
+	// MaxTotalCapitalUSDC：最大总资金限制（USDC）。
+	// 当总持仓价值（UP + DOWN）超过此限制时，禁止开新单。
+	// 0 表示不限制。
+	MaxTotalCapitalUSDC float64 `yaml:"maxTotalCapitalUSDC" json:"maxTotalCapitalUSDC"`
+
+	// RequireFullyHedgedBeforeNewEntry：是否要求完全对冲后才能开新单。
+	// true：必须一对完全锁定后才能开新单（更安全，避免未对冲持仓累积）
+	// false：允许在有未对冲持仓时继续开新单（原逻辑）
+	RequireFullyHedgedBeforeNewEntry bool `yaml:"requireFullyHedgedBeforeNewEntry" json:"requireFullyHedgedBeforeNewEntry"`
+
 	// StrictOneToOneHedge：严格“一对一对冲”。
 	// - true：对冲单不会被系统自动放大（禁用 minOrderSize/minShareSize 自动调整）；若达不到最小金额则不下单并持续重试。
 	// - false：允许系统为满足最小金额/最小份额自动调整（可能导致过度对冲）。
@@ -42,6 +52,11 @@ type Config struct {
 	WarmupMs               int     `yaml:"warmupMs" json:"warmupMs"`                             // 周期切换/启动预热（毫秒）
 	MaxTradesPerCycle      int     `yaml:"maxTradesPerCycle" json:"maxTradesPerCycle"`           // 每周期最多触发次数（0=不设限）
 	OncePerCycle           bool    `yaml:"oncePerCycle" json:"oncePerCycle"`                     // [兼容] 已废弃
+
+	// ===== 波动过滤（避免在波动太大时开仓，降低对冲失败风险）=====
+	// 当价格变化速度或幅度超过这些阈值时，跳过开仓
+	MaxVelocityCentsPerSec float64 `yaml:"maxVelocityCentsPerSec" json:"maxVelocityCentsPerSec"` // 最大速度（分/秒），超过此速度不开仓（0=不限制）
+	MaxMoveCents            int     `yaml:"maxMoveCents" json:"maxMoveCents"`                     // 最大变化幅度（分），超过此幅度不开仓（0=不限制）
 
 	// ===== 信号模式（为“绝对变化/双向变化/盘口跳变”服务）=====
 	// signalMode:
@@ -84,6 +99,19 @@ type Config struct {
 	// ===== 价格优先选择（当 UP/DOWN 都满足速度条件） =====
 	PreferHigherPrice      bool `yaml:"preferHigherPrice" json:"preferHigherPrice"`
 	MinPreferredPriceCents int  `yaml:"minPreferredPriceCents" json:"minPreferredPriceCents"`
+
+	// ===== 涨势方向选择 =====
+	// BullishPriceThresholdCents: 定义"涨"的价格阈值（cents）
+	// - 当 UP 价格 >= 此阈值时，认为 UP 是"涨"的，优先买 UP
+	// - 当 UP 价格 <= (100 - 此阈值) 时，认为 DOWN 是"涨"的，优先买 DOWN
+	// - 0 表示不启用此逻辑，使用 signalToken 配置
+	// 例如：设置为 56 表示价格 >= 56 cents 的一边是"涨"的
+	BullishPriceThresholdCents int `yaml:"bullishPriceThresholdCents" json:"bullishPriceThresholdCents"`
+
+	// ===== 价格范围过滤 =====
+	// 当价格低于 MinPriceCents 或高于 MaxPriceCents 时，不开仓
+	MinPriceCents int `yaml:"minPriceCents" json:"minPriceCents"` // 最小价格（cents），低于此价格不开仓（0=不限制）
+	MaxPriceCents int `yaml:"maxPriceCents" json:"maxPriceCents"` // 最大价格（cents），高于此价格不开仓（0=不限制）
 
 	// ===== 市场质量过滤 =====
 	EnableMarketQualityGate     *bool `yaml:"enableMarketQualityGate" json:"enableMarketQualityGate"`
@@ -134,6 +162,13 @@ func (c *Config) Validate() error {
 	}
 	if c.MinVelocityCentsPerSec <= 0 {
 		c.MinVelocityCentsPerSec = float64(c.MinMoveCents) / float64(c.WindowSeconds)
+	}
+	// 波动过滤默认值：默认启用，避免在波动太大时开仓
+	if c.MaxVelocityCentsPerSec <= 0 {
+		c.MaxVelocityCentsPerSec = 2.0 // 默认最大速度 2.0 c/s
+	}
+	if c.MaxMoveCents <= 0 {
+		c.MaxMoveCents = 10 // 默认最大变化幅度 10 cents
 	}
 
 	// 信号模式默认：按你的需求启用“绝对变化/双向变化”；并默认用盘口 mid 作为信号源
@@ -278,5 +313,40 @@ func (c *Config) Validate() error {
 	if c.PreferHigherPrice && c.MinPreferredPriceCents <= 0 {
 		c.MinPreferredPriceCents = 50
 	}
+
+	// 涨势方向选择默认值：不启用（0表示不启用）
+	// BullishPriceThresholdCents 默认为 0，表示不启用涨势方向选择
+	// 如果设置为 56，表示价格 >= 56 cents 的一边是"涨"的
+	if c.BullishPriceThresholdCents < 0 {
+		c.BullishPriceThresholdCents = 0
+	}
+	if c.BullishPriceThresholdCents > 0 && (c.BullishPriceThresholdCents < 1 || c.BullishPriceThresholdCents >= 100) {
+		return fmt.Errorf("bullishPriceThresholdCents 必须在 1-99 之间")
+	}
+
+	// 价格范围过滤默认值：不限制（0表示不限制）
+	// MinPriceCents 和 MaxPriceCents 默认为 0，表示不启用价格范围过滤
+	if c.MinPriceCents < 0 {
+		c.MinPriceCents = 0
+	}
+	if c.MaxPriceCents < 0 {
+		c.MaxPriceCents = 0
+	}
+	if c.MaxPriceCents > 0 && c.MinPriceCents > 0 && c.MaxPriceCents <= c.MinPriceCents {
+		return fmt.Errorf("maxPriceCents (%d) 必须大于 minPriceCents (%d)", c.MaxPriceCents, c.MinPriceCents)
+	}
+
+	// 总资金限制默认值：不限制（0表示不限制）
+	if c.MaxTotalCapitalUSDC < 0 {
+		c.MaxTotalCapitalUSDC = 0
+	}
+
+	// 默认启用"完全对冲后才能开新单"（更安全）
+	// 如果未设置，默认启用
+	if !c.RequireFullyHedgedBeforeNewEntry {
+		// 默认启用，但允许通过配置禁用
+		c.RequireFullyHedgedBeforeNewEntry = true
+	}
+
 	return nil
 }

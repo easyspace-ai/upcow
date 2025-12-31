@@ -31,17 +31,47 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 
 	target := math.Max(upSize, downSize)
 	if target <= 0 {
+		log.Debugf("🔍 [%s] manageExistingExposure: 返回 true (target<=0), upSize=%.4f downSize=%.4f market=%s", ID, upSize, downSize, market.Slug)
 		return true
 	}
 
 	// 1) 已对冲：两边数量几乎相等 -> 清理残留挂单，避免额外被动成交
-	// 注意：返回 false，让 maxTradesPerCycle 来控制是否继续开新仓
-	// 这样即使已对冲，只要 tradesCount < maxTradesPerCycle，仍可以继续开新仓
+	// 注意：如果 RequireFullyHedgedBeforeNewEntry=true，需要检查是否有未成交的对冲订单
 	if upSize > 0 && downSize > 0 && nearlyEqualShares(upSize, downSize) {
+		// 如果要求完全对冲后才能开新单，检查是否有未成交的对冲订单
+		if s.RequireFullyHedgedBeforeNewEntry {
+			orders := s.TradingService.GetActiveOrders()
+			hasPendingHedgeOrder := false
+			for _, o := range orders {
+				if o == nil || o.OrderID == "" {
+					continue
+				}
+				if o.MarketSlug != market.Slug {
+					continue
+				}
+				if o.Side != types.SideBuy {
+					continue
+				}
+				if o.OrderType != types.OrderTypeGTC {
+					continue
+				}
+				// 检查是否有未成交的对冲订单（Open、Pending、Partial 状态）
+				if !o.IsFinalStatus() && o.Status != domain.OrderStatusCanceling {
+					hasPendingHedgeOrder = true
+					log.Debugf("🔍 [%s] manageExistingExposure: 发现未成交的对冲订单: orderID=%s status=%s market=%s", ID, o.OrderID, o.Status, market.Slug)
+					break
+				}
+			}
+			if hasPendingHedgeOrder {
+				log.Infof("🚫 [%s] manageExistingExposure: 有未成交的对冲订单且 RequireFullyHedgedBeforeNewEntry=true，禁止开新单: upSize=%.4f downSize=%.4f market=%s", ID, upSize, downSize, market.Slug)
+				return true
+			}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		s.TradingService.CancelOrdersForMarket(ctx, market.Slug)
 		// 返回 false，允许 maxTradesPerCycle 控制是否继续开新仓
+		log.Debugf("🔍 [%s] manageExistingExposure: 返回 false (已对冲), upSize=%.4f downSize=%.4f market=%s", ID, upSize, downSize, market.Slug)
 		return false
 	}
 
@@ -58,7 +88,40 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 	}
 	remaining := target - hedgedSoFar
 	if remaining <= 0 {
+		// 已完全对冲：检查是否有未成交的对冲订单
+		if s.RequireFullyHedgedBeforeNewEntry {
+			orders := s.TradingService.GetActiveOrders()
+			hasPendingHedgeOrder := false
+			for _, o := range orders {
+				if o == nil || o.OrderID == "" {
+					continue
+				}
+				if o.MarketSlug != market.Slug {
+					continue
+				}
+				if o.Side != types.SideBuy {
+					continue
+				}
+				if o.TokenType != hedgeTok {
+					continue
+				}
+				if o.OrderType != types.OrderTypeGTC {
+					continue
+				}
+				// 检查是否有未成交的对冲订单（Open、Pending、Partial 状态）
+				if !o.IsFinalStatus() && o.Status != domain.OrderStatusCanceling {
+					hasPendingHedgeOrder = true
+					log.Debugf("🔍 [%s] manageExistingExposure: 发现未成交的对冲订单: orderID=%s status=%s market=%s", ID, o.OrderID, o.Status, market.Slug)
+					break
+				}
+			}
+			if hasPendingHedgeOrder {
+				log.Infof("🚫 [%s] manageExistingExposure: 有未成交的对冲订单且 RequireFullyHedgedBeforeNewEntry=true，禁止开新单: entryTok=%s remaining=%.4f market=%s", ID, entryTok, remaining, market.Slug)
+				return true
+			}
+		}
 		// 已完全对冲：返回 false，让 maxTradesPerCycle 控制是否继续开新仓
+		log.Debugf("🔍 [%s] manageExistingExposure: 返回 false (已完全对冲), entryTok=%s remaining=%.4f market=%s", ID, entryTok, remaining, market.Slug)
 		return false
 	}
 
@@ -81,9 +144,11 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 		return true
 	}
 
-	// 找到现存 hedge 买单（若存在多个，保留一个，其他撤掉）
+	// 找到现存 hedge 买单（若存在多个，全部取消，重新挂单）
+	// 注意：这里不保留旧订单，因为价格可能已经变化，统一重新挂单更安全
 	hedgeOrderID := ""
 	orders := s.TradingService.GetActiveOrders()
+	canceledCount := 0
 	for _, o := range orders {
 		if o == nil || o.OrderID == "" {
 			continue
@@ -100,23 +165,67 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 		if o.OrderType != types.OrderTypeGTC {
 			continue
 		}
-		if hedgeOrderID == "" {
-			hedgeOrderID = o.OrderID
+		// 只取消可取消状态的订单
+		if o.IsFinalStatus() || o.Status == domain.OrderStatusCanceling {
 			continue
 		}
-		// 多余挂单撤掉，避免意外加仓
-		go func(id string) { _ = s.TradingService.CancelOrder(context.Background(), id) }(o.OrderID)
+		// 同步取消订单，确保取消完成
+		cancelCtx, cancelCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := s.TradingService.CancelOrder(cancelCtx, o.OrderID); err != nil {
+			log.Debugf("🔍 [%s] manageExistingExposure: 取消旧 hedge 订单失败: orderID=%s err=%v market=%s", ID, o.OrderID, err, market.Slug)
+		} else {
+			canceledCount++
+			log.Debugf("🔍 [%s] manageExistingExposure: 已取消旧 hedge 订单: orderID=%s price=%dc market=%s", ID, o.OrderID, o.Price.ToCents(), market.Slug)
+		}
+		cancelCancel()
+	}
+	// 如果取消了订单，等待状态更新
+	if canceledCount > 0 {
+		time.Sleep(300 * time.Millisecond)
 	}
 
 	hedgeAsset := market.GetAssetID(hedgeTok)
 
-	// 若没有 hedge 单，则立即挂一张（不依赖 goroutine）
-	if hedgeOrderID == "" {
-		// 需要对侧 ask（防穿价）
+	// 重新检查，确保没有残留的 hedge 订单（防止重复挂单）
+	// 注意：即使之前找到了 hedgeOrderID，我们也取消它并重新挂单，确保价格是最新的
+	verifyOrders := s.TradingService.GetActiveOrders()
+	for _, o := range verifyOrders {
+		if o == nil || o.OrderID == "" {
+			continue
+		}
+		if o.MarketSlug != market.Slug {
+			continue
+		}
+		if o.Side != types.SideBuy {
+			continue
+		}
+		if o.TokenType != hedgeTok {
+			continue
+		}
+		if o.OrderType != types.OrderTypeGTC {
+			continue
+		}
+		if !o.IsFinalStatus() && o.Status != domain.OrderStatusCanceling {
+			// 仍有未取消的订单，强制取消
+			cancelCtx, cancelCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			s.TradingService.CancelOrder(cancelCtx, o.OrderID)
+			cancelCancel()
+			log.Warnf("⚠️ [%s] manageExistingExposure: 发现残留 hedge 订单，已强制取消: orderID=%s market=%s", ID, o.OrderID, market.Slug)
+		}
+	}
+	// 再等待一下，确保取消完成
+	if canceledCount > 0 {
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// 统一重新挂单（确保价格是最新的，避免重复挂单）
+	// 需要对侧 ask（防穿价）
+	{
 		bookCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_, yesAsk, _, noAsk, _, err := s.TradingService.GetTopOfBook(bookCtx, market)
 		if err != nil {
+			log.Debugf("🔍 [%s] manageExistingExposure: 返回 true (获取盘口失败), err=%v market=%s", ID, err, market.Slug)
 			return true
 		}
 		oppAskCents := yesAsk.ToCents()
@@ -129,6 +238,7 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 			maxHedgeCents = 100 - entryPriceCents - s.HedgeOffsetCents
 		}
 		if maxHedgeCents <= 0 {
+			log.Debugf("🔍 [%s] manageExistingExposure: 返回 true (maxHedgeCents<=0), entryPriceCents=%d hedgeOffset=%d market=%s", ID, entryPriceCents, s.HedgeOffsetCents, market.Slug)
 			return true
 		}
 		limitCents := maxHedgeCents
@@ -136,6 +246,7 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 			limitCents = oppAskCents - 1
 		}
 		if limitCents <= 0 || limitCents >= 100 {
+			log.Debugf("🔍 [%s] manageExistingExposure: 返回 true (limitCents无效), limitCents=%d maxHedgeCents=%d oppAskCents=%d market=%s", ID, limitCents, maxHedgeCents, oppAskCents, market.Slug)
 			return true
 		}
 		price := domain.Price{Pips: limitCents * 100}
@@ -165,9 +276,30 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 				s.attachMarketPrecision(fak)
 				if placed, e := s.TradingService.PlaceOrder(context.Background(), fak); e == nil && placed != nil && placed.OrderID != "" {
 					hedgeOrderID = placed.OrderID
+					log.Infof("✅ [%s] manageExistingExposure: 已创建 FAK hedge 订单: orderID=%s price=%dc size=%.4f market=%s", ID, placed.OrderID, takerAsk.ToCents(), remaining, market.Slug)
+				} else {
+					log.Warnf("⚠️ [%s] manageExistingExposure: 创建 FAK hedge 订单失败: err=%v size=%.4f market=%s", ID, e, remaining, market.Slug)
+					// 如果要求完全对冲后才能开新单，且 FAK 对冲订单创建失败，禁止开新单
+					if s.RequireFullyHedgedBeforeNewEntry {
+						log.Warnf("🚫 [%s] manageExistingExposure: FAK 对冲订单创建失败，且 RequireFullyHedgedBeforeNewEntry=true，禁止开新单: remaining=%.4f market=%s", ID, remaining, market.Slug)
+						return true
+					}
 				}
 			}
+			// 如果要求完全对冲后才能开新单，且有未对冲持仓，禁止开新单
+			// 但是，如果 remaining 非常小（小于容差阈值），可以认为已经基本对冲完成
+			// 容差阈值：remaining < 0.1 shares 或 remaining < target * 0.01 (1%)
+			remainingTolerance := math.Max(0.1, target*0.01)
+			if s.RequireFullyHedgedBeforeNewEntry && remaining > remainingTolerance && hedgeOrderID == "" {
+				log.Warnf("🚫 [%s] manageExistingExposure: 无法用maker完成对冲且 RequireFullyHedgedBeforeNewEntry=true，禁止开新单: remaining=%.4f tolerance=%.4f market=%s", ID, remaining, remainingTolerance, market.Slug)
+				return true
+			}
+			if s.RequireFullyHedgedBeforeNewEntry && remaining > 0 && remaining <= remainingTolerance && hedgeOrderID == "" {
+				log.Infof("✅ [%s] manageExistingExposure: remaining=%.4f 小于容差阈值 %.4f，视为已基本对冲完成，允许开新单: market=%s", ID, remaining, remainingTolerance, market.Slug)
+				// 不返回 true，继续执行后续逻辑，允许开新单
+			}
 			// 无论是否成功，都不止损；交给后续 tick/监控继续尝试
+			log.Debugf("🔍 [%s] manageExistingExposure: 返回 true (无法用maker完成对冲), remaining=%.4f minOrderSize=%.2f minShareSize=%.2f market=%s", ID, remaining, s.minOrderSize, s.minShareSize, market.Slug)
 			return true
 		}
 
@@ -187,8 +319,16 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 		}
 		s.attachMarketPrecision(o)
 		placed, err := s.TradingService.PlaceOrder(context.Background(), o)
-		if err == nil && placed != nil {
+		if err == nil && placed != nil && placed.OrderID != "" {
 			hedgeOrderID = placed.OrderID
+			log.Infof("✅ [%s] manageExistingExposure: 已创建新 hedge 订单: orderID=%s price=%dc size=%.4f market=%s", ID, placed.OrderID, limitCents, remaining, market.Slug)
+		} else if err != nil {
+			log.Warnf("⚠️ [%s] manageExistingExposure: 创建 hedge 订单失败: err=%v price=%dc size=%.4f market=%s", ID, err, limitCents, remaining, market.Slug)
+			// 如果要求完全对冲后才能开新单，且对冲订单创建失败，禁止开新单
+			if s.RequireFullyHedgedBeforeNewEntry {
+				log.Warnf("🚫 [%s] manageExistingExposure: 对冲订单创建失败，且 RequireFullyHedgedBeforeNewEntry=true，禁止开新单: remaining=%.4f market=%s", ID, remaining, market.Slug)
+				return true
+			}
 		}
 	}
 
@@ -199,8 +339,22 @@ func (s *Strategy) manageExistingExposure(now time.Time, market *domain.Market) 
 		})
 	}
 
+	// 如果要求完全对冲后才能开新单，且有未对冲持仓，禁止开新单
+	// 但是，如果 remaining 非常小（小于容差阈值），可以认为已经基本对冲完成
+	// 容差阈值：remaining < 0.1 shares 或 remaining < target * 0.01 (1%)
+	remainingTolerance := math.Max(0.1, target*0.01)
+	if s.RequireFullyHedgedBeforeNewEntry && remaining > remainingTolerance {
+		log.Infof("🚫 [%s] manageExistingExposure: 有未对冲持仓且 RequireFullyHedgedBeforeNewEntry=true，禁止开新单: entryTok=%s remaining=%.4f tolerance=%.4f hedgeOrderID=%s market=%s", ID, entryTok, remaining, remainingTolerance, hedgeOrderID, market.Slug)
+		return true
+	}
+	if s.RequireFullyHedgedBeforeNewEntry && remaining > 0 && remaining <= remainingTolerance {
+		log.Infof("✅ [%s] manageExistingExposure: remaining=%.4f 小于容差阈值 %.4f，视为已基本对冲完成，允许开新单: entryTok=%s hedgeOrderID=%s market=%s", ID, remaining, remainingTolerance, entryTok, hedgeOrderID, market.Slug)
+		// 不返回 true，继续执行后续逻辑，允许开新单
+	}
+
 	// 返回 false，让 maxTradesPerCycle 控制是否继续开新仓
 	// 即使有未对冲持仓，只要 tradesCount < maxTradesPerCycle，仍可以继续开新仓
+	log.Debugf("🔍 [%s] manageExistingExposure: 返回 false (已处理未对冲持仓), entryTok=%s remaining=%.4f hedgeOrderID=%s market=%s", ID, entryTok, remaining, hedgeOrderID, market.Slug)
 	return false
 }
 

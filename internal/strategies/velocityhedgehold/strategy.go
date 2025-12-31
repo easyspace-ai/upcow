@@ -72,6 +72,11 @@ type Strategy struct {
 	// key: entryOrderID, value: pendingEntryInfo
 	pendingEntries   map[string]*pendingEntryInfo
 	pendingEntriesMu sync.Mutex
+
+	// 未对冲的 Entry 订单：Hedge 订单提交失败或未提交
+	// key: entryOrderID, value: unhedgedEntryInfo
+	unhedgedEntries   map[string]*unhedgedEntryInfo
+	unhedgedEntriesMu sync.RWMutex
 }
 
 // pendingEntryInfo 存储待处理 Entry 订单的信息，用于在订单成交后提交 Hedge
@@ -82,11 +87,20 @@ type pendingEntryInfo struct {
 	hedgeLimitCents int
 	hedgePrice      domain.Price
 	hedgeAsset      string
-	entryShares     float64
-	hedgeOffset     int
-	minOrderSize    float64
-	minShareSize    float64
-	reorderSec      int
+	entryShares      float64
+	hedgeOffset      int
+	minOrderSize     float64
+	minShareSize     float64
+	reorderSec       int
+	createdAt        time.Time
+}
+
+// unhedgedEntryInfo 存储未对冲 Entry 订单的信息，用于在 RequireFullyHedgedBeforeNewEntry=true 时阻止新 Entry
+type unhedgedEntryInfo struct {
+	entryOrderID    string
+	entryFilledSize float64
+	entryToken      domain.TokenType
+	marketSlug      string
 	createdAt       time.Time
 }
 
@@ -105,6 +119,9 @@ func (s *Strategy) Initialize() error {
 	}
 	if s.pendingEntries == nil {
 		s.pendingEntries = make(map[string]*pendingEntryInfo)
+	}
+	if s.unhedgedEntries == nil {
+		s.unhedgedEntries = make(map[string]*unhedgedEntryInfo)
 	}
 
 	gc := config.Get()
@@ -420,6 +437,35 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if strings.EqualFold(s.SignalToken, "down") {
 		signalTok = domain.TokenTypeDown
 	}
+	
+	// 如果启用了涨势方向选择，根据价格判断哪一边是"涨"的
+	if s.BullishPriceThresholdCents > 0 {
+		// 获取当前价格（从样本中获取，如果还没有样本则从事件中获取）
+		upPrice := latestPriceCents(s.samples[domain.TokenTypeUp])
+		downPrice := latestPriceCents(s.samples[domain.TokenTypeDown])
+		// 如果样本中没有价格，从当前事件中获取
+		if upPrice == 0 && e.TokenType == domain.TokenTypeUp {
+			upPrice = e.NewPrice.ToCents()
+		}
+		if downPrice == 0 && e.TokenType == domain.TokenTypeDown {
+			downPrice = e.NewPrice.ToCents()
+		}
+		// 如果 DOWN 价格未知，用互补推导
+		if downPrice == 0 && upPrice > 0 && upPrice < 100 {
+			downPrice = 100 - upPrice
+		}
+		
+		// 判断哪一边是"涨"的（价格 >= threshold）
+		if upPrice >= s.BullishPriceThresholdCents {
+			// UP 价格 >= threshold，UP 是"涨"的
+			signalTok = domain.TokenTypeUp
+		} else if downPrice >= s.BullishPriceThresholdCents {
+			// DOWN 价格 >= threshold（即 UP <= 100-threshold），DOWN 是"涨"的
+			signalTok = domain.TokenTypeDown
+		}
+		// 如果两边价格都不满足 threshold，使用默认 signalToken
+	}
+	
 	signalCents := s.signalPriceCentsLocked(now, signalTok, e)
 	if signalCents > 0 && signalCents < 100 {
 		s.signalSamples = append(s.signalSamples, sample{ts: now, priceCents: signalCents})
@@ -429,8 +475,96 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	s.pruneSignalLocked(now)
 
 	// 3) 若有持仓需要管理，先走管理逻辑（不进入开仓/加仓触发）
-	if s.manageExistingExposure(now, e.Market) {
+	// 注意：manageExistingExposure 可能涉及 IO 操作，需要在锁外调用
+	currentTradesCount := s.tradesCountThisCycle
+	maxTradesLimit := s.MaxTradesPerCycle
+	
+	// 3.3) 如果要求完全对冲后才能开新单，先检查是否有未对冲的 Entry 订单（Hedge 订单提交失败的情况）
+	if s.RequireFullyHedgedBeforeNewEntry {
+		s.unhedgedEntriesMu.RLock()
+		hasUnhedged := false
+		for entryID, info := range s.unhedgedEntries {
+			if info.marketSlug == e.Market.Slug {
+				hasUnhedged = true
+				log.Infof("🚫 [%s] 检测到未对冲的 Entry 订单，禁止开新单: entryOrderID=%s entryToken=%s filledSize=%.4f market=%s", ID, entryID, info.entryToken, info.entryFilledSize, e.Market.Slug)
+				break
+			}
+		}
+		s.unhedgedEntriesMu.RUnlock()
+		if hasUnhedged {
+			s.mu.Unlock()
+			return nil
+		}
+	}
+	
+	s.mu.Unlock()
+	shouldSkipEntry := s.manageExistingExposure(now, e.Market)
+	s.mu.Lock()
+	if shouldSkipEntry {
 		// 仍然会继续走日志输出（监控），但不触发交易
+		log.Debugf("🔍 [%s] 跳过开仓逻辑（manageExistingExposure返回true）: tradesCount=%d/%d market=%s", ID, currentTradesCount, maxTradesLimit, e.Market.Slug)
+		s.mu.Unlock()
+		return nil
+	}
+	log.Debugf("🔍 [%s] manageExistingExposure返回false，继续开仓逻辑: tradesCount=%d/%d market=%s", ID, currentTradesCount, maxTradesLimit, e.Market.Slug)
+
+	// 3.4) 如果要求完全对冲后才能开新单，检查是否有未成交的对冲订单（即使当前没有持仓）
+	// 这可以防止在 Entry 订单提交后、持仓更新前，有未成交的对冲订单时继续开新单
+	if s.RequireFullyHedgedBeforeNewEntry {
+		orders := s.TradingService.GetActiveOrders()
+		hasPendingHedgeOrder := false
+		for _, o := range orders {
+			if o == nil || o.OrderID == "" {
+				continue
+			}
+			if o.MarketSlug != e.Market.Slug {
+				continue
+			}
+			if o.Side != types.SideBuy {
+				continue
+			}
+			if o.OrderType != types.OrderTypeGTC {
+				continue
+			}
+			// 检查是否有未成交的对冲订单（Open、Pending、Partial 状态）
+			if !o.IsFinalStatus() && o.Status != domain.OrderStatusCanceling {
+				hasPendingHedgeOrder = true
+				log.Debugf("🔍 [%s] 发现未成交的对冲订单，禁止开新单: orderID=%s status=%s market=%s", ID, o.OrderID, o.Status, e.Market.Slug)
+				break
+			}
+		}
+		if hasPendingHedgeOrder {
+			log.Infof("🚫 [%s] 有未成交的对冲订单且 RequireFullyHedgedBeforeNewEntry=true，禁止开新单: market=%s", ID, e.Market.Slug)
+			s.mu.Unlock()
+			return nil
+		}
+	}
+
+	// 3.5) 检查总资金限制
+	if s.MaxTotalCapitalUSDC > 0 {
+		positions := s.TradingService.GetOpenPositionsForMarket(e.Market.Slug)
+		totalCapital := 0.0
+		for _, pos := range positions {
+			if pos == nil || !pos.IsOpen() || pos.Size <= 0 {
+				continue
+			}
+			// 使用平均价格或入场价格计算持仓价值
+			price := 0.0
+			if pos.AvgPrice > 0 {
+				price = pos.AvgPrice
+			} else if pos.EntryPrice.Pips > 0 {
+				price = pos.EntryPrice.ToDecimal()
+			}
+			if price > 0 {
+				totalCapital += pos.Size * price
+			}
+		}
+		if totalCapital >= s.MaxTotalCapitalUSDC {
+			log.Warnf("🚫 [%s] 总资金限制：当前总持仓价值 %.2f USDC >= 限制 %.2f USDC，禁止开新单: market=%s", ID, totalCapital, s.MaxTotalCapitalUSDC, e.Market.Slug)
+			s.mu.Unlock()
+			return nil
+		}
+		log.Debugf("💰 [%s] 总资金检查通过：当前总持仓价值 %.2f USDC < 限制 %.2f USDC: market=%s", ID, totalCapital, s.MaxTotalCapitalUSDC, e.Market.Slug)
 	}
 
 	// 4) 计算信号
@@ -587,6 +721,62 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		return nil
 	}
 
+	// 🎯 触发条件满足，检查涨势方向过滤（如果启用了涨势方向选择）
+	if s.BullishPriceThresholdCents > 0 {
+		winnerPrice := latestPriceCents(s.samples[winner])
+		// 如果 winner 的价格不满足"涨"的条件，跳过开仓
+		if winner == domain.TokenTypeUp {
+			if winnerPrice < s.BullishPriceThresholdCents {
+				log.Infof("⏸️ [%s] 涨势方向过滤：UP 价格未达到涨势阈值，跳过开仓: price=%dc < threshold=%dc market=%s",
+					ID, winnerPrice, s.BullishPriceThresholdCents, e.Market.Slug)
+				s.mu.Unlock()
+				return nil
+			}
+		} else if winner == domain.TokenTypeDown {
+			// DOWN 价格需要 >= threshold（即 UP <= 100-threshold）
+			upPrice := latestPriceCents(s.samples[domain.TokenTypeUp])
+			if upPrice > 0 && upPrice > (100-s.BullishPriceThresholdCents) {
+				log.Infof("⏸️ [%s] 涨势方向过滤：DOWN 价格未达到涨势阈值，跳过开仓: UP price=%dc DOWN price=%dc threshold=%dc market=%s",
+					ID, upPrice, winnerPrice, s.BullishPriceThresholdCents, e.Market.Slug)
+				s.mu.Unlock()
+				return nil
+			}
+		}
+	}
+
+	// 🎯 触发条件满足，检查波动过滤（避免在波动太大时开仓）
+	// 检查速度是否超过最大阈值
+	if s.MaxVelocityCentsPerSec > 0 && winMet.velocity > s.MaxVelocityCentsPerSec {
+		log.Infof("⏸️ [%s] 波动过滤：速度超过阈值，跳过开仓: winner=%s vel=%.3f(c/s) > max=%.3f(c/s) delta=%dc market=%s",
+			ID, winner, winMet.velocity, s.MaxVelocityCentsPerSec, winMet.delta, e.Market.Slug)
+		s.mu.Unlock()
+		return nil
+	}
+	// 检查变化幅度是否超过最大阈值
+	if s.MaxMoveCents > 0 && winMet.delta > s.MaxMoveCents {
+		log.Infof("⏸️ [%s] 波动过滤：变化幅度超过阈值，跳过开仓: winner=%s delta=%dc > max=%dc vel=%.3f(c/s) market=%s",
+			ID, winner, winMet.delta, s.MaxMoveCents, winMet.velocity, e.Market.Slug)
+		s.mu.Unlock()
+		return nil
+	}
+
+	// 检查价格范围过滤（避免在极端价格时开仓）
+	winnerPrice := latestPriceCents(s.samples[winner])
+	if winnerPrice > 0 {
+		if s.MinPriceCents > 0 && winnerPrice < s.MinPriceCents {
+			log.Infof("⏸️ [%s] 价格范围过滤：价格低于最小阈值，跳过开仓: winner=%s price=%dc < min=%dc market=%s",
+				ID, winner, winnerPrice, s.MinPriceCents, e.Market.Slug)
+			s.mu.Unlock()
+			return nil
+		}
+		if s.MaxPriceCents > 0 && winnerPrice > s.MaxPriceCents {
+			log.Infof("⏸️ [%s] 价格范围过滤：价格高于最大阈值，跳过开仓: winner=%s price=%dc > max=%dc market=%s",
+				ID, winner, winnerPrice, s.MaxPriceCents, e.Market.Slug)
+			s.mu.Unlock()
+			return nil
+		}
+	}
+
 	// 🎯 触发条件满足，准备下单
 	log.Infof("🎯 [%s] 触发条件满足: winner=%s vel=%.3f(c/s) delta=%dc/%0.1fs price=%dc market=%s",
 		ID, winner, winMet.velocity, winMet.delta, winMet.seconds, latestPriceCents(s.samples[winner]), e.Market.Slug)
@@ -624,8 +814,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	reorderSec := s.HedgeReorderTimeoutSeconds
 	biasTok := activeBiasTok
 	biasReason := activeBiasReason
-	currentTradesCount := s.tradesCountThisCycle
-	maxTradesLimit := s.MaxTradesPerCycle
+	// currentTradesCount 和 maxTradesLimit 已在前面声明
 	s.mu.Unlock()
 
 	// 市场质量 gate
@@ -879,10 +1068,29 @@ func (s *Strategy) submitHedgeOrder(ctx context.Context, orderCtx context.Contex
 		if isFailSafeRefusal(hedgeErr) {
 			// 系统拒绝：不止损，进入监控循环持续尝试对冲
 			log.Warnf("⚠️ [%s] Hedge 下单失败（系统拒绝）：将继续重试对冲 err=%v entryOrderID=%s market=%s tradesCount=%d/%d", ID, hedgeErr, entryOrderID, market.Slug, currentCount, maxTrades)
+			// 记录未对冲状态（即使系统拒绝，也需要标记为未对冲）
+			s.unhedgedEntriesMu.Lock()
+			s.unhedgedEntries[entryOrderID] = &unhedgedEntryInfo{
+				entryOrderID:    entryOrderID,
+				entryFilledSize: entryFilledSize,
+				entryToken:      winner,
+				marketSlug:      market.Slug,
+				createdAt:       now,
+			}
+			s.unhedgedEntriesMu.Unlock()
 			return nil
 		}
 		log.Warnf("⚠️ [%s] Hedge 下单失败: err=%v entryOrderID=%s hedgePrice=%dc size=%.4f market=%s tradesCount=%d/%d", ID, hedgeErr, entryOrderID, hedgeLimitCents, hedgeShares, market.Slug, currentCount, maxTrades)
-		// Hedge订单提交失败，启动监控以持续尝试对冲（无止损）
+		// Hedge订单提交失败，记录未对冲状态并启动监控以持续尝试对冲（无止损）
+		s.unhedgedEntriesMu.Lock()
+		s.unhedgedEntries[entryOrderID] = &unhedgedEntryInfo{
+			entryOrderID:    entryOrderID,
+			entryFilledSize: entryFilledSize,
+			entryToken:      winner,
+			marketSlug:      market.Slug,
+			createdAt:       now,
+		}
+		s.unhedgedEntriesMu.Unlock()
 		entryFilledAtTime := now
 		if entryFilledAt != nil && !entryFilledAt.IsZero() {
 			entryFilledAtTime = *entryFilledAt
@@ -894,7 +1102,16 @@ func (s *Strategy) submitHedgeOrder(ctx context.Context, orderCtx context.Contex
 	}
 	if hedgeRes == nil || hedgeRes.OrderID == "" {
 		log.Warnf("⚠️ [%s] Hedge 订单ID为空: entryOrderID=%s market=%s tradesCount=%d/%d", ID, entryOrderID, market.Slug, currentCount, maxTrades)
-		// Hedge订单ID为空，启动监控以持续尝试对冲（无止损）
+		// Hedge订单ID为空，记录未对冲状态并启动监控以持续尝试对冲（无止损）
+		s.unhedgedEntriesMu.Lock()
+		s.unhedgedEntries[entryOrderID] = &unhedgedEntryInfo{
+			entryOrderID:    entryOrderID,
+			entryFilledSize: entryFilledSize,
+			entryToken:      winner,
+			marketSlug:      market.Slug,
+			createdAt:       now,
+		}
+		s.unhedgedEntriesMu.Unlock()
 		entryFilledAtTime := now
 		if entryFilledAt != nil && !entryFilledAt.IsZero() {
 			entryFilledAtTime = *entryFilledAt

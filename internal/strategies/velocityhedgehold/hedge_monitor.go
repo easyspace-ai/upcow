@@ -75,6 +75,12 @@ func (s *Strategy) monitorHedge(
 			}
 
 			// 若当前仓位已对冲（双边数量几乎相等），停止监控并清理挂单
+			// 清除未对冲记录（如果存在）
+			if entryOrderID != "" {
+				s.unhedgedEntriesMu.Lock()
+				delete(s.unhedgedEntries, entryOrderID)
+				s.unhedgedEntriesMu.Unlock()
+			}
 			upPos, downPos := splitPositions(positions)
 			upSize, downSize := 0.0, 0.0
 			if upPos != nil {
@@ -85,6 +91,12 @@ func (s *Strategy) monitorHedge(
 			}
 			if upSize > 0 && downSize > 0 && nearlyEqualShares(upSize, downSize) {
 				s.TradingService.CancelOrdersForMarket(context.Background(), market.Slug)
+				// 清除未对冲记录（如果存在）
+				if entryOrderID != "" {
+					s.unhedgedEntriesMu.Lock()
+					delete(s.unhedgedEntries, entryOrderID)
+					s.unhedgedEntriesMu.Unlock()
+				}
 				log.Infof("✅ [%s] 监控结束：仓位已对冲（按持仓判断） up=%.4f down=%.4f market=%s", ID, upSize, downSize, market.Slug)
 				return
 			}
@@ -101,6 +113,12 @@ func (s *Strategy) monitorHedge(
 
 			// 允许一个很小的容错（浮点/精度）
 			if hedgeFilled > 0 && hedgeFilled >= target*0.999 {
+				// 清除未对冲记录（如果存在）
+				if entryOrderID != "" {
+					s.unhedgedEntriesMu.Lock()
+					delete(s.unhedgedEntries, entryOrderID)
+					s.unhedgedEntriesMu.Unlock()
+				}
 				log.Infof("✅ [%s] Hedge 已完成：entryFilled=%.4f hedgeFilled=%.4f entryOrderID=%s hedgeOrderID=%s market=%s",
 					ID, target, hedgeFilled, entryOrderID, hedgeOrderID, market.Slug)
 				return
@@ -115,9 +133,110 @@ func (s *Strategy) monitorHedge(
 					continue
 				}
 
-				// 取消旧 hedge 单（best effort）
-				if hedgeOrderID != "" {
-					_ = s.TradingService.CancelOrder(context.Background(), hedgeOrderID)
+				// 取消所有旧的 hedge 挂单（避免重复挂单）
+				// 查找所有相同方向的 GTC 挂单并取消
+				hedgeTok := opposite(entryToken)
+				allOrders := s.TradingService.GetActiveOrders()
+				oldPrices := make(map[string]int) // 记录旧订单的价格，用于判断是否需要改价
+				canceledCount := 0
+				for _, o := range allOrders {
+					if o == nil || o.OrderID == "" {
+						continue
+					}
+					if o.MarketSlug != market.Slug {
+						continue
+					}
+					if o.TokenType != hedgeTok {
+						continue
+					}
+					if o.Side != types.SideBuy {
+						continue
+					}
+					if o.OrderType != types.OrderTypeGTC {
+						continue
+					}
+					// 只取消可取消状态的订单（Open、Pending、Partial）
+					// 跳过已终态订单（Filled、Canceled、Failed）和正在取消的订单（Canceling）
+					if o.IsFinalStatus() || o.Status == domain.OrderStatusCanceling {
+						continue
+					}
+					// 记录旧订单价格
+					if o.Price.Pips > 0 {
+						oldPrices[o.OrderID] = o.Price.ToCents()
+					}
+					// 取消订单（同步等待，确保取消完成）
+					cancelCtx, cancelCancel := context.WithTimeout(context.Background(), 3*time.Second)
+					if err := s.TradingService.CancelOrder(cancelCtx, o.OrderID); err != nil {
+						log.Warnf("⚠️ [%s] 取消旧 hedge 订单失败: orderID=%s status=%s err=%v market=%s", ID, o.OrderID, o.Status, err, market.Slug)
+					} else {
+						canceledCount++
+						log.Infof("✅ [%s] 已取消旧 hedge 订单: orderID=%s price=%dc status=%s market=%s", ID, o.OrderID, o.Price.ToCents(), o.Status, market.Slug)
+					}
+					cancelCancel()
+				}
+				// 如果取消了订单，等待一小段时间让订单状态更新
+				if canceledCount > 0 {
+					time.Sleep(300 * time.Millisecond)
+					// 再次检查，确保订单真的被取消了（防止重复挂单）
+					verifyOrders := s.TradingService.GetActiveOrders()
+					stillOpenOrders := make([]string, 0)
+					for _, o := range verifyOrders {
+						if o == nil || o.OrderID == "" {
+							continue
+						}
+						if o.MarketSlug != market.Slug {
+							continue
+						}
+						if o.TokenType != hedgeTok {
+							continue
+						}
+						if o.Side != types.SideBuy {
+							continue
+						}
+						if o.OrderType != types.OrderTypeGTC {
+							continue
+						}
+						if !o.IsFinalStatus() && o.Status != domain.OrderStatusCanceling {
+							stillOpenOrders = append(stillOpenOrders, o.OrderID)
+							log.Warnf("⚠️ [%s] 对冲重挂前仍有未取消的订单: orderID=%s status=%s market=%s", ID, o.OrderID, o.Status, market.Slug)
+						}
+					}
+					if len(stillOpenOrders) > 0 {
+						// 如果仍有未取消的订单，尝试使用 CancelOrdersForMarket 强制取消
+						log.Warnf("⚠️ [%s] 对冲重挂前仍有 %d 个未取消的订单，尝试强制取消所有市场订单: orderIDs=%v market=%s", ID, len(stillOpenOrders), stillOpenOrders, market.Slug)
+						forceCancelCtx, forceCancelCancel := context.WithTimeout(context.Background(), 2*time.Second)
+						s.TradingService.CancelOrdersForMarket(forceCancelCtx, market.Slug)
+						forceCancelCancel()
+						// 再等待一下
+						time.Sleep(200 * time.Millisecond)
+						// 最后检查一次
+						finalOrders := s.TradingService.GetActiveOrders()
+						finalOpenCount := 0
+						for _, o := range finalOrders {
+							if o == nil || o.OrderID == "" {
+								continue
+							}
+							if o.MarketSlug != market.Slug {
+								continue
+							}
+							if o.TokenType != hedgeTok {
+								continue
+							}
+							if o.Side != types.SideBuy {
+								continue
+							}
+							if o.OrderType != types.OrderTypeGTC {
+								continue
+							}
+							if !o.IsFinalStatus() && o.Status != domain.OrderStatusCanceling {
+								finalOpenCount++
+							}
+						}
+						if finalOpenCount > 0 {
+							log.Errorf("🚨 [%s] 强制取消后仍有 %d 个未取消的订单，跳过本次重挂以避免重复挂单 market=%s", ID, finalOpenCount, market.Slug)
+							continue // 跳过本次重挂，等待下一次
+						}
+					}
 				}
 
 				reorderCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -145,6 +264,23 @@ func (s *Strategy) monitorHedge(
 						ID, maxHedgeCents, oppAskCents, source, entryPriceCents, s.HedgeOffsetCents)
 					continue
 				}
+
+				// 检查价格是否有变化：如果所有旧订单的价格都和新区间价相同，记录日志
+				priceChanged := true
+				if len(oldPrices) > 0 {
+					allSamePrice := true
+					for _, oldPrice := range oldPrices {
+						if oldPrice != newLimitCents {
+							allSamePrice = false
+							break
+						}
+					}
+					if allSamePrice {
+						priceChanged = false
+						log.Debugf("🔍 [%s] 对冲重挂：价格未变化 newLimitCents=%dc，但仍重挂以确保订单状态正确 market=%s", ID, newLimitCents, market.Slug)
+					}
+				}
+
 				hedgePrice := domain.Price{Pips: newLimitCents * 100}
 				hedgePriceDec := hedgePrice.ToDecimal()
 				if hedgePriceDec <= 0 {
@@ -263,13 +399,19 @@ func (s *Strategy) monitorHedge(
 						// 系统拒绝：不做止损，等待下一轮重试
 						continue
 					}
+					log.Warnf("⚠️ [%s] Hedge 重挂下单失败: err=%v remaining=%.4f limit=%dc market=%s", ID, err, remaining, newLimitCents, market.Slug)
 					continue
 				}
 				if placed == nil || placed.OrderID == "" {
+					log.Warnf("⚠️ [%s] Hedge 重挂下单返回空: remaining=%.4f limit=%dc market=%s", ID, remaining, newLimitCents, market.Slug)
 					continue
 				}
-				log.Infof("🔄 [%s] Hedge 重挂：old=%s new=%s remaining=%.4f limit=%dc (max=%dc oppAsk=%dc source=%s)",
-					ID, hedgeOrderID, placed.OrderID, remaining, newLimitCents, maxHedgeCents, oppAskCents, source)
+				priceChangeStr := "价格未变化"
+				if priceChanged {
+					priceChangeStr = "价格已更新"
+				}
+				log.Infof("🔄 [%s] Hedge 重挂：old=%s new=%s remaining=%.4f limit=%dc (max=%dc oppAsk=%dc source=%s) %s",
+					ID, hedgeOrderID, placed.OrderID, remaining, newLimitCents, maxHedgeCents, oppAskCents, source, priceChangeStr)
 				hedgeOrderID = placed.OrderID
 			}
 		}

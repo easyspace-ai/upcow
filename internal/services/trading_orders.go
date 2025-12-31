@@ -234,13 +234,19 @@ func (o *OrdersService) PlaceOrder(ctx context.Context, order *domain.Order) (cr
 		// - risk-off/paused/market mismatch/stale cycle（系统门控）
 		msgLower := strings.ToLower(err.Error())
 		isDedup := errors.Is(err, execution.ErrDuplicateInFlight)
-		isBalance := strings.Contains(err.Error(), "余额不足")
+		// 余额不足的错误（中英文都要识别）
+		isBalance := strings.Contains(err.Error(), "余额不足") ||
+			strings.Contains(msgLower, "not enough balance") ||
+			strings.Contains(msgLower, "insufficient balance") ||
+			strings.Contains(msgLower, "balance / allowance")
 		isGate := strings.Contains(msgLower, "risk-off active") ||
 			strings.Contains(msgLower, "trading paused") ||
 			strings.Contains(msgLower, "order market mismatch") ||
 			strings.Contains(msgLower, "stale cycle command")
+		// Circuit Breaker 打开的错误不应该再次触发 OnError()，避免循环
+		isCircuitBreaker := strings.Contains(msgLower, "circuit breaker open")
 
-		if !isDedup && !isBalance && !isGate {
+		if !isDedup && !isBalance && !isGate && !isCircuitBreaker {
 			if s.circuitBreaker != nil {
 				s.circuitBreaker.OnError()
 			}

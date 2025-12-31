@@ -173,6 +173,7 @@ func main() {
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("步骤 2: 通过 Gamma API 获取市场信息")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	slug = "bitcoin-up-or-down-december-31-9am-et"
 
 	gammaMarket, err := client.FetchMarketFromGamma(ctx, slug)
 	if err != nil {
@@ -492,4 +493,3 @@ func loadEnvConfig() (*EnvConfig, error) {
 
 	return config, nil
 }
-

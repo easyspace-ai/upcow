@@ -150,16 +150,18 @@ func NewTradingService(clobClient *client.Client, dryRun bool) *TradingService {
 		circuitBreaker: func() *risk.CircuitBreaker {
 			// 纸交易模式下禁用熔断器（MaxConsecutiveErrors <= 0 表示关闭）
 			maxErrors := int64(10)
+			cooldownSeconds := int64(30) // 默认30秒冷却时间
 			if dryRun {
 				maxErrors = 0 // 纸交易模式：禁用连续错误熔断
 				log.Info("🔓 Circuit Breaker 已禁用（纸交易模式）")
 			} else {
-				log.Infof("🔒 Circuit Breaker 已启用：MaxConsecutiveErrors=%d", maxErrors)
+				log.Infof("🔒 Circuit Breaker 已启用：MaxConsecutiveErrors=%d, CooldownSeconds=%d", maxErrors, cooldownSeconds)
 			}
 			return risk.NewCircuitBreaker(risk.CircuitBreakerConfig{
 				// 默认只启用"连续错误熔断"，避免误伤；当日亏损上限可后续接入完整 PnL 统计后再启用。
 				MaxConsecutiveErrors: maxErrors,
 				DailyLossLimitCents:  0,
+				CooldownSeconds:      cooldownSeconds, // 30秒后自动恢复
 			})
 		}(),
 		repriceState: make(map[string]repriceInfo),
