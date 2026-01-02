@@ -15,6 +15,7 @@ import (
 	_ "github.com/betbot/gobet/internal/strategies/pairedtrading"
 	_ "github.com/betbot/gobet/internal/strategies/pairlock"
 	_ "github.com/betbot/gobet/internal/strategies/pricebreak"
+	_ "github.com/betbot/gobet/internal/strategies/rangeboth"
 	_ "github.com/betbot/gobet/internal/strategies/threshold"
 	_ "github.com/betbot/gobet/internal/strategies/unifiedarb"
 	_ "github.com/betbot/gobet/internal/strategies/updown"
