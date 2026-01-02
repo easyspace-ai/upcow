@@ -290,7 +290,7 @@ func (o *OrdersService) adjustOrderSize(order *domain.Order) *domain.Order {
 	// 检查并调整最小订单金额和最小 share 数量
 	minOrderSize := s.minOrderSize
 	if minOrderSize <= 0 {
-		minOrderSize = 1.1 // 默认值
+		minOrderSize = 0.1 // 默认值
 	}
 
 	// 限价单最小 share 数量（仅限价单 GTC 时应用）

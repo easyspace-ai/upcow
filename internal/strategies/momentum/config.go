@@ -50,4 +50,3 @@ func (c *MomentumStrategyConfig) Validate() error {
 	}
 	return nil
 }
-

@@ -21,7 +21,7 @@ log_level: "debug"
 log_file: "logs/bot.log"
 log_by_cycle: true
 
-minOrderSize: 1.1
+minOrderSize: 0.1
 minShareSize: 5.0
 
 order_status_sync_interval_with_orders: 3

@@ -38,9 +38,9 @@ type Config struct {
 	WeakSellMinCents int `yaml:"weakSellMinCents" json:"weakSellMinCents"`
 	WeakSellMaxCents int `yaml:"weakSellMaxCents" json:"weakSellMaxCents"`
 
-	// MinStrongWeakDiffCents: 强弱差阈值（mid 的差），默认 20
+	// MinStrongWeakDiffCents: 强弱差阈值（mid 的差），默认 10
 	MinStrongWeakDiffCents int `yaml:"minStrongWeakDiffCents" json:"minStrongWeakDiffCents"`
-	// MinStrongSideCents: 强方 mid 至少达到该值，默认 80
+	// MinStrongSideCents: 强方 mid 至少达到该值，默认 90
 	MinStrongSideCents int `yaml:"minStrongSideCents" json:"minStrongSideCents"`
 
 	// MaxSpreadCents: 盘口价差上限（ask-bid），默认 5
@@ -74,6 +74,12 @@ type Config struct {
 	HoldingsExpectedMinRatio float64 `yaml:"holdingsExpectedMinRatio" json:"holdingsExpectedMinRatio"`
 
 	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
+
+	// ===== 强方卖出配置（卖出弱方后立即挂强方卖单）=====
+	// EnableStrongSellAfterWeak: 卖出弱方后是否立即挂强方卖单（默认 false）
+	EnableStrongSellAfterWeak bool `yaml:"enableStrongSellAfterWeak" json:"enableStrongSellAfterWeak"`
+	// StrongSellPrices: 强方卖出价格数组（cents），长度应与 sellSplits 一致，默认 [94, 95, 96, 97]
+	StrongSellPrices []int `yaml:"strongSellPrices" json:"strongSellPrices"`
 }
 
 func (c *Config) Validate() error {
@@ -160,6 +166,15 @@ func (c *Config) Validate() error {
 	}
 	if c.HoldingsExpectedMinRatio > 1.0 {
 		c.HoldingsExpectedMinRatio = 1.0
+	}
+
+	// ===== 强方卖出配置默认值 =====
+	if len(c.StrongSellPrices) == 0 {
+		c.StrongSellPrices = []int{94, 95, 96, 97}
+	}
+	// 验证强方卖出价格数组长度与 sellSplits 长度匹配
+	if c.EnableStrongSellAfterWeak && len(c.StrongSellPrices) != len(c.SellSplits) {
+		return fmt.Errorf("strongSellPrices 长度 (%d) 必须等于 sellSplits 长度 (%d)", len(c.StrongSellPrices), len(c.SellSplits))
 	}
 
 	return nil

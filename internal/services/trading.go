@@ -124,7 +124,7 @@ func (s *TradingService) BestBookSnapshot() (marketstate.BestBookSnapshot, bool)
 func NewTradingService(clobClient *client.Client, dryRun bool) *TradingService {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	minOrderSize := 1.1 // 默认最小订单金额
+	minOrderSize := 0.1 // 默认最小订单金额
 
 	// 创建 IO 执行器
 	ioExecutor := newIOExecutor(clobClient, dryRun)
@@ -582,8 +582,8 @@ func (s *TradingService) SetFunderAddress(funderAddress string, signatureType ty
 
 // SetMinOrderSize 设置最小订单金额（USDC）（无锁版本）
 func (s *TradingService) SetMinOrderSize(minOrderSize float64) {
-	if minOrderSize < 1.0 {
-		minOrderSize = 1.0 // 交易所要求不能小于 1.0
+	if minOrderSize < 0.1 {
+		minOrderSize = 0.1 // 交易所要求不能小于 1.0
 	}
 	s.minOrderSize = minOrderSize
 	// 更新 OrderEngine 的最小订单金额

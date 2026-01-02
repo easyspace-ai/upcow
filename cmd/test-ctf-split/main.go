@@ -164,7 +164,7 @@ func main() {
 	currentPeriodStartUnix := marketSpec.CurrentPeriodStartUnix(now)
 	nextPeriodStartUnix := marketSpec.NextPeriodStartUnix(currentPeriodStartUnix)
 	slug := marketSpec.Slug(nextPeriodStartUnix)
-	slug = "highest-temperature-in-london-on-december-31-5c"
+	slug = "will-olivia-rodrigo-release-an-album-in-2025"
 
 	fmt.Printf("当前时间: %s\n", now.Format(time.RFC3339))
 	fmt.Printf("当前周期开始时间戳: %d\n", currentPeriodStartUnix)

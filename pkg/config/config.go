@@ -152,9 +152,9 @@ type Config struct {
 
 // MarketPrecisionConfig 市场精度配置
 type MarketPrecisionConfig struct {
-	TickSize     string `yaml:"tick_size" json:"tick_size"`           // 价格精度（如 "0.01", "0.001"）
-	MinOrderSize string `yaml:"min_order_size" json:"min_order_size"` // 最小订单大小（如 "0.1", "5"）
-	NegRisk      bool   `yaml:"neg_risk" json:"neg_risk"`             // 是否为负风险市场
+	TickSize     string `yaml:"tick_size" json:"tick_size"`       // 价格精度（如 "0.01", "0.001"）
+	MinOrderSize string `yaml:"minOrderSize" json:"minOrderSize"` // 最小订单大小（如 "0.1", "5"）
+	NegRisk      bool   `yaml:"neg_risk" json:"neg_risk"`         // 是否为负风险市场
 }
 
 // MarketConfig 选择要交易/订阅的 polymarket 市场规格。
@@ -488,7 +488,7 @@ func LoadFromFileWithOptions(filePath string, opts LoadOptions) (*Config, error)
 					return v
 				}
 			}
-			return 1.1
+			return 0.1
 		}(),
 		MinShareSize: func() float64 {
 			// 优先级：config file > env > 默认 5.0
@@ -851,7 +851,7 @@ func (c *Config) ValidateWithOptions(opts LoadOptions) error {
 	if !opts.AllowEmptyExchangeStrategies && len(c.ExchangeStrategies) == 0 {
 		return fmt.Errorf("exchangeStrategies 不能为空（请按 bbgo main 风格配置策略）")
 	}
-	if c.MinOrderSize > 0 && c.MinOrderSize < 1.0 {
+	if c.MinOrderSize > 0 && c.MinOrderSize < 0.1 {
 		return fmt.Errorf("minOrderSize 必须 >= 1.0")
 	}
 	return nil
