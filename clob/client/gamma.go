@@ -100,12 +100,14 @@ func FetchMarketFromGamma(ctx context.Context, slug string) (*GammaMarket, error
 		proxyURLParsed, parseErr := url.Parse(proxyURL)
 		if parseErr == nil {
 			transport.Proxy = http.ProxyURL(proxyURLParsed)
-			log.Printf("使用代理获取市场数据: %s", proxyURL)
+			log.Printf("✅ [Gamma API] 使用代理获取市场数据: %s", proxyURL)
 		} else {
-			log.Printf("警告: 解析代理 URL 失败: %v", parseErr)
+			log.Printf("⚠️ [Gamma API] 警告: 解析代理 URL 失败: %v", parseErr)
 		}
+	} else {
+		// 如果环境变量未设置，记录日志以便调试
+		log.Printf("ℹ️ [Gamma API] 代理未设置，使用直接连接")
 	}
-	// 如果环境变量未设置，则不设置代理（直接连接）
 	
 	// 创建 HTTP 客户端（增加超时时间到 30 秒）
 	client := &http.Client{

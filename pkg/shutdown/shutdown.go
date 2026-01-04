@@ -51,7 +51,12 @@ func (m *Manager) Shutdown(ctx context.Context) {
 	for _, cb := range callbacks {
 		go func(handler Handler) {
 			defer wg.Done()
-			handler(ctx, &wg)
+			// 创建一个新的WaitGroup传递给handler
+			// handler内部可以调用这个WaitGroup的Add/Done来等待子任务完成
+			handlerWg := &sync.WaitGroup{}
+			handler(ctx, handlerWg)
+			// 等待handler内部的所有子任务完成
+			handlerWg.Wait()
 		}(cb)
 	}
 
