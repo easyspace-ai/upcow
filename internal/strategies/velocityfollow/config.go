@@ -3,7 +3,7 @@ package velocityfollow
 import (
 	"fmt"
 
-	"github.com/betbot/gobet/internal/strategies/common"
+	"github.com/betbot/gobet/internal/common"
 	"github.com/sirupsen/logrus"
 )
 
@@ -79,6 +79,24 @@ type Config struct {
 
 	// 对冲单重下机制：主单成交后，如果对冲单在指定时间内未成交，重新下单
 	HedgeReorderTimeoutSeconds int `yaml:"hedgeReorderTimeoutSeconds" json:"hedgeReorderTimeoutSeconds"` // 对冲单重下超时时间（秒），默认 30 秒
+
+	// 对冲单超时后以FAK吃单：Entry成交后，如果对冲单在指定时间内未成交，撤单并以卖一价（ask）FAK吃单
+	HedgeTimeoutFakSeconds int `yaml:"hedgeTimeoutFakSeconds" json:"hedgeTimeoutFakSeconds"` // 对冲单超时后以FAK吃单的时间（秒），0=禁用，默认 0
+
+	// ====== 智能风险管理系统 ======
+	// 风险监控：实时计算持仓和风险敞口，当Entry已成交但Hedge未成交超过指定时间时，激进对冲
+	RiskManagementEnabled         bool `yaml:"riskManagementEnabled" json:"riskManagementEnabled"`                // 是否启用风险管理系统（默认 true）
+	RiskManagementCheckIntervalMs int  `yaml:"riskManagementCheckIntervalMs" json:"riskManagementCheckIntervalMs"` // 风险检查间隔（毫秒），默认 5 秒
+	AggressiveHedgeTimeoutSeconds  int  `yaml:"aggressiveHedgeTimeoutSeconds" json:"aggressiveHedgeTimeoutSeconds"`  // Entry成交后，Hedge未成交超过此时间（秒）则激进对冲，默认 60 秒
+	MaxAcceptableLossCents        int  `yaml:"maxAcceptableLossCents" json:"maxAcceptableLossCents"`                // 激进对冲时允许的最大亏损（分），默认 5 分（0.05 USDC per share）
+
+	// ====== 套利分析大脑模块 ======
+	// 实时分析持仓和利润，计算UP/DOWN两方无论哪方胜出的收益情况，判断是否完全锁定
+	ArbitrageBrainEnabled         bool `yaml:"arbitrageBrainEnabled" json:"arbitrageBrainEnabled"`         // 是否启用套利分析大脑（默认 true）
+	ArbitrageBrainUpdateIntervalSeconds int `yaml:"arbitrageBrainUpdateIntervalSeconds" json:"arbitrageBrainUpdateIntervalSeconds"` // 套利分析更新间隔（秒），默认 10 秒
+
+	// ====== Dashboard UI ======
+	DashboardEnabled bool `yaml:"dashboardEnabled" json:"dashboardEnabled"` // 是否启用Dashboard UI（默认 true）
 
 	// 库存偏斜机制：当净持仓超过阈值时，降低该方向的交易频率
 	InventoryThreshold float64 `yaml:"inventoryThreshold" json:"inventoryThreshold"` // 净持仓阈值（shares），默认 0（禁用）
@@ -226,6 +244,11 @@ func (c *Config) Validate() error {
 		c.HedgeReorderTimeoutSeconds = 30 // 默认 30 秒
 	}
 
+	// 对冲单超时后以FAK吃单默认值
+	if c.HedgeTimeoutFakSeconds < 0 {
+		c.HedgeTimeoutFakSeconds = 0 // 默认禁用
+	}
+
 	// 库存偏斜机制默认值
 	// 如果未设置，默认为 0（禁用）
 	// 如果设置为 > 0，则启用库存偏斜机制
@@ -293,6 +316,30 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("trailStartCents / trailDistanceCents 不能为负数")
 		}
 	}
+
+	// 风险管理系统默认值
+	if c.RiskManagementCheckIntervalMs <= 0 {
+		c.RiskManagementCheckIntervalMs = 5000 // 默认 5 秒
+	}
+	if c.AggressiveHedgeTimeoutSeconds <= 0 {
+		c.AggressiveHedgeTimeoutSeconds = 60 // 默认 60 秒
+	}
+	if c.MaxAcceptableLossCents <= 0 {
+		c.MaxAcceptableLossCents = 5 // 默认 5 分（0.05 USDC per share）
+	}
+	// RiskManagementEnabled 默认为 true（如果未设置，在 NewRiskManager 中处理）
+
+	// 套利分析大脑默认值
+	if c.ArbitrageBrainUpdateIntervalSeconds <= 0 {
+		c.ArbitrageBrainUpdateIntervalSeconds = 10 // 默认 10 秒
+	}
+	// ArbitrageBrainEnabled 默认为 true（如果未设置，在 NewArbitrageBrain 中处理）
+
+	// Dashboard默认值
+	// DashboardEnabled 默认为 true（bool类型默认为false，需要在Validate中设置）
+	// 注意：bool类型在Go中默认为false，所以如果用户没有显式设置，我们需要在Validate中设置为true
+	// 但这里我们不能直接设置，因为无法区分"用户显式设置为false"和"未设置"
+	// 所以使用指针类型或者确保配置文件中显式设置
 
 	return nil
 }

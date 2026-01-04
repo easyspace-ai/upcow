@@ -1,13 +1,18 @@
-# cyclehedge：40U 测试版（BTC 15m）
+# VelocityFollow 策略配置文件
 #
-# 说明：
-# - 每周期固定投入 40 USDC（fixedNotionalUSDC）
-# - 距离结算 3 分钟（180s）停止开新仓并撤单（entryCutoffSeconds）
+# 策略说明：
+# - 监控 UP/DOWN 价格变化速度
+# - 当某一侧速度超过阈值时，触发交易：
+#   - Entry: 买入速度更快的一侧（FAK 订单，立即成交）
+#   - Hedge: 买入对侧（GTC 限价单，等待成交）
 #
+# 示例：UP 迅速拉升到 70c，触发：
+# - 吃单买 UP @ 70c
+# - 同时挂 DOWN 买单 @ (100-70-3)=27c
 
 # 市场配置（可从策略配置文件读取，会覆盖主配置文件中的设置）
 market:
-  symbol: "btc"
+  symbol: "eth"
   timeframe: "15m"
   kind: "updown"
 
@@ -15,65 +20,112 @@ market:
 # true = 仅模拟交易，false = 真实交易
 dry_run: false
 
-
 exchangeStrategies:
   - on: polymarket
     velocityfollow:
-      # ====== 下单参数 ======
-      orderSize: 4
-      hedgeOrderSize: 0          # 0=跟随 orderSize（对侧挂单 shares）
+      # ====== 交易参数 ======
+      orderSize: 3                    # 吃单买入 shares
+      hedgeOrderSize: 0               # 对侧挂单 shares（0 表示跟随 orderSize）
 
-      # ====== 开仓质量过滤（胜率） ======
-      enableMarketQualityGate: false
-      marketQualityMinScore: 70
-      marketQualityMaxSpreadCents: 5     # <=0 则使用 maxSpreadCents
-      marketQualityMaxBookAgeMs: 3000
+      # ====== “速度快”判定参数 ======
+      # 建议从保守开始，逐步调整
+      windowSeconds: 10                 # 速度计算窗口（秒），默认 10
+      minMoveCents: 2                 # 窗口内最小上行位移（分），默认 3
+      minVelocityCentsPerSec: 0.1      # 最小速度（分/秒），默认 = minMoveCents / windowSeconds
+      cooldownMs: 1500                # 触发冷却（毫秒），默认 1500
+      warmupMs: 800                   # 启动/换周期后的预热窗口（毫秒），默认 0
+      maxTradesPerCycle: 2            # 每周期最多交易次数（0=不设限，1=每周期只交易一次）
 
-      # ====== 出场（平仓）参数：已禁用，只做对冲 ======
+      # ====== 下单安全参数 ======
+      hedgeOffsetCents: 2             # 对侧挂单价 = (100 - entryAskCents - offset)，默认 3
+      minEntryPriceCents: 72          # 吃单价下限（分），0=不设下限，避免低价时 size 被放大
+      maxEntryPriceCents: 88        # 吃单价上限（分），默认 95，避免 99/100 假盘口
+      maxSpreadCents: 3              # 盘口价差上限（分），默认 0，避免极差盘口误触发
+
+      # ====== 订单执行模式 ======
+      # sequential: 先下 Entry 订单，等待成交后再下 Hedge 订单（风险低，速度慢）
+      # parallel: 同时提交 Entry 和 Hedge 订单（速度快，风险高）
+      orderExecutionMode: sequential  # "sequential" | "parallel"，默认 "sequential"
+
+      # 顺序下单模式的参数（仅在 orderExecutionMode="sequential" 时生效）
+      sequentialCheckIntervalMs: 20   # 检查订单状态的间隔（毫秒），默认 20ms
+      sequentialMaxWaitMs: 2000       # 最大等待时间（毫秒），默认 2000ms（FAK 订单通常立即成交）
+
+      # ====== 周期和风险控制 ======
+      cycleEndProtectionMinutes: 3    # 周期结束前保护时间（分钟），默认 3 分钟，在周期结束前不开新单
+      hedgeReorderTimeoutSeconds: 30  # 对冲单重下超时时间（秒），默认 30 秒
+                                       # 主单成交后，如果对冲单在指定时间内未成交，重新下 GTC 挂单
+      hedgeTimeoutFakSeconds: 60      # 对冲单超时后以 FAK 吃单的时间（秒），0=禁用，默认 0
+                                       # 从 Entry 成交开始计时，如果对冲单在此时间内未成交，撤单并以卖一价吃单（防止亏损过多）
+      inventoryThreshold: 0           # 库存偏斜阈值（shares），默认 0（禁用）
+                                       # 当净持仓超过阈值时，降低该方向的交易频率
+
+      # ====== 价格优先选择 ======
+      # 当 UP/DOWN 都满足速度条件时，优先选择价格更高的一边
+      # 因为订单簿是镜像的，速度通常相同，价格更高的胜率更大
+      preferHigherPrice: false        # 是否启用价格优先选择，默认 false
+      minPreferredPriceCents: 50      # 优先价格阈值（分），默认 50，例如 50 或 60.60（转换为 6060）
+
+      # ====== Binance 开盘 1m K 线阴阳 bias（可选）======
+      # 用"本周期开盘第 1 根 1m K 线阴阳"作为 bias/过滤器
+      useBinanceOpen1mBias: false      # 是否启用 Binance bias，默认 false
+      biasMode: "hard"                 # "hard" | "soft"，默认 "hard"
+                                       # hard=只顺势；soft=逆势门槛更高
+      open1mMaxWaitSeconds: 120       # 等待开盘 1m K 线的最大时间（秒），默认 120
+      open1mMinBodyBps: 3             # 实体最小阈值（bps，1bp=0.01%），默认 3（0.03%）
+      open1mMaxWickBps: 25            # 影线最大阈值（bps），默认 25（0.25%）
+      requireBiasReady: false         # 开启 bias 后，是否必须等开盘 1m 收线再允许交易，默认 true（如果启用 bias）
+
+      # 当候选方向与开盘 1m bias 相反时，提高触发门槛（仅 BiasMode="soft" 时生效）
+      oppositeBiasVelocityMultiplier: 1.5  # 速度倍数，默认 1.5
+      oppositeBiasMinMoveExtraCents: 2     # 额外最小位移（分），默认 0
+
+      # ====== Binance 1s "底层硬动确认"（可选）======
+      # 用 Binance 1s 方向做确认（借鉴 momentum bot 的"底层硬动"过滤）
+      useBinanceMoveConfirm: false          # 是否启用底层硬动确认，默认 false
+      moveConfirmWindowSeconds: 60         # lookback 秒数，默认 60
+      minUnderlyingMoveBps: 20             # 最小底层波动（bps），默认 20（0.20%）
+
+      # ====== 市场质量过滤（提升胜率）======
+      enableMarketQualityGate: false        # 是否启用盘口质量 gate，默认 true
+      marketQualityMinScore: 70            # 最小质量分（0..100），默认 70
+      marketQualityMaxSpreadCents: 2       # 最大一档价差（分），<=0 则使用 maxSpreadCents
+      marketQualityMaxBookAgeMs: 3000      # WS 盘口最大年龄（毫秒），默认 3000
+
+      # ====== 出场（平仓）参数 ======
       # 说明：当持仓存在时，策略会优先处理出场，不再叠加开仓。
       # - 触发价使用 bestBid（SELL FAK），因此实际成交价会略受盘口影响
-      takeProfitCents: 0         # 止盈（分）：当前 bid - 入场均价 >= 3c 则卖出平仓（0=禁用）
-      stopLossCents: 0           # 止损（分）：入场均价 - 当前 bid >= 6c 则卖出平仓（0=禁用）
-      maxHoldSeconds: 0          # 时间止损（秒）：持仓超过 120 秒强制平仓（0=禁用）
-      exitCooldownMs: 1500       # 出场冷却（ms）：避免频繁重复下卖单
-      exitBothSidesIfHedged: true # 若同周期同时持有 UP/DOWN，则同时卖出全平（更简单、更安全）
+      # - 建议开启形成"可盈利闭环"
+      takeProfitCents: 0                   # 止盈阈值（分），当前 bid - 入场均价 >= 此值则卖出平仓，0=禁用
+      stopLossCents: 0                     # 止损阈值（分），入场均价 - 当前 bid >= 此值则卖出平仓，0=禁用
+      maxHoldSeconds: 0                    # 最大持仓时间（秒），超过此时间强制平仓，0=禁用
+      exitCooldownMs: 1500                 # 出场冷却（毫秒），避免频繁重复下卖单，默认 1500
+      exitBothSidesIfHedged: false         # 若同周期同时持有 UP/DOWN，则同时卖出平仓，默认 true
 
-      # ====== 分批止盈（盈亏比）：已禁用 ======
+      # ====== 分批止盈（提升盈亏比）======
       # 达到利润阈值后，卖出"当前剩余持仓"的 fraction 比例（每个 level 只触发一次）
-      partialTakeProfits: []     # 空数组表示禁用分批止盈
+      # 注意：fraction 范围 (0,1]，表示"当前剩余持仓"的比例（非初始持仓）
+      partialTakeProfits: []               # 分批止盈列表（按 profitCents 递增建议），空数组表示禁用
+                                           # 示例：
+                                           #   - profitCents: 3
+                                           #     fraction: 0.5
+                                           #   - profitCents: 6
+                                           #     fraction: 0.5
 
-      # ====== 追踪止盈（trailing）：已禁用 ======
-      enableTrailingTakeProfit: false
-      trailStartCents: 4
-      trailDistanceCents: 2
+      # ====== 追踪止盈（trailing）======
+      enableTrailingTakeProfit: false      # 是否启用追踪止盈，默认 false
+      trailStartCents: 4                   # 达到该利润后开始追踪（分），默认 4
+      trailDistanceCents: 2                # 回撤触发距离（分），默认 2
 
-      # ====== “速度快”判定 ======
-      windowSeconds: 10
-      minMoveCents: 5
-      minVelocityCentsPerSec: 0.3
-
-      cooldownMs: 1500
-      maxTradesPerCycle: 3      # 每周期最多交易次数（0=不设限，1=每周期只交易一次）
-      warmupMs: 800
-
-      # ====== 安全参数 ======
-      hedgeOffsetCents: 3        # 对侧挂单价 = (100 - entryAskCents - offset)
-      maxEntryPriceCents: 92
-      maxSpreadCents: 5
-
-      # ====== Binance 开盘 1m K 线阴阳 bias（已禁用用于测试）======
-      useBinanceOpen1mBias: false
-      biasMode: "hard"           # hard=只顺势；soft=逆势门槛更高
-      open1mMaxWaitSeconds: 120
-      open1mMinBodyBps: 3
-      open1mMaxWickBps: 25
-      requireBiasReady: false    # 禁用 bias 等待
-
-      # soft 模式下才需要（hard 模式也可以留着不生效）
-      oppositeBiasVelocityMultiplier: 1.5
-      oppositeBiasMinMoveExtraCents: 2
-
-      # ====== Binance 1s "底层硬动确认"（已禁用用于测试）======
-      useBinanceMoveConfirm: false
-      moveConfirmWindowSeconds: 60
-      minUnderlyingMoveBps: 20
+      # ====== 自动合并订单 ======
+      # 自动合并 complete sets（YES+NO -> USDC），默认禁用
+      autoMerge:
+        enabled: false                     # 是否启用自动合并，默认 false
+        minCompleteSets: 5                  # 最小 complete sets（shares）才触发合并，默认 0
+        maxCompleteSetsPerRun: 10          # 每次最多合并数量（shares），0=不设限，默认 0
+        mergeRatio: 1.0                    # 合并比例 (0..1]，默认 1.0（100% 合并）
+        intervalSeconds: 60                # 合并尝试的最小间隔（秒），默认 60
+        onlyIfNoOpenOrders: true          # 是否要求没有活跃订单才合并（更安全），默认 false
+        reconcileAfterMerge: true         # 合并后是否通过 Data API 对账，默认 false
+        reconcileMaxWaitSeconds: 0         # 对账最大等待时间（秒），0=禁用轮询，默认 0
+        metadata: ""                       # 可选的中继器元数据（<=500 字符），为空则使用默认值

@@ -148,12 +148,27 @@ func (b *BalanceService) initializeBalance(ctx context.Context) {
 		allowanceStr = "0"
 	}
 
-	// 更新 OrderEngine 余额
+	// 更新 OrderEngine 余额（等待更新完成）
+	reply := make(chan error, 1)
 	s.orderEngine.SubmitCommand(&UpdateBalanceCommand{
 		id:       fmt.Sprintf("init_balance_%d", time.Now().UnixNano()),
 		Balance:  balance,
 		Currency: "USDC",
+		Reply:    reply,
 	})
+	// 等待余额更新完成（最多等待 1 秒）
+	select {
+	case err := <-reply:
+		if err != nil {
+			log.Warnf("⚠️ [余额更新] 更新 OrderEngine 余额失败: %v", err)
+		} else {
+			log.Debugf("✅ [余额更新] OrderEngine 余额已更新为 %.6f USDC", balance)
+		}
+	case <-time.After(1 * time.Second):
+		log.Warnf("⚠️ [余额更新] 等待 OrderEngine 余额更新超时")
+	case <-ctx.Done():
+		log.Warnf("⚠️ [余额更新] 上下文已取消，余额更新可能未完成")
+	}
 
 	// 格式化显示账号信息、余额和授权额度
 	log.Infof("═══════════════════════════════════════════════════════════")

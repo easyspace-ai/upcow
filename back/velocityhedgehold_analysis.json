@@ -1,0 +1,8050 @@
+[
+  {
+    "timestamp": "25-12-30 20:15:01",
+    "trigger": {
+      "winner": "down",
+      "velocity": 4.385,
+      "delta_cents": 3.0,
+      "delta_seconds": 0.7
+    },
+    "entry": {
+      "order_id": "order_1767096901711390000",
+      "side": "down",
+      "price_cents": 54,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767096901712057000",
+      "side": "up",
+      "price_cents": 44,
+      "size": 14.9772,
+      "entry_id": "order_1767096901711390000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096901711390000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 54,
+      "hedge_id": "order_1767096901712057000",
+      "hedge_limit_cents": 44,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 1,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:02",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.345,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.5
+    },
+    "entry": {
+      "order_id": "order_1767096902515040000",
+      "side": "down",
+      "price_cents": 53,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096902515545000",
+      "side": "up",
+      "price_cents": 45,
+      "size": 15.0,
+      "entry_id": "order_1767096902515040000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096902515040000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 53,
+      "hedge_id": "order_1767096902515545000",
+      "hedge_limit_cents": 45,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 2,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:03",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.698,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.4
+    },
+    "entry": {
+      "order_id": "order_1767096903143670000",
+      "side": "up",
+      "price_cents": 48,
+      "size": 14.9791
+    },
+    "hedge": {
+      "hedge_id": "order_1767096903144468000",
+      "side": "down",
+      "price_cents": 50,
+      "size": 14.96,
+      "entry_id": "order_1767096903143670000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096903143670000",
+      "entry_filled_size": 14.9791,
+      "entry_price_cents": 48,
+      "hedge_id": "order_1767096903144468000",
+      "hedge_limit_cents": 50,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 3,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:05",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.511,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": {
+      "order_id": "order_1767096905102006000",
+      "side": "down",
+      "price_cents": 54,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767096905102838000",
+      "side": "up",
+      "price_cents": 44,
+      "size": 14.9772,
+      "entry_id": "order_1767096905102006000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096905102006000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 54,
+      "hedge_id": "order_1767096905102838000",
+      "hedge_limit_cents": 44,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 4,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:05",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.51,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:15:06",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.104,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767096906314354000",
+      "side": "down",
+      "price_cents": 55,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767096906315119000",
+      "side": "up",
+      "price_cents": 43,
+      "size": 14.9767,
+      "entry_id": "order_1767096906314354000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096906314354000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 55,
+      "hedge_id": "order_1767096906315119000",
+      "hedge_limit_cents": 43,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 5,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:07",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.575,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.7
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:15:08",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.567,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767096908077125000",
+      "side": "up",
+      "price_cents": 47,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096908079111000",
+      "side": "down",
+      "price_cents": 51,
+      "size": 15.0,
+      "entry_id": "order_1767096908077125000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096908077125000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 47,
+      "hedge_id": "order_1767096908079111000",
+      "hedge_limit_cents": 51,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 6,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:08",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.809,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.2
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:15:09",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.525,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767096909983197000",
+      "side": "down",
+      "price_cents": 55,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767096909988938000",
+      "side": "up",
+      "price_cents": 43,
+      "size": 14.9767,
+      "entry_id": "order_1767096909983197000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096909983197000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 55,
+      "hedge_id": "order_1767096909988938000",
+      "hedge_limit_cents": 43,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 7,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:10",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.524,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:15:13",
+    "trigger": {
+      "winner": "down",
+      "velocity": 2.461,
+      "delta_cents": 4.0,
+      "delta_seconds": 1.6
+    },
+    "entry": {
+      "order_id": "order_1767096913496865000",
+      "side": "down",
+      "price_cents": 59,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096913498082000",
+      "side": "up",
+      "price_cents": 39,
+      "size": 14.9999,
+      "entry_id": "order_1767096913496865000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096913496865000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 59,
+      "hedge_id": "order_1767096913498082000",
+      "hedge_limit_cents": 39,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 8,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:14",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.76,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.3
+    },
+    "entry": {
+      "order_id": "order_1767096914811702000",
+      "side": "down",
+      "price_cents": 60,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096914812584000",
+      "side": "up",
+      "price_cents": 38,
+      "size": 15.0,
+      "entry_id": "order_1767096914811702000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096914811702000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 60,
+      "hedge_id": "order_1767096914812584000",
+      "hedge_limit_cents": 38,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 9,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:15",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.508,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:15:17",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.525,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767096917968517000",
+      "side": "down",
+      "price_cents": 60,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096917970563000",
+      "side": "up",
+      "price_cents": 38,
+      "size": 15.0,
+      "entry_id": "order_1767096917968517000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096917968517000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 60,
+      "hedge_id": "order_1767096917970563000",
+      "hedge_limit_cents": 38,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 10,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:22",
+    "trigger": {
+      "winner": "up",
+      "velocity": 4.88,
+      "delta_cents": 3.0,
+      "delta_seconds": 0.6
+    },
+    "entry": {
+      "order_id": "order_1767096922073938000",
+      "side": "up",
+      "price_cents": 45,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096922074684000",
+      "side": "down",
+      "price_cents": 53,
+      "size": 15.0,
+      "entry_id": "order_1767096922073938000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096922073938000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 45,
+      "hedge_id": "order_1767096922074684000",
+      "hedge_limit_cents": 53,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 11,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:22",
+    "trigger": {
+      "winner": "up",
+      "velocity": 2.394,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.3
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:15:23",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.614,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:15:26",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.519,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767096926565851000",
+      "side": "down",
+      "price_cents": 57,
+      "size": 14.9824
+    },
+    "hedge": {
+      "hedge_id": "order_1767096926567138000",
+      "side": "up",
+      "price_cents": 41,
+      "size": 14.9756,
+      "entry_id": "order_1767096926565851000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096926565851000",
+      "entry_filled_size": 14.9824,
+      "entry_price_cents": 57,
+      "hedge_id": "order_1767096926567138000",
+      "hedge_limit_cents": 41,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 12,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:27",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.505,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:15:27",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.521,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:15:34",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.536,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767096934658699000",
+      "side": "up",
+      "price_cents": 45,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096934659612000",
+      "side": "down",
+      "price_cents": 53,
+      "size": 15.0,
+      "entry_id": "order_1767096934658699000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096934658699000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 45,
+      "hedge_id": "order_1767096934659612000",
+      "hedge_limit_cents": 53,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 13,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:35",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.544,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:15:37",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.571,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767096937033056000",
+      "side": "up",
+      "price_cents": 47,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096937034140000",
+      "side": "down",
+      "price_cents": 51,
+      "size": 15.0,
+      "entry_id": "order_1767096937033056000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096937033056000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 47,
+      "hedge_id": "order_1767096937034140000",
+      "hedge_limit_cents": 51,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 14,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:38",
+    "trigger": {
+      "winner": "up",
+      "velocity": 2.818,
+      "delta_cents": 4.0,
+      "delta_seconds": 1.4
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:15:39",
+    "trigger": {
+      "winner": "down",
+      "velocity": 3.202,
+      "delta_cents": 2.0,
+      "delta_seconds": 0.6
+    },
+    "entry": {
+      "order_id": "order_1767096939077074000",
+      "side": "down",
+      "price_cents": 53,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096939077843000",
+      "side": "up",
+      "price_cents": 45,
+      "size": 15.0,
+      "entry_id": "order_1767096939077074000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096939077074000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 53,
+      "hedge_id": "order_1767096939077843000",
+      "hedge_limit_cents": 45,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 15,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:39",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.578,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.3
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:15:40",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.07,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:15:47",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.552,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767096947506486000",
+      "side": "up",
+      "price_cents": 49,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096947507332000",
+      "side": "down",
+      "price_cents": 49,
+      "size": 15.0,
+      "entry_id": "order_1767096947506486000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096947506486000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 49,
+      "hedge_id": "order_1767096947507332000",
+      "hedge_limit_cents": 49,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 16,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:48",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.51,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:15:51",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.502,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": {
+      "order_id": "order_1767096951903675000",
+      "side": "down",
+      "price_cents": 53,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096951904399000",
+      "side": "up",
+      "price_cents": 45,
+      "size": 15.0,
+      "entry_id": "order_1767096951903675000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096951903675000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 53,
+      "hedge_id": "order_1767096951904399000",
+      "hedge_limit_cents": 45,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 17,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:52",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.512,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:15:53",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.508,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:15:56",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.531,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767096956457803000",
+      "side": "up",
+      "price_cents": 49,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096956458509000",
+      "side": "down",
+      "price_cents": 49,
+      "size": 15.0,
+      "entry_id": "order_1767096956457803000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096956457803000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 49,
+      "hedge_id": "order_1767096956458509000",
+      "hedge_limit_cents": 49,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 18,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:15:57",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.522,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:16:02",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.501,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": {
+      "order_id": "order_1767096962577088000",
+      "side": "up",
+      "price_cents": 50,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096962578020000",
+      "side": "down",
+      "price_cents": 48,
+      "size": 14.9791,
+      "entry_id": "order_1767096962577088000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096962577088000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 50,
+      "hedge_id": "order_1767096962578020000",
+      "hedge_limit_cents": 48,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 19,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:16:03",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.505,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:16:04",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.67,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.5
+    },
+    "entry": {
+      "order_id": "order_1767096964688553000",
+      "side": "down",
+      "price_cents": 52,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096964690215000",
+      "side": "up",
+      "price_cents": 46,
+      "size": 15.0,
+      "entry_id": "order_1767096964688553000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096964688553000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 52,
+      "hedge_id": "order_1767096964690215000",
+      "hedge_limit_cents": 46,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 20,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:16:05",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.671,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.5
+    },
+    "entry": {
+      "order_id": "order_1767096965300540000",
+      "side": "up",
+      "price_cents": 50,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096965301739000",
+      "side": "down",
+      "price_cents": 48,
+      "size": 14.9791,
+      "entry_id": "order_1767096965300540000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096965300540000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 50,
+      "hedge_id": "order_1767096965301739000",
+      "hedge_limit_cents": 48,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 21,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:16:06",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.663,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.5
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:16:11",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.546,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767096971297035000",
+      "side": "up",
+      "price_cents": 51,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096971297804000",
+      "side": "down",
+      "price_cents": 47,
+      "size": 15.0,
+      "entry_id": "order_1767096971297035000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096971297035000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 51,
+      "hedge_id": "order_1767096971297804000",
+      "hedge_limit_cents": 47,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 22,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:16:11",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.543,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:16:12",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.531,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:16:15",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.52,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767096975084806000",
+      "side": "down",
+      "price_cents": 51,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096975085981000",
+      "side": "up",
+      "price_cents": 47,
+      "size": 15.0,
+      "entry_id": "order_1767096975084806000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096975084806000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 51,
+      "hedge_id": "order_1767096975085981000",
+      "hedge_limit_cents": 47,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 23,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:16:15",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.541,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:16:16",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.548,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:16:20",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.508,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": {
+      "order_id": "order_1767096980380330000",
+      "side": "up",
+      "price_cents": 51,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096980381013000",
+      "side": "down",
+      "price_cents": 47,
+      "size": 15.0,
+      "entry_id": "order_1767096980380330000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096980380330000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 51,
+      "hedge_id": "order_1767096980381013000",
+      "hedge_limit_cents": 47,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 24,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:16:21",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.509,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:16:24",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.813,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.2
+    },
+    "entry": {
+      "order_id": "order_1767096984721306000",
+      "side": "down",
+      "price_cents": 51,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096984724621000",
+      "side": "up",
+      "price_cents": 47,
+      "size": 15.0,
+      "entry_id": "order_1767096984721306000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096984721306000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 51,
+      "hedge_id": "order_1767096984724621000",
+      "hedge_limit_cents": 47,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 25,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:16:25",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.531,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:16:26",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.514,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:16:31",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.689,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.5
+    },
+    "entry": {
+      "order_id": "order_1767096991400524000",
+      "side": "up",
+      "price_cents": 51,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096991401321000",
+      "side": "down",
+      "price_cents": 47,
+      "size": 15.0,
+      "entry_id": "order_1767096991400524000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096991400524000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 51,
+      "hedge_id": "order_1767096991401321000",
+      "hedge_limit_cents": 47,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 26,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:16:32",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.523,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.3
+    },
+    "entry": {
+      "order_id": "order_1767096992102133000",
+      "side": "up",
+      "price_cents": 52,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096992103338000",
+      "side": "down",
+      "price_cents": 46,
+      "size": 15.0,
+      "entry_id": "order_1767096992102133000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096992102133000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 52,
+      "hedge_id": "order_1767096992103338000",
+      "hedge_limit_cents": 46,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 27,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:16:32",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.043,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:16:36",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.653,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.5
+    },
+    "entry": {
+      "order_id": "order_1767096996105896000",
+      "side": "down",
+      "price_cents": 50,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096996107668000",
+      "side": "up",
+      "price_cents": 48,
+      "size": 14.9791,
+      "entry_id": "order_1767096996105896000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096996105896000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 50,
+      "hedge_id": "order_1767096996107668000",
+      "hedge_limit_cents": 48,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 28,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:16:36",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.79,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.3
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:16:37",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.535,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:16:37",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.541,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767096997954345000",
+      "side": "up",
+      "price_cents": 52,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096997955129000",
+      "side": "down",
+      "price_cents": 46,
+      "size": 15.0,
+      "entry_id": "order_1767096997954345000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096997954345000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 52,
+      "hedge_id": "order_1767096997955129000",
+      "hedge_limit_cents": 46,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 29,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:16:38",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.505,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:16:43",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.52,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097003263294000",
+      "side": "up",
+      "price_cents": 53,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097003264125000",
+      "side": "down",
+      "price_cents": 45,
+      "size": 15.0,
+      "entry_id": "order_1767097003263294000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097003263294000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 53,
+      "hedge_id": "order_1767097003264125000",
+      "hedge_limit_cents": 45,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 30,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:16:43",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.71,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.4
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:16:48",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.73,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.4
+    },
+    "entry": {
+      "order_id": "order_1767097008052945000",
+      "side": "up",
+      "price_cents": 54,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097008059187000",
+      "side": "down",
+      "price_cents": 44,
+      "size": 14.9772,
+      "entry_id": "order_1767097008052945000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097008052945000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 54,
+      "hedge_id": "order_1767097008059187000",
+      "hedge_limit_cents": 44,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 31,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:16:48",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.619,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.6
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:16:54",
+    "trigger": {
+      "winner": "down",
+      "velocity": 2.17,
+      "delta_cents": 4.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097014225310000",
+      "side": "down",
+      "price_cents": 47,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097014227759000",
+      "side": "up",
+      "price_cents": 51,
+      "size": 15.0,
+      "entry_id": "order_1767097014225310000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097014225310000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 47,
+      "hedge_id": "order_1767097014227759000",
+      "hedge_limit_cents": 51,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 32,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:16:56",
+    "trigger": {
+      "winner": "up",
+      "velocity": 2.182,
+      "delta_cents": 4.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097016058314000",
+      "side": "up",
+      "price_cents": 55,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097016058872000",
+      "side": "down",
+      "price_cents": 43,
+      "size": 14.9767,
+      "entry_id": "order_1767097016058314000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097016058314000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 55,
+      "hedge_id": "order_1767097016058872000",
+      "hedge_limit_cents": 43,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 33,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:16:56",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.55,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:01",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.535,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097021825821000",
+      "side": "up",
+      "price_cents": 55,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097021826660000",
+      "side": "down",
+      "price_cents": 43,
+      "size": 14.9767,
+      "entry_id": "order_1767097021825821000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097021825821000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 55,
+      "hedge_id": "order_1767097021826660000",
+      "hedge_limit_cents": 43,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 34,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:02",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.536,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:03",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.077,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097023053751000",
+      "side": "up",
+      "price_cents": 56,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097023054840000",
+      "side": "down",
+      "price_cents": 42,
+      "size": 15.0,
+      "entry_id": "order_1767097023053751000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097023053751000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 56,
+      "hedge_id": "order_1767097023054840000",
+      "hedge_limit_cents": 42,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 35,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:03",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.545,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:04",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.544,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:13",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.782,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.3
+    },
+    "entry": {
+      "order_id": "order_1767097033780893000",
+      "side": "up",
+      "price_cents": 57,
+      "size": 14.9824
+    },
+    "hedge": {
+      "hedge_id": "order_1767097033781886000",
+      "side": "down",
+      "price_cents": 41,
+      "size": 14.9756,
+      "entry_id": "order_1767097033780893000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097033780893000",
+      "entry_filled_size": 14.9824,
+      "entry_price_cents": 57,
+      "hedge_id": "order_1767097033781886000",
+      "hedge_limit_cents": 41,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 36,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:14",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.531,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:15",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.543,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:17",
+    "trigger": {
+      "winner": "up",
+      "velocity": 4.654,
+      "delta_cents": 6.0,
+      "delta_seconds": 1.3
+    },
+    "entry": {
+      "order_id": "order_1767097037065417000",
+      "side": "up",
+      "price_cents": 63,
+      "size": 14.9841
+    },
+    "hedge": {
+      "hedge_id": "order_1767097037066331000",
+      "side": "down",
+      "price_cents": 35,
+      "size": 14.9714,
+      "entry_id": "order_1767097037065417000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097037065417000",
+      "entry_filled_size": 14.9841,
+      "entry_price_cents": 63,
+      "hedge_id": "order_1767097037066331000",
+      "hedge_limit_cents": 35,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 37,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:17",
+    "trigger": {
+      "winner": "up",
+      "velocity": 3.157,
+      "delta_cents": 6.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:18",
+    "trigger": {
+      "winner": "up",
+      "velocity": 3.043,
+      "delta_cents": 6.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:19",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.516,
+      "delta_cents": 3.0,
+      "delta_seconds": 2.0
+    },
+    "entry": {
+      "order_id": "order_1767097039044200000",
+      "side": "down",
+      "price_cents": 41,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097039044951000",
+      "side": "up",
+      "price_cents": 57,
+      "size": 14.9824,
+      "entry_id": "order_1767097039044200000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097039044200000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 41,
+      "hedge_id": "order_1767097039044951000",
+      "hedge_limit_cents": 57,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 38,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:19",
+    "trigger": {
+      "winner": "down",
+      "velocity": 3.211,
+      "delta_cents": 4.0,
+      "delta_seconds": 1.2
+    },
+    "entry": {
+      "order_id": "order_1767097039680068000",
+      "side": "down",
+      "price_cents": 42,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097039680669000",
+      "side": "up",
+      "price_cents": 56,
+      "size": 15.0,
+      "entry_id": "order_1767097039680068000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097039680068000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 42,
+      "hedge_id": "order_1767097039680669000",
+      "hedge_limit_cents": 56,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 39,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:20",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.599,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:20",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.528,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:22",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.541,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097042158221000",
+      "side": "down",
+      "price_cents": 42,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097042159013000",
+      "side": "up",
+      "price_cents": 56,
+      "size": 15.0,
+      "entry_id": "order_1767097042158221000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097042158221000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 42,
+      "hedge_id": "order_1767097042159013000",
+      "hedge_limit_cents": 56,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 40,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:22",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.08,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097042790559000",
+      "side": "down",
+      "price_cents": 44,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097042791554000",
+      "side": "up",
+      "price_cents": 54,
+      "size": 14.9999,
+      "entry_id": "order_1767097042790559000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097042790559000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 44,
+      "hedge_id": "order_1767097042791554000",
+      "hedge_limit_cents": 54,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 41,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:23",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.228,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.6
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:25",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.591,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.7
+    },
+    "entry": {
+      "order_id": "order_1767097045477770000",
+      "side": "up",
+      "price_cents": 58,
+      "size": 14.9827
+    },
+    "hedge": {
+      "hedge_id": "order_1767097045479802000",
+      "side": "down",
+      "price_cents": 40,
+      "size": 14.975,
+      "entry_id": "order_1767097045477770000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097045477770000",
+      "entry_filled_size": 14.9827,
+      "entry_price_cents": 58,
+      "hedge_id": "order_1767097045479802000",
+      "hedge_limit_cents": 40,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 42,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:26",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.128,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097046302503000",
+      "side": "up",
+      "price_cents": 59,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097046303244000",
+      "side": "down",
+      "price_cents": 39,
+      "size": 14.9999,
+      "entry_id": "order_1767097046302503000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097046302503000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 59,
+      "hedge_id": "order_1767097046303244000",
+      "hedge_limit_cents": 39,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 43,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:27",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.506,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:30",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.714,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.4
+    },
+    "entry": {
+      "order_id": "order_1767097050098556000",
+      "side": "up",
+      "price_cents": 60,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097050103553000",
+      "side": "down",
+      "price_cents": 38,
+      "size": 15.0,
+      "entry_id": "order_1767097050098556000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097050098556000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 60,
+      "hedge_id": "order_1767097050103553000",
+      "hedge_limit_cents": 38,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 44,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:30",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.799,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.3
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:31",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.521,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:32",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.52,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097052022176000",
+      "side": "up",
+      "price_cents": 61,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097052023061000",
+      "side": "down",
+      "price_cents": 37,
+      "size": 15.0,
+      "entry_id": "order_1767097052022176000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097052022176000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 61,
+      "hedge_id": "order_1767097052023061000",
+      "hedge_limit_cents": 37,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 45,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:32",
+    "trigger": {
+      "winner": "up",
+      "velocity": 2.093,
+      "delta_cents": 4.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097052626618000",
+      "side": "up",
+      "price_cents": 64,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097052627657000",
+      "side": "down",
+      "price_cents": 34,
+      "size": 14.9999,
+      "entry_id": "order_1767097052626618000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097052626618000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 64,
+      "hedge_id": "order_1767097052627657000",
+      "hedge_limit_cents": 34,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 46,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:33",
+    "trigger": {
+      "winner": "up",
+      "velocity": 3.216,
+      "delta_cents": 6.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:33",
+    "trigger": {
+      "winner": "up",
+      "velocity": 3.264,
+      "delta_cents": 6.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:34",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.088,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097054465316000",
+      "side": "up",
+      "price_cents": 66,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097054466098000",
+      "side": "down",
+      "price_cents": 32,
+      "size": 15.0,
+      "entry_id": "order_1767097054465316000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097054465316000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 66,
+      "hedge_id": "order_1767097054466098000",
+      "hedge_limit_cents": 32,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 47,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:35",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.629,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.6
+    },
+    "entry": {
+      "order_id": "order_1767097055451278000",
+      "side": "down",
+      "price_cents": 35,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097055454287000",
+      "side": "up",
+      "price_cents": 63,
+      "size": 14.9841,
+      "entry_id": "order_1767097055451278000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097055451278000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 35,
+      "hedge_id": "order_1767097055454287000",
+      "hedge_limit_cents": 63,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 48,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:37",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.535,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097057937912000",
+      "side": "down",
+      "price_cents": 36,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097057939725000",
+      "side": "up",
+      "price_cents": 62,
+      "size": 15.0,
+      "entry_id": "order_1767097057937912000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097057937912000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 36,
+      "hedge_id": "order_1767097057939725000",
+      "hedge_limit_cents": 62,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 49,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:40",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.511,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": {
+      "order_id": "order_1767097060504088000",
+      "side": "down",
+      "price_cents": 36,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097060506793000",
+      "side": "up",
+      "price_cents": 62,
+      "size": 15.0,
+      "entry_id": "order_1767097060504088000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097060504088000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 36,
+      "hedge_id": "order_1767097060506793000",
+      "hedge_limit_cents": 62,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 50,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:41",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.016,
+      "delta_cents": 2.0,
+      "delta_seconds": 2.0
+    },
+    "entry": {
+      "order_id": "order_1767097061726611000",
+      "side": "up",
+      "price_cents": 67,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097061727275000",
+      "side": "down",
+      "price_cents": 31,
+      "size": 15.0,
+      "entry_id": "order_1767097061726611000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097061726611000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 67,
+      "hedge_id": "order_1767097061727275000",
+      "hedge_limit_cents": 31,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 51,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:42",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.548,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097062328819000",
+      "side": "up",
+      "price_cents": 66,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097062330043000",
+      "side": "down",
+      "price_cents": 32,
+      "size": 15.0,
+      "entry_id": "order_1767097062328819000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097062328819000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 66,
+      "hedge_id": "order_1767097062330043000",
+      "hedge_limit_cents": 32,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 52,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:42",
+    "trigger": {
+      "winner": "down",
+      "velocity": 2.208,
+      "delta_cents": 4.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097062938068000",
+      "side": "down",
+      "price_cents": 39,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097062938967000",
+      "side": "up",
+      "price_cents": 59,
+      "size": 14.983,
+      "entry_id": "order_1767097062938068000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097062938068000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 39,
+      "hedge_id": "order_1767097062938967000",
+      "hedge_limit_cents": 59,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 53,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:43",
+    "trigger": {
+      "winner": "down",
+      "velocity": 3.296,
+      "delta_cents": 6.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097063547432000",
+      "side": "down",
+      "price_cents": 40,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097063549043000",
+      "side": "up",
+      "price_cents": 58,
+      "size": 14.9827,
+      "entry_id": "order_1767097063547432000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097063547432000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 40,
+      "hedge_id": "order_1767097063549043000",
+      "hedge_limit_cents": 58,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 54,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:44",
+    "trigger": {
+      "winner": "down",
+      "velocity": 2.732,
+      "delta_cents": 5.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:45",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.547,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:45",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.544,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097065998087000",
+      "side": "up",
+      "price_cents": 62,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097065999690000",
+      "side": "down",
+      "price_cents": 36,
+      "size": 15.0,
+      "entry_id": "order_1767097065998087000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097065998087000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 62,
+      "hedge_id": "order_1767097065999690000",
+      "hedge_limit_cents": 36,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 55,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:47",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.516,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097067937732000",
+      "side": "up",
+      "price_cents": 63,
+      "size": 14.9841
+    },
+    "hedge": {
+      "hedge_id": "order_1767097067938726000",
+      "side": "down",
+      "price_cents": 35,
+      "size": 14.9714,
+      "entry_id": "order_1767097067937732000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097067937732000",
+      "entry_filled_size": 14.9841,
+      "entry_price_cents": 63,
+      "hedge_id": "order_1767097067938726000",
+      "hedge_limit_cents": 35,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 56,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:48",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.534,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:49",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.549,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:51",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.53,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097071645198000",
+      "side": "up",
+      "price_cents": 64,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097071646812000",
+      "side": "down",
+      "price_cents": 34,
+      "size": 14.9999,
+      "entry_id": "order_1767097071645198000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097071645198000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 64,
+      "hedge_id": "order_1767097071646812000",
+      "hedge_limit_cents": 34,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 57,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:52",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.506,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:52",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.516,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:17:58",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.803,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.2
+    },
+    "entry": {
+      "order_id": "order_1767097078670043000",
+      "side": "up",
+      "price_cents": 65,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097078672301000",
+      "side": "down",
+      "price_cents": 33,
+      "size": 15.0,
+      "entry_id": "order_1767097078670043000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097078670043000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 65,
+      "hedge_id": "order_1767097078672301000",
+      "hedge_limit_cents": 33,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 58,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:17:59",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.533,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:00",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.501,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:01",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.086,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097081885537000",
+      "side": "down",
+      "price_cents": 38,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097081886200000",
+      "side": "up",
+      "price_cents": 60,
+      "size": 15.0,
+      "entry_id": "order_1767097081885537000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097081885537000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 38,
+      "hedge_id": "order_1767097081886200000",
+      "hedge_limit_cents": 60,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 59,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:02",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.55,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097082494786000",
+      "side": "down",
+      "price_cents": 37,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097082495557000",
+      "side": "up",
+      "price_cents": 61,
+      "size": 15.0,
+      "entry_id": "order_1767097082494786000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097082494786000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 37,
+      "hedge_id": "order_1767097082495557000",
+      "hedge_limit_cents": 61,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 60,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:03",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.55,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:04",
+    "trigger": {
+      "winner": "down",
+      "velocity": 7.592,
+      "delta_cents": 14.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097084339437000",
+      "side": "down",
+      "price_cents": 38,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097084340857000",
+      "side": "up",
+      "price_cents": 60,
+      "size": 15.0,
+      "entry_id": "order_1767097084339437000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097084339437000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 38,
+      "hedge_id": "order_1767097084340857000",
+      "hedge_limit_cents": 60,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 61,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:04",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.071,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097084968449000",
+      "side": "down",
+      "price_cents": 39,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097084969176000",
+      "side": "up",
+      "price_cents": 59,
+      "size": 14.983,
+      "entry_id": "order_1767097084968449000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097084968449000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 39,
+      "hedge_id": "order_1767097084969176000",
+      "hedge_limit_cents": 59,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 62,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:06",
+    "trigger": {
+      "winner": "up",
+      "velocity": 6.982,
+      "delta_cents": 13.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097086201017000",
+      "side": "up",
+      "price_cents": 63,
+      "size": 14.9841
+    },
+    "hedge": {
+      "hedge_id": "order_1767097086202685000",
+      "side": "down",
+      "price_cents": 35,
+      "size": 14.9714,
+      "entry_id": "order_1767097086201017000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097086201017000",
+      "entry_filled_size": 14.9841,
+      "entry_price_cents": 63,
+      "hedge_id": "order_1767097086202685000",
+      "hedge_limit_cents": 35,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 63,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:06",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.541,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:08",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.522,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097088732041000",
+      "side": "down",
+      "price_cents": 39,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097088732854000",
+      "side": "up",
+      "price_cents": 59,
+      "size": 14.983,
+      "entry_id": "order_1767097088732041000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097088732041000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 39,
+      "hedge_id": "order_1767097088732854000",
+      "hedge_limit_cents": 59,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 64,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:09",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.55,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:12",
+    "trigger": {
+      "winner": "down",
+      "velocity": 11.415,
+      "delta_cents": 7.0,
+      "delta_seconds": 0.6
+    },
+    "entry": {
+      "order_id": "order_1767097092073853000",
+      "side": "down",
+      "price_cents": 46,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097092193507000",
+      "side": "up",
+      "price_cents": 52,
+      "size": 15.0,
+      "entry_id": "order_1767097092073853000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097092073853000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 46,
+      "hedge_id": "order_1767097092193507000",
+      "hedge_limit_cents": 52,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 65,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:12",
+    "trigger": {
+      "winner": "down",
+      "velocity": 4.932,
+      "delta_cents": 6.0,
+      "delta_seconds": 1.2
+    },
+    "entry": {
+      "order_id": "order_1767097092676364000",
+      "side": "down",
+      "price_cents": 45,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097092986973000",
+      "side": "up",
+      "price_cents": 53,
+      "size": 15.0,
+      "entry_id": "order_1767097092676364000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097092676364000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 45,
+      "hedge_id": "order_1767097092986973000",
+      "hedge_limit_cents": 53,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 66,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:13",
+    "trigger": {
+      "winner": "down",
+      "velocity": 3.29,
+      "delta_cents": 6.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:15",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.087,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097095123499000",
+      "side": "down",
+      "price_cents": 47,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097095126872000",
+      "side": "up",
+      "price_cents": 51,
+      "size": 15.0,
+      "entry_id": "order_1767097095123499000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097095123499000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 47,
+      "hedge_id": "order_1767097095126872000",
+      "hedge_limit_cents": 51,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 67,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:15",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.05,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097095807238000",
+      "side": "down",
+      "price_cents": 49,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097095808192000",
+      "side": "up",
+      "price_cents": 49,
+      "size": 15.0,
+      "entry_id": "order_1767097095807238000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097095807238000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 49,
+      "hedge_id": "order_1767097095808192000",
+      "hedge_limit_cents": 49,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 68,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:16",
+    "trigger": {
+      "winner": "down",
+      "velocity": 2.094,
+      "delta_cents": 4.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:17",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.605,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.7
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:18",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.573,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.7
+    },
+    "entry": {
+      "order_id": "order_1767097098166968000",
+      "side": "down",
+      "price_cents": 50,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097098168208000",
+      "side": "up",
+      "price_cents": 48,
+      "size": 14.9791,
+      "entry_id": "order_1767097098166968000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097098166968000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 50,
+      "hedge_id": "order_1767097098168208000",
+      "hedge_limit_cents": 48,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 69,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:18",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.76,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.3
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:19",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.506,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:20",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.034,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097100711507000",
+      "side": "down",
+      "price_cents": 52,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097100713952000",
+      "side": "up",
+      "price_cents": 46,
+      "size": 15.0,
+      "entry_id": "order_1767097100711507000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097100711507000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 52,
+      "hedge_id": "order_1767097100713952000",
+      "hedge_limit_cents": 46,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 70,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:21",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.532,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097101316293000",
+      "side": "down",
+      "price_cents": 51,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097101317015000",
+      "side": "up",
+      "price_cents": 47,
+      "size": 15.0,
+      "entry_id": "order_1767097101316293000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097101316293000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 51,
+      "hedge_id": "order_1767097101317015000",
+      "hedge_limit_cents": 47,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 71,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:22",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.501,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:22",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.509,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": {
+      "order_id": "order_1767097102676411000",
+      "side": "up",
+      "price_cents": 50,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097102677904000",
+      "side": "down",
+      "price_cents": 48,
+      "size": 14.9791,
+      "entry_id": "order_1767097102676411000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097102676411000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 50,
+      "hedge_id": "order_1767097102677904000",
+      "hedge_limit_cents": 48,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 72,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:23",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.617,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097103904692000",
+      "side": "up",
+      "price_cents": 53,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097103905676000",
+      "side": "down",
+      "price_cents": 45,
+      "size": 15.0,
+      "entry_id": "order_1767097103904692000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097103904692000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 53,
+      "hedge_id": "order_1767097103905676000",
+      "hedge_limit_cents": 45,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 73,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:24",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.632,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:25",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.501,
+      "delta_cents": 3.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:27",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.555,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097107704502000",
+      "side": "up",
+      "price_cents": 54,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097107710432000",
+      "side": "down",
+      "price_cents": 44,
+      "size": 14.9772,
+      "entry_id": "order_1767097107704502000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097107704502000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 54,
+      "hedge_id": "order_1767097107710432000",
+      "hedge_limit_cents": 44,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 74,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:28",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.554,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:28",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.664,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097108906440000",
+      "side": "up",
+      "price_cents": 56,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097108907571000",
+      "side": "down",
+      "price_cents": 42,
+      "size": 15.0,
+      "entry_id": "order_1767097108906440000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097108906440000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 56,
+      "hedge_id": "order_1767097108907571000",
+      "hedge_limit_cents": 42,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 75,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:29",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.088,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:32",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.534,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:34",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.515,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097114190996000",
+      "side": "down",
+      "price_cents": 45,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097114192988000",
+      "side": "up",
+      "price_cents": 53,
+      "size": 15.0,
+      "entry_id": "order_1767097114190996000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097114190996000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 45,
+      "hedge_id": "order_1767097114192988000",
+      "hedge_limit_cents": 53,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 76,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:35",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.514,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097115441065000",
+      "side": "down",
+      "price_cents": 46,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097115441819000",
+      "side": "up",
+      "price_cents": 52,
+      "size": 15.0,
+      "entry_id": "order_1767097115441065000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097115441065000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 46,
+      "hedge_id": "order_1767097115441819000",
+      "hedge_limit_cents": 52,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 77,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:36",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.5,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:39",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.079,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097119475385000",
+      "side": "down",
+      "price_cents": 48,
+      "size": 14.9791
+    },
+    "hedge": {
+      "hedge_id": "order_1767097119476254000",
+      "side": "up",
+      "price_cents": 50,
+      "size": 14.96,
+      "entry_id": "order_1767097119475385000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097119475385000",
+      "entry_filled_size": 14.9791,
+      "entry_price_cents": 48,
+      "hedge_id": "order_1767097119476254000",
+      "hedge_limit_cents": 50,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 78,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:40",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.418,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.4
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:40",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.683,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.5
+    },
+    "entry": {
+      "order_id": "order_1767097120939812000",
+      "side": "down",
+      "price_cents": 49,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097120940860000",
+      "side": "up",
+      "price_cents": 49,
+      "size": 15.0,
+      "entry_id": "order_1767097120939812000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097120939812000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 49,
+      "hedge_id": "order_1767097120940860000",
+      "hedge_limit_cents": 49,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 79,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:41",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.537,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.3
+    },
+    "entry": {
+      "order_id": "order_1767097121552562000",
+      "side": "down",
+      "price_cents": 50,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097121553218000",
+      "side": "up",
+      "price_cents": 48,
+      "size": 14.9791,
+      "entry_id": "order_1767097121552562000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097121552562000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 50,
+      "hedge_id": "order_1767097121553218000",
+      "hedge_limit_cents": 48,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 80,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:42",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.046,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:42",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.54,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:48",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.532,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097128592974000",
+      "side": "up",
+      "price_cents": 52,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097128594074000",
+      "side": "down",
+      "price_cents": 46,
+      "size": 15.0,
+      "entry_id": "order_1767097128592974000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097128592974000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 52,
+      "hedge_id": "order_1767097128594074000",
+      "hedge_limit_cents": 46,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 81,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:49",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.534,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:49",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.535,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:18:55",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.51,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": {
+      "order_id": "order_1767097135359300000",
+      "side": "down",
+      "price_cents": 50,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097135360272000",
+      "side": "up",
+      "price_cents": 48,
+      "size": 14.9791,
+      "entry_id": "order_1767097135359300000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097135359300000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 50,
+      "hedge_id": "order_1767097135360272000",
+      "hedge_limit_cents": 48,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 82,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:55",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.538,
+      "delta_cents": 3.0,
+      "delta_seconds": 2.0
+    },
+    "entry": {
+      "order_id": "order_1767097135962969000",
+      "side": "down",
+      "price_cents": 52,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097135963890000",
+      "side": "up",
+      "price_cents": 46,
+      "size": 15.0,
+      "entry_id": "order_1767097135962969000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097135962969000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 52,
+      "hedge_id": "order_1767097135963890000",
+      "hedge_limit_cents": 46,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 83,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:18:56",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.388,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.4
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:19:01",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.522,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097141292487000",
+      "side": "up",
+      "price_cents": 50,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097141293225000",
+      "side": "down",
+      "price_cents": 48,
+      "size": 14.9791,
+      "entry_id": "order_1767097141292487000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097141292487000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 50,
+      "hedge_id": "order_1767097141293225000",
+      "hedge_limit_cents": 48,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 84,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:19:04",
+    "trigger": {
+      "winner": "up",
+      "velocity": 4.758,
+      "delta_cents": 5.0,
+      "delta_seconds": 1.1
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:19:05",
+    "trigger": {
+      "winner": "up",
+      "velocity": 2.983,
+      "delta_cents": 5.0,
+      "delta_seconds": 1.7
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:19:09",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.526,
+      "delta_cents": 3.0,
+      "delta_seconds": 2.0
+    },
+    "entry": {
+      "order_id": "order_1767097149674433000",
+      "side": "up",
+      "price_cents": 58,
+      "size": 14.9827
+    },
+    "hedge": {
+      "hedge_id": "order_1767097149675378000",
+      "side": "down",
+      "price_cents": 40,
+      "size": 14.975,
+      "entry_id": "order_1767097149674433000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097149674433000",
+      "entry_filled_size": 14.9827,
+      "entry_price_cents": 58,
+      "hedge_id": "order_1767097149675378000",
+      "hedge_limit_cents": 40,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 85,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:19:10",
+    "trigger": {
+      "winner": "up",
+      "velocity": 2.225,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.3
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:19:12",
+    "trigger": {
+      "winner": "down",
+      "velocity": 2.037,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.0
+    },
+    "entry": {
+      "order_id": "order_1767097152877518000",
+      "side": "down",
+      "price_cents": 45,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097152878441000",
+      "side": "up",
+      "price_cents": 53,
+      "size": 15.0,
+      "entry_id": "order_1767097152877518000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097152877518000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 45,
+      "hedge_id": "order_1767097152878441000",
+      "hedge_limit_cents": 53,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 86,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:19:15",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.747,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.3
+    },
+    "entry": {
+      "order_id": "order_1767097155402232000",
+      "side": "down",
+      "price_cents": 46,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097155403723000",
+      "side": "up",
+      "price_cents": 52,
+      "size": 15.0,
+      "entry_id": "order_1767097155402232000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097155402232000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 46,
+      "hedge_id": "order_1767097155403723000",
+      "hedge_limit_cents": 52,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 87,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:19:16",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.505,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:19:20",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.502,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": {
+      "order_id": "order_1767097160879038000",
+      "side": "up",
+      "price_cents": 56,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097160879712000",
+      "side": "down",
+      "price_cents": 42,
+      "size": 15.0,
+      "entry_id": "order_1767097160879038000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097160879038000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 56,
+      "hedge_id": "order_1767097160879712000",
+      "hedge_limit_cents": 42,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 88,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:19:21",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.51,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:19:22",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.508,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:19:42",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.688,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.5
+    },
+    "entry": {
+      "order_id": "order_1767097182719744000",
+      "side": "up",
+      "price_cents": 58,
+      "size": 14.9827
+    },
+    "hedge": {
+      "hedge_id": "order_1767097182720943000",
+      "side": "down",
+      "price_cents": 40,
+      "size": 14.975,
+      "entry_id": "order_1767097182719744000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097182719744000",
+      "entry_filled_size": 14.9827,
+      "entry_price_cents": 58,
+      "hedge_id": "order_1767097182720943000",
+      "hedge_limit_cents": 40,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 89,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:19:43",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.624,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.6
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:19:46",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.509,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:19:47",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.611,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097187391652000",
+      "side": "up",
+      "price_cents": 61,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097187393019000",
+      "side": "down",
+      "price_cents": 37,
+      "size": 15.0,
+      "entry_id": "order_1767097187391652000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097187391652000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 61,
+      "hedge_id": "order_1767097187393019000",
+      "hedge_limit_cents": 37,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 90,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:19:47",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.638,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:19:48",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.099,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:19:49",
+    "trigger": {
+      "winner": "up",
+      "velocity": 2.154,
+      "delta_cents": 4.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097189248837000",
+      "side": "up",
+      "price_cents": 65,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097189249667000",
+      "side": "down",
+      "price_cents": 33,
+      "size": 15.0,
+      "entry_id": "order_1767097189248837000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097189248837000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 65,
+      "hedge_id": "order_1767097189249667000",
+      "hedge_limit_cents": 33,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 91,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:19:49",
+    "trigger": {
+      "winner": "up",
+      "velocity": 2.153,
+      "delta_cents": 4.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:19:50",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.615,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:19:51",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.53,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097191134238000",
+      "side": "down",
+      "price_cents": 37,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097191135532000",
+      "side": "up",
+      "price_cents": 61,
+      "size": 15.0,
+      "entry_id": "order_1767097191134238000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097191134238000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 37,
+      "hedge_id": "order_1767097191135532000",
+      "hedge_limit_cents": 61,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 92,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:19:52",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.532,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097192339867000",
+      "side": "up",
+      "price_cents": 66,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097192341043000",
+      "side": "down",
+      "price_cents": 32,
+      "size": 15.0,
+      "entry_id": "order_1767097192339867000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097192339867000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 66,
+      "hedge_id": "order_1767097192341043000",
+      "hedge_limit_cents": 32,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 93,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:19:52",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.107,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097192940963000",
+      "side": "up",
+      "price_cents": 67,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097192941656000",
+      "side": "down",
+      "price_cents": 31,
+      "size": 15.0,
+      "entry_id": "order_1767097192940963000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097192940963000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 67,
+      "hedge_id": "order_1767097192941656000",
+      "hedge_limit_cents": 31,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 94,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:19:53",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.542,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:19:54",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.083,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:19:54",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.54,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:19:55",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.101,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097195395880000",
+      "side": "up",
+      "price_cents": 68,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097195396665000",
+      "side": "down",
+      "price_cents": 30,
+      "size": 14.9666,
+      "entry_id": "order_1767097195395880000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097195395880000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 68,
+      "hedge_id": "order_1767097195396665000",
+      "hedge_limit_cents": 30,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 95,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:19:56",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.522,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097196101384000",
+      "side": "up",
+      "price_cents": 69,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097196103183000",
+      "side": "down",
+      "price_cents": 29,
+      "size": 14.9655,
+      "entry_id": "order_1767097196101384000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097196101384000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 69,
+      "hedge_id": "order_1767097196103183000",
+      "hedge_limit_cents": 29,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 96,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:19:57",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.73,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.4
+    },
+    "entry": {
+      "order_id": "order_1767097197470263000",
+      "side": "down",
+      "price_cents": 34,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097197470890000",
+      "side": "up",
+      "price_cents": 64,
+      "size": 14.9843,
+      "entry_id": "order_1767097197470263000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097197470263000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 34,
+      "hedge_id": "order_1767097197470890000",
+      "hedge_limit_cents": 64,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 97,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:19:58",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.5,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:01",
+    "trigger": {
+      "winner": "down",
+      "velocity": 2.199,
+      "delta_cents": 4.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097201956264000",
+      "side": "down",
+      "price_cents": 38,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097201957114000",
+      "side": "up",
+      "price_cents": 60,
+      "size": 15.0,
+      "entry_id": "order_1767097201956264000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097201956264000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 38,
+      "hedge_id": "order_1767097201957114000",
+      "hedge_limit_cents": 60,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 98,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:02",
+    "trigger": {
+      "winner": "down",
+      "velocity": 2.795,
+      "delta_cents": 4.0,
+      "delta_seconds": 1.4
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:03",
+    "trigger": {
+      "winner": "up",
+      "velocity": 2.059,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.5
+    },
+    "entry": {
+      "order_id": "order_1767097203413087000",
+      "side": "up",
+      "price_cents": 66,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097203414616000",
+      "side": "down",
+      "price_cents": 32,
+      "size": 15.0,
+      "entry_id": "order_1767097203413087000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097203413087000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 66,
+      "hedge_id": "order_1767097203414616000",
+      "hedge_limit_cents": 32,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 99,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:04",
+    "trigger": {
+      "winner": "up",
+      "velocity": 2.181,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.4
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:06",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.535,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097206675288000",
+      "side": "up",
+      "price_cents": 67,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097206675929000",
+      "side": "down",
+      "price_cents": 31,
+      "size": 15.0,
+      "entry_id": "order_1767097206675288000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097206675288000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 67,
+      "hedge_id": "order_1767097206675929000",
+      "hedge_limit_cents": 31,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 100,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:07",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.522,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:07",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.518,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097207957174000",
+      "side": "up",
+      "price_cents": 68,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097207959396000",
+      "side": "down",
+      "price_cents": 30,
+      "size": 14.9666,
+      "entry_id": "order_1767097207957174000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097207957174000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 68,
+      "hedge_id": "order_1767097207959396000",
+      "hedge_limit_cents": 30,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 101,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:17",
+    "trigger": {
+      "winner": "down",
+      "velocity": 2.717,
+      "delta_cents": 5.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097217469954000",
+      "side": "down",
+      "price_cents": 39,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097217470723000",
+      "side": "up",
+      "price_cents": 59,
+      "size": 14.983,
+      "entry_id": "order_1767097217469954000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097217469954000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 39,
+      "hedge_id": "order_1767097217470723000",
+      "hedge_limit_cents": 59,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 102,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:19",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.537,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097219329380000",
+      "side": "up",
+      "price_cents": 63,
+      "size": 14.9841
+    },
+    "hedge": {
+      "hedge_id": "order_1767097219330249000",
+      "side": "down",
+      "price_cents": 35,
+      "size": 14.9714,
+      "entry_id": "order_1767097219329380000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097219329380000",
+      "entry_filled_size": 14.9841,
+      "entry_price_cents": 63,
+      "hedge_id": "order_1767097219330249000",
+      "hedge_limit_cents": 35,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 103,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:20",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.708,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.4
+    },
+    "entry": {
+      "order_id": "order_1767097220140540000",
+      "side": "down",
+      "price_cents": 40,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097220143893000",
+      "side": "up",
+      "price_cents": 58,
+      "size": 14.9827,
+      "entry_id": "order_1767097220140540000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097220140540000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 40,
+      "hedge_id": "order_1767097220143893000",
+      "hedge_limit_cents": 58,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 104,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:20",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.707,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.4
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:21",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.647,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.2
+    },
+    "entry": {
+      "order_id": "order_1767097221354661000",
+      "side": "up",
+      "price_cents": 63,
+      "size": 14.9841
+    },
+    "hedge": {
+      "hedge_id": "order_1767097221355756000",
+      "side": "down",
+      "price_cents": 35,
+      "size": 14.9714,
+      "entry_id": "order_1767097221354661000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097221354661000",
+      "entry_filled_size": 14.9841,
+      "entry_price_cents": 63,
+      "hedge_id": "order_1767097221355756000",
+      "hedge_limit_cents": 35,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 105,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:22",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.505,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:22",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.503,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:23",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.592,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.3
+    },
+    "entry": {
+      "order_id": "order_1767097223377087000",
+      "side": "up",
+      "price_cents": 64,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097223378023000",
+      "side": "down",
+      "price_cents": 34,
+      "size": 14.9999,
+      "entry_id": "order_1767097223377087000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097223377087000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 64,
+      "hedge_id": "order_1767097223378023000",
+      "hedge_limit_cents": 34,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 106,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:24",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.054,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:25",
+    "trigger": {
+      "winner": "down",
+      "velocity": 2.151,
+      "delta_cents": 4.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097225236844000",
+      "side": "down",
+      "price_cents": 41,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097225238356000",
+      "side": "up",
+      "price_cents": 57,
+      "size": 14.9824,
+      "entry_id": "order_1767097225236844000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097225236844000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 41,
+      "hedge_id": "order_1767097225238356000",
+      "hedge_limit_cents": 57,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 107,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:25",
+    "trigger": {
+      "winner": "down",
+      "velocity": 4.874,
+      "delta_cents": 9.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097225865186000",
+      "side": "down",
+      "price_cents": 46,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097225865818000",
+      "side": "up",
+      "price_cents": 52,
+      "size": 15.0,
+      "entry_id": "order_1767097225865186000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097225865186000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 46,
+      "hedge_id": "order_1767097225865818000",
+      "hedge_limit_cents": 52,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 108,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:28",
+    "trigger": {
+      "winner": "up",
+      "velocity": 4.805,
+      "delta_cents": 3.0,
+      "delta_seconds": 0.6
+    },
+    "entry": {
+      "order_id": "order_1767097228102352000",
+      "side": "up",
+      "price_cents": 58,
+      "size": 14.9827
+    },
+    "hedge": {
+      "hedge_id": "order_1767097228104958000",
+      "side": "down",
+      "price_cents": 40,
+      "size": 14.975,
+      "entry_id": "order_1767097228102352000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097228102352000",
+      "entry_filled_size": 14.9827,
+      "entry_price_cents": 58,
+      "hedge_id": "order_1767097228104958000",
+      "hedge_limit_cents": 40,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 109,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:28",
+    "trigger": {
+      "winner": "up",
+      "velocity": 2.218,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.4
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:31",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.531,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097231586649000",
+      "side": "up",
+      "price_cents": 59,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097231588424000",
+      "side": "down",
+      "price_cents": 39,
+      "size": 14.9999,
+      "entry_id": "order_1767097231586649000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097231586649000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 59,
+      "hedge_id": "order_1767097231588424000",
+      "hedge_limit_cents": 39,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 110,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:32",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.533,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:32",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.532,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:36",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.505,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": {
+      "order_id": "order_1767097236225704000",
+      "side": "down",
+      "price_cents": 43,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097236227101000",
+      "side": "up",
+      "price_cents": 55,
+      "size": 14.9999,
+      "entry_id": "order_1767097236225704000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097236225704000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 43,
+      "hedge_id": "order_1767097236227101000",
+      "hedge_limit_cents": 55,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 111,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:36",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.704,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.4
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:40",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.534,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097240057901000",
+      "side": "up",
+      "price_cents": 59,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097240059411000",
+      "side": "down",
+      "price_cents": 39,
+      "size": 14.9999,
+      "entry_id": "order_1767097240057901000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097240057901000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 59,
+      "hedge_id": "order_1767097240059411000",
+      "hedge_limit_cents": 39,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 112,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:40",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.076,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097240672368000",
+      "side": "up",
+      "price_cents": 60,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097240673363000",
+      "side": "down",
+      "price_cents": 38,
+      "size": 15.0,
+      "entry_id": "order_1767097240672368000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097240672368000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 60,
+      "hedge_id": "order_1767097240673363000",
+      "hedge_limit_cents": 38,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 113,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:41",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.068,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:41",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.519,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:42",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.517,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097242608382000",
+      "side": "down",
+      "price_cents": 42,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097242609854000",
+      "side": "up",
+      "price_cents": 56,
+      "size": 15.0,
+      "entry_id": "order_1767097242608382000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097242608382000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 42,
+      "hedge_id": "order_1767097242609854000",
+      "hedge_limit_cents": 56,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 114,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:43",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.507,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:43",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.515,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:46",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.644,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.2
+    },
+    "entry": {
+      "order_id": "order_1767097246614073000",
+      "side": "down",
+      "price_cents": 44,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097246614686000",
+      "side": "up",
+      "price_cents": 54,
+      "size": 14.9999,
+      "entry_id": "order_1767097246614073000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097246614073000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 44,
+      "hedge_id": "order_1767097246614686000",
+      "hedge_limit_cents": 54,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 115,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:47",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.1,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:47",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.079,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:48",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.084,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097248458995000",
+      "side": "down",
+      "price_cents": 46,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097248459560000",
+      "side": "up",
+      "price_cents": 52,
+      "size": 15.0,
+      "entry_id": "order_1767097248458995000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097248458995000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 46,
+      "hedge_id": "order_1767097248459560000",
+      "hedge_limit_cents": 52,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 116,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:49",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.029,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:49",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.048,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:51",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.755,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.3
+    },
+    "entry": {
+      "order_id": "order_1767097251786310000",
+      "side": "up",
+      "price_cents": 56,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097251787620000",
+      "side": "down",
+      "price_cents": 42,
+      "size": 15.0,
+      "entry_id": "order_1767097251786310000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097251786310000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 56,
+      "hedge_id": "order_1767097251787620000",
+      "hedge_limit_cents": 42,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 117,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:52",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.687,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.5
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:57",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.513,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097257009083000",
+      "side": "down",
+      "price_cents": 46,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097257010089000",
+      "side": "up",
+      "price_cents": 52,
+      "size": 15.0,
+      "entry_id": "order_1767097257009083000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097257009083000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 46,
+      "hedge_id": "order_1767097257010089000",
+      "hedge_limit_cents": 52,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 118,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:58",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.538,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097258236175000",
+      "side": "up",
+      "price_cents": 58,
+      "size": 14.9827
+    },
+    "hedge": {
+      "hedge_id": "order_1767097258236982000",
+      "side": "down",
+      "price_cents": 40,
+      "size": 14.975,
+      "entry_id": "order_1767097258236175000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097258236175000",
+      "entry_filled_size": 14.9827,
+      "entry_price_cents": 58,
+      "hedge_id": "order_1767097258236982000",
+      "hedge_limit_cents": 40,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 119,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:20:58",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.073,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:20:59",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.08,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:00",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.077,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:00",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.636,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097260705924000",
+      "side": "up",
+      "price_cents": 60,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097260707229000",
+      "side": "down",
+      "price_cents": 38,
+      "size": 15.0,
+      "entry_id": "order_1767097260705924000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097260705924000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 60,
+      "hedge_id": "order_1767097260707229000",
+      "hedge_limit_cents": 38,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 120,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:01",
+    "trigger": {
+      "winner": "up",
+      "velocity": 2.717,
+      "delta_cents": 5.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097261312861000",
+      "side": "up",
+      "price_cents": 63,
+      "size": 14.9841
+    },
+    "hedge": {
+      "hedge_id": "order_1767097261314245000",
+      "side": "down",
+      "price_cents": 35,
+      "size": 14.9714,
+      "entry_id": "order_1767097261312861000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097261312861000",
+      "entry_filled_size": 14.9841,
+      "entry_price_cents": 63,
+      "hedge_id": "order_1767097261314245000",
+      "hedge_limit_cents": 35,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 121,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:01",
+    "trigger": {
+      "winner": "up",
+      "velocity": 2.186,
+      "delta_cents": 4.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:02",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.604,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:07",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.503,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": {
+      "order_id": "order_1767097267596721000",
+      "side": "up",
+      "price_cents": 64,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097267598397000",
+      "side": "down",
+      "price_cents": 34,
+      "size": 14.9999,
+      "entry_id": "order_1767097267596721000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097267596721000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 64,
+      "hedge_id": "order_1767097267598397000",
+      "hedge_limit_cents": 34,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 122,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:10",
+    "trigger": {
+      "winner": "up",
+      "velocity": 17.982,
+      "delta_cents": 11.0,
+      "delta_seconds": 0.6
+    },
+    "entry": {
+      "order_id": "order_1767097270898232000",
+      "side": "up",
+      "price_cents": 75,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097270899682000",
+      "side": "down",
+      "price_cents": 23,
+      "size": 15.0,
+      "entry_id": "order_1767097270898232000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097270898232000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 75,
+      "hedge_id": "order_1767097270899682000",
+      "hedge_limit_cents": 23,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 123,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:11",
+    "trigger": {
+      "winner": "up",
+      "velocity": 7.411,
+      "delta_cents": 9.0,
+      "delta_seconds": 1.2
+    },
+    "entry": {
+      "order_id": "order_1767097271501272000",
+      "side": "up",
+      "price_cents": 74,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097271502008000",
+      "side": "down",
+      "price_cents": 24,
+      "size": 14.9583,
+      "entry_id": "order_1767097271501272000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097271501272000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 74,
+      "hedge_id": "order_1767097271502008000",
+      "hedge_limit_cents": 24,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 124,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:12",
+    "trigger": {
+      "winner": "up",
+      "velocity": 5.483,
+      "delta_cents": 10.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:12",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.098,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097272720655000",
+      "side": "down",
+      "price_cents": 28,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097272721801000",
+      "side": "up",
+      "price_cents": 70,
+      "size": 15.0,
+      "entry_id": "order_1767097272720655000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097272720655000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 28,
+      "hedge_id": "order_1767097272721801000",
+      "hedge_limit_cents": 70,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 125,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:13",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.101,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097273927258000",
+      "side": "down",
+      "price_cents": 29,
+      "size": 14.9655
+    },
+    "hedge": {
+      "hedge_id": "order_1767097273928900000",
+      "side": "up",
+      "price_cents": 69,
+      "size": 14.9565,
+      "entry_id": "order_1767097273927258000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097273927258000",
+      "entry_filled_size": 14.9655,
+      "entry_price_cents": 29,
+      "hedge_id": "order_1767097273928900000",
+      "hedge_limit_cents": 69,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 126,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:14",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.533,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:15",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.532,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097275807009000",
+      "side": "down",
+      "price_cents": 30,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097275809421000",
+      "side": "up",
+      "price_cents": 68,
+      "size": 14.9999,
+      "entry_id": "order_1767097275807009000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097275807009000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 30,
+      "hedge_id": "order_1767097275809421000",
+      "hedge_limit_cents": 68,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 127,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:17",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.508,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": {
+      "order_id": "order_1767097277174107000",
+      "side": "down",
+      "price_cents": 29,
+      "size": 14.9655
+    },
+    "hedge": {
+      "hedge_id": "order_1767097277175702000",
+      "side": "up",
+      "price_cents": 69,
+      "size": 14.9565,
+      "entry_id": "order_1767097277174107000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097277174107000",
+      "entry_filled_size": 14.9655,
+      "entry_price_cents": 29,
+      "hedge_id": "order_1767097277175702000",
+      "hedge_limit_cents": 69,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 128,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:21",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.525,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097281173847000",
+      "side": "up",
+      "price_cents": 73,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097281175127000",
+      "side": "down",
+      "price_cents": 25,
+      "size": 15.0,
+      "entry_id": "order_1767097281173847000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097281173847000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 73,
+      "hedge_id": "order_1767097281175127000",
+      "hedge_limit_cents": 25,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 129,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:21",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.525,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:22",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.537,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:23",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.539,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097283030525000",
+      "side": "down",
+      "price_cents": 29,
+      "size": 14.9655
+    },
+    "hedge": {
+      "hedge_id": "order_1767097283031681000",
+      "side": "up",
+      "price_cents": 69,
+      "size": 14.9565,
+      "entry_id": "order_1767097283030525000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097283030525000",
+      "entry_filled_size": 14.9655,
+      "entry_price_cents": 29,
+      "hedge_id": "order_1767097283031681000",
+      "hedge_limit_cents": 69,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 130,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:24",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.55,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:25",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.521,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097285550538000",
+      "side": "down",
+      "price_cents": 29,
+      "size": 14.9655
+    },
+    "hedge": {
+      "hedge_id": "order_1767097285551343000",
+      "side": "up",
+      "price_cents": 69,
+      "size": 14.9565,
+      "entry_id": "order_1767097285550538000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097285550538000",
+      "entry_filled_size": 14.9655,
+      "entry_price_cents": 29,
+      "hedge_id": "order_1767097285551343000",
+      "hedge_limit_cents": 69,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 131,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:26",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.528,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097286800775000",
+      "side": "down",
+      "price_cents": 30,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097286802123000",
+      "side": "up",
+      "price_cents": 68,
+      "size": 14.9999,
+      "entry_id": "order_1767097286800775000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097286800775000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 30,
+      "hedge_id": "order_1767097286802123000",
+      "hedge_limit_cents": 68,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 132,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:27",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.538,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:28",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.545,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097288634928000",
+      "side": "up",
+      "price_cents": 72,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097288635653000",
+      "side": "down",
+      "price_cents": 26,
+      "size": 15.0,
+      "entry_id": "order_1767097288634928000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097288634928000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 72,
+      "hedge_id": "order_1767097288635653000",
+      "hedge_limit_cents": 26,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 133,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:29",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.547,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:31",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.515,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097291178630000",
+      "side": "down",
+      "price_cents": 30,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097291180259000",
+      "side": "up",
+      "price_cents": 68,
+      "size": 14.9999,
+      "entry_id": "order_1767097291178630000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097291178630000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 30,
+      "hedge_id": "order_1767097291180259000",
+      "hedge_limit_cents": 68,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 134,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:31",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.75,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.3
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:32",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.511,
+      "delta_cents": 1.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:34",
+    "trigger": {
+      "winner": "up",
+      "velocity": 3.367,
+      "delta_cents": 6.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097294883298000",
+      "side": "up",
+      "price_cents": 78,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097294884057000",
+      "side": "down",
+      "price_cents": 20,
+      "size": 14.95,
+      "entry_id": "order_1767097294883298000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097294883298000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 78,
+      "hedge_id": "order_1767097294884057000",
+      "hedge_limit_cents": 20,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 135,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:35",
+    "trigger": {
+      "winner": "up",
+      "velocity": 3.322,
+      "delta_cents": 2.0,
+      "delta_seconds": 0.6
+    },
+    "entry": {
+      "order_id": "order_1767097295485197000",
+      "side": "up",
+      "price_cents": 79,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097295485869000",
+      "side": "down",
+      "price_cents": 19,
+      "size": 14.9473,
+      "entry_id": "order_1767097295485197000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097295485197000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 79,
+      "hedge_id": "order_1767097295485869000",
+      "hedge_limit_cents": 19,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 136,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:36",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.821,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.2
+    },
+    "entry": {
+      "order_id": "order_1767097296100759000",
+      "side": "down",
+      "price_cents": 25,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097296101391000",
+      "side": "up",
+      "price_cents": 73,
+      "size": 15.0,
+      "entry_id": "order_1767097296100759000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097296100759000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 25,
+      "hedge_id": "order_1767097296101391000",
+      "hedge_limit_cents": 73,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 137,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:36",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.094,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097296711967000",
+      "side": "down",
+      "price_cents": 26,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097296714274000",
+      "side": "up",
+      "price_cents": 72,
+      "size": 15.0,
+      "entry_id": "order_1767097296711967000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097296711967000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 26,
+      "hedge_id": "order_1767097296714274000",
+      "hedge_limit_cents": 72,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 138,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:37",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.634,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:38",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.076,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097298570967000",
+      "side": "up",
+      "price_cents": 77,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097298572361000",
+      "side": "down",
+      "price_cents": 21,
+      "size": 15.0,
+      "entry_id": "order_1767097298570967000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097298570967000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 77,
+      "hedge_id": "order_1767097298572361000",
+      "hedge_limit_cents": 21,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 139,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:39",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.527,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:42",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.825,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.6
+    },
+    "entry": {
+      "order_id": "order_1767097302906584000",
+      "side": "down",
+      "price_cents": 27,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097302907301000",
+      "side": "up",
+      "price_cents": 71,
+      "size": 14.9859,
+      "entry_id": "order_1767097302906584000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097302906584000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 27,
+      "hedge_id": "order_1767097302907301000",
+      "hedge_limit_cents": 71,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 140,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:43",
+    "trigger": {
+      "winner": "up",
+      "velocity": 3.292,
+      "delta_cents": 2.0,
+      "delta_seconds": 0.6
+    },
+    "entry": {
+      "order_id": "order_1767097303513811000",
+      "side": "up",
+      "price_cents": 76,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097303514431000",
+      "side": "down",
+      "price_cents": 22,
+      "size": 15.0,
+      "entry_id": "order_1767097303513811000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097303513811000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 76,
+      "hedge_id": "order_1767097303514431000",
+      "hedge_limit_cents": 22,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 141,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:44",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.652,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.2
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:44",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.103,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:45",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.539,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097305970354000",
+      "side": "up",
+      "price_cents": 77,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097305971588000",
+      "side": "down",
+      "price_cents": 21,
+      "size": 15.0,
+      "entry_id": "order_1767097305970354000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097305970354000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 77,
+      "hedge_id": "order_1767097305971588000",
+      "hedge_limit_cents": 21,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 142,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:46",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.534,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:47",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.519,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097307898322000",
+      "side": "down",
+      "price_cents": 25,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097307899078000",
+      "side": "up",
+      "price_cents": 73,
+      "size": 15.0,
+      "entry_id": "order_1767097307898322000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097307898322000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 25,
+      "hedge_id": "order_1767097307899078000",
+      "hedge_limit_cents": 73,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 143,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:51",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.515,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097311203232000",
+      "side": "up",
+      "price_cents": 77,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097311205531000",
+      "side": "down",
+      "price_cents": 21,
+      "size": 15.0,
+      "entry_id": "order_1767097311203232000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097311203232000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 77,
+      "hedge_id": "order_1767097311205531000",
+      "hedge_limit_cents": 21,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 144,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:51",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.515,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:52",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.55,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:53",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.42,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.4
+    },
+    "entry": {
+      "order_id": "order_1767097313815757000",
+      "side": "down",
+      "price_cents": 27,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097313821932000",
+      "side": "up",
+      "price_cents": 71,
+      "size": 14.9859,
+      "entry_id": "order_1767097313815757000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097313815757000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 27,
+      "hedge_id": "order_1767097313821932000",
+      "hedge_limit_cents": 71,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 145,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:54",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.782,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.3
+    },
+    "entry": {
+      "order_id": "order_1767097314427537000",
+      "side": "down",
+      "price_cents": 25,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097314428614000",
+      "side": "up",
+      "price_cents": 73,
+      "size": 15.0,
+      "entry_id": "order_1767097314427537000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097314427537000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 25,
+      "hedge_id": "order_1767097314428614000",
+      "hedge_limit_cents": 73,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 146,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:55",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.531,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:21:56",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.386,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.4
+    },
+    "entry": {
+      "order_id": "order_1767097316474033000",
+      "side": "down",
+      "price_cents": 27,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097316475491000",
+      "side": "up",
+      "price_cents": 71,
+      "size": 14.9859,
+      "entry_id": "order_1767097316474033000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097316474033000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 27,
+      "hedge_id": "order_1767097316475491000",
+      "hedge_limit_cents": 71,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 147,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:21:57",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.54,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:22:03",
+    "trigger": {
+      "winner": "down",
+      "velocity": 2.374,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.3
+    },
+    "entry": {
+      "order_id": "order_1767097323862798000",
+      "side": "down",
+      "price_cents": 30,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097323863796000",
+      "side": "up",
+      "price_cents": 68,
+      "size": 14.9999,
+      "entry_id": "order_1767097323862798000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097323862798000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 30,
+      "hedge_id": "order_1767097323863796000",
+      "hedge_limit_cents": 68,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 148,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:22:04",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.609,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:22:05",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.578,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097325105210000",
+      "side": "down",
+      "price_cents": 31,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097325105950000",
+      "side": "up",
+      "price_cents": 67,
+      "size": 15.0,
+      "entry_id": "order_1767097325105210000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097325105210000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 31,
+      "hedge_id": "order_1767097325105950000",
+      "hedge_limit_cents": 67,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 149,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:22:05",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.539,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:22:06",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.538,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:22:06",
+    "trigger": {
+      "winner": "down",
+      "velocity": 3.292,
+      "delta_cents": 6.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097326927338000",
+      "side": "down",
+      "price_cents": 36,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097326928205000",
+      "side": "up",
+      "price_cents": 62,
+      "size": 15.0,
+      "entry_id": "order_1767097326927338000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097326927338000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 36,
+      "hedge_id": "order_1767097326928205000",
+      "hedge_limit_cents": 62,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 150,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:22:07",
+    "trigger": {
+      "winner": "down",
+      "velocity": 2.735,
+      "delta_cents": 5.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:22:08",
+    "trigger": {
+      "winner": "down",
+      "velocity": 2.52,
+      "delta_cents": 5.0,
+      "delta_seconds": 2.0
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:22:08",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.507,
+      "delta_cents": 3.0,
+      "delta_seconds": 2.0
+    },
+    "entry": {
+      "order_id": "order_1767097328917881000",
+      "side": "down",
+      "price_cents": 39,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097328918629000",
+      "side": "up",
+      "price_cents": 59,
+      "size": 14.983,
+      "entry_id": "order_1767097328917881000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097328917881000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 39,
+      "hedge_id": "order_1767097328918629000",
+      "hedge_limit_cents": 59,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 151,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:22:09",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.507,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.3
+    },
+    "entry": {
+      "order_id": "order_1767097329631936000",
+      "side": "down",
+      "price_cents": 38,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097329637242000",
+      "side": "up",
+      "price_cents": 60,
+      "size": 15.0,
+      "entry_id": "order_1767097329631936000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097329631936000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 38,
+      "hedge_id": "order_1767097329637242000",
+      "hedge_limit_cents": 60,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 152,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:22:10",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.646,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.5
+    },
+    "entry": {
+      "order_id": "order_1767097330465170000",
+      "side": "up",
+      "price_cents": 63,
+      "size": 14.9841
+    },
+    "hedge": {
+      "hedge_id": "order_1767097330468008000",
+      "side": "down",
+      "price_cents": 35,
+      "size": 14.9714,
+      "entry_id": "order_1767097330465170000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097330465170000",
+      "entry_filled_size": 14.9841,
+      "entry_price_cents": 63,
+      "hedge_id": "order_1767097330468008000",
+      "hedge_limit_cents": 35,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 153,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:22:11",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.686,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.5
+    },
+    "entry": {
+      "order_id": "order_1767097331090626000",
+      "side": "up",
+      "price_cents": 64,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097331108280000",
+      "side": "down",
+      "price_cents": 34,
+      "size": 14.9999,
+      "entry_id": "order_1767097331090626000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097331090626000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 64,
+      "hedge_id": "order_1767097331108280000",
+      "hedge_limit_cents": 34,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 154,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:22:11",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.793,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.3
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:22:14",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.345,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.5
+    },
+    "entry": {
+      "order_id": "order_1767097334091280000",
+      "side": "down",
+      "price_cents": 39,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097334092932000",
+      "side": "up",
+      "price_cents": 59,
+      "size": 14.983,
+      "entry_id": "order_1767097334091280000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097334091280000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 39,
+      "hedge_id": "order_1767097334092932000",
+      "hedge_limit_cents": 59,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 155,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:22:14",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.645,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.2
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:22:16",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.72,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.4
+    },
+    "entry": {
+      "order_id": "order_1767097336986768000",
+      "side": "up",
+      "price_cents": 63,
+      "size": 14.9841
+    },
+    "hedge": {
+      "hedge_id": "order_1767097336987901000",
+      "side": "down",
+      "price_cents": 35,
+      "size": 14.9714,
+      "entry_id": "order_1767097336986768000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097336986768000",
+      "entry_filled_size": 14.9841,
+      "entry_price_cents": 63,
+      "hedge_id": "order_1767097336987901000",
+      "hedge_limit_cents": 35,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 156,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:22:18",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.531,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767097338870371000",
+      "side": "down",
+      "price_cents": 39,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097338870914000",
+      "side": "up",
+      "price_cents": 59,
+      "size": 14.983,
+      "entry_id": "order_1767097338870371000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097338870371000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 39,
+      "hedge_id": "order_1767097338870914000",
+      "hedge_limit_cents": 59,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 157,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:22:19",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.543,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767097339472676000",
+      "side": "down",
+      "price_cents": 40,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097339473298000",
+      "side": "up",
+      "price_cents": 58,
+      "size": 14.9827,
+      "entry_id": "order_1767097339472676000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097339472676000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 40,
+      "hedge_id": "order_1767097339473298000",
+      "hedge_limit_cents": 58,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 158,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:22:20",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.528,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:22:20",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.66,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.5
+    },
+    "entry": {
+      "order_id": "order_1767097340988883000",
+      "side": "up",
+      "price_cents": 62,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097340991245000",
+      "side": "down",
+      "price_cents": 36,
+      "size": 15.0,
+      "entry_id": "order_1767097340988883000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097340988883000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 62,
+      "hedge_id": "order_1767097340991245000",
+      "hedge_limit_cents": 36,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 159,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:22:21",
+    "trigger": {
+      "winner": "up",
+      "velocity": 10.803,
+      "delta_cents": 16.0,
+      "delta_seconds": 1.5
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:22:22",
+    "trigger": {
+      "winner": "up",
+      "velocity": 9.271,
+      "delta_cents": 14.0,
+      "delta_seconds": 1.5
+    },
+    "entry": {
+      "order_id": "order_1767097342499013000",
+      "side": "up",
+      "price_cents": 77,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097342500726000",
+      "side": "down",
+      "price_cents": 21,
+      "size": 15.0,
+      "entry_id": "order_1767097342499013000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097342499013000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 77,
+      "hedge_id": "order_1767097342500726000",
+      "hedge_limit_cents": 21,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 160,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:22:23",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.755,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.7
+    },
+    "entry": {
+      "order_id": "order_1767097343323017000",
+      "side": "down",
+      "price_cents": 27,
+      "size": 14.9999
+    },
+    "hedge": {
+      "hedge_id": "order_1767097343323622000",
+      "side": "up",
+      "price_cents": 71,
+      "size": 14.9859,
+      "entry_id": "order_1767097343323017000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097343323017000",
+      "entry_filled_size": 14.9999,
+      "entry_price_cents": 27,
+      "hedge_id": "order_1767097343323622000",
+      "hedge_limit_cents": 71,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 161,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:22:23",
+    "trigger": {
+      "winner": "down",
+      "velocity": 2.091,
+      "delta_cents": 3.0,
+      "delta_seconds": 1.4
+    },
+    "entry": {
+      "order_id": "order_1767097343933684000",
+      "side": "down",
+      "price_cents": 28,
+      "size": 15.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767097343934107000",
+      "side": "up",
+      "price_cents": 70,
+      "size": 15.0,
+      "entry_id": "order_1767097343933684000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767097343933684000",
+      "entry_filled_size": 15.0,
+      "entry_price_cents": 28,
+      "hedge_id": "order_1767097343934107000",
+      "hedge_limit_cents": 70,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 162,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:11:36",
+    "trigger": {
+      "winner": "down",
+      "velocity": 25.633,
+      "delta_cents": 49.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767096696568013000",
+      "side": "down",
+      "price_cents": 2,
+      "size": 55.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096696568981000",
+      "side": "up",
+      "price_cents": 96,
+      "size": 55.0,
+      "entry_id": "order_1767096696568013000"
+    },
+    "hedge_completed": {
+      "up_size": 55.0,
+      "down_size": 55.0
+    },
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096696568013000",
+      "entry_filled_size": 55.0,
+      "entry_price_cents": 2,
+      "hedge_id": "order_1767096696568981000",
+      "hedge_limit_cents": 96,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 1,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:11:43",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.751,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.3
+    },
+    "entry": {
+      "order_id": "order_1767096703078390000",
+      "side": "down",
+      "price_cents": 3,
+      "size": 36.6666
+    },
+    "hedge": {
+      "hedge_id": "order_1767096703078919000",
+      "side": "up",
+      "price_cents": 95,
+      "size": 36.6631,
+      "entry_id": "order_1767096703078390000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096703078390000",
+      "entry_filled_size": 36.6667,
+      "entry_price_cents": 3,
+      "hedge_id": "order_1767096703078919000",
+      "hedge_limit_cents": 95,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 2,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:11:43",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.034,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767096703681481000",
+      "side": "down",
+      "price_cents": 4,
+      "size": 27.5
+    },
+    "hedge": {
+      "hedge_id": "order_1767096703682298000",
+      "side": "up",
+      "price_cents": 94,
+      "size": 27.5,
+      "entry_id": "order_1767096703681481000"
+    },
+    "hedge_completed": {
+      "up_size": 119.1631,
+      "down_size": 119.1667
+    },
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096703681481000",
+      "entry_filled_size": 27.5,
+      "entry_price_cents": 4,
+      "hedge_id": "order_1767096703682298000",
+      "hedge_limit_cents": 94,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 3,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:11:44",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.768,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.3
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:11:47",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.563,
+      "delta_cents": 1.0,
+      "delta_seconds": 0.6
+    },
+    "entry": {
+      "order_id": "order_1767096707144461000",
+      "side": "down",
+      "price_cents": 4,
+      "size": 27.5
+    },
+    "hedge": {
+      "hedge_id": "order_1767096707145235000",
+      "side": "up",
+      "price_cents": 94,
+      "size": 27.5,
+      "entry_id": "order_1767096707144461000"
+    },
+    "hedge_completed": {
+      "up_size": 146.6631,
+      "down_size": 146.6667
+    },
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096707144461000",
+      "entry_filled_size": 27.5,
+      "entry_price_cents": 4,
+      "hedge_id": "order_1767096707145235000",
+      "hedge_limit_cents": 94,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 4,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:11:48",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.679,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.5
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:11:52",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.074,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767096712579059000",
+      "side": "down",
+      "price_cents": 5,
+      "size": 22.0
+    },
+    "hedge": {
+      "hedge_id": "order_1767096712580806000",
+      "side": "up",
+      "price_cents": 93,
+      "size": 22.0,
+      "entry_id": "order_1767096712579059000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096712579059000",
+      "entry_filled_size": 22.0,
+      "entry_price_cents": 5,
+      "hedge_id": "order_1767096712580806000",
+      "hedge_limit_cents": 93,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 5,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:11:53",
+    "trigger": {
+      "winner": "down",
+      "velocity": 3.268,
+      "delta_cents": 2.0,
+      "delta_seconds": 0.6
+    },
+    "entry": {
+      "order_id": "order_1767096713191687000",
+      "side": "down",
+      "price_cents": 7,
+      "size": 15.7142
+    },
+    "hedge": {
+      "hedge_id": "order_1767096713192971000",
+      "side": "up",
+      "price_cents": 91,
+      "size": 15.7142,
+      "entry_id": "order_1767096713191687000"
+    },
+    "hedge_completed": {
+      "up_size": 184.3773,
+      "down_size": 184.381
+    },
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096713191687000",
+      "entry_filled_size": 15.7143,
+      "entry_price_cents": 7,
+      "hedge_id": "order_1767096713192971000",
+      "hedge_limit_cents": 91,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 6,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:11:53",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.633,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.2
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:11:54",
+    "trigger": {
+      "winner": "down",
+      "velocity": 1.095,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:11:55",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.545,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.8
+    },
+    "entry": {
+      "order_id": "order_1767096715025270000",
+      "side": "up",
+      "price_cents": 95,
+      "size": 15.0
+    },
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:11:55",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.07,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767096715672355000",
+      "side": "up",
+      "price_cents": 96,
+      "size": 14.9895
+    },
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:11:56",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.695,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.4
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:12:02",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.535,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": {
+      "order_id": "order_1767096722192567000",
+      "side": "up",
+      "price_cents": 97,
+      "size": 15.0
+    },
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:12:05",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.783,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.3
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:12:05",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.531,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:12:06",
+    "trigger": {
+      "winner": "up",
+      "velocity": 1.085,
+      "delta_cents": 2.0,
+      "delta_seconds": 1.8
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:12:06",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.525,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:12:07",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.513,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:12:08",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.736,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.4
+    },
+    "entry": {
+      "order_id": "order_1767096728937111000",
+      "side": "down",
+      "price_cents": 3,
+      "size": 36.6666
+    },
+    "hedge": {
+      "hedge_id": "order_1767096728937876000",
+      "side": "up",
+      "price_cents": 95,
+      "size": 36.6631,
+      "entry_id": "order_1767096728937111000"
+    },
+    "hedge_completed": null,
+    "stop_loss": null,
+    "entry_filled": {
+      "entry_id": "order_1767096728937111000",
+      "entry_filled_size": 36.6667,
+      "entry_price_cents": 3,
+      "hedge_id": "order_1767096728937876000",
+      "hedge_limit_cents": 95,
+      "unhedged_max_seconds": 45,
+      "stop_loss_cents": 8,
+      "trades_count": 7,
+      "max_trades": 0
+    }
+  },
+  {
+    "timestamp": "25-12-30 20:12:09",
+    "trigger": {
+      "winner": "down",
+      "velocity": 0.728,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.4
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:12:12",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.771,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.3
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:12:13",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.526,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  },
+  {
+    "timestamp": "25-12-30 20:12:14",
+    "trigger": {
+      "winner": "up",
+      "velocity": 0.523,
+      "delta_cents": 1.0,
+      "delta_seconds": 1.9
+    },
+    "entry": null,
+    "hedge": null,
+    "hedge_completed": null,
+    "stop_loss": null
+  }
+]

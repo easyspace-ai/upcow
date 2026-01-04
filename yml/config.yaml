@@ -17,7 +17,7 @@ proxy:
 
 
 
-log_level: "debug"
+log_level: "info"
 log_file: "logs/bot.log"
 log_by_cycle: true
 

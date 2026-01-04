@@ -202,7 +202,7 @@ func (ar *AutoRedeemer) redeemLoop(ctx context.Context) {
 	log.Printf("[AutoRedeemer] Initial redemption run completed")
 
 	// Ticker for 3-minute interval executions
-	ticker := time.NewTicker(3 * time.Minute)
+	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
 
 	for {

@@ -40,7 +40,7 @@ func (r *SessionEventRouter) SetSession(session *ExchangeSession) {
 func (r *SessionEventRouter) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
 	log.Infof("📥 [EventRouter] 收到订单更新: orderID=%s status=%s filledSize=%.4f assetID=%s marketSlug=%s",
 		order.OrderID, order.Status, order.FilledSize, order.AssetID, order.MarketSlug)
-	
+
 	r.mu.RLock()
 	s := r.session
 	r.mu.RUnlock()
@@ -48,16 +48,16 @@ func (r *SessionEventRouter) OnOrderUpdate(ctx context.Context, order *domain.Or
 		log.Warnf("⚠️ [EventRouter] session 为 nil，丢弃订单更新: orderID=%s status=%s", order.OrderID, order.Status)
 		return nil
 	}
-	
-	marketSlug := ""
-	if s.Market() != nil {
-		marketSlug = s.Market().Slug
-	}
-	log.Infof("📤 [EventRouter] 转发订单更新到 Session: orderID=%s status=%s filledSize=%.4f marketSlug=%s sessionMarket=%s",
-		order.OrderID, order.Status, order.FilledSize, order.MarketSlug, marketSlug)
+
+	//marketSlug := ""
+	//if s.Market() != nil {
+	//	marketSlug = s.Market().Slug
+	//}
+	// log.Infof("📤 [EventRouter] 转发订单更新到 Session: orderID=%s status=%s filledSize=%.4f marketSlug=%s sessionMarket=%s",
+	// 	order.OrderID, order.Status, order.FilledSize, order.MarketSlug, marketSlug)
 	// 进一步的隔离与补齐由 session.EmitOrderUpdate 统一处理
 	s.EmitOrderUpdate(ctx, order)
-	log.Infof("✅ [EventRouter] 订单更新已转发: orderID=%s", order.OrderID)
+	//log.Infof("✅ [EventRouter] 订单更新已转发: orderID=%s", order.OrderID)
 	return nil
 }
 
@@ -71,4 +71,3 @@ func (r *SessionEventRouter) HandleTrade(ctx context.Context, trade *domain.Trad
 	// 进一步的隔离与补齐由 session.EmitTradeUpdate 统一处理
 	s.EmitTradeUpdate(ctx, trade)
 }
-

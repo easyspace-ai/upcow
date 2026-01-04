@@ -1,52 +1,78 @@
-# cyclehedge：BTC 15m 周期“对冲锁利”策略示例
+# cyclehedge：5000U 测试版（BTC 15m）
 #
-# 目标：
-# - 每个 15m 周期里，用 complete-set（同时持有 YES+NO）锁定 1~5c 的确定收益
-# - 以 maker(GTC) 挂单为主，成交后持有到结算
-# - 余额每周期刷新，按余额比例自动放大投入（上限 maxNotionalUSDC）
+# 说明：
+# - 每周期固定投入 5000 USDC（fixedNotionalUSDC）
+# - 距离结算 3 分钟（180s）停止开新仓并撤单（entryCutoffSeconds）
 #
-# 风险提示：
-# - 最大风险来自“单腿成交而另一腿未成交”，本策略会在超时/临近结算前自动补齐或回平
-# - maker 成交速度取决于流动性，profit 目标越大越难成交
-#
+log_level: info
+persistence_dir: data/state/cyclehedge-test-50
+# 市场配置（可从策略配置文件读取，会覆盖主配置文件中的设置）
+market:
+  symbol: "btc"
+  timeframe: "15m"
+  kind: "updown"
+
+# 纸交易模式（可从策略配置文件读取，会覆盖主配置文件中的设置）
+# true = 仅模拟交易，false = 真实交易
+dry_run: false
+
 exchangeStrategies:
   - on: polymarket
     cyclehedge:
-      # 周期长度（秒）：btc 15m = 900
-      cycleDurationSeconds: 900
+      # 资金规模：测试期固定 5000 USDC
+      fixedNotionalUSDC: 10
+      minNotionalUSDC: 0.5
+      maxNotionalUSDC: 1
 
-      # 锁利区间：优先尝试 profitMaxCents，若盘口不允许则向下尝试到 profitMinCents
+      # 目标收益：1-4 cents（动态挑选）
       profitMinCents: 1
-      profitMaxCents: 5
-      # 动态 profit：在区间内按“收益 vs 距离盘口的远近”选最优
+      profitMaxCents: 4
       enableDynamicProfit: true
       distancePenaltyBps: 30
 
-      # 单腿裸露处理：
-      # - allowTakerComplete=true：优先用 FAK 补齐另一腿（只要不低于 minProfitAfterCompleteCents）
-      # - allowFlatten=true：若无法补齐则卖出多出来的一腿回平
-      minProfitAfterCompleteCents: 0
-      unhedgedTimeoutSeconds: 10
+      # 最后 3 分钟：不新增，只补齐/去风险 180s
+      entryCutoffSeconds: 180
+
+      # 裸露控制（结合你的最小单限制）
+      minUnhedgedShares: 5                # 让策略不要去下 <5 shares 的 GTC（避免被自动抬到 5 导致意外放大）
+      unhedgedTimeoutSeconds: 10   	# 单腿裸露最长允许时长（秒）。# 超过该时长仍无法完成对冲，则触发补齐(taker) 或回平(flatten)。
+      maxUnhedgedSharesBudget: 10         # 裸露预算（策略内部会随时间动态收紧）
+      maxSingleSideShares: 6000  # 调整为6000，确保不会因为持仓达到20就停止下单（目标shares=5208.33）             # 单边上限，避免只成交一腿越滚越大
+      maxOrderSizeShares: 10              # 单笔最大 shares（小资金建议保守）
+
+      # 补齐：maker 优先 + 追价 + 尾盘可贴 ask-1（仍 maker）
+      enableMakerSupplement: true
+      makerSupplementWindowSeconds: 3
+      makerSupplementBumpCents: 1
+      makerSupplementMinShares: 5
+      enableMakerSupplementSnapToAskMinusOne: true
+
+      # 兜底：允许 taker 补齐 / 回平（会按“补齐 vs 回平”成本收益自动选择）
       allowTakerComplete: true
       allowFlatten: true
-      minUnhedgedShares: 1
 
-      # 每周期投入（USDC notional）：min/max + 按余额比例滚动
-      # fixedNotionalUSDC: 3000   # 若设置>0，则每周期固定使用该资金量（不随余额滚动）
-      minNotionalUSDC: 30
-      maxNotionalUSDC: 3000
-      balanceAllocationPct: 0.8
+      # 当需要“补齐对冲（taker）”时允许的最小剩余利润（分）。
+      # 例如设为 0 表示只要不亏就允许补齐；设为 1/2 表示仍要保留一点确定收益。
+      minProfitAfterCompleteCents: 0
 
-      # 每周期最大单向持仓（shares）
-      maxSingleSideShares: 5000
 
-      # 执行节奏
-      requoteMs: 800
-      entryCutoffSeconds: 25
-
-      # 盘口质量 gate（建议开启）
-      enableMarketQualityGate: true
+      # 盘口质量 gate（建议开着）
+      enableMarketQualityGate: false
       marketQualityMinScore: 70
       marketQualityMaxSpreadCents: 5
       marketQualityMaxBookAgeMs: 3000
 
+      # 报表（可选）
+      enableReport: true
+      reportDir: data/reports/cyclehedge
+      reportWriteJSONL: true
+      reportWritePerCycle: true
+
+      # 自动 merge（测试期先关，避免复杂度）
+      autoMerge:
+        enabled: false
+
+      cycleProfitTargetMinUSDC: 1
+      cycleProfitTargetMaxUSDC: 90
+      # profitMaximizationCutoffSeconds: 180  # 可不配，默认 180
+      profitMaximizationCutoffSeconds: 180

@@ -455,10 +455,10 @@ func (s *ExchangeSession) EmitOrderUpdate(ctx context.Context, order *domain.Ord
 	if market != nil {
 		marketSlug = market.Slug
 	}
-	sessionLog.Infof("📥 [Session %s] 收到订单更新事件: orderID=%s status=%s filledSize=%.4f marketSlug=%s assetID=%s currentMarket=%s",
+	sessionLog.Debugf("📥 [Session %s] 收到订单更新事件: orderID=%s status=%s filledSize=%.4f marketSlug=%s assetID=%s currentMarket=%s",
 		s.Name, order.OrderID, order.Status, order.FilledSize, order.MarketSlug, order.AssetID, marketSlug)
 
-	sessionLog.Infof("🔍 [Session %s] 开始过滤订单事件: orderID=%s orderMarketSlug=%s orderAssetID=%s currentMarketSlug=%s currentYESAssetID=%s currentNOAssetID=%s",
+	sessionLog.Debugf("🔍 [Session %s] 开始过滤订单事件: orderID=%s orderMarketSlug=%s orderAssetID=%s currentMarketSlug=%s currentYESAssetID=%s currentNOAssetID=%s",
 		s.Name, order.OrderID, order.MarketSlug, order.AssetID, marketSlug,
 		func() string {
 			if market != nil {
@@ -504,13 +504,13 @@ func (s *ExchangeSession) EmitOrderUpdate(ctx context.Context, order *domain.Ord
 		}
 	}
 
-	sessionLog.Infof("✅ [Session %s] 订单事件过滤通过: orderID=%s marketSlug=%s tokenType=%s", s.Name, order.OrderID, order.MarketSlug, order.TokenType)
+	sessionLog.Debugf("✅ [Session %s] 订单事件过滤通过: orderID=%s marketSlug=%s tokenType=%s", s.Name, order.OrderID, order.MarketSlug, order.TokenType)
 
 	s.mu.RLock()
 	handlers := s.orderHandlers
 	s.mu.RUnlock()
 
-	sessionLog.Infof("📊 [Session %s] 触发订单更新事件: orderID=%s status=%s filledSize=%.4f handlers=%d", s.Name, order.OrderID, order.Status, order.FilledSize, len(handlers))
+	sessionLog.Debugf("📊 [Session %s] 触发订单更新事件: orderID=%s status=%s filledSize=%.4f handlers=%d", s.Name, order.OrderID, order.Status, order.FilledSize, len(handlers))
 
 	// 串行执行（确定性优先，避免并发导致的状态竞态）
 	for i, handler := range handlers {

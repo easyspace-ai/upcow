@@ -2,6 +2,8 @@ package velocityfollow
 
 import (
 	"context"
+	"math"
+	"strings"
 	"time"
 
 	"github.com/betbot/gobet/clob/types"
@@ -82,6 +84,20 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 		}
 	}
 
+	// ⚠️ 重要：价格调整后，需要检查价格区间
+	// 确保主leg价格在配置的区间内（minEntryPriceCents/maxEntryPriceCents）
+	entryPriceCentsAfterAdjust := int(entryPrice.ToDecimal()*100 + 0.5)
+	minEntry := s.MinEntryPriceCents
+	maxEntry := s.MaxEntryPriceCents
+	if minEntry > 0 && entryPriceCentsAfterAdjust < minEntry {
+		log.Debugf("⏭️ [%s] 跳过：Entry 价格调整后低于下限 (%dc < %dc)", ID, entryPriceCentsAfterAdjust, minEntry)
+		return nil
+	}
+	if maxEntry > 0 && entryPriceCentsAfterAdjust > maxEntry {
+		log.Debugf("⏭️ [%s] 跳过：Entry 价格调整后超过上限 (%dc > %dc)", ID, entryPriceCentsAfterAdjust, maxEntry)
+		return nil
+	}
+
 	// ⚠️ 重要：价格调整后，需要重新进行精度调整
 	// 因为价格可能从有效价格调整为实际订单簿价格（卖一价或卖二价）
 	// 精度调整必须使用实际下单价格，确保 maker amount = size × price 是 2 位小数
@@ -112,9 +128,29 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 			ID, entryShares, availableSize, actualPrice)
 	}
 
+	// ⚠️ 重要：在创建订单前，最后进行一次精度调整
+	// 确保 maker amount = size × price 是 2 位小数，taker amount (size) 是 4 位小数
+	// 因为 adjustOrderSize 可能会调整 size，破坏精度要求
+	entryPriceDecFinal := entryPrice.ToDecimal()
+	entrySharesFinal := adjustSizeForMakerAmountPrecision(entryShares, entryPriceDecFinal)
+	if entrySharesFinal != entryShares {
+		log.Infof("🔧 [%s] Entry size 最终精度调整（创建订单前）: %.4f -> %.4f (maker amount: %.2f -> %.2f, price=%.4f)",
+			ID, entryShares, entrySharesFinal, entryShares*entryPriceDecFinal, entrySharesFinal*entryPriceDecFinal, entryPriceDecFinal)
+		entryShares = entrySharesFinal
+	}
+
+	// 验证最终精度
+	makerAmountFinal := entryShares * entryPriceDecFinal
+	makerAmountCents := int(makerAmountFinal*100 + 0.5)
+	makerAmountRounded := float64(makerAmountCents) / 100.0
+	if math.Abs(makerAmountFinal-makerAmountRounded) > 0.0001 {
+		log.Warnf("⚠️ [%s] 精度验证失败: maker amount=%.6f 不是2位小数，size=%.4f price=%.4f",
+			ID, makerAmountFinal, entryShares, entryPriceDecFinal)
+	}
+
 	// 主单：价格 >= minPreferredPriceCents 的订单（FAK，立即成交或取消）
-	log.Infof("📤 [%s] 步骤1: 下主单 Entry (side=%s price=%dc size=%.4f FAK)",
-		ID, winner, int(entryPrice.ToDecimal()*100+0.5), entryShares)
+	log.Infof("📤 [%s] 步骤1: 下主单 Entry (side=%s price=%dc size=%.4f FAK, maker amount=%.2f USDC)",
+		ID, winner, int(entryPriceDecFinal*100+0.5), entryShares, makerAmountFinal)
 
 	// 获取市场精度信息（从缓存）
 	var tickSize types.TickSize
@@ -147,6 +183,21 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 			log.Warnf("⏸️ [%s] 系统拒绝下单（fail-safe，预期行为）：entry err=%v market=%s", ID, execErr, market.Slug)
 			return nil
 		}
+
+		// 检测余额不足错误，刷新余额
+		errStr := execErr.Error()
+		if strings.Contains(errStr, "余额不足") || strings.Contains(errStr, "insufficient") || strings.Contains(errStr, "balance") {
+			log.Warnf("⚠️ [%s] 主单下单失败（余额不足），尝试刷新余额: err=%v side=%s market=%s", ID, execErr, winner, market.Slug)
+			// 使用独立的上下文刷新余额，避免阻塞
+			refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer refreshCancel()
+			if refreshErr := s.TradingService.RefreshBalance(refreshCtx); refreshErr != nil {
+				log.Warnf("⚠️ [%s] 刷新余额失败: err=%v", ID, refreshErr)
+			} else {
+				log.Infof("✅ [%s] 已刷新余额，请稍后重试", ID)
+			}
+		}
+
 		log.Warnf("⚠️ [%s] 主单下单失败: err=%v side=%s market=%s", ID, execErr, winner, market.Slug)
 		return nil
 	}
@@ -309,6 +360,21 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 			log.Warnf("⏸️ [%s] 系统拒绝对冲单（fail-safe，预期行为）：hedge err=%v market=%s", ID, hedgeErr, market.Slug)
 			return nil
 		}
+
+		// 检测余额不足错误，刷新余额
+		errStr := hedgeErr.Error()
+		if strings.Contains(errStr, "余额不足") || strings.Contains(errStr, "insufficient") || strings.Contains(errStr, "balance") {
+			log.Warnf("⚠️ [%s] 对冲单下单失败（余额不足），尝试刷新余额: err=%v entryOrderID=%s", ID, hedgeErr, entryOrderID)
+			// 使用独立的上下文刷新余额，避免阻塞
+			refreshCtx, refreshCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer refreshCancel()
+			if refreshErr := s.TradingService.RefreshBalance(refreshCtx); refreshErr != nil {
+				log.Warnf("⚠️ [%s] 刷新余额失败: err=%v", ID, refreshErr)
+			} else {
+				log.Infof("✅ [%s] 已刷新余额，请稍后重试", ID)
+			}
+		}
+
 		log.Errorf("❌ [%s] 对冲单下单失败: err=%v (主单已成交，需要处理)",
 			ID, hedgeErr)
 
@@ -382,6 +448,18 @@ func (s *Strategy) executeSequential(ctx context.Context, market *domain.Market,
 	// entryOrderResult 一定不为 nil（因为如果为 nil，execErr 不为 nil，函数会提前返回）
 	if hedgeOrderID != "" {
 		entryOrderResult.HedgeOrderID = &hedgeOrderID
+
+		// 记录未完成的对冲单：Entry已成交但Hedge未成交，确保对冲单成交后才能开启下一轮交易
+		if entryFilled {
+			s.mu.Lock()
+			if s.pendingHedges == nil {
+				s.pendingHedges = make(map[string]string)
+			}
+			s.pendingHedges[entryOrderID] = hedgeOrderID
+			log.Infof("📝 [%s] 记录未完成的对冲单，等待对冲单成交后才能开启下一轮交易: entryOrderID=%s hedgeOrderID=%s",
+				ID, entryOrderID, hedgeOrderID)
+			s.mu.Unlock()
+		}
 	}
 
 	// ===== 主单成交后：实时计算盈亏并监控对冲单 =====

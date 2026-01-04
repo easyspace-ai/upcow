@@ -94,6 +94,7 @@ type UpdateBalanceCommand struct {
 	id       string
 	Balance  float64
 	Currency string
+	Reply    chan error // 可选：用于等待余额更新完成
 }
 
 func (c *UpdateBalanceCommand) CommandType() OrderCommandType { return CmdUpdateBalance }
@@ -1174,6 +1175,13 @@ func (e *OrderEngine) handleUpdateBalance(cmd *UpdateBalanceCommand) {
 	if cmd.Currency == "USDC" || cmd.Currency == "" {
 		e.balance = cmd.Balance
 		orderEngineLog.Debugf("余额已更新: %.2f USDC", e.balance)
+	}
+	// 如果有 Reply channel，发送成功信号
+	if cmd.Reply != nil {
+		select {
+		case cmd.Reply <- nil:
+		default:
+		}
 	}
 }
 

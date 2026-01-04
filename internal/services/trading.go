@@ -453,6 +453,11 @@ func (s *TradingService) getCurrentMarketInfo() *domain.Market {
 	return &cp
 }
 
+// GetCurrentMarketInfo 获取当前市场信息（公开方法，供Dashboard等使用）
+func (s *TradingService) GetCurrentMarketInfo() *domain.Market {
+	return s.getCurrentMarketInfo()
+}
+
 // GetCurrentMarket 获取当前市场
 func (s *TradingService) GetCurrentMarket() string {
 	s.currentMarketMu.RLock()

@@ -53,22 +53,40 @@ func adjustSizeForMakerAmountPrecision(size float64, price float64) float64 {
 	makerAmount := size * price
 
 	// 将 maker amount 向下舍入到 2 位小数
-	makerAmountRounded := math.Floor(makerAmount*100) / 100
+	// 使用 math.Floor 确保向下舍入，避免浮点数精度问题
+	makerAmountCents := int(math.Floor(makerAmount*100 + 0.0001)) // 添加小的epsilon避免浮点误差
+	makerAmountRounded := float64(makerAmountCents) / 100.0
 
 	// 如果舍入后为 0，使用最小有效值（0.01）
 	if makerAmountRounded <= 0 {
 		makerAmountRounded = 0.01
+		makerAmountCents = 1
 	}
 
 	// 重新计算 size = maker amount / price
 	newSize := makerAmountRounded / price
 
 	// 将 size 向下舍入到 4 位小数（taker amount 要求）
-	newSize = math.Floor(newSize*10000) / 10000
+	// 使用 math.Floor 确保向下舍入
+	newSizeCents := int(math.Floor(newSize*10000 + 0.0001)) // 添加小的epsilon避免浮点误差
+	newSize = float64(newSizeCents) / 10000.0
 
 	// 确保 size 不为 0
 	if newSize <= 0 {
 		return size // 如果调整后为 0，返回原始值
+	}
+
+	// 验证：重新计算 maker amount，确保是 2 位小数
+	verifyMakerAmount := newSize * price
+	verifyMakerAmountCents := int(math.Floor(verifyMakerAmount*100 + 0.0001))
+	verifyMakerAmountRounded := float64(verifyMakerAmountCents) / 100.0
+
+	// 如果验证失败（maker amount 不是2位小数），再次调整
+	if math.Abs(verifyMakerAmount-verifyMakerAmountRounded) > 0.0001 {
+		// 使用验证后的 maker amount 重新计算 size
+		newSize = verifyMakerAmountRounded / price
+		newSizeCents = int(math.Floor(newSize*10000 + 0.0001))
+		newSize = float64(newSizeCents) / 10000.0
 	}
 
 	return newSize

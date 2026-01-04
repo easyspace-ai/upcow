@@ -59,3 +59,22 @@ func (s *TradingService) GetActiveOrders() []*domain.Order {
 		return []*domain.Order{} // 超时返回空列表
 	}
 }
+
+// GetAllOrders 获取所有订单（包括已成交的，通过 OrderEngine 查询）
+func (s *TradingService) GetAllOrders() []*domain.Order {
+	reply := make(chan *StateSnapshot, 1)
+	cmd := &QueryStateCommand{
+		id:    fmt.Sprintf("query_all_orders_%d", time.Now().UnixNano()),
+		Query: QueryAllOrders,
+		Reply: reply,
+	}
+
+	s.orderEngine.SubmitCommand(cmd)
+
+	select {
+	case snapshot := <-reply:
+		return snapshot.Orders
+	case <-time.After(5 * time.Second):
+		return []*domain.Order{} // 超时返回空列表
+	}
+}

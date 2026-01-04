@@ -173,7 +173,7 @@ func main() {
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("步骤 2: 通过 Gamma API 获取市场信息")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	slug = "xrp-updown-15m-1767199500"
+	//slug = "xrp-updown-15m-1767199500"
 
 	gammaMarket, err := client.FetchMarketFromGamma(ctx, slug)
 	if err != nil {

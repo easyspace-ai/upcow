@@ -1,0 +1,62 @@
+{
+  "name": "@catalyst-team/poly-sdk",
+  "version": "0.1.0",
+  "private": false,
+  "description": "TypeScript SDK for Polymarket - prediction markets trading, smart money analysis, and market data",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "example:basic": "tsx examples/01-basic-usage.ts",
+    "example:smart-money": "tsx examples/02-smart-money.ts",
+    "example:market-analysis": "tsx examples/03-market-analysis.ts",
+    "example:kline": "tsx examples/04-kline-aggregation.ts",
+    "example:follow-wallet": "tsx examples/05-follow-wallet-strategy.ts",
+    "example:services": "tsx examples/06-services-demo.ts",
+    "example:realtime": "tsx examples/07-realtime-websocket.ts",
+    "example:trading": "tsx examples/08-trading-orders.ts",
+    "example:rewards": "tsx examples/09-rewards-tracking.ts",
+    "example:ctf": "tsx examples/10-ctf-operations.ts",
+    "example:arbitrage": "tsx examples/11-arbitrage-service.ts",
+    "example:live-arb": "tsx examples/12-live-arbitrage-scan.ts",
+    "example:trending-arb": "tsx examples/13-trending-arb-monitor.ts"
+  },
+  "keywords": [
+    "polymarket",
+    "prediction-markets",
+    "trading",
+    "crypto",
+    "defi",
+    "smart-money"
+  ],
+  "author": "Catalyst Team",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@nevuamarkets/poly-websockets": "^0.3.0",
+    "@polymarket/clob-client": "4.22.8",
+    "@catalyst-team/cache": "workspace:*",
+    "@types/ws": "^8.18.1",
+    "bottleneck": "^2.19.5",
+    "ethers": "5",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
