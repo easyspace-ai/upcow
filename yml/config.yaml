@@ -27,3 +27,13 @@ minShareSize: 5.0
 order_status_sync_interval_with_orders: 3
 order_status_sync_interval_without_orders: 30
 
+# Builder API 凭证（用于 Relayer merge/redeem 操作）
+# 优先级：环境变量 > 配置文件
+# 如果环境变量已设置，则优先使用环境变量
+builder:
+  api_key: "019b5b90-4279-710b-860e-d2ae7a9d37b7"      # Builder API Key（从 .env 文件读取或直接填写）
+  secret: "efUenxTT9PiktGu4Xa_b-0wCPjYdqJkGDBPpvtayyoY="       # Builder API Secret（从 .env 文件读取或直接填写）
+  pass_phrase: "4b76dfe6874ff62d7d6393fb3680b580c648bd0d691bb17f8d0c62231ad9e56e"  # Builder API Passphrase（从 .env 文件读取或直接填写）
+
+
+ 

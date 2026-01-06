@@ -145,9 +145,17 @@ type Config struct {
 	OrderStatusCheckInterval             int                     // 订单状态API轮询间隔（秒），默认3秒
 	OrderStatusSyncIntervalWithOrders    int                     // 有活跃订单时的订单状态同步间隔（秒），默认3秒（官方API限流：150请求/10秒，理论上可支持1秒，但建议3秒以上）
 	OrderStatusSyncIntervalWithoutOrders int                     // 无活跃订单时的订单状态同步间隔（秒），默认30秒
-	CancelOpenOrdersOnCycleStart         bool                    // 每个新周期开始时是否清空“本周期残留 open orders”（默认false）
+	CancelOpenOrdersOnCycleStart         bool                    // 每个新周期开始时是否清空"本周期残留 open orders"（默认false）
 	ConcurrentExecutorWorkers            int                     // 并发命令执行器 worker 数（套利等），默认 8
 	DryRun                               bool                    // 纸交易模式（dry run），如果为 true，不进行真实交易，只在日志中打印订单信息
+	Builder                              BuilderConfig           // Builder API 凭证（用于 Relayer merge/redeem 操作）
+}
+
+// BuilderConfig Builder API 凭证配置
+type BuilderConfig struct {
+	APIKey    string // Builder API Key
+	Secret    string // Builder API Secret
+	PassPhrase string // Builder API Passphrase
 }
 
 // MarketPrecisionConfig 市场精度配置
@@ -268,6 +276,11 @@ type ConfigFile struct {
 	CancelOpenOrdersOnCycleStart         bool    `yaml:"cancel_open_orders_on_cycle_start" json:"cancel_open_orders_on_cycle_start"`                 // 新周期开始时清空本周期残留 open orders（默认false）
 	ConcurrentExecutorWorkers            int     `yaml:"concurrent_executor_workers" json:"concurrent_executor_workers"`                             // 并发命令执行器 worker 数（套利等），默认8
 	DryRun                               bool    `yaml:"dry_run" json:"dry_run"`                                                                     // 纸交易模式（dry run），如果为 true，不进行真实交易，只在日志中打印订单信息
+	Builder                              struct {
+		APIKey    string `yaml:"api_key" json:"api_key"`
+		Secret    string `yaml:"secret" json:"secret"`
+		PassPhrase string `yaml:"pass_phrase" json:"pass_phrase"`
+	} `yaml:"builder" json:"builder"` // Builder API 凭证（用于 Relayer merge/redeem 操作）
 }
 
 // Load 加载配置
@@ -576,6 +589,38 @@ func LoadFromFileWithOptions(filePath string, opts LoadOptions) (*Config, error)
 			}
 			return 8
 		}(),
+		Builder: BuilderConfig{
+			APIKey: func() string {
+				// 优先级：环境变量 > 配置文件
+				if envVal := strings.TrimSpace(getEnv("BUILDER_API_KEY", "")); envVal != "" {
+					return envVal
+				}
+				if configFile != nil && strings.TrimSpace(configFile.Builder.APIKey) != "" {
+					return strings.TrimSpace(configFile.Builder.APIKey)
+				}
+				return ""
+			}(),
+			Secret: func() string {
+				// 优先级：环境变量 > 配置文件
+				if envVal := strings.TrimSpace(getEnv("BUILDER_SECRET", "")); envVal != "" {
+					return envVal
+				}
+				if configFile != nil && strings.TrimSpace(configFile.Builder.Secret) != "" {
+					return strings.TrimSpace(configFile.Builder.Secret)
+				}
+				return ""
+			}(),
+			PassPhrase: func() string {
+				// 优先级：环境变量 > 配置文件
+				if envVal := strings.TrimSpace(getEnv("BUILDER_PASS_PHRASE", "")); envVal != "" {
+					return envVal
+				}
+				if configFile != nil && strings.TrimSpace(configFile.Builder.PassPhrase) != "" {
+					return strings.TrimSpace(configFile.Builder.PassPhrase)
+				}
+				return ""
+			}(),
+		},
 	}
 
 	// 验证配置

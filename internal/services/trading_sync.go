@@ -504,8 +504,31 @@ func (os *OrderSyncService) syncOrderStatusImpl(ctx context.Context, orderID str
 	originalSize, _ := strconv.ParseFloat(order.OriginalSize, 64)
 	sizeMatched, _ := strconv.ParseFloat(order.SizeMatched, 64)
 
+	// 重要：验证API返回的订单大小是否合理
+	// 如果API返回的originalSize与本地订单的Size差异过大（超过50%），可能是订单匹配错误
+	// 或者API返回了错误的数据，此时应该使用本地订单的Size作为上限
+	if localOrder.Size > 0 {
+		maxAllowedSize := localOrder.Size * 1.5 // 允许50%的误差
+		if originalSize > maxAllowedSize {
+			log.Warnf("⚠️ [订单状态同步] API返回的originalSize异常: orderID=%s localSize=%.2f apiOriginalSize=%.2f (差异过大，使用本地Size作为上限)",
+				orderID, localOrder.Size, originalSize)
+			originalSize = localOrder.Size
+		}
+		if sizeMatched > maxAllowedSize {
+			log.Warnf("⚠️ [订单状态同步] API返回的sizeMatched异常: orderID=%s localSize=%.2f apiSizeMatched=%.2f (差异过大，使用本地Size作为上限)",
+				orderID, localOrder.Size, sizeMatched)
+			sizeMatched = localOrder.Size
+		}
+	}
+
 	if originalSize > 0 && sizeMatched > 0 && sizeMatched < originalSize {
 		// 关键：可能因为 WS 丢弃导致 trade 未进入 OrderEngine，这里用 delta-trade 补偿仓位/成交量
+		// 但需要确保sizeMatched不超过本地订单的Size
+		if localOrder.Size > 0 && sizeMatched > localOrder.Size {
+			log.Warnf("⚠️ [订单状态同步] sizeMatched超过本地订单Size，使用本地Size: orderID=%s localSize=%.2f sizeMatched=%.2f",
+				orderID, localOrder.Size, sizeMatched)
+			sizeMatched = localOrder.Size
+		}
 		delta := sizeMatched - localOrder.FilledSize
 		if delta > 0 {
 			trade := &domain.Trade{
@@ -527,7 +550,15 @@ func (os *OrderSyncService) syncOrderStatusImpl(ctx context.Context, orderID str
 		if localOrder.Status != domain.OrderStatusFilled {
 			localOrder.Status = domain.OrderStatusPartial
 		}
-		localOrder.Size = originalSize
+		// 重要：保持本地订单的Size不变，不要被API返回的originalSize覆盖
+		// 只有在本地Size为0时才使用API返回的originalSize
+		if localOrder.Size <= 0 {
+			localOrder.Size = originalSize
+		}
+		// 重要：FilledSize不能超过订单的Size
+		if localOrder.Size > 0 && sizeMatched > localOrder.Size {
+			sizeMatched = localOrder.Size
+		}
 		localOrder.FilledSize = sizeMatched
 
 		s.orderEngine.SubmitCommand(&UpdateOrderCommand{
@@ -539,14 +570,26 @@ func (os *OrderSyncService) syncOrderStatusImpl(ctx context.Context, orderID str
 	}
 
 	if originalSize > 0 && sizeMatched >= originalSize && localOrder.Status != domain.OrderStatusFilled {
-		log.Infof("🔄 [订单状态同步] 订单已完全成交: orderID=%s, sizeMatched=%.2f, originalSize=%.2f",
-			orderID, sizeMatched, originalSize)
+		// 重要：使用本地订单的Size作为最终成交数量，而不是API返回的originalSize
+		// 因为API可能返回错误的数据（比如132），而本地订单的Size是正确的（比如5）
+		finalFilledSize := localOrder.Size
+		if finalFilledSize <= 0 {
+			// 如果本地Size为0，才使用API返回的originalSize
+			finalFilledSize = originalSize
+		} else if originalSize > finalFilledSize * 1.5 {
+			// 如果API返回的originalSize与本地Size差异过大，使用本地Size
+			log.Warnf("⚠️ [订单状态同步] API返回的originalSize与本地Size差异过大，使用本地Size: orderID=%s localSize=%.2f apiOriginalSize=%.2f",
+				orderID, localOrder.Size, originalSize)
+		}
+
+		log.Infof("🔄 [订单状态同步] 订单已完全成交: orderID=%s, sizeMatched=%.2f, originalSize=%.2f, localSize=%.2f, finalFilledSize=%.2f",
+			orderID, sizeMatched, originalSize, localOrder.Size, finalFilledSize)
 
 		// delta-trade 补偿：只补齐未进入 OrderEngine 的成交部分
-		delta := originalSize - localOrder.FilledSize
+		delta := finalFilledSize - localOrder.FilledSize
 		if delta > 0 {
 			trade := &domain.Trade{
-				ID:      fmt.Sprintf("reconcile:%s:%.4f", orderID, originalSize),
+				ID:      fmt.Sprintf("reconcile:%s:%.4f", orderID, finalFilledSize),
 				OrderID: orderID,
 				AssetID: localOrder.AssetID,
 				Side:    localOrder.Side,
@@ -565,8 +608,12 @@ func (os *OrderSyncService) syncOrderStatusImpl(ctx context.Context, orderID str
 		localOrder.Status = domain.OrderStatusFilled
 		now := time.Now()
 		localOrder.FilledAt = &now
-		localOrder.Size = originalSize
-		localOrder.FilledSize = originalSize
+		// 重要：保持本地订单的Size不变，不要被API返回的originalSize覆盖
+		if localOrder.Size <= 0 {
+			localOrder.Size = originalSize
+		}
+		// 重要：FilledSize使用本地订单的Size，而不是API返回的originalSize
+		localOrder.FilledSize = finalFilledSize
 
 		s.orderEngine.SubmitCommand(&UpdateOrderCommand{
 			id:    fmt.Sprintf("sync_status_%s", orderID),

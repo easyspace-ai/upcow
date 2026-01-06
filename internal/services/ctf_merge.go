@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/betbot/gobet/pkg/config"
 	sdkapi "github.com/betbot/gobet/pkg/sdk/api"
 	sdkrelayer "github.com/betbot/gobet/pkg/sdk/relayer"
 	relayertypes "github.com/betbot/gobet/pkg/sdk/relayer/types"
@@ -20,8 +21,9 @@ import (
 //
 // Requirements:
 //   - TradingService must have wallet.funder_address set (Safe/proxy wallet).
-//   - Environment must provide Builder credentials:
-//     BUILDER_API_KEY, BUILDER_SECRET, BUILDER_PASS_PHRASE
+//   - Builder credentials must be provided via:
+//     - Environment variables: BUILDER_API_KEY, BUILDER_SECRET, BUILDER_PASS_PHRASE (highest priority)
+//     - Config file: config.yaml builder section (fallback)
 //
 // Notes:
 //   - This is a "manual/explicit action" API by default. Balance checks are not performed here
@@ -63,11 +65,28 @@ func (s *TradingService) MergeCompleteSetsViaRelayer(ctx context.Context, condit
 		return "dry_run_merge", nil
 	}
 
+	// 获取 Builder 凭证（优先级：环境变量 > 配置文件）
 	builderKey := strings.TrimSpace(os.Getenv("BUILDER_API_KEY"))
 	builderSecret := strings.TrimSpace(os.Getenv("BUILDER_SECRET"))
 	builderPass := strings.TrimSpace(os.Getenv("BUILDER_PASS_PHRASE"))
+
+	// 如果环境变量未设置，尝试从配置文件读取
 	if builderKey == "" || builderSecret == "" || builderPass == "" {
-		return "", fmt.Errorf("missing builder credentials (BUILDER_API_KEY/BUILDER_SECRET/BUILDER_PASS_PHRASE)")
+		if gc := config.Get(); gc != nil {
+			if builderKey == "" && strings.TrimSpace(gc.Builder.APIKey) != "" {
+				builderKey = strings.TrimSpace(gc.Builder.APIKey)
+			}
+			if builderSecret == "" && strings.TrimSpace(gc.Builder.Secret) != "" {
+				builderSecret = strings.TrimSpace(gc.Builder.Secret)
+			}
+			if builderPass == "" && strings.TrimSpace(gc.Builder.PassPhrase) != "" {
+				builderPass = strings.TrimSpace(gc.Builder.PassPhrase)
+			}
+		}
+	}
+
+	if builderKey == "" || builderSecret == "" || builderPass == "" {
+		return "", fmt.Errorf("missing builder credentials (BUILDER_API_KEY/BUILDER_SECRET/BUILDER_PASS_PHRASE or config.yaml builder section)")
 	}
 
 	// amount float -> 6 decimals integer

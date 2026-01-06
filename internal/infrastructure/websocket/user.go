@@ -61,6 +61,10 @@ type UserWebSocket struct {
 	// 丢弃补偿：当分发队列满导致事件丢弃时，触发上层对账（节流）
 	dropHandler  DropHandler
 	lastDropAtNs atomic.Int64
+
+	// 订单 FilledSize 历史追踪：用于分析订单拆分和合并逻辑
+	orderFilledSizeHistoryMu sync.RWMutex
+	orderFilledSizeHistory    map[string][]FilledSizeRecord // key=orderID
 }
 
 // DropHandler 用于在 WS 分发队列发生丢弃时触发补偿对账（例如：拉取订单状态/仓位纠偏）。
@@ -104,6 +108,13 @@ type tradeUpdateJob struct {
 	trade *domain.Trade
 }
 
+// FilledSizeRecord 记录 FilledSize 的历史值
+type FilledSizeRecord struct {
+	FilledSize float64
+	Timestamp  time.Time
+	Type       string // PLACEMENT, UPDATE, CANCELLATION
+}
+
 // UserCredentials 用户凭证
 type UserCredentials struct {
 	APIKey     string
@@ -115,18 +126,19 @@ type UserCredentials struct {
 func NewUserWebSocket() *UserWebSocket {
 	dispatchCtx, dispatchCancel := context.WithCancel(context.Background())
 	return &UserWebSocket{
-		orderHandlers:  make([]ports.OrderUpdateHandler, 0),
-		tradeHandlers:  make([]ports.TradeUpdateHandler, 0),
-		maxReconnects:  10,              // 最多重连 10 次
-		reconnectDelay: 5 * time.Second, // 初始重连延迟 5 秒
-		lastPong:       time.Now(),
-		dispatchCtx:    dispatchCtx,
-		dispatchCancel: dispatchCancel,
-		orderUpdateC:   make(chan orderUpdateJob, 2048),
-		tradeUpdateC:   make(chan tradeUpdateJob, 2048),
-		pendingOrders:  make(map[string]orderUpdateJob),
-		pendingTrades:  make(map[string]tradeUpdateJob),
-		maxPendingSize: 4096,
+		orderHandlers:         make([]ports.OrderUpdateHandler, 0),
+		tradeHandlers:         make([]ports.TradeUpdateHandler, 0),
+		maxReconnects:         10,              // 最多重连 10 次
+		reconnectDelay:        5 * time.Second, // 初始重连延迟 5 秒
+		lastPong:              time.Now(),
+		dispatchCtx:           dispatchCtx,
+		dispatchCancel:        dispatchCancel,
+		orderUpdateC:           make(chan orderUpdateJob, 2048),
+		tradeUpdateC:           make(chan tradeUpdateJob, 2048),
+		pendingOrders:          make(map[string]orderUpdateJob),
+		pendingTrades:          make(map[string]tradeUpdateJob),
+		maxPendingSize:         4096,
+		orderFilledSizeHistory: make(map[string][]FilledSizeRecord),
 	}
 }
 
@@ -925,6 +937,43 @@ func (u *UserWebSocket) handleOrderMessage(ctx context.Context, msg map[string]i
 
 	originalSize, _ := strconv.ParseFloat(originalSizeStr, 64)
 	sizeMatched, _ := strconv.ParseFloat(sizeMatchedStr, 64)
+
+	// 记录 FilledSize 历史变化，用于分析订单拆分和合并逻辑
+	u.orderFilledSizeHistoryMu.Lock()
+	history, exists := u.orderFilledSizeHistory[orderID]
+	prevFilledSize := 0.0
+	if exists && len(history) > 0 {
+		prevFilledSize = history[len(history)-1].FilledSize
+	}
+	// 添加新记录
+	record := FilledSizeRecord{
+		FilledSize: sizeMatched,
+		Timestamp:  time.Now(),
+		Type:       orderTypeStr,
+	}
+	u.orderFilledSizeHistory[orderID] = append(history, record)
+	// 限制历史记录数量，避免内存泄漏（保留最近 50 条）
+	if len(u.orderFilledSizeHistory[orderID]) > 50 {
+		u.orderFilledSizeHistory[orderID] = u.orderFilledSizeHistory[orderID][len(u.orderFilledSizeHistory[orderID])-50:]
+	}
+	u.orderFilledSizeHistoryMu.Unlock()
+
+	// 输出 FilledSize 变化日志（debug 级别）
+	if exists {
+		if sizeMatched > prevFilledSize {
+			userLog.Debugf("📈 [UserWebSocket] 订单 FilledSize 增加: orderID=%s 从 %.4f 增加到 %.4f (累计值，正常更新)",
+				orderID, prevFilledSize, sizeMatched)
+		} else if sizeMatched < prevFilledSize {
+			userLog.Warnf("⚠️ [UserWebSocket] 订单 FilledSize 减少: orderID=%s 从 %.4f 减少到 %.4f (异常！可能是部分成交值，需要累加)",
+				orderID, prevFilledSize, sizeMatched)
+		} else {
+			userLog.Debugf("🔄 [UserWebSocket] 订单 FilledSize 未变化: orderID=%s FilledSize=%.4f (重复推送)",
+				orderID, sizeMatched)
+		}
+	} else {
+		userLog.Debugf("🆕 [UserWebSocket] 订单 FilledSize 首次记录: orderID=%s FilledSize=%.4f",
+			orderID, sizeMatched)
+	}
 
 	userLog.Infof("✅ [UserWebSocket] 订单解析完成: orderID=%s price=%.4f originalSize=%.4f sizeMatched=%.4f",
 		orderID, price.ToDecimal(), originalSize, sizeMatched)

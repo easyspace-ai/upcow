@@ -12,7 +12,7 @@
 
 # 市场配置（可从策略配置文件读取，会覆盖主配置文件中的设置）
 market:
-  symbol: "eth"
+  symbol: "btc"
   timeframe: "15m"
   kind: "updown"
 
@@ -24,23 +24,23 @@ exchangeStrategies:
   - on: polymarket
     velocityfollow:
       # ====== 交易参数 ======
-      orderSize: 3                    # 吃单买入 shares
-      hedgeOrderSize: 0               # 对侧挂单 shares（0 表示跟随 orderSize）
+      orderSize: 1.2                   # 吃单买入 USDC 金额（会根据价格自动计算 shares）
+      hedgeOrderSize: 0               # 对侧挂单 USDC 金额（0 表示跟随 orderSize，会根据价格自动计算 shares）
 
       # ====== “速度快”判定参数 ======
       # 建议从保守开始，逐步调整
       windowSeconds: 10                 # 速度计算窗口（秒），默认 10
-      minMoveCents: 2                 # 窗口内最小上行位移（分），默认 3
-      minVelocityCentsPerSec: 0.1      # 最小速度（分/秒），默认 = minMoveCents / windowSeconds
+      minMoveCents: 3                # 窗口内最小上行位移（分），默认 3
+      minVelocityCentsPerSec: 0.3     # 最小速度（分/秒），默认 = minMoveCents / windowSeconds
       cooldownMs: 1500                # 触发冷却（毫秒），默认 1500
       warmupMs: 800                   # 启动/换周期后的预热窗口（毫秒），默认 0
-      maxTradesPerCycle: 2            # 每周期最多交易次数（0=不设限，1=每周期只交易一次）
+      maxTradesPerCycle: 6            # 每周期最多交易次数（0=不设限，1=每周期只交易一次）
 
       # ====== 下单安全参数 ======
-      hedgeOffsetCents: 2             # 对侧挂单价 = (100 - entryAskCents - offset)，默认 3
-      minEntryPriceCents: 72          # 吃单价下限（分），0=不设下限，避免低价时 size 被放大
-      maxEntryPriceCents: 88        # 吃单价上限（分），默认 95，避免 99/100 假盘口
-      maxSpreadCents: 3              # 盘口价差上限（分），默认 0，避免极差盘口误触发
+      hedgeOffsetCents: 1             # 对侧挂单价 = (100 - entryAskCents - offset)，默认 3
+      minEntryPriceCents: 63         # 吃单价下限（分），0=不设下限，避免低价时 size 被放大
+      maxEntryPriceCents: 89        # 吃单价上限（分），默认 95，避免 99/100 假盘口
+      maxSpreadCents: 2             # 盘口价差上限（分），默认 0，避免极差盘口误触发
 
       # ====== 订单执行模式 ======
       # sequential: 先下 Entry 订单，等待成交后再下 Hedge 订单（风险低，速度慢）
@@ -53,12 +53,40 @@ exchangeStrategies:
 
       # ====== 周期和风险控制 ======
       cycleEndProtectionMinutes: 3    # 周期结束前保护时间（分钟），默认 3 分钟，在周期结束前不开新单
-      hedgeReorderTimeoutSeconds: 30  # 对冲单重下超时时间（秒），默认 30 秒
-                                       # 主单成交后，如果对冲单在指定时间内未成交，重新下 GTC 挂单
+      # ====== 对冲单重下机制（分阶段处理）======
+      # 主单成交后，如果对冲单在指定时间内未成交，分阶段处理：
+      # 原则：不能长时间有风险敞口，可以小亏，不能大亏
+      # 
+      # 阶段1：重新下 GTC 限价单（重新计算价格，允许负收益）
+      hedgeReorderTimeoutSeconds: 15  # 对冲单重下超时时间（秒），默认 15 秒
+                                       # 主单成交后15秒内对冲单未成交，则撤销旧单并重新下 GTC 限价单（重新计算价格）
+      # 
+      # 阶段2：强制 FAK 吃单（如果阶段1还没成交）
       hedgeTimeoutFakSeconds: 60      # 对冲单超时后以 FAK 吃单的时间（秒），0=禁用，默认 0
-                                       # 从 Entry 成交开始计时，如果对冲单在此时间内未成交，撤单并以卖一价吃单（防止亏损过多）
+                                       # 从 Entry 成交开始计时，如果对冲单在此时间内未成交，撤单并以卖一价 FAK 吃单（强制立即成交，防止亏损过多）
+                                       # 注意：如果两个都启用，先执行阶段1（15秒），如果还没成交再执行阶段2（60秒）
+      
+      # 对冲单重下时允许负收益（风险敞口控制）
+      allowNegativeProfitOnHedgeReorder: true  # 是否允许负收益（默认 true），原则：不能长时间有风险敞口，可以小亏，不能大亏
+      maxNegativeProfitCents: 5                # 最大允许负收益（分），默认 5 分（0.05 USDC per share），超过此值则不允许重下
       inventoryThreshold: 0           # 库存偏斜阈值（shares），默认 0（禁用）
                                        # 当净持仓超过阈值时，降低该方向的交易频率
+
+      # ====== 智能风险管理系统 ======
+      # 风险监控：实时计算持仓和风险敞口，当Entry已成交但Hedge未成交超过指定时间时，激进对冲
+      riskManagementEnabled: true              # 是否启用风险管理系统，默认 true
+      riskManagementCheckIntervalMs: 5000      # 风险检查间隔（毫秒），默认 5000（5秒）
+      aggressiveHedgeTimeoutSeconds: 60         # Entry成交后，Hedge未成交超过此时间（秒）则激进对冲，默认 60
+      maxAcceptableLossCents: 5                 # 激进对冲时允许的最大亏损（分），默认 5（0.05 USDC per share）
+
+      # ====== 套利分析大脑模块 ======
+      # 实时分析持仓和利润，计算UP/DOWN两方无论哪方胜出的收益情况，判断是否完全锁定
+      arbitrageBrainEnabled: true                      # 是否启用套利分析大脑，默认 true
+      arbitrageBrainUpdateIntervalSeconds: 10          # 套利分析更新间隔（秒），默认 10
+
+      # ====== Dashboard UI ======
+      dashboardEnabled: true                    # 是否启用Dashboard UI，默认 true
+      dashboardPositionReconcileIntervalSeconds: 15  # Dashboard持仓同步间隔（秒），默认 30 秒（定期从Data API同步持仓，确保本地与真实仓位一致）
 
       # ====== 价格优先选择 ======
       # 当 UP/DOWN 都满足速度条件时，优先选择价格更高的一边
@@ -117,15 +145,31 @@ exchangeStrategies:
       trailStartCents: 4                   # 达到该利润后开始追踪（分），默认 4
       trailDistanceCents: 2                # 回撤触发距离（分），默认 2
 
+      # ====== 市场指标相关配置（决策引擎）======
+      # 价格稳定性检查
+      priceStabilityCheckEnabled: true      # 是否启用价格稳定性检查，默认 true
+      maxPriceChangePercent: 2.0            # 最大价格变化百分比（默认 2.0%），超过此值跳过下单
+      priceChangeWindowSeconds: 5           # 价格变化检查窗口（秒，默认 5）
+
+      # 流动性要求
+      minLiquidityScore: 2.0                # 最小流动性评分（0-10，默认 5.0），决策引擎拒绝交易的最低市场质量阈值
+      minDepthAt1Percent: 10.0             # 1% 深度最小要求（shares，默认 10.0），检查订单簿深度
+      minTotalLiquidity: 20.0              # 最小总流动性（shares，默认 20.0），检查总流动性是否足够
+
+      # 价差稳定性
+      maxSpreadVolatilityPercent: 50.0     # 最大价差波动百分比（默认 50%），超过此值跳过下单
+
       # ====== 自动合并订单 ======
       # 自动合并 complete sets（YES+NO -> USDC），默认禁用
       autoMerge:
-        enabled: false                     # 是否启用自动合并，默认 false
+        enabled: true                     # 是否启用自动合并，默认 false
         minCompleteSets: 5                  # 最小 complete sets（shares）才触发合并，默认 0
-        maxCompleteSetsPerRun: 10          # 每次最多合并数量（shares），0=不设限，默认 0
+        maxCompleteSetsPerRun: 5          # 每次最多合并数量（shares），0=不设限，默认 0
         mergeRatio: 1.0                    # 合并比例 (0..1]，默认 1.0（100% 合并）
+                                           # 注意：代码会自动取 min(UP, DOWN) 作为 complete sets，然后按此比例合并
+                                           # 例如：UP=5.13, DOWN=5.0，会取 5.0 作为 complete，mergeRatio=1.0 则合并 5.0
         intervalSeconds: 60                # 合并尝试的最小间隔（秒），默认 60
-        onlyIfNoOpenOrders: true          # 是否要求没有活跃订单才合并（更安全），默认 false
+        onlyIfNoOpenOrders: false          # 是否要求没有活跃订单才合并（更安全），默认 false
         reconcileAfterMerge: true         # 合并后是否通过 Data API 对账，默认 false
         reconcileMaxWaitSeconds: 0         # 对账最大等待时间（秒），0=禁用轮询，默认 0
         metadata: ""                       # 可选的中继器元数据（<=500 字符），为空则使用默认值
