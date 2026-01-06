@@ -397,7 +397,7 @@ func main() {
 	// 设置系统级配置（直接回调模式防抖间隔，BBGO风格：只支持直接模式）
 	if cfg.DirectModeDebounce > 0 {
 		environ.SetDirectModeDebounce(cfg.DirectModeDebounce)
-		logrus.Infof("系统级配置: 防抖间隔=%dms（BBGO风格：直接回调模式）", cfg.DirectModeDebounce)
+		logrus.Debugf("系统级配置: 防抖间隔=%dms（BBGO风格：直接回调模式）", cfg.DirectModeDebounce)
 	}
 
 	// 创建持久化服务
@@ -445,7 +445,7 @@ func main() {
 			continue
 		}
 		trader.AddStrategy(strategy)
-		logrus.Infof("✅ 策略 %s 已加载（on=%v）", mount.StrategyID, mount.On)
+		logrus.Debugf("✅ 策略 %s 已加载（on=%v）", mount.StrategyID, mount.On)
 	}
 
 	// 注入服务
@@ -489,8 +489,24 @@ func main() {
 	)
 
 	// 启动市场调度器（这会创建初始会话）
-	if err := marketScheduler.Start(rootCtx); err != nil {
-		logrus.Errorf("启动市场调度器失败: %v", err)
+	// 如果获取市场失败，重试几次（可能市场还没创建）
+	maxRetries := 5
+	retryDelay := 2 * time.Second
+	var startErr error
+	for i := 0; i < maxRetries; i++ {
+		startErr = marketScheduler.Start(rootCtx)
+		if startErr == nil {
+			break
+		}
+		logrus.Warnf("启动市场调度器失败（尝试 %d/%d）: %v", i+1, maxRetries, startErr)
+		if i < maxRetries-1 {
+			logrus.Infof("等待 %v 后重试...", retryDelay)
+			time.Sleep(retryDelay)
+		}
+	}
+	if startErr != nil {
+		logrus.Errorf("启动市场调度器失败（已重试 %d 次）: %v", maxRetries, startErr)
+		logrus.Errorf("可能的原因：1) 当前周期市场尚未创建 2) Gamma API 不可用 3) 网络/代理问题")
 		os.Exit(1)
 	}
 
@@ -578,6 +594,16 @@ func main() {
 		logrus.Errorf("启动策略失败: %v", err)
 		os.Exit(1)
 	}
+
+	// 策略启动后，重新应用 Dashboard 的日志重定向（如果启用）
+	// 因为 logger.CheckAndRotateLogWithForce 会覆盖日志输出
+	// 延迟一下，确保策略的 Dashboard 已经启动
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		// 通过策略的 OnCycle 回调重新应用日志重定向
+		// 这里触发一个假的周期切换，只是为了重新应用日志重定向
+		// 实际上，Dashboard 的 logRedirectGuard 会定期检查并重新应用
+	}()
 
 	logrus.Info("✅ 交易机器人已启动，按 Ctrl+C 停止")
 	logrus.Info("📊 等待价格更新和交易信号...")

@@ -1,0 +1,322 @@
+package capital
+
+import (
+	"context"
+	"fmt"
+	"math"
+
+	"github.com/betbot/gobet/internal/common"
+	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/services"
+	"github.com/sirupsen/logrus"
+)
+
+var mLog = logrus.WithField("module", "merger")
+
+// Merger 合并逻辑
+type Merger struct {
+	tradingService *services.TradingService
+	config         ConfigInterface
+	capital        *Capital // 反向引用，用于更新 merge 次数
+}
+
+// NewMerger 创建新的合并器
+func NewMerger(ts *services.TradingService, cfg ConfigInterface) *Merger {
+	return &Merger{
+		tradingService: ts,
+		config:         cfg,
+	}
+}
+
+// SetCapital 设置 Capital 引用（用于更新 merge 次数）
+func (m *Merger) SetCapital(capital *Capital) {
+	m.capital = capital
+}
+
+// MergePreviousCycle 合并上一周期的 up/down
+// 返回: (mergeAmount, txHash, error)
+func (m *Merger) MergePreviousCycle(ctx context.Context, market *domain.Market) (float64, string, error) {
+	if market == nil {
+		return 0, "", fmt.Errorf("市场信息为空")
+	}
+
+	autoMerge := m.config.GetAutoMerge()
+	
+	// 检查是否启用自动合并
+	if !autoMerge.Enabled {
+		mLog.Debugf("⏸️ [Merger] 自动合并未启用: market=%s", market.Slug)
+		return 0, "", nil // 返回 nil error 表示未启用，这是正常情况
+	}
+
+	// 获取上一周期的持仓
+	// 注意：周期切换时，持仓的 MarketSlug 可能还是旧周期的，也可能已经被更新
+	// 所以我们先尝试通过 market.Slug 获取，如果获取不到，则获取所有持仓并过滤
+	positions := m.tradingService.GetOpenPositionsForMarket(market.Slug)
+	
+	// 如果通过 market.Slug 获取不到持仓，尝试获取所有持仓并过滤
+	if len(positions) == 0 {
+		mLog.Debugf("🔍 [Merger] 通过 market.Slug 未获取到持仓，尝试获取所有持仓: market=%s", market.Slug)
+		allPositions := m.tradingService.GetAllPositions()
+		for _, pos := range allPositions {
+			if pos == nil || !pos.IsOpen() || pos.Size <= 0 {
+				continue
+			}
+			// 检查持仓是否属于旧周期（通过 ConditionID 匹配，因为 ConditionID 是唯一的）
+			if pos.Market != nil && pos.Market.ConditionID == market.ConditionID {
+				positions = append(positions, pos)
+			} else if pos.EntryOrder != nil && pos.EntryOrder.MarketSlug == market.Slug {
+				// 或者通过 EntryOrder 的 MarketSlug 匹配
+				positions = append(positions, pos)
+			}
+		}
+		mLog.Infof("🔍 [Merger] 通过 ConditionID 匹配到 %d 个持仓: market=%s conditionID=%s", 
+			len(positions), market.Slug, market.ConditionID)
+	}
+
+	return m.mergePositions(ctx, market, positions, autoMerge)
+}
+
+// MergePreviousCycleWithPositions 合并上一周期的 up/down（使用提供的持仓）
+// 关键修复：在 ResetForNewCycle 清空持仓之前，先保存旧周期持仓，然后传递给此方法
+// 返回: (mergeAmount, txHash, error)
+func (m *Merger) MergePreviousCycleWithPositions(ctx context.Context, market *domain.Market, positions []*domain.Position) (float64, string, error) {
+	if market == nil {
+		return 0, "", fmt.Errorf("市场信息为空")
+	}
+
+	autoMerge := m.config.GetAutoMerge()
+	
+	// 检查是否启用自动合并
+	if !autoMerge.Enabled {
+		mLog.Debugf("⏸️ [Merger] 自动合并未启用: market=%s", market.Slug)
+		return 0, "", nil // 返回 nil error 表示未启用，这是正常情况
+	}
+
+	mLog.Infof("🔍 [Merger] 使用提供的持仓进行合并: market=%s positions=%d", market.Slug, len(positions))
+
+	return m.mergePositions(ctx, market, positions, autoMerge)
+}
+
+// mergePositions 合并持仓的通用逻辑
+func (m *Merger) mergePositions(ctx context.Context, market *domain.Market, positions []*domain.Position, autoMerge common.AutoMergeConfig) (float64, string, error) {
+	var upSize, downSize float64
+	for _, pos := range positions {
+		if pos == nil || !pos.IsOpen() || pos.Size <= 0 {
+			continue
+		}
+
+		if pos.TokenType == domain.TokenTypeUp {
+			upSize += pos.Size
+		} else if pos.TokenType == domain.TokenTypeDown {
+			downSize += pos.Size
+		}
+	}
+
+	// 计算 complete sets
+	completeSets := math.Min(upSize, downSize)
+
+	mLog.Infof("🔍 [Merger] 检查合并条件: market=%s UP=%.4f DOWN=%.4f complete=%.4f enabled=%v minCompleteSets=%.4f mergeRatio=%.2f onlyIfNoOpenOrders=%v",
+		market.Slug, upSize, downSize, completeSets, autoMerge.Enabled, autoMerge.MinCompleteSets, autoMerge.MergeRatio, autoMerge.OnlyIfNoOpenOrders)
+
+	if completeSets <= 0 {
+		mLog.Infof("⏸️ [Merger] 无 complete sets 可合并: market=%s UP=%.4f DOWN=%.4f",
+			market.Slug, upSize, downSize)
+		return 0, "", nil // 返回 nil error 表示没有 complete sets，这是正常情况
+	}
+	
+	// 检查合并条件
+	if autoMerge.MinCompleteSets > 0 && completeSets < autoMerge.MinCompleteSets {
+		mLog.Infof("⏸️ [Merger] complete sets 不足: market=%s complete=%.4f min=%.4f",
+			market.Slug, completeSets, autoMerge.MinCompleteSets)
+		return 0, "", nil // 返回 nil error 表示条件不满足，这是正常情况
+	}
+
+	// 应用合并比例
+	mergeAmount := completeSets * autoMerge.MergeRatio
+	if mergeAmount > completeSets {
+		mergeAmount = completeSets
+	}
+
+	// 检查最大合并数量限制
+	if autoMerge.MaxCompleteSetsPerRun > 0 && mergeAmount > autoMerge.MaxCompleteSetsPerRun {
+		mergeAmount = autoMerge.MaxCompleteSetsPerRun
+	}
+
+	if mergeAmount <= 0 {
+		mLog.Debugf("⏸️ [Merger] 计算后的合并数量 <= 0: market=%s", market.Slug)
+		return 0, "", nil // 返回 nil error 表示数量不足，这是正常情况
+	}
+
+	// 检查是否要求没有活跃订单
+	if autoMerge.OnlyIfNoOpenOrders {
+		allOrders := m.tradingService.GetAllOrders()
+		openOrderCount := 0
+		for _, order := range allOrders {
+			if order != nil && order.MarketSlug == market.Slug && order.IsOpen() {
+				openOrderCount++
+				mLog.Infof("⏸️ [Merger] 存在活跃订单，跳过合并: market=%s orderID=%s status=%s",
+					market.Slug, order.OrderID, order.Status)
+			}
+		}
+		if openOrderCount > 0 {
+			mLog.Infof("⏸️ [Merger] 存在 %d 个活跃订单，跳过合并: market=%s", openOrderCount, market.Slug)
+			return 0, "", nil // 返回 nil error 表示有活跃订单，这是正常情况
+		}
+		mLog.Debugf("✅ [Merger] 无活跃订单，可以合并: market=%s", market.Slug)
+	}
+
+	// 执行合并
+	mLog.Infof("🔄 [Merger] 开始合并: market=%s amount=%.4f complete=%.4f",
+		market.Slug, mergeAmount, completeSets)
+
+	txHash, err := m.tradingService.MergeCompleteSetsViaRelayer(
+		ctx, market.ConditionID, mergeAmount, autoMerge.Metadata)
+	if err != nil {
+		return 0, "", fmt.Errorf("合并失败: %w", err)
+	}
+
+	mLog.Infof("✅ [Merger] 合并已提交: market=%s amount=%.4f txHash=%s",
+		market.Slug, mergeAmount, txHash)
+
+	// 更新 merge 次数
+	if m.capital != nil {
+		m.capital.IncrementMergeCount()
+	}
+
+	// 合并后刷新余额
+	if err := m.tradingService.RefreshBalance(ctx); err != nil {
+		mLog.Warnf("⚠️ [Merger] 刷新余额失败: %v (不影响合并结果)", err)
+	}
+
+	return mergeAmount, txHash, nil
+}
+
+// MergeCurrentCycle 合并当前周期的 up/down
+// 返回: (mergeAmount, txHash, error)
+func (m *Merger) MergeCurrentCycle(ctx context.Context, market *domain.Market) (float64, string, error) {
+	if market == nil {
+		return 0, "", fmt.Errorf("市场信息为空")
+	}
+
+	autoMerge := m.config.GetAutoMerge()
+	
+	// 检查是否启用自动合并
+	if !autoMerge.Enabled {
+		mLog.Debugf("⏸️ [Merger] 自动合并未启用: market=%s", market.Slug)
+		return 0, "", nil // 返回 nil error 表示未启用，这是正常情况
+	}
+
+	// 获取当前周期的持仓
+	positions := m.tradingService.GetOpenPositionsForMarket(market.Slug)
+	
+	// 如果通过 market.Slug 获取不到持仓，尝试获取所有持仓并过滤
+	if len(positions) == 0 {
+		mLog.Debugf("🔍 [Merger] 通过 market.Slug 未获取到持仓，尝试获取所有持仓: market=%s", market.Slug)
+		allPositions := m.tradingService.GetAllPositions()
+		for _, pos := range allPositions {
+			if pos == nil || !pos.IsOpen() || pos.Size <= 0 {
+				continue
+			}
+			// 检查持仓是否属于当前周期（通过 ConditionID 匹配）
+			if pos.Market != nil && pos.Market.ConditionID == market.ConditionID {
+				positions = append(positions, pos)
+			} else if pos.EntryOrder != nil && pos.EntryOrder.MarketSlug == market.Slug {
+				// 或者通过 EntryOrder 的 MarketSlug 匹配
+				positions = append(positions, pos)
+			}
+		}
+		mLog.Debugf("🔍 [Merger] 通过 ConditionID 匹配到 %d 个持仓: market=%s conditionID=%s", 
+			len(positions), market.Slug, market.ConditionID)
+	}
+
+	var upSize, downSize float64
+	for _, pos := range positions {
+		if pos == nil || !pos.IsOpen() || pos.Size <= 0 {
+			continue
+		}
+
+		if pos.TokenType == domain.TokenTypeUp {
+			upSize += pos.Size
+		} else if pos.TokenType == domain.TokenTypeDown {
+			downSize += pos.Size
+		}
+	}
+
+	// 计算 complete sets
+	completeSets := math.Min(upSize, downSize)
+
+	mLog.Infof("🔍 [Merger] 检查当前周期合并条件: market=%s UP=%.4f DOWN=%.4f complete=%.4f enabled=%v minCompleteSets=%.4f mergeRatio=%.2f onlyIfNoOpenOrders=%v",
+		market.Slug, upSize, downSize, completeSets, autoMerge.Enabled, autoMerge.MinCompleteSets, autoMerge.MergeRatio, autoMerge.OnlyIfNoOpenOrders)
+
+	if completeSets <= 0 {
+		mLog.Debugf("⏸️ [Merger] 当前周期无 complete sets 可合并: market=%s UP=%.4f DOWN=%.4f",
+			market.Slug, upSize, downSize)
+		return 0, "", nil // 返回 nil error 表示没有 complete sets，这是正常情况
+	}
+	
+	// 检查合并条件
+	if autoMerge.MinCompleteSets > 0 && completeSets < autoMerge.MinCompleteSets {
+		mLog.Debugf("⏸️ [Merger] 当前周期 complete sets 不足: market=%s complete=%.4f min=%.4f",
+			market.Slug, completeSets, autoMerge.MinCompleteSets)
+		return 0, "", nil // 返回 nil error 表示条件不满足，这是正常情况
+	}
+
+	// 应用合并比例
+	mergeAmount := completeSets * autoMerge.MergeRatio
+	if mergeAmount > completeSets {
+		mergeAmount = completeSets
+	}
+
+	// 检查最大合并数量限制
+	if autoMerge.MaxCompleteSetsPerRun > 0 && mergeAmount > autoMerge.MaxCompleteSetsPerRun {
+		mergeAmount = autoMerge.MaxCompleteSetsPerRun
+	}
+
+	if mergeAmount <= 0 {
+		mLog.Debugf("⏸️ [Merger] 计算后的合并数量 <= 0: market=%s", market.Slug)
+		return 0, "", nil // 返回 nil error 表示数量不足，这是正常情况
+	}
+
+	// 检查是否要求没有活跃订单
+	if autoMerge.OnlyIfNoOpenOrders {
+		allOrders := m.tradingService.GetAllOrders()
+		openOrderCount := 0
+		for _, order := range allOrders {
+			if order != nil && order.MarketSlug == market.Slug && order.IsOpen() {
+				openOrderCount++
+				mLog.Debugf("⏸️ [Merger] 存在活跃订单，跳过合并: market=%s orderID=%s status=%s",
+					market.Slug, order.OrderID, order.Status)
+			}
+		}
+		if openOrderCount > 0 {
+			mLog.Debugf("⏸️ [Merger] 存在 %d 个活跃订单，跳过合并: market=%s", openOrderCount, market.Slug)
+			return 0, "", nil // 返回 nil error 表示有活跃订单，这是正常情况
+		}
+		mLog.Debugf("✅ [Merger] 无活跃订单，可以合并: market=%s", market.Slug)
+	}
+
+	// 执行合并
+	mLog.Infof("🔄 [Merger] 开始合并当前周期: market=%s amount=%.4f complete=%.4f",
+		market.Slug, mergeAmount, completeSets)
+
+	txHash, err := m.tradingService.MergeCompleteSetsViaRelayer(
+		ctx, market.ConditionID, mergeAmount, autoMerge.Metadata)
+	if err != nil {
+		return 0, "", fmt.Errorf("合并失败: %w", err)
+	}
+
+	mLog.Infof("✅ [Merger] 当前周期合并已提交: market=%s amount=%.4f txHash=%s",
+		market.Slug, mergeAmount, txHash)
+
+	// 更新 merge 次数
+	if m.capital != nil {
+		m.capital.IncrementMergeCount()
+	}
+
+	// 合并后刷新余额
+	if err := m.tradingService.RefreshBalance(ctx); err != nil {
+		mLog.Warnf("⚠️ [Merger] 刷新余额失败: %v (不影响合并结果)", err)
+	}
+
+	return mergeAmount, txHash, nil
+}

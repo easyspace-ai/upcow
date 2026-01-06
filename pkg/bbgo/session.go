@@ -326,24 +326,46 @@ func (h *sessionPriceHandler) OnPriceChanged(ctx context.Context, event *events.
 	// 架构层防护：Session 只分发属于"当前 market"的事件，避免周期切换时旧数据进入策略层。
 	// - 周期切换时 MarketScheduler 会创建新 Session 并关闭旧 Session/旧 WS，但仍可能存在乱序/延迟消息
 	// - 在这里做最终 gate，可以让策略完全不需要关心"是否旧周期"
+	// 
+	// 关键修复：在周期切换的短暂窗口内，如果 MarketStream 已经切换到新市场（通过 event.Market 判断），
+	// 即使 session.Market() 可能还未完全同步，也允许通过。因为 MarketStream 是价格事件的源头，
+	// 如果它已经切换到新市场，说明这个事件确实属于新市场。
 	if event != nil {
 		current := h.session.Market()
 		if current != nil && event.Market != nil {
 			// 优先用 timestamp 判定（单调递增且更稳定），其次用 slug 兜底
 			if current.Timestamp > 0 && event.Market.Timestamp > 0 {
 				if event.Market.Timestamp != current.Timestamp {
-					if shouldLogEvery(&h.lastDiscardWarnAt, 2*time.Second) {
-						sessionLog.Warnf("⚠️ [sessionPriceHandler] 丢弃非当前周期价格事件: current=%s[%d] event=%s[%d] token=%s price=%.4f session=%s",
+					// 关键修复：如果 event.Market 的 timestamp 比 current 的 timestamp 更新（更大），
+					// 说明这是新市场的价格事件，应该允许通过（周期切换窗口内）
+					if event.Market.Timestamp > current.Timestamp {
+						sessionLog.Infof("✅ [sessionPriceHandler] 周期切换窗口内接受新市场价格事件: current=%s[%d] event=%s[%d] token=%s price=%.4f session=%s",
 							current.Slug, current.Timestamp, event.Market.Slug, event.Market.Timestamp, event.TokenType, event.NewPrice.ToDecimal(), h.session.Name)
+						// 允许通过，继续处理
+					} else {
+						// event.Market 的 timestamp 更旧，说明是旧市场的延迟消息，应该过滤
+						if shouldLogEvery(&h.lastDiscardWarnAt, 2*time.Second) {
+							sessionLog.Warnf("⚠️ [sessionPriceHandler] 丢弃旧周期价格事件: current=%s[%d] event=%s[%d] token=%s price=%.4f session=%s",
+								current.Slug, current.Timestamp, event.Market.Slug, event.Market.Timestamp, event.TokenType, event.NewPrice.ToDecimal(), h.session.Name)
+						}
+						return nil
+					}
+				}
+			} else if current.Slug != "" && event.Market.Slug != "" && event.Market.Slug != current.Slug {
+				// 关键修复：如果 event.Market 的 slug 与 current 不同，但 event.Market 的 timestamp 更新，
+				// 说明这是新市场的价格事件，应该允许通过（周期切换窗口内）
+				if event.Market.Timestamp > 0 && current.Timestamp > 0 && event.Market.Timestamp > current.Timestamp {
+					sessionLog.Infof("✅ [sessionPriceHandler] 周期切换窗口内接受新市场价格事件（slug不匹配但timestamp更新）: current=%s[%d] event=%s[%d] token=%s price=%.4f session=%s",
+						current.Slug, current.Timestamp, event.Market.Slug, event.Market.Timestamp, event.TokenType, event.NewPrice.ToDecimal(), h.session.Name)
+					// 允许通过，继续处理
+				} else {
+					// 其他情况，按原逻辑过滤
+					if shouldLogEvery(&h.lastDiscardWarnAt, 2*time.Second) {
+						sessionLog.Warnf("⚠️ [sessionPriceHandler] 丢弃非当前 market 价格事件: current=%s event=%s token=%s price=%.4f session=%s",
+							current.Slug, event.Market.Slug, event.TokenType, event.NewPrice.ToDecimal(), h.session.Name)
 					}
 					return nil
 				}
-			} else if current.Slug != "" && event.Market.Slug != "" && event.Market.Slug != current.Slug {
-				if shouldLogEvery(&h.lastDiscardWarnAt, 2*time.Second) {
-					sessionLog.Warnf("⚠️ [sessionPriceHandler] 丢弃非当前 market 价格事件: current=%s event=%s token=%s price=%.4f session=%s",
-						current.Slug, event.Market.Slug, event.TokenType, event.NewPrice.ToDecimal(), h.session.Name)
-				}
-				return nil
 			}
 		}
 		// 热路径：每个价格事件都打 INFO 会极大影响吞吐与延迟；默认降级为 Debug（首条仍为 INFO）

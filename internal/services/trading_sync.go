@@ -453,7 +453,18 @@ func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 		}
 
 		// 订单状态不是最终状态，但 API 显示不在 open 列表中
-		// 以 API 为准：更新订单状态为已成交（API 先确认）
+		// 在纸交易模式下，不应该强制将订单标记为Filled，因为订单不会真正提交到交易所
+		// 订单状态应该由 io_executor.go 中的逻辑决定（基于真实市场价格）
+		if s.dryRun {
+			// 纸交易模式：跳过强制标记为Filled的逻辑
+			// 订单状态应该由 io_executor.go 中的价格匹配逻辑决定
+			log.Debugf("🔄 [订单状态同步] 纸交易模式：跳过强制标记为Filled，订单状态由价格匹配逻辑决定: orderID=%s status=%s",
+				orderID, order.Status)
+			s.orderStatusCache.Set(orderID, false)
+			continue
+		}
+
+		// 真实交易模式：以 API 为准，更新订单状态为已成交（API 先确认）
 		log.Infof("🔄 [订单状态同步] 订单已成交（API先确认）: orderID=%s, side=%s, price=%.4f, size=%.2f",
 			orderID, order.Side, order.Price.ToDecimal(), order.Size)
 

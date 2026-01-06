@@ -132,6 +132,7 @@ func (s *MarketScheduler) Start(ctx context.Context) error {
 	// 更新日志系统的市场周期时间戳
 	logger.SetMarketInfo(market.Slug, market.Timestamp)
 	// 强制切换日志文件（使用市场周期时间戳命名）
+	// 注意：这会重新设置日志输出，可能会覆盖 Dashboard 的日志重定向
 	if err := logger.CheckAndRotateLogWithForce(logger.Config{
 		LogByCycle:    true,
 		CycleDuration: s.spec.Duration(),
@@ -139,6 +140,9 @@ func (s *MarketScheduler) Start(ctx context.Context) error {
 	}, true); err != nil {
 		schedulerLog.Errorf("切换日志文件失败: %v", err)
 	}
+	
+	// 注意：日志轮转后，Dashboard 的日志重定向会被覆盖
+	// Dashboard 会在启动时重新应用日志重定向，或者在周期切换时通过 ReapplyLogRedirect 重新应用
 
 	// 创建初始会话
 	session, err := s.createSession(ctx, market)
@@ -294,7 +298,7 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 	// 检查是否需要切换到下一个市场
 	// 条件：正常周期结束（15分钟后）
 	if now >= normalEndTs {
-		schedulerLog.Infof("当前市场周期结束: %s", currentMarket.Slug)
+		schedulerLog.Debugf("当前市场周期结束: %s", currentMarket.Slug)
 
 		// 切换到下一个市场
 		// 计算下一个周期的时间戳
@@ -306,7 +310,7 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 		nextSlug := s.spec.Slug(nextPeriodTs)
 
 		// 从缓存获取下一个市场
-		schedulerLog.Infof("准备切换到下一个市场: %s (当前周期=%d, 下一个周期=%d)",
+		schedulerLog.Debugf("准备切换到下一个市场: %s (当前周期=%d, 下一个周期=%d)",
 			nextSlug, currentMarket.Timestamp, nextPeriodTs)
 		nextMarket, err := s.marketDataService.FetchMarketInfo(s.ctx, nextSlug)
 		if err != nil {
@@ -329,7 +333,7 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 		// 使用动态订阅切换市场（不关闭连接）
 		if currentSession != nil && currentSession.MarketDataStream != nil {
 			if ms, ok := currentSession.MarketDataStream.(*websocket.MarketStream); ok {
-				schedulerLog.Infof("🔄 [切换市场] 使用动态订阅切换: %s -> %s", currentMarket.Slug, nextMarket.Slug)
+				schedulerLog.Debugf("🔄 [切换市场] 使用动态订阅切换: %s -> %s", currentMarket.Slug, nextMarket.Slug)
 
 				// 【修复】先更新会话的市场信息，确保策略能获取到正确的市场信息
 				currentSession.SetMarket(nextMarket)
@@ -353,7 +357,7 @@ func (s *MarketScheduler) checkAndSwitchMarket() {
 
 				// 先触发回调，让策略注册价格处理器
 				if callback != nil {
-					schedulerLog.Infof("🔄 [切换市场] 先注册价格处理器，然后再订阅市场")
+					schedulerLog.Debugf("🔄 [切换市场] 先注册价格处理器，然后再订阅市场")
 					callback(oldSession, currentSession, nextMarket)
 					// 等待一小段时间，确保价格处理器已注册
 					time.Sleep(100 * time.Millisecond)

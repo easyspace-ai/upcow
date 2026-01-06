@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -57,24 +58,120 @@ func (e *ioExecutor) PlaceOrderAsync(
 		result := &PlaceOrderResult{}
 
 		if e.dryRun {
-			// 纸交易模式：模拟下单成功
+			// 纸交易模式：模拟下单
 			result.Order = order
-
-			// ✅ 修复：在纸交易模式下，所有订单都立即"成交"，以便测试策略逻辑
-			// 这样可以测试订单执行和持仓更新逻辑，而不需要等待真实成交
-			// FAK 订单：立即成交
-			// GTC 订单：也立即成交（用于测试）
-			result.Order.Status = domain.OrderStatusFilled
-			result.Order.FilledSize = order.Size // 完全成交
-			now := time.Now()
-			result.Order.FilledAt = &now
 
 			// 保持原始订单ID，不生成新的
 			if result.Order.OrderID == "" {
 				result.Order.OrderID = fmt.Sprintf("dry_run_%d", time.Now().UnixNano())
 			}
-			ioExecutorLog.Infof("📝 [纸交易] 模拟下单（立即成交）: orderID=%s, assetID=%s, tokenType=%s, side=%s, price=%.4f, size=%.4f, status=%s",
-				result.Order.OrderID, order.AssetID, order.TokenType, order.Side, order.Price.ToDecimal(), order.Size, result.Order.Status)
+
+			// 根据订单类型决定成交逻辑
+			orderType := order.OrderType
+			if orderType == "" {
+				orderType = types.OrderTypeGTC
+			}
+
+			if orderType == types.OrderTypeFAK {
+				// FAK 订单：立即成交（FAK 是立即成交或取消）
+				result.Order.Status = domain.OrderStatusFilled
+				result.Order.FilledSize = order.Size
+				now := time.Now()
+				result.Order.FilledAt = &now
+				ioExecutorLog.Debugf("📝 [纸交易] FAK订单立即成交: orderID=%s, assetID=%s, side=%s, price=%.4f, size=%.4f",
+					result.Order.OrderID, order.AssetID, order.Side, order.Price.ToDecimal(), order.Size)
+			} else {
+				// GTC 订单：根据订单簿价格判断是否可以成交
+				// 获取订单簿价格
+				book, err := e.clobClient.GetOrderBook(ctx, order.AssetID, nil)
+				if err != nil {
+					// 如果无法获取订单簿，默认保持 OPEN 状态（更保守）
+					result.Order.Status = domain.OrderStatusOpen
+					ioExecutorLog.Warnf("⚠️ [纸交易] 无法获取订单簿，GTC订单保持OPEN: orderID=%s, assetID=%s, err=%v",
+						result.Order.OrderID, order.AssetID, err)
+				} else {
+					orderPrice := order.Price.ToDecimal()
+					var canFill bool
+
+					if order.Side == types.SideBuy {
+						// 买单：只有当市场ask价格 <= 订单价格时才能成交
+						// 限价买单：我们愿意以orderPrice或更低的价格买入，如果ask <= orderPrice，可以成交
+						if len(book.Asks) > 0 {
+							askPrice, err := strconv.ParseFloat(book.Asks[0].Price, 64)
+							if err == nil && askPrice <= orderPrice {
+								canFill = true
+							}
+						}
+					} else {
+						// 卖单：只有当市场bid价格 >= 订单价格时才能成交
+						// 限价卖单：我们愿意以orderPrice或更高的价格卖出，如果bid >= orderPrice，可以成交
+						if len(book.Bids) > 0 {
+							bidPrice, err := strconv.ParseFloat(book.Bids[0].Price, 64)
+							if err == nil && bidPrice >= orderPrice {
+								canFill = true
+							}
+						}
+					}
+
+					// 在 dry run 模式下，使用真实市场价格验证对冲单能否成交
+					// 为了测试调价功能，Hedge订单必须严格低于市场ask价格（买单）才能成交
+					// 如果订单价格等于或高于ask，说明价格被调整过，应该保持OPEN触发调价
+					if canFill && !order.IsEntryOrder {
+						// Hedge订单：使用真实市场价格验证，但要求严格价格匹配
+						// 限价买单：如果ask <= orderPrice，可以成交；但如果orderPrice <= ask（等于），保持OPEN用于测试
+						var marketPrice float64
+						var shouldFill bool
+						
+						if order.Side == types.SideBuy {
+							// 买单：市场ask价格必须严格小于订单价格才能成交（不能等于）
+							// 如果ask == orderPrice，说明订单价格被调整为ask价，应该保持OPEN触发调价
+							if len(book.Asks) > 0 {
+								askPrice, _ := strconv.ParseFloat(book.Asks[0].Price, 64)
+								marketPrice = askPrice
+								// 严格检查：ask价格必须 < 订单价格（不能等于）
+								shouldFill = askPrice < orderPrice
+							}
+						} else {
+							// 卖单：市场bid价格必须严格大于订单价格才能成交（不能等于）
+							if len(book.Bids) > 0 {
+								bidPrice, _ := strconv.ParseFloat(book.Bids[0].Price, 64)
+								marketPrice = bidPrice
+								// 严格检查：bid价格必须 > 订单价格（不能等于）
+								shouldFill = bidPrice > orderPrice
+							}
+						}
+						
+						if shouldFill {
+							// 价格严格匹配，立即成交（使用真实市场价格）
+							result.Order.Status = domain.OrderStatusFilled
+							result.Order.FilledSize = order.Size
+							now := time.Now()
+							result.Order.FilledAt = &now
+							ioExecutorLog.Infof("✅ [纸交易] Hedge订单已成交（价格严格匹配真实市场）: orderID=%s, assetID=%s, side=%s, orderPrice=%.4f, marketPrice=%.4f, size=%.4f",
+								result.Order.OrderID, order.AssetID, order.Side, orderPrice, marketPrice, order.Size)
+						} else {
+							// 价格不严格匹配（订单价格等于市场价），保持OPEN状态（用于测试调价功能）
+							result.Order.Status = domain.OrderStatusOpen
+							ioExecutorLog.Infof("⏸️ [纸交易] Hedge订单保持OPEN（价格等于市场价，用于测试调价）: orderID=%s, assetID=%s, side=%s, orderPrice=%.4f, marketPrice=%.4f, size=%.4f",
+								result.Order.OrderID, order.AssetID, order.Side, orderPrice, marketPrice, order.Size)
+						}
+					} else if canFill {
+						// Entry订单：价格匹配立即成交
+						result.Order.Status = domain.OrderStatusFilled
+						result.Order.FilledSize = order.Size
+						now := time.Now()
+						result.Order.FilledAt = &now
+						ioExecutorLog.Debugf("📝 [纸交易] GTC订单已成交（价格匹配）: orderID=%s, assetID=%s, side=%s, price=%.4f, size=%.4f",
+							result.Order.OrderID, order.AssetID, order.Side, order.Price.ToDecimal(), order.Size)
+					} else {
+						// 无法成交，保持 OPEN 状态
+						result.Order.Status = domain.OrderStatusOpen
+						ioExecutorLog.Debugf("📝 [纸交易] GTC订单保持OPEN（价格未匹配）: orderID=%s, assetID=%s, side=%s, price=%.4f, size=%.4f",
+							result.Order.OrderID, order.AssetID, order.Side, order.Price.ToDecimal(), order.Size)
+					}
+				}
+			}
+
 			callback(result)
 			return
 		}

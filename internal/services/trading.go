@@ -338,7 +338,7 @@ func (s *TradingService) SetCurrentMarket(marketSlug string) {
 	s.currentMarketSlug = marketSlug
 	s.currentMarketMu.Unlock()
 
-	log.Infof("✅ [周期切换] 已设置当前市场: %s", marketSlug)
+	log.Debugf("✅ [周期切换] 已设置当前市场: %s", marketSlug)
 
 	// 架构层约束：新周期必须是“全新世界”
 	// - 清空 OrderEngine 的周期相关状态（openOrders/orderStore/positions/pendingTrades）
@@ -356,7 +356,7 @@ func (s *TradingService) SetCurrentMarket(marketSlug string) {
 		if s.inFlightDeduper != nil {
 			s.inFlightDeduper.Clear()
 		}
-		log.Warnf("🔄 [周期切换] 已重置本地状态：orders/positions/cache/inflight（prev=%s -> new=%s gen=%d）", prev, marketSlug, newGen)
+		log.Debugf("🔄 [周期切换] 已重置本地状态：orders/positions/cache/inflight（prev=%s -> new=%s gen=%d）", prev, marketSlug, newGen)
 	}
 }
 
@@ -473,7 +473,7 @@ func (s *TradingService) SetOrderStatusSyncConfig(withOrdersSeconds, withoutOrde
 	if withoutOrdersSeconds > 0 {
 		s.orderStatusSyncIntervalWithoutOrders = withoutOrdersSeconds
 	}
-	log.Infof("订单状态同步配置已更新: 有活跃订单时=%d秒, 无活跃订单时=%d秒", s.orderStatusSyncIntervalWithOrders, s.orderStatusSyncIntervalWithoutOrders)
+	log.Debugf("订单状态同步配置已更新: 有活跃订单时=%d秒, 无活跃订单时=%d秒", s.orderStatusSyncIntervalWithOrders, s.orderStatusSyncIntervalWithoutOrders)
 }
 
 // OnOrderUpdate 注册订单更新回调（通过 OrderEngine）
@@ -496,7 +496,7 @@ func (s *TradingService) Start(ctx context.Context) error {
 	// 创建新的 context 和 cancel 函数
 	s.ctx, s.cancel = context.WithCancel(ctx)
 
-	log.Info("✅ 交易服务已启动（使用 OrderEngine）")
+	log.Debug("✅ 交易服务已启动（使用 OrderEngine）")
 
 	// 启动 OrderEngine 主循环
 	go s.orderEngine.Run(s.ctx)
@@ -546,7 +546,7 @@ func (s *TradingService) Start(ctx context.Context) error {
 			Currency: "USDC",
 		}
 		s.orderEngine.SubmitCommand(updateCmd)
-		log.Infof("📊 [余额初始化] 纸交易模式：设置初始余额为 %.2f USDC", initialBalance)
+		log.Debugf("📊 [余额初始化] 纸交易模式：设置初始余额为 %.2f USDC", initialBalance)
 	}
 
 	// 启动定期订单状态同步（如果需要）
@@ -593,7 +593,7 @@ func (s *TradingService) SetMinOrderSize(minOrderSize float64) {
 	s.minOrderSize = minOrderSize
 	// 更新 OrderEngine 的最小订单金额
 	s.orderEngine.MinOrderSize = minOrderSize
-	log.Infof("✅ 已设置最小订单金额: %.2f USDC", minOrderSize)
+	log.Debugf("✅ 已设置最小订单金额: %.2f USDC", minOrderSize)
 }
 
 // SetMinShareSize 设置限价单最小 share 数量（无锁版本）
@@ -602,7 +602,7 @@ func (s *TradingService) SetMinShareSize(minShareSize float64) {
 		minShareSize = 5.0 // 默认值
 	}
 	s.minShareSize = minShareSize
-	log.Infof("✅ 已设置限价单最小 share 数量: %.2f（仅限价单 GTC 时应用）", minShareSize)
+	log.Debugf("✅ 已设置限价单最小 share 数量: %.2f（仅限价单 GTC 时应用）", minShareSize)
 }
 
 // WaitOrderResult 等待订单处理结果（已废弃，现在通过 OrderEngine 处理）

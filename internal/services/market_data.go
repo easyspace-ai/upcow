@@ -211,7 +211,7 @@ func (s *MarketDataService) preloadFutureMarkets() {
 		return // 所有缺失数据都在预加载中，无需重复请求
 	}
 
-	logger.Infof("后台预加载: 发现 %d 个缺失的周期数据（需要预加载: %v，缓存大小: %d）",
+	logger.Debugf("后台预加载: 发现 %d 个缺失的周期数据（需要预加载: %v，缓存大小: %d）",
 		len(actualMissing), actualMissing, cacheSize)
 
 	// 标记为正在预加载
@@ -262,7 +262,7 @@ func (s *MarketDataService) preloadFutureMarkets() {
 
 		// 记录预加载结果（无论成功或失败都记录，方便调试）
 		if successCount > 0 || failCount > 0 {
-			logger.Infof("后台预加载完成: 成功=%d, 失败=%d, 当前缓存大小=%d",
+			logger.Debugf("后台预加载完成: 成功=%d, 失败=%d, 当前缓存大小=%d",
 				successCount, failCount, cacheSize+successCount)
 		}
 	}()
@@ -367,7 +367,7 @@ func (s *MarketDataService) fetchFromAPI(ctx context.Context, slug string) (*dom
 		return nil, fmt.Errorf("Gamma 市场数据不完整（拒绝使用）: slug=%s err=%w conditionID=%q", slug, err, gammaMarket.ConditionID)
 	}
 
-	logger.Infof("从 API 获取市场信息成功: %s (YES: %s..., NO: %s...)",
+	logger.Debugf("从 API 获取市场信息成功: %s (YES: %s..., NO: %s...)",
 		slug, yesAssetID[:12], noAssetID[:12])
 	return market, nil
 }

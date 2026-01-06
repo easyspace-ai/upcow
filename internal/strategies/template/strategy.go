@@ -11,8 +11,8 @@ import (
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/execution"
 	"github.com/betbot/gobet/internal/services"
-	"github.com/betbot/gobet/internal/strategies/common"
-	"github.com/betbot/gobet/internal/strategies/orderutil"
+	"github.com/betbot/gobet/internal/common"
+	"github.com/betbot/gobet/internal/orderutil"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/sirupsen/logrus"
 )
@@ -155,7 +155,7 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if e == nil || e.Market == nil || s.TradingService == nil {
 		return nil
 	}
-	s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof)
+	s.autoMerge.MaybeAutoMerge(ctx, s.TradingService, e.Market, s.AutoMerge, log.Infof, nil)
 	// 系统级安全兜底：仅处理当前周期 market 的事件（即使框架层已有过滤，这里仍做防御）
 	cur := s.TradingService.GetCurrentMarket()
 	if cur != "" && cur != e.Market.Slug {

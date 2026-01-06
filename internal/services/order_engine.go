@@ -1409,7 +1409,7 @@ func (e *OrderEngine) handleResetCycle(cmd *ResetCycleCommand) {
 		e.generation++
 	}
 
-	orderEngineLog.Warnf("🔄 [周期切换] OrderEngine 已重置运行时状态: newMarket=%s reason=%s gen=%d",
+	orderEngineLog.Debugf("🔄 [周期切换] OrderEngine 已重置运行时状态: newMarket=%s reason=%s gen=%d",
 		cmd.NewMarketSlug, cmd.Reason, e.generation)
 
 	if cmd.Reply != nil {

@@ -3,7 +3,7 @@ package template
 import (
 	"fmt"
 
-	"github.com/betbot/gobet/internal/strategies/common"
+	"github.com/betbot/gobet/internal/common"
 )
 
 const ID = "template"

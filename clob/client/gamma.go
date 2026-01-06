@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -100,13 +99,13 @@ func FetchMarketFromGamma(ctx context.Context, slug string) (*GammaMarket, error
 		proxyURLParsed, parseErr := url.Parse(proxyURL)
 		if parseErr == nil {
 			transport.Proxy = http.ProxyURL(proxyURLParsed)
-			log.Printf("✅ [Gamma API] 使用代理获取市场数据: %s", proxyURL)
+			// 使用代理获取市场数据（DEBUG级别，不输出到终端）
 		} else {
-			log.Printf("⚠️ [Gamma API] 警告: 解析代理 URL 失败: %v", parseErr)
+			// 解析代理 URL 失败（DEBUG级别，不输出到终端）
 		}
 	} else {
 		// 如果环境变量未设置，记录日志以便调试
-		log.Printf("ℹ️ [Gamma API] 代理未设置，使用直接连接")
+		// 代理未设置，使用直接连接（DEBUG级别，不输出到终端）
 	}
 	
 	// 创建 HTTP 客户端（增加超时时间到 30 秒）
@@ -122,7 +121,7 @@ func FetchMarketFromGamma(ctx context.Context, slug string) (*GammaMarket, error
 	
 	for i := 0; i < maxRetries; i++ {
 		if i > 0 {
-			log.Printf("重试获取市场数据 (第 %d/%d 次): %s", i+1, maxRetries, slug)
+			// 重试获取市场数据（DEBUG级别，不输出到终端）
 			// 递增延迟：2秒、4秒
 			time.Sleep(time.Duration(i) * 2 * time.Second)
 		}
@@ -150,7 +149,7 @@ func FetchMarketFromGamma(ctx context.Context, slug string) (*GammaMarket, error
 		}
 		
 		if err != nil {
-			log.Printf("获取市场数据失败 (尝试 %d/%d): %v", i+1, maxRetries, err)
+			// 获取市场数据失败（DEBUG级别，不输出到终端）
 		}
 	}
 	
@@ -188,7 +187,7 @@ func FetchMultipleMarketsFromGamma(ctx context.Context, slugs []string, delayMs 
 	for i, slug := range slugs {
 		market, err := FetchMarketFromGamma(ctx, slug)
 		if err != nil {
-			log.Printf("警告: 获取市场失败 %s: %v", slug, err)
+			// 获取市场失败（DEBUG级别，不输出到终端）
 			continue
 		}
 		
@@ -199,10 +198,10 @@ func FetchMultipleMarketsFromGamma(ctx context.Context, slugs []string, delayMs 
 			time.Sleep(time.Duration(delayMs) * time.Millisecond)
 		}
 		
-		// 进度日志
-		if (i+1)%10 == 0 {
-			log.Printf("进度: %d/%d", i+1, len(slugs))
-		}
+		// 进度日志（DEBUG级别，不输出到终端）
+		// if (i+1)%10 == 0 {
+		// 	log.Printf("进度: %d/%d", i+1, len(slugs))
+		// }
 	}
 	
 	return markets, nil

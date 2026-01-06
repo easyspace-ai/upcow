@@ -252,13 +252,21 @@ func CheckAndRotateLogWithForce(config Config, forceRotate bool) error {
 	oldLogFile := currentLogFile
 	currentPeriod = period
 	
-	// 记录切换信息（使用 fmt.Printf 避免依赖 Logger，因为可能正在切换）
+	// 记录切换信息
+	// 优先使用 Logger（写入日志文件），避免直接输出到终端打乱 TUI
+	msg := ""
 	if oldLogFile != "" {
-		fmt.Printf("[日志切换] %s -> %s (市场时间戳=%d, period=%d, forceRotate=%v, basePath=%s)\n", 
+		msg = fmt.Sprintf("[日志切换] %s -> %s (市场时间戳=%d, period=%d, forceRotate=%v, basePath=%s)",
 			oldLogFile, logFilePath, currentMarketTimestamp, period, forceRotate, basePath)
 	} else {
-		fmt.Printf("[日志切换] 初始化日志文件: %s (市场时间戳=%d, period=%d, basePath=%s)\n", 
+		msg = fmt.Sprintf("[日志切换] 初始化日志文件: %s (市场时间戳=%d, period=%d, basePath=%s)",
 			logFilePath, currentMarketTimestamp, period, basePath)
+	}
+	if Logger != nil {
+		Logger.Debugf(msg)
+	} else {
+		// 退回到标准输出（极端情况下）
+		fmt.Println(msg)
 	}
 
 	// 重新初始化日志输出
@@ -314,7 +322,7 @@ func CheckAndRotateLogWithForce(config Config, forceRotate bool) error {
 	})
 
 	Logger = logger
-	Logger.Infof("日志文件已切换到新周期: %s", logFilePath)
+	Logger.Debugf("日志文件已切换到新周期: %s", logFilePath)
 	return nil
 }
 
