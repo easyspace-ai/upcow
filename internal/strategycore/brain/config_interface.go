@@ -25,3 +25,4 @@ type ConfigInterface interface {
 	GetSlowStrategyMaxSpreadCents() int
 	GetSlowStrategyPriceAggressiveness() float64
 }
+

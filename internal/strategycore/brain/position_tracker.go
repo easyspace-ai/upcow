@@ -30,7 +30,6 @@ type PositionTracker struct {
 	positions      map[string]*PositionState // marketSlug -> state
 }
 
-// NewPositionTracker 创建新的持仓跟踪器
 func NewPositionTracker(ts *services.TradingService) *PositionTracker {
 	return &PositionTracker{
 		tradingService: ts,
@@ -38,39 +37,30 @@ func NewPositionTracker(ts *services.TradingService) *PositionTracker {
 	}
 }
 
-// OnCycle 周期切换回调
 func (pt *PositionTracker) OnCycle(ctx context.Context, oldMarket *domain.Market, newMarket *domain.Market) {
+	_ = ctx
 	pt.mu.Lock()
 	defer pt.mu.Unlock()
-
-	// 清理旧周期的持仓状态（可选，如果需要保留历史数据可以注释掉）
 	if oldMarket != nil {
 		delete(pt.positions, oldMarket.Slug)
 	}
 }
 
-// UpdatePositions 更新持仓状态
 func (pt *PositionTracker) UpdatePositions(ctx context.Context, market *domain.Market) {
 	if pt.tradingService == nil || market == nil {
 		return
 	}
-
-	// 从 TradingService 获取持仓
 	positions := pt.tradingService.GetOpenPositionsForMarket(market.Slug)
 
 	pt.mu.Lock()
 	defer pt.mu.Unlock()
 
-	state := &PositionState{
-		MarketSlug: market.Slug,
-	}
+	state := &PositionState{MarketSlug: market.Slug}
 
-	// 计算 UP/DOWN 持仓
 	for _, pos := range positions {
 		if pos == nil || !pos.IsOpen() || pos.Size <= 0 {
 			continue
 		}
-
 		if pos.TokenType == domain.TokenTypeUp {
 			state.UpSize += pos.Size
 			state.UpCost += pos.CostBasis
@@ -86,9 +76,8 @@ func (pt *PositionTracker) UpdatePositions(ctx context.Context, market *domain.M
 		}
 	}
 
-	// 判断是否完全对冲（UP 和 DOWN 数量相等）
 	state.IsHedged = state.UpSize > 0 && state.DownSize > 0 &&
-		abs(state.UpSize-state.DownSize) < 1 // 允许小的浮点误差
+		abs(state.UpSize-state.DownSize) < 1
 
 	pt.positions[market.Slug] = state
 
@@ -96,7 +85,6 @@ func (pt *PositionTracker) UpdatePositions(ctx context.Context, market *domain.M
 		market.Slug, state.UpSize, state.DownSize, state.IsHedged)
 }
 
-// GetPositionState 获取持仓状态
 func (pt *PositionTracker) GetPositionState(marketSlug string) *PositionState {
 	pt.mu.RLock()
 	defer pt.mu.RUnlock()
@@ -105,8 +93,6 @@ func (pt *PositionTracker) GetPositionState(marketSlug string) *PositionState {
 	if !ok {
 		return &PositionState{MarketSlug: marketSlug}
 	}
-
-	// 返回副本，避免并发修改
 	return &PositionState{
 		MarketSlug:   state.MarketSlug,
 		UpSize:       state.UpSize,
@@ -119,10 +105,10 @@ func (pt *PositionTracker) GetPositionState(marketSlug string) *PositionState {
 	}
 }
 
-// abs 计算绝对值
 func abs(x float64) float64 {
 	if x < 0 {
 		return -x
 	}
 	return x
 }
+

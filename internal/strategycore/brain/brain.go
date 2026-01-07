@@ -13,13 +13,13 @@ var log = logrus.WithField("module", "brain")
 
 // Decision 决策结果
 type Decision struct {
-	ShouldTrade bool              // 是否应该交易
-	Direction   domain.TokenType   // 交易方向（UP 或 DOWN）
-	EntryPrice  domain.Price       // Entry 价格
-	HedgePrice  domain.Price       // Hedge 价格
-	EntrySize   float64            // Entry 数量
-	HedgeSize   float64            // Hedge 数量
-	Reason      string             // 决策原因
+	ShouldTrade bool            // 是否应该交易
+	Direction   domain.TokenType // 交易方向（UP 或 DOWN）
+	EntryPrice  domain.Price     // Entry 价格
+	HedgePrice  domain.Price     // Hedge 价格
+	EntrySize   float64          // Entry 数量
+	HedgeSize   float64          // Hedge 数量
+	Reason      string           // 决策原因
 }
 
 // Brain 控制大脑模块
@@ -79,7 +79,6 @@ func (b *Brain) MakeDecision(ctx context.Context, e *events.PriceChangedEvent) (
 	if err != nil {
 		return &Decision{ShouldTrade: false, Reason: "速度计算失败: " + err.Error()}, nil
 	}
-
 	if direction == "" {
 		return &Decision{ShouldTrade: false, Reason: "未满足速度条件"}, nil
 	}
@@ -100,7 +99,6 @@ func (b *Brain) MakeDecision(ctx context.Context, e *events.PriceChangedEvent) (
 	// 5. 决策引擎评估（市场质量、价格稳定性等，根据速度状态选择策略）
 	shouldTrade, reason, entryPrice, hedgePrice, entrySize, hedgeSize := b.decisionEngine.Evaluate(
 		ctx, e, direction, velocity, positionState)
-
 	if !shouldTrade {
 		return &Decision{ShouldTrade: false, Reason: reason}, nil
 	}
@@ -169,7 +167,7 @@ func (b *Brain) checkProfitLocked(state *PositionState) (bool, float64) {
 	// 分别计算 UP win 和 DOWN win 的利润
 	// UP win 的利润 = UP shares * 1.0 - UP总成本 - DOWN总成本
 	profitIfUpWin := state.UpSize*1.0 - state.UpCost - state.DownCost
-	
+
 	// DOWN win 的利润 = DOWN shares * 1.0 - UP总成本 - DOWN总成本
 	profitIfDownWin := state.DownSize*1.0 - state.UpCost - state.DownCost
 

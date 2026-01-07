@@ -13,13 +13,13 @@ type ConfigInterface interface {
 	GetSequentialMaxWaitMs() int
 	GetOrderSize() float64
 	GetHedgeOrderSize() float64
-	
+
 	// RiskManager 配置
 	GetRiskManagementEnabled() bool
 	GetRiskManagementCheckIntervalMs() int
 	GetAggressiveHedgeTimeoutSeconds() int
 	GetMaxAcceptableLossCents() int
-	
+
 	// HedgeReorder 配置
 	GetHedgeReorderTimeoutSeconds() int
 	GetHedgeTimeoutFakSeconds() int
@@ -32,3 +32,4 @@ type ConfigInterface interface {
 type CapitalInterface interface {
 	TryMergeCurrentCycle(ctx context.Context, market *domain.Market)
 }
+

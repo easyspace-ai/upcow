@@ -10,10 +10,10 @@ import (
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/services"
-	vfbrain "github.com/betbot/gobet/internal/strategies/velocityfollow/brain"
-	vfcapital "github.com/betbot/gobet/internal/strategies/velocityfollow/capital"
-	vfdash "github.com/betbot/gobet/internal/strategies/velocityfollow/dashboard"
-	vfoms "github.com/betbot/gobet/internal/strategies/velocityfollow/oms"
+	wbbrain "github.com/betbot/gobet/internal/strategies/winbet/brain"
+	wbcapital "github.com/betbot/gobet/internal/strategies/winbet/capital"
+	wbdash "github.com/betbot/gobet/internal/strategies/winbet/dashboard"
+	wboms "github.com/betbot/gobet/internal/strategies/winbet/oms"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/marketspec"
 	"github.com/sirupsen/logrus"
@@ -36,10 +36,10 @@ type Strategy struct {
 	// 避免在周期切换/重复 Subscribe 时重复注册 handler
 	orderUpdateOnce sync.Once
 
-	brain   *vfbrain.Brain
-	oms     *vfoms.OMS
-	capital *vfcapital.Capital
-	dash    *vfdash.Dashboard
+	brain   *wbbrain.Brain
+	oms     *wboms.OMS
+	capital *wbcapital.Capital
+	dash    *wbdash.Dashboard
 
 	// dashboard loop（独立 ctx，不受周期切换影响）
 	dashboardCtx      context.Context
@@ -68,15 +68,15 @@ func (s *Strategy) Initialize() error {
 	}
 
 	var err error
-	s.brain, err = vfbrain.New(s.TradingService, &s.Config)
+	s.brain, err = wbbrain.New(s.TradingService, &s.Config)
 	if err != nil {
 		return err
 	}
-	s.oms, err = vfoms.New(s.TradingService, &s.Config)
+	s.oms, err = wboms.New(s.TradingService, &s.Config)
 	if err != nil {
 		return err
 	}
-	s.capital, err = vfcapital.New(s.TradingService, &s.Config)
+	s.capital, err = wbcapital.New(s.TradingService, &s.Config)
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func (s *Strategy) Initialize() error {
 
 	// Dashboard
 	if s.Config.DashboardEnabled {
-		s.dash = vfdash.New(s.TradingService, s.Config.DashboardUseNativeTUI)
+		s.dash = wbdash.New(s.TradingService, s.Config.DashboardUseNativeTUI)
 		s.dash.SetTitle("WinBet Strategy Dashboard")
 		s.dash.SetEnabled(true)
 		s.dash.ReapplyLogRedirect()
@@ -343,12 +343,12 @@ func (s *Strategy) updateDashboard(ctx context.Context, market *domain.Market) {
 	}
 
 	// 持仓信息
-	var posState *vfdash.PositionState
+	var posState *wbdash.PositionState
 	if s.brain != nil {
 		s.brain.UpdatePositionState(ctx, market)
 		ps := s.brain.GetPositionState(market.Slug)
 		if ps != nil {
-			posState = &vfdash.PositionState{
+			posState = &wbdash.PositionState{
 				UpSize:       ps.UpSize,
 				DownSize:     ps.DownSize,
 				UpCost:       ps.UpCost,
@@ -385,13 +385,13 @@ func (s *Strategy) updateDashboard(ctx context.Context, market *domain.Market) {
 	openOrders := len(s.TradingService.GetActiveOrders())
 
 	// 风控状态（RiskManager/HedgeReorder）
-	var rm *vfdash.RiskManagementStatus
+	var rm *wbdash.RiskManagementStatus
 	if s.oms != nil {
 		if st := s.oms.GetRiskManagementStatus(); st != nil {
 			// 转换（字段名一致）
-			riskExposures := make([]vfdash.RiskExposureInfo, 0, len(st.RiskExposures))
+			riskExposures := make([]wbdash.RiskExposureInfo, 0, len(st.RiskExposures))
 			for _, exp := range st.RiskExposures {
-				riskExposures = append(riskExposures, vfdash.RiskExposureInfo{
+				riskExposures = append(riskExposures, wbdash.RiskExposureInfo{
 					EntryOrderID:            exp.EntryOrderID,
 					EntryTokenType:          exp.EntryTokenType,
 					EntrySize:               exp.EntrySize,
@@ -405,7 +405,7 @@ func (s *Strategy) updateDashboard(ctx context.Context, market *domain.Market) {
 					CountdownSeconds:        exp.CountdownSeconds,
 				})
 			}
-			rm = &vfdash.RiskManagementStatus{
+			rm = &wbdash.RiskManagementStatus{
 				RiskExposuresCount:    st.RiskExposuresCount,
 				RiskExposures:         riskExposures,
 				CurrentAction:         st.CurrentAction,
@@ -430,7 +430,7 @@ func (s *Strategy) updateDashboard(ctx context.Context, market *domain.Market) {
 	}
 
 	// 决策条件（用于左下角）
-	var dc *vfdash.DecisionConditions
+	var dc *wbdash.DecisionConditions
 	if s.brain != nil {
 		cooldownRemaining := 0.0
 		if !last.IsZero() {
@@ -446,7 +446,7 @@ func (s *Strategy) updateDashboard(ctx context.Context, market *domain.Market) {
 				warmupRemaining = (wu - since).Seconds()
 			}
 		}
-		info := &vfbrain.StrategyInfo{
+		info := &wbbrain.StrategyInfo{
 			CooldownRemaining: cooldownRemaining,
 			WarmupRemaining:   warmupRemaining,
 			TradesThisCycle:   trades,
@@ -460,7 +460,7 @@ func (s *Strategy) updateDashboard(ctx context.Context, market *domain.Market) {
 		}
 		raw := s.brain.GetDecisionConditions(ctx, priceEvent, info)
 		if raw != nil {
-			dc = &vfdash.DecisionConditions{
+			dc = &wbdash.DecisionConditions{
 				UpVelocityOK:       raw.UpVelocityOK,
 				UpVelocityValue:    raw.UpVelocityValue,
 				UpMoveOK:           raw.UpMoveOK,
@@ -508,7 +508,7 @@ func (s *Strategy) updateDashboard(ctx context.Context, market *domain.Market) {
 		mergeStatus, mergeAmount, mergeTx, lastMerge = s.capital.GetMergeStatus()
 	}
 
-	update := &vfdash.UpdateData{
+	update := &wbdash.UpdateData{
 		YesPrice: (yesBidF + yesAskF) / 2,
 		NoPrice:  (noBidF + noAskF) / 2,
 		YesBid:   yesBidF,
