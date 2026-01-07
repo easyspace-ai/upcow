@@ -115,6 +115,30 @@ func (o *OMS) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) e
 
 		profitNow := 100 - (w.entryAskCents + hedgeAskCents)
 
+		// take profit：达到可锁定利润阈值，优先“立即完成对冲”以提高每周期可做单数（周转）。
+		// 说明：如果 hedge 本来挂得更低（追求更高利润），可能迟迟不成交；此处允许在达到阈值后直接吃单锁利。
+		if pp.takeProfitCents > 0 && !w.triggered && profitNow >= pp.takeProfitCents {
+			w.tpHits++
+			if w.tpHits >= pp.takeProfitConfirmTicks {
+				w.triggered = true
+				delete(o.priceStopWatches, entryID)
+				triggers = append(triggers, trigger{
+					entryID:       entryID,
+					hedgeID:       hedgeID,
+					entryToken:    w.entryToken,
+					entryAskCents: w.entryAskCents,
+					remaining:     remaining,
+					hedgeAsk:      hedgeAsk,
+					why:           "take_profit",
+					profitNow:     profitNow,
+					firstHedge:    w.firstHedgeOrderID,
+				})
+				continue
+			}
+		} else {
+			w.tpHits = 0
+		}
+
 		// hard stop：立即触发
 		if !w.triggered && profitNow <= pp.hardLossCents {
 			w.triggered = true
@@ -178,6 +202,8 @@ func (o *OMS) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) e
 		}
 		if t.why == "hard" {
 			priceStopLog.WithFields(fields).Warn("🚨 [PriceStop] hard stop triggered (event-driven), locking loss via FAK")
+		} else if t.why == "take_profit" {
+			priceStopLog.WithFields(fields).Info("✅ [PriceStop] take profit triggered (event-driven), locking profit via FAK")
 		} else {
 			priceStopLog.WithFields(fields).Warn("⚠️ [PriceStop] soft stop triggered (event-driven), locking loss via FAK")
 		}

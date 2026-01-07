@@ -16,18 +16,22 @@ var priceStopLog = logrus.WithField("module", "price_stop_watcher")
 // 可选配置（仅 winbet 等策略实现；不强制所有策略更新配置接口）。
 type priceStopConfig interface {
 	GetPriceStopEnabled() bool
-	GetPriceStopSoftLossCents() int   // 触发阈值（例如 -5）
-	GetPriceStopHardLossCents() int   // 紧急阈值（例如 -10）
-	GetPriceStopCheckIntervalMs() int // 盯盘频率
-	GetPriceStopConfirmTicks() int    // soft 触发需要连续命中次数（防抖）
+	GetPriceStopSoftLossCents() int      // 触发阈值（例如 -5）
+	GetPriceStopHardLossCents() int      // 紧急阈值（例如 -10）
+	GetPriceTakeProfitCents() int        // 锁利阈值（例如 +5）；0 表示禁用
+	GetPriceTakeProfitConfirmTicks() int // 锁利触发连续命中次数（防抖）
+	GetPriceStopCheckIntervalMs() int    // 盯盘频率
+	GetPriceStopConfirmTicks() int       // soft 触发需要连续命中次数（防抖）
 }
 
 type priceStopParams struct {
-	enabled       bool
-	softLossCents int
-	hardLossCents int
-	interval      time.Duration
-	confirmTicks  int
+	enabled                bool
+	softLossCents          int
+	hardLossCents          int
+	takeProfitCents        int
+	interval               time.Duration
+	confirmTicks           int
+	takeProfitConfirmTicks int
 }
 
 type priceStopWatch struct {
@@ -38,6 +42,7 @@ type priceStopWatch struct {
 	firstHedgeOrderID string
 
 	softHits  int
+	tpHits    int
 	triggered bool
 	lastEval  time.Time
 }
@@ -45,11 +50,13 @@ type priceStopWatch struct {
 func (o *OMS) priceStopParams() priceStopParams {
 	// 默认：保守（只在配置实现且 enabled=true 时启动）
 	p := priceStopParams{
-		enabled:       false,
-		softLossCents: -5,
-		hardLossCents: -10,
-		interval:      0, // 事件驱动默认不节流（每次 WS 价格变化都评估）
-		confirmTicks:  2,
+		enabled:                false,
+		softLossCents:          -5,
+		hardLossCents:          -10,
+		takeProfitCents:        0, // 默认不开启“吃单锁利”，避免增加 taker 成本；可按策略目标开启
+		interval:               0, // 事件驱动默认不节流（每次 WS 价格变化都评估）
+		confirmTicks:           2,
+		takeProfitConfirmTicks: 2,
 	}
 
 	if o == nil || o.config == nil {
@@ -65,6 +72,12 @@ func (o *OMS) priceStopParams() priceStopParams {
 	}
 	if v := c.GetPriceStopHardLossCents(); v != 0 {
 		p.hardLossCents = v
+	}
+	if v := c.GetPriceTakeProfitCents(); v != 0 {
+		p.takeProfitCents = v
+	}
+	if n := c.GetPriceTakeProfitConfirmTicks(); n > 0 {
+		p.takeProfitConfirmTicks = n
 	}
 	// 约束：soft 必须“比 hard 更不极端”（例如 -5 > -10）
 	if p.softLossCents < p.hardLossCents {
@@ -89,6 +102,12 @@ func (o *OMS) priceStopParams() priceStopParams {
 	}
 	if p.confirmTicks > 10 {
 		p.confirmTicks = 10
+	}
+	if p.takeProfitConfirmTicks < 1 {
+		p.takeProfitConfirmTicks = 1
+	}
+	if p.takeProfitConfirmTicks > 10 {
+		p.takeProfitConfirmTicks = 10
 	}
 	return p
 }
@@ -254,8 +273,10 @@ func (o *OMS) lockLossByFAK(
 		IsEntryOrder: false,
 		// 风控动作：允许绕过短时 risk-off（否则极端情况下可能拒单，导致敞口扩大）
 		BypassRiskOff: true,
-		Status:        domain.OrderStatusPending,
-		CreatedAt:     time.Now(),
+		// 对冲/止损属于严格一对一：避免系统自动放大 size 造成过度对冲
+		DisableSizeAdjust: true,
+		Status:            domain.OrderStatusPending,
+		CreatedAt:         time.Now(),
 	}
 	entryRef := entryOrderID
 	fakOrder.HedgeOrderID = &entryRef

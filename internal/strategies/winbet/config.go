@@ -60,11 +60,13 @@ type Config struct {
 	MaxAcceptableLossCents        int  `yaml:"maxAcceptableLossCents" json:"maxAcceptableLossCents"`
 
 	// ====== 价格盯盘止损（Entry 成交后盯“可锁定PnL”，不利则立即吃单锁损） ======
-	PriceStopEnabled         bool `yaml:"priceStopEnabled" json:"priceStopEnabled"`
-	PriceStopSoftLossCents   int  `yaml:"priceStopSoftLossCents" json:"priceStopSoftLossCents"`     // 例如 -5：触发撤单+FAK 锁损
-	PriceStopHardLossCents   int  `yaml:"priceStopHardLossCents" json:"priceStopHardLossCents"`     // 例如 -10：紧急锁损（不做确认）
-	PriceStopCheckIntervalMs int  `yaml:"priceStopCheckIntervalMs" json:"priceStopCheckIntervalMs"` // 盯盘频率
-	PriceStopConfirmTicks    int  `yaml:"priceStopConfirmTicks" json:"priceStopConfirmTicks"`       // soft 触发连续命中次数（防抖）
+	PriceStopEnabled            bool `yaml:"priceStopEnabled" json:"priceStopEnabled"`
+	PriceStopSoftLossCents      int  `yaml:"priceStopSoftLossCents" json:"priceStopSoftLossCents"`           // 例如 -5：触发撤单+FAK 锁损
+	PriceStopHardLossCents      int  `yaml:"priceStopHardLossCents" json:"priceStopHardLossCents"`           // 例如 -10：紧急锁损（不做确认）
+	PriceTakeProfitCents        int  `yaml:"priceTakeProfitCents" json:"priceTakeProfitCents"`               // 例如 +5：达到阈值时吃单锁利（0=禁用）
+	PriceTakeProfitConfirmTicks int  `yaml:"priceTakeProfitConfirmTicks" json:"priceTakeProfitConfirmTicks"` // 锁利触发防抖
+	PriceStopCheckIntervalMs    int  `yaml:"priceStopCheckIntervalMs" json:"priceStopCheckIntervalMs"`       // 盯盘频率
+	PriceStopConfirmTicks       int  `yaml:"priceStopConfirmTicks" json:"priceStopConfirmTicks"`             // soft 触发连续命中次数（防抖）
 
 	// ====== per-entry 执行预算 + 冷静期（防止单笔把系统拖进重下风暴） ======
 	PerEntryMaxHedgeReorders int `yaml:"perEntryMaxHedgeReorders" json:"perEntryMaxHedgeReorders"`
@@ -224,6 +226,13 @@ func (c *Config) Defaults() error {
 	if c.PriceStopHardLossCents == 0 {
 		c.PriceStopHardLossCents = -10
 	}
+	// 默认开启“达到 +5 立即吃单锁利”，符合“多做对冲单/提高周转”的目标。
+	if c.PriceTakeProfitCents == 0 {
+		c.PriceTakeProfitCents = 5
+	}
+	if c.PriceTakeProfitConfirmTicks <= 0 {
+		c.PriceTakeProfitConfirmTicks = 2
+	}
 	// 事件驱动默认不节流（0=每次 WS 价格变化都评估）；若要限频可显式配置 >0
 	if c.PriceStopCheckIntervalMs < 0 {
 		c.PriceStopCheckIntervalMs = 0
@@ -377,6 +386,9 @@ func (c *Config) Validate() error {
 	if c.PriceStopConfirmTicks < 0 {
 		return fmt.Errorf("priceStopConfirmTicks 不合法")
 	}
+	if c.PriceTakeProfitConfirmTicks < 0 {
+		return fmt.Errorf("priceTakeProfitConfirmTicks 不合法")
+	}
 	if c.PerEntryMaxHedgeReorders < 0 {
 		return fmt.Errorf("perEntryMaxHedgeReorders 不合法")
 	}
@@ -440,11 +452,13 @@ func (c *Config) GetAllowNegativeProfitOnHedgeReorder() bool {
 func (c *Config) GetMaxNegativeProfitCents() int { return c.MaxNegativeProfitCents }
 
 // ====== 价格盯盘止损（strategycore/oms 可选读取） ======
-func (c *Config) GetPriceStopEnabled() bool        { return c.PriceStopEnabled }
-func (c *Config) GetPriceStopSoftLossCents() int   { return c.PriceStopSoftLossCents }
-func (c *Config) GetPriceStopHardLossCents() int   { return c.PriceStopHardLossCents }
-func (c *Config) GetPriceStopCheckIntervalMs() int { return c.PriceStopCheckIntervalMs }
-func (c *Config) GetPriceStopConfirmTicks() int    { return c.PriceStopConfirmTicks }
+func (c *Config) GetPriceStopEnabled() bool           { return c.PriceStopEnabled }
+func (c *Config) GetPriceStopSoftLossCents() int      { return c.PriceStopSoftLossCents }
+func (c *Config) GetPriceStopHardLossCents() int      { return c.PriceStopHardLossCents }
+func (c *Config) GetPriceTakeProfitCents() int        { return c.PriceTakeProfitCents }
+func (c *Config) GetPriceTakeProfitConfirmTicks() int { return c.PriceTakeProfitConfirmTicks }
+func (c *Config) GetPriceStopCheckIntervalMs() int    { return c.PriceStopCheckIntervalMs }
+func (c *Config) GetPriceStopConfirmTicks() int       { return c.PriceStopConfirmTicks }
 
 // ====== per-entry 执行预算 + 冷静期（strategycore/oms 可选读取） ======
 func (c *Config) GetPerEntryMaxHedgeReorders() int { return c.PerEntryMaxHedgeReorders }
