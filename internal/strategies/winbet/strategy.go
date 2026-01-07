@@ -135,7 +135,14 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.Exchan
 				s.dashboardExitCancel()
 			}
 		})
-		_ = s.dash.Start(ctx)
+		// 关键：Dashboard 用独立 ctx 启动，避免“周期切换触发 ctx cancel”导致 UI 停更。
+		// 周期切换时 bbgo 会 cancel 当前 Run(ctx)，但 Strategy 实例仍会被复用并再次 Run。
+		// 若 Dashboard 随 Run(ctx) 停止，而 dashboardUpdateLoop 又是 once，则会出现“新周期 UI 不再更新”的现象。
+		startCtx := ctx
+		if s.dashboardCtx != nil {
+			startCtx = s.dashboardCtx
+		}
+		_ = s.dash.Start(startCtx)
 		s.dashboardLoopOnce.Do(func() {
 			if s.dashboardCtx != nil {
 				go s.dashboardUpdateLoop(s.dashboardCtx)
@@ -162,12 +169,8 @@ func (s *Strategy) Run(ctx context.Context, _ bbgo.OrderExecutor, _ *bbgo.Exchan
 	if s.oms != nil {
 		s.oms.Stop()
 	}
-	if s.dash != nil {
-		s.dash.Stop()
-	}
-	if s.dashboardCancel != nil {
-		s.dashboardCancel()
-	}
+	// 注意：不要在 Run 结束时停止 Dashboard 或 cancel dashboardCtx。
+	// Run 会在周期切换时被 cancel 并重新启动；Dashboard 需要跨周期持续运行。
 
 	return ctx.Err()
 }
