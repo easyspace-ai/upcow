@@ -26,21 +26,6 @@ func (o *OMS) logMetricsOnce() {
 		return
 	}
 
-	queueLen := 0
-	if o.q != nil && o.q.ch != nil {
-		queueLen = len(o.q.ch)
-	}
-
-	pending := 0
-	o.mu.RLock()
-	pending = len(o.pendingHedges)
-	o.mu.RUnlock()
-
-	exposures := 0
-	if o.riskManager != nil {
-		exposures = len(o.riskManager.GetExposures())
-	}
-
 	market := ""
 	if o.tradingService != nil {
 		if m := o.tradingService.GetCurrentMarketInfo(); m != nil {
@@ -48,12 +33,15 @@ func (o *OMS) logMetricsOnce() {
 		}
 	}
 
-	ewma := 0.0
-	if o.hm != nil && market != "" {
-		ewma = o.hm.getEWMASec(market)
-	}
-
-	log.Debugf("📊 [OMS Metrics] market=%s queue=%d pending=%d exposures=%d hedgeEWMA=%.1fs",
-		market, queueLen, pending, exposures, ewma)
+	metrics := o.GetOpsMetrics(context.Background(), market)
+	log.Debugf("📊 [OMS Metrics] market=%s queue=%d pending=%d exposures=%d hedgeEWMA=%.1fs reorderSkips=%d fakWarn=%d",
+		market,
+		metrics.QueueLen,
+		metrics.PendingHedges,
+		metrics.Exposures,
+		metrics.HedgeEWMASec,
+		metrics.ReorderBudgetSkips,
+		metrics.FAKBudgetWarnings,
+	)
 }
 

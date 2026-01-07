@@ -118,6 +118,12 @@ type Snapshot struct {
 	PendingHedges int
 	OpenOrders    int
 
+	// OMS 运行指标（职业交易系统可观测性）
+	OMSQueueLen        int
+	HedgeEWMASec       float64
+	ReorderBudgetSkips int64
+	FAKBudgetWarnings  int64
+
 	// 风控状态
 	RiskManagement *RiskManagementStatus
 
@@ -426,6 +432,11 @@ type UpdateData struct {
 	PendingHedges int
 	OpenOrders    int
 
+	OMSQueueLen        int
+	HedgeEWMASec       float64
+	ReorderBudgetSkips int64
+	FAKBudgetWarnings  int64
+
 	RiskManagement     *RiskManagementStatus
 	DecisionConditions *DecisionConditions
 
@@ -513,6 +524,10 @@ func (d *Dashboard) UpdateSnapshot(ctx context.Context, market *domain.Market, d
 
 			d.snapshot.PendingHedges = data.PendingHedges
 			d.snapshot.OpenOrders = data.OpenOrders
+			d.snapshot.OMSQueueLen = data.OMSQueueLen
+			d.snapshot.HedgeEWMASec = data.HedgeEWMASec
+			d.snapshot.ReorderBudgetSkips = data.ReorderBudgetSkips
+			d.snapshot.FAKBudgetWarnings = data.FAKBudgetWarnings
 
 			d.snapshot.RiskManagement = data.RiskManagement
 			if data.DecisionConditions != nil {
@@ -601,6 +616,10 @@ func (d *Dashboard) UpdateSnapshot(ctx context.Context, market *domain.Market, d
 
 		d.snapshot.PendingHedges = data.PendingHedges
 		d.snapshot.OpenOrders = data.OpenOrders
+		d.snapshot.OMSQueueLen = data.OMSQueueLen
+		d.snapshot.HedgeEWMASec = data.HedgeEWMASec
+		d.snapshot.ReorderBudgetSkips = data.ReorderBudgetSkips
+		d.snapshot.FAKBudgetWarnings = data.FAKBudgetWarnings
 
 		if data.RiskManagement != nil {
 			d.snapshot.RiskManagement = data.RiskManagement
@@ -997,6 +1016,10 @@ func (d *Dashboard) GetSnapshot() *Snapshot {
 		LastRedeemTime:     d.snapshot.LastRedeemTime,
 		PendingHedges:      d.snapshot.PendingHedges,
 		OpenOrders:         d.snapshot.OpenOrders,
+		OMSQueueLen:        d.snapshot.OMSQueueLen,
+		HedgeEWMASec:       d.snapshot.HedgeEWMASec,
+		ReorderBudgetSkips: d.snapshot.ReorderBudgetSkips,
+		FAKBudgetWarnings:  d.snapshot.FAKBudgetWarnings,
 		RiskManagement:     d.snapshot.RiskManagement,
 		DecisionConditions: d.snapshot.DecisionConditions,
 		CycleEndTime:       d.snapshot.CycleEndTime,

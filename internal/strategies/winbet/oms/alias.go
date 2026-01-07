@@ -11,6 +11,7 @@ type ConfigInterface = core.ConfigInterface
 type CapitalInterface = core.CapitalInterface
 
 type OMS = core.OMS
+type OpsMetrics = core.OpsMetrics
 type RiskManagementStatus = core.RiskManagementStatus
 type RiskExposureInfo = core.RiskExposureInfo
 

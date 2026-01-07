@@ -11,6 +11,7 @@ type ConfigInterface = core.ConfigInterface
 type CapitalInterface = core.CapitalInterface
 
 type OMS = core.OMS
+type OpsMetrics = core.OpsMetrics
 type OrderExecutor = core.OrderExecutor
 type PositionManager = core.PositionManager
 type RiskManager = core.RiskManager

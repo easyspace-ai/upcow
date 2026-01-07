@@ -3,6 +3,7 @@ package oms
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/betbot/gobet/internal/domain"
@@ -28,6 +29,9 @@ type OMS struct {
 	fakLimiter     *perMarketLimiter
 
 	metricsCancel context.CancelFunc
+
+	reorderBudgetSkips atomic.Int64
+	fakBudgetWarnings  atomic.Int64
 
 	orderExecutor   *OrderExecutor
 	positionManager *PositionManager
@@ -127,14 +131,22 @@ func (o *OMS) allowReorder(marketSlug string) bool {
 	if o == nil || o.reorderLimiter == nil {
 		return true
 	}
-	return o.reorderLimiter.Allow(marketSlug, 1)
+	ok := o.reorderLimiter.Allow(marketSlug, 1)
+	if !ok {
+		o.reorderBudgetSkips.Add(1)
+	}
+	return ok
 }
 
 func (o *OMS) allowFAK(marketSlug string) bool {
 	if o == nil || o.fakLimiter == nil {
 		return true
 	}
-	return o.fakLimiter.Allow(marketSlug, 1)
+	ok := o.fakLimiter.Allow(marketSlug, 1)
+	if !ok {
+		o.fakBudgetWarnings.Add(1)
+	}
+	return ok
 }
 
 // 写操作统一入口（串行化）

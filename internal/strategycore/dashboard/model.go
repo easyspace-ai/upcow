@@ -247,6 +247,10 @@ func (m model) renderOrderStatus(snap *Snapshot, width int) string {
 	lines = append(lines, titleStyle.Render("Orders"))
 	lines = append(lines, strings.Repeat("─", width-4))
 	lines = append(lines, fmt.Sprintf("Hedges:%d Open:%d", snap.PendingHedges, snap.OpenOrders))
+	if snap.OMSQueueLen > 0 || snap.HedgeEWMASec > 0 || snap.ReorderBudgetSkips > 0 || snap.FAKBudgetWarnings > 0 {
+		lines = append(lines, fmt.Sprintf("Queue:%d EWMA:%.1fs RS:%d FAK:%d",
+			snap.OMSQueueLen, snap.HedgeEWMASec, snap.ReorderBudgetSkips, snap.FAKBudgetWarnings))
+	}
 	return strings.Join(lines, "\n")
 }
 

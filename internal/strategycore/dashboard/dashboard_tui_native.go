@@ -119,6 +119,10 @@ func (t *NativeTUI) UpdateSnapshot(snapshot *Snapshot) {
 		LastTriggerTime:   snapshot.LastTriggerTime,
 		PendingHedges:     snapshot.PendingHedges,
 		OpenOrders:        snapshot.OpenOrders,
+		OMSQueueLen:       snapshot.OMSQueueLen,
+		HedgeEWMASec:      snapshot.HedgeEWMASec,
+		ReorderBudgetSkips: snapshot.ReorderBudgetSkips,
+		FAKBudgetWarnings:  snapshot.FAKBudgetWarnings,
 		MergeCount:        snapshot.MergeCount,
 		MergeStatus:       snapshot.MergeStatus,
 		MergeAmount:       snapshot.MergeAmount,
@@ -545,7 +549,14 @@ func (t *NativeTUI) renderRight(snap *Snapshot, width, startX, startY int) {
 	})
 	y = t.renderSection(snap, "Orders", x, y, width, func(snap *Snapshot, y int) int {
 		t.renderText(x+1, y, fmt.Sprintf("Hedges:%d Open:%d", snap.PendingHedges, snap.OpenOrders), tcell.ColorDefault)
-		return y + 1
+		y++
+		// 运行指标（紧凑展示）
+		if snap.OMSQueueLen > 0 || snap.HedgeEWMASec > 0 || snap.ReorderBudgetSkips > 0 || snap.FAKBudgetWarnings > 0 {
+			t.renderText(x+1, y, fmt.Sprintf("Queue:%d EWMA:%.1fs RS:%d FAK:%d",
+				snap.OMSQueueLen, snap.HedgeEWMASec, snap.ReorderBudgetSkips, snap.FAKBudgetWarnings), tcell.ColorDefault)
+			y++
+		}
+		return y
 	})
 	if snap.RiskManagement != nil {
 		y = t.renderRiskManagement(snap, x, y, width)

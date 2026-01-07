@@ -643,6 +643,11 @@ func (s *Strategy) updateDashboard(ctx context.Context, market *domain.Market) {
 		mergeStatus, mergeAmount, mergeTx, lastMerge = s.capital.GetMergeStatus()
 	}
 
+	ops := wboms.OpsMetrics{}
+	if s.oms != nil {
+		ops = s.oms.GetOpsMetrics(ctx, market.Slug)
+	}
+
 	update := &wbdash.UpdateData{
 		YesPrice: (yesBidF + yesAskF) / 2,
 		NoPrice:  (noBidF + noAskF) / 2,
@@ -668,6 +673,10 @@ func (s *Strategy) updateDashboard(ctx context.Context, market *domain.Market) {
 
 		PendingHedges: pendingHedges,
 		OpenOrders:    openOrders,
+		OMSQueueLen:        ops.QueueLen,
+		HedgeEWMASec:       ops.HedgeEWMASec,
+		ReorderBudgetSkips: ops.ReorderBudgetSkips,
+		FAKBudgetWarnings:  ops.FAKBudgetWarnings,
 
 		RiskManagement:     rm,
 		DecisionConditions: dc,
