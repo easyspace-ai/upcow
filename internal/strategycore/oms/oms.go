@@ -41,8 +41,8 @@ type OMS struct {
 	mu            sync.RWMutex
 	pendingHedges map[string]string // entryOrderID -> hedgeOrderID
 
-	// 价格盯盘止损协程（entryOrderID -> cancel）
-	priceWatchCancel map[string]context.CancelFunc
+	// 价格盯盘止损（事件驱动）：entryOrderID -> watch state
+	priceStopWatches map[string]*priceStopWatch
 
 	// per-entry 预算 + per-market 冷静期（防止极端行情执行风暴）
 	entryBudgets map[string]*entryBudget
@@ -77,7 +77,7 @@ func New(ts *services.TradingService, cfg ConfigInterface, strategyID string) (*
 		riskManager:      rm,
 		hedgeReorder:     hr,
 		pendingHedges:    make(map[string]string),
-		priceWatchCancel: make(map[string]context.CancelFunc),
+		priceStopWatches: make(map[string]*priceStopWatch),
 	}
 
 	oe.SetOMS(oms)
@@ -188,12 +188,7 @@ func (o *OMS) OnCycle(ctx context.Context, oldMarket *domain.Market, newMarket *
 	defer o.mu.Unlock()
 
 	o.pendingHedges = make(map[string]string)
-	for _, cancel := range o.priceWatchCancel {
-		if cancel != nil {
-			cancel()
-		}
-	}
-	o.priceWatchCancel = make(map[string]context.CancelFunc)
+	o.priceStopWatches = make(map[string]*priceStopWatch)
 	o.entryBudgets = make(map[string]*entryBudget)
 	o.cooldowns = make(map[string]cooldownInfo)
 	if o.positionManager != nil {
@@ -559,12 +554,7 @@ func (o *OMS) Stop() {
 		o.q.Close()
 	}
 	o.mu.Lock()
-	for _, cancel := range o.priceWatchCancel {
-		if cancel != nil {
-			cancel()
-		}
-	}
-	o.priceWatchCancel = make(map[string]context.CancelFunc)
+	o.priceStopWatches = make(map[string]*priceStopWatch)
 	o.mu.Unlock()
 	if o.metricsCancel != nil {
 		o.metricsCancel()

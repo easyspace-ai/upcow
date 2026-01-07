@@ -253,6 +253,11 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		s.brain.UpdateSamplesFromPriceEvent(ctx, e)
 	}
 
+	// 风控优先：把 WS 价格变化实时转发给 OMS（用于 event-driven 止损/锁损），不受 gate 影响。
+	if s.oms != nil {
+		_ = s.oms.OnPriceChanged(ctx, e)
+	}
+
 	// 市场质量/稳定性 gate（职业交易员视角：先保证“盘口可交易”再谈信号）
 	if s.gates != nil {
 		ok, _ := s.gates.AllowTrade(ctx, s.TradingService, e.Market)
@@ -329,10 +334,10 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	decision.EntrySize, decision.HedgeSize = s.dynamicSizeForMarket(ctx, e.Market, decision.EntrySize, decision.HedgeSize)
 	if decision.EntrySize <= 0 || decision.HedgeSize <= 0 {
 		log.WithFields(logrus.Fields{
-			"market":  e.Market.Slug,
-			"token":   e.TokenType,
-			"dir":     decision.Direction,
-			"reason":  "dynamic_size_zero",
+			"market": e.Market.Slug,
+			"token":  e.TokenType,
+			"dir":    decision.Direction,
+			"reason": "dynamic_size_zero",
 		}).Info("winbet: skip trade after dynamic sizing (size<=0)")
 		return nil
 	}
@@ -572,16 +577,16 @@ func (s *Strategy) updateDashboard(ctx context.Context, market *domain.Market) {
 				})
 			}
 			rm = &wbdash.RiskManagementStatus{
-				RiskExposuresCount:    st.RiskExposuresCount,
-				RiskExposures:         riskExposures,
-				CurrentAction:         st.CurrentAction,
-				CurrentActionEntry:    st.CurrentActionEntry,
-				CurrentActionHedge:    st.CurrentActionHedge,
-				CurrentActionTime:     st.CurrentActionTime,
-				CurrentActionDesc:     st.CurrentActionDesc,
-				TotalReorders:         st.TotalReorders,
-				TotalAggressiveHedges: st.TotalAggressiveHedges,
-				TotalFakEats:          st.TotalFakEats,
+				RiskExposuresCount:      st.RiskExposuresCount,
+				RiskExposures:           riskExposures,
+				CurrentAction:           st.CurrentAction,
+				CurrentActionEntry:      st.CurrentActionEntry,
+				CurrentActionHedge:      st.CurrentActionHedge,
+				CurrentActionTime:       st.CurrentActionTime,
+				CurrentActionDesc:       st.CurrentActionDesc,
+				TotalReorders:           st.TotalReorders,
+				TotalAggressiveHedges:   st.TotalAggressiveHedges,
+				TotalFakEats:            st.TotalFakEats,
 				RepriceOldPriceCents:    st.RepriceOldPriceCents,
 				RepriceNewPriceCents:    st.RepriceNewPriceCents,
 				RepricePriceChangeCents: st.RepricePriceChangeCents,
@@ -627,38 +632,38 @@ func (s *Strategy) updateDashboard(ctx context.Context, market *domain.Market) {
 		raw := s.brain.GetDecisionConditions(ctx, priceEvent, info)
 		if raw != nil {
 			dc = &wbdash.DecisionConditions{
-				UpVelocityOK:       raw.UpVelocityOK,
-				UpVelocityValue:    raw.UpVelocityValue,
-				UpMoveOK:           raw.UpMoveOK,
-				UpMoveValue:        raw.UpMoveValue,
-				DownVelocityOK:     raw.DownVelocityOK,
-				DownVelocityValue:  raw.DownVelocityValue,
-				DownMoveOK:         raw.DownMoveOK,
-				DownMoveValue:      raw.DownMoveValue,
-				Direction:          raw.Direction,
-				EntryPriceOK:       raw.EntryPriceOK,
-				EntryPriceValue:    raw.EntryPriceValue,
-				EntryPriceMin:      raw.EntryPriceMin,
-				EntryPriceMax:      raw.EntryPriceMax,
-				TotalCostOK:        raw.TotalCostOK,
-				TotalCostValue:     raw.TotalCostValue,
-				HedgePriceOK:       raw.HedgePriceOK,
-				HedgePriceValue:    raw.HedgePriceValue,
-				HasUnhedgedRisk:    raw.HasUnhedgedRisk,
-				IsProfitLocked:     raw.IsProfitLocked,
-				ProfitIfUpWin:      raw.ProfitIfUpWin,
-				ProfitIfDownWin:    raw.ProfitIfDownWin,
-				CooldownOK:         raw.CooldownOK,
-				CooldownRemaining:  raw.CooldownRemaining,
-				WarmupOK:           raw.WarmupOK,
-				WarmupRemaining:    raw.WarmupRemaining,
-				TradesLimitOK:      raw.TradesLimitOK,
-				TradesThisCycle:    raw.TradesThisCycle,
-				MaxTradesPerCycle:  raw.MaxTradesPerCycle,
-				MarketValid:        raw.MarketValid,
-				HasPendingHedge:    raw.HasPendingHedge,
-				CanTrade:           raw.CanTrade,
-				BlockReason:        raw.BlockReason,
+				UpVelocityOK:      raw.UpVelocityOK,
+				UpVelocityValue:   raw.UpVelocityValue,
+				UpMoveOK:          raw.UpMoveOK,
+				UpMoveValue:       raw.UpMoveValue,
+				DownVelocityOK:    raw.DownVelocityOK,
+				DownVelocityValue: raw.DownVelocityValue,
+				DownMoveOK:        raw.DownMoveOK,
+				DownMoveValue:     raw.DownMoveValue,
+				Direction:         raw.Direction,
+				EntryPriceOK:      raw.EntryPriceOK,
+				EntryPriceValue:   raw.EntryPriceValue,
+				EntryPriceMin:     raw.EntryPriceMin,
+				EntryPriceMax:     raw.EntryPriceMax,
+				TotalCostOK:       raw.TotalCostOK,
+				TotalCostValue:    raw.TotalCostValue,
+				HedgePriceOK:      raw.HedgePriceOK,
+				HedgePriceValue:   raw.HedgePriceValue,
+				HasUnhedgedRisk:   raw.HasUnhedgedRisk,
+				IsProfitLocked:    raw.IsProfitLocked,
+				ProfitIfUpWin:     raw.ProfitIfUpWin,
+				ProfitIfDownWin:   raw.ProfitIfDownWin,
+				CooldownOK:        raw.CooldownOK,
+				CooldownRemaining: raw.CooldownRemaining,
+				WarmupOK:          raw.WarmupOK,
+				WarmupRemaining:   raw.WarmupRemaining,
+				TradesLimitOK:     raw.TradesLimitOK,
+				TradesThisCycle:   raw.TradesThisCycle,
+				MaxTradesPerCycle: raw.MaxTradesPerCycle,
+				MarketValid:       raw.MarketValid,
+				HasPendingHedge:   raw.HasPendingHedge,
+				CanTrade:          raw.CanTrade,
+				BlockReason:       raw.BlockReason,
 			}
 		}
 	}
@@ -703,21 +708,21 @@ func (s *Strategy) updateDashboard(ctx context.Context, market *domain.Market) {
 		DownMove:     downMove,
 		Direction:    dir,
 
-		PositionState:  posState,
-		ProfitIfUpWin:  profitUp,
+		PositionState:   posState,
+		ProfitIfUpWin:   profitUp,
 		ProfitIfDownWin: profitDown,
-		TotalCost:      totalCost,
-		IsProfitLocked: locked,
+		TotalCost:       totalCost,
+		IsProfitLocked:  locked,
 
 		TradesThisCycle: trades,
 		LastTriggerTime: last,
 
-		PendingHedges: pendingHedges,
-		OpenOrders:    openOrders,
-		OMSQueueLen:        ops.QueueLen,
-		HedgeEWMASec:       ops.HedgeEWMASec,
-		ReorderBudgetSkips: ops.ReorderBudgetSkips,
-		FAKBudgetWarnings:  ops.FAKBudgetWarnings,
+		PendingHedges:              pendingHedges,
+		OpenOrders:                 openOrders,
+		OMSQueueLen:                ops.QueueLen,
+		HedgeEWMASec:               ops.HedgeEWMASec,
+		ReorderBudgetSkips:         ops.ReorderBudgetSkips,
+		FAKBudgetWarnings:          ops.FAKBudgetWarnings,
 		MarketCooldownRemainingSec: ops.CooldownRemainingSec,
 		MarketCooldownReason:       ops.CooldownReason,
 
@@ -757,4 +762,3 @@ func marketCycleEndTime(market *domain.Market) time.Time {
 	}
 	return start.Add(dur)
 }
-

@@ -224,8 +224,9 @@ func (c *Config) Defaults() error {
 	if c.PriceStopHardLossCents == 0 {
 		c.PriceStopHardLossCents = -10
 	}
-	if c.PriceStopCheckIntervalMs <= 0 {
-		c.PriceStopCheckIntervalMs = 200
+	// 事件驱动默认不节流（0=每次 WS 价格变化都评估）；若要限频可显式配置 >0
+	if c.PriceStopCheckIntervalMs < 0 {
+		c.PriceStopCheckIntervalMs = 0
 	}
 	if c.PriceStopConfirmTicks <= 0 {
 		c.PriceStopConfirmTicks = 2

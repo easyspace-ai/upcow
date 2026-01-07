@@ -30,13 +30,25 @@ type priceStopParams struct {
 	confirmTicks  int
 }
 
+type priceStopWatch struct {
+	marketSlug        string
+	entryToken        domain.TokenType
+	entryAskCents     int
+	entryFilledSize   float64
+	firstHedgeOrderID string
+
+	softHits  int
+	triggered bool
+	lastEval  time.Time
+}
+
 func (o *OMS) priceStopParams() priceStopParams {
 	// 默认：保守（只在配置实现且 enabled=true 时启动）
 	p := priceStopParams{
 		enabled:       false,
 		softLossCents: -5,
 		hardLossCents: -10,
-		interval:      200 * time.Millisecond,
+		interval:      0, // 事件驱动默认不节流（每次 WS 价格变化都评估）
 		confirmTicks:  2,
 	}
 
@@ -62,8 +74,9 @@ func (o *OMS) priceStopParams() priceStopParams {
 	if ms := c.GetPriceStopCheckIntervalMs(); ms > 0 {
 		p.interval = time.Duration(ms) * time.Millisecond
 	}
-	if p.interval < 50*time.Millisecond {
-		p.interval = 50 * time.Millisecond
+	// interval==0 表示不节流；>0 则做合理限幅（避免误配导致 CPU 风暴）
+	if p.interval > 0 && p.interval < 20*time.Millisecond {
+		p.interval = 20 * time.Millisecond
 	}
 	if p.interval > 2*time.Second {
 		p.interval = 2 * time.Second
@@ -93,16 +106,14 @@ func (o *OMS) startPriceStopWatcher(entryOrder *domain.Order, hedgeOrderID strin
 	entryID := entryOrder.OrderID
 
 	o.mu.Lock()
-	// 防止重复启动
-	if o.priceWatchCancel == nil {
-		o.priceWatchCancel = make(map[string]context.CancelFunc)
+	if o.priceStopWatches == nil {
+		o.priceStopWatches = make(map[string]*priceStopWatch)
 	}
-	if _, exists := o.priceWatchCancel[entryID]; exists {
+	// 防止重复注册
+	if _, exists := o.priceStopWatches[entryID]; exists {
 		o.mu.Unlock()
 		return
 	}
-	wCtx, cancel := context.WithCancel(context.Background())
-	o.priceWatchCancel[entryID] = cancel
 	o.mu.Unlock()
 
 	// entry 成本（优先成交价）
@@ -111,10 +122,6 @@ func (o *OMS) startPriceStopWatcher(entryOrder *domain.Order, hedgeOrderID strin
 		entryAskCents = entryOrder.FilledPrice.ToCents()
 	}
 	if entryAskCents <= 0 {
-		cancel()
-		o.mu.Lock()
-		delete(o.priceWatchCancel, entryID)
-		o.mu.Unlock()
 		return
 	}
 
@@ -124,10 +131,6 @@ func (o *OMS) startPriceStopWatcher(entryOrder *domain.Order, hedgeOrderID strin
 		entryFilledSize = entryOrder.Size
 	}
 	if entryFilledSize <= 0 {
-		cancel()
-		o.mu.Lock()
-		delete(o.priceWatchCancel, entryID)
-		o.mu.Unlock()
 		return
 	}
 
@@ -145,154 +148,15 @@ func (o *OMS) startPriceStopWatcher(entryOrder *domain.Order, hedgeOrderID strin
 		"interval":       pp.interval.String(),
 		"confirmTicks":   pp.confirmTicks,
 		"entryTokenType": entryToken,
-	}).Info("📉 [PriceStop] start watcher")
+	}).Info("📉 [PriceStop] register watcher (event-driven)")
 
-	go o.priceStopLoop(wCtx, pp, marketSlug, entryID, hedgeOrderID, entryToken, entryAskCents, entryFilledSize)
-}
-
-func (o *OMS) priceStopLoop(
-	ctx context.Context,
-	pp priceStopParams,
-	marketSlug string,
-	entryOrderID string,
-	initialHedgeOrderID string,
-	entryToken domain.TokenType,
-	entryAskCents int,
-	entryFilledSize float64,
-) {
-	ticker := time.NewTicker(pp.interval)
-	defer ticker.Stop()
-
-	softHits := 0
-	triggered := false
-
-	for {
-		select {
-		case <-ctx.Done():
-			o.cleanupPriceStop(entryOrderID)
-			return
-		case <-ticker.C:
-			if o == nil || o.tradingService == nil {
-				continue
-			}
-
-			// 若 entry 已不再处于 pending hedge，则停止（说明已对冲完成或被外部流程清理）
-			hedgeOrderID := ""
-			o.mu.RLock()
-			if o.pendingHedges != nil {
-				hedgeOrderID = o.pendingHedges[entryOrderID]
-			}
-			o.mu.RUnlock()
-			if hedgeOrderID == "" {
-				o.cleanupPriceStop(entryOrderID)
-				return
-			}
-
-			// 如果 hedge 订单已成交，停止
-			hedgeFilledSize := 0.0
-			if ord, ok := o.tradingService.GetOrder(hedgeOrderID); ok && ord != nil {
-				if ord.IsFilled() {
-					o.cleanupPriceStop(entryOrderID)
-					return
-				}
-				hedgeFilledSize = ord.FilledSize
-				if hedgeFilledSize < 0 {
-					hedgeFilledSize = 0
-				}
-			}
-
-			remaining := entryFilledSize - hedgeFilledSize
-			if remaining <= 0 {
-				o.cleanupPriceStop(entryOrderID)
-				return
-			}
-
-			market := o.getMarketForSlug(marketSlug)
-			if market == nil {
-				// 市场对象拿不到时不做强动作；等下一轮（更安全）
-				continue
-			}
-
-			tobCtx, cancel := context.WithTimeout(ctx, 800*time.Millisecond)
-			_, yesAsk, _, noAsk, _, err := o.tradingService.GetTopOfBook(tobCtx, market)
-			cancel()
-			if err != nil {
-				continue
-			}
-
-			hedgeAsk := yesAsk
-			if entryToken == domain.TokenTypeUp {
-				// Entry=UP => hedge 买 NO，用 noAsk
-				hedgeAsk = noAsk
-			}
-			hedgeAskCents := hedgeAsk.ToCents()
-			if hedgeAskCents <= 0 {
-				continue
-			}
-
-			lockedProfitCentsNow := 100 - (entryAskCents + hedgeAskCents)
-
-			// hard stop：无需确认，立即触发
-			if lockedProfitCentsNow <= pp.hardLossCents && !triggered {
-				triggered = true
-				priceStopLog.WithFields(logrus.Fields{
-					"market":     marketSlug,
-					"entry":      entryOrderID,
-					"hedge":      hedgeOrderID,
-					"profitNow":  lockedProfitCentsNow,
-					"hardStop":   pp.hardLossCents,
-					"softStop":   pp.softLossCents,
-					"entryCost":  entryAskCents,
-					"hedgeAsk":   hedgeAskCents,
-					"remaining":  remaining,
-					"firstHedge": initialHedgeOrderID,
-				}).Warn("🚨 [PriceStop] hard stop triggered, locking loss via FAK")
-				_ = o.lockLossByFAK(ctx, market, entryOrderID, hedgeOrderID, entryToken, hedgeAsk, remaining)
-				continue
-			}
-
-			// soft stop：连续命中确认（防抖）
-			if lockedProfitCentsNow <= pp.softLossCents && !triggered {
-				softHits++
-				if softHits >= pp.confirmTicks {
-					triggered = true
-					priceStopLog.WithFields(logrus.Fields{
-						"market":     marketSlug,
-						"entry":      entryOrderID,
-						"hedge":      hedgeOrderID,
-						"profitNow":  lockedProfitCentsNow,
-						"softStop":   pp.softLossCents,
-						"hardStop":   pp.hardLossCents,
-						"entryCost":  entryAskCents,
-						"hedgeAsk":   hedgeAskCents,
-						"remaining":  remaining,
-						"hits":       softHits,
-						"firstHedge": initialHedgeOrderID,
-					}).Warn("⚠️ [PriceStop] soft stop confirmed, locking loss via FAK")
-					_ = o.lockLossByFAK(ctx, market, entryOrderID, hedgeOrderID, entryToken, hedgeAsk, remaining)
-				}
-				continue
-			}
-
-			// 回到安全区，清空计数
-			softHits = 0
-		}
-	}
-}
-
-func (o *OMS) cleanupPriceStop(entryOrderID string) {
-	if o == nil || entryOrderID == "" {
-		return
-	}
 	o.mu.Lock()
-	if o.priceWatchCancel != nil {
-		if cancel, ok := o.priceWatchCancel[entryOrderID]; ok {
-			// 避免外部已 cancel 时重复调用造成误解（cancel 本身幂等）
-			if cancel != nil {
-				cancel()
-			}
-			delete(o.priceWatchCancel, entryOrderID)
-		}
+	o.priceStopWatches[entryID] = &priceStopWatch{
+		marketSlug:        marketSlug,
+		entryToken:        entryToken,
+		entryAskCents:     entryAskCents,
+		entryFilledSize:   entryFilledSize,
+		firstHedgeOrderID: hedgeOrderID,
 	}
 	o.mu.Unlock()
 }
@@ -429,7 +293,12 @@ func (o *OMS) lockLossByFAK(
 				o.capital.TryMergeCurrentCycle(context.Background(), m)
 			}(market)
 		}
-		o.cleanupPriceStop(entryOrderID)
+		// 事件驱动 watcher：对冲完成后移除监控
+		o.mu.Lock()
+		if o.priceStopWatches != nil {
+			delete(o.priceStopWatches, entryOrderID)
+		}
+		o.mu.Unlock()
 	}
 
 	return nil
