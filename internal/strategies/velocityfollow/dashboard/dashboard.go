@@ -84,6 +84,9 @@ func getCycleDurationFromMarket(market *domain.Market) time.Duration {
 
 // Snapshot 仪表板快照数据
 type Snapshot struct {
+	// UI 标题（策略名/看板名）
+	Title string
+
 	// 市场信息
 	MarketSlug string
 	YesPrice   float64
@@ -246,6 +249,7 @@ type Dashboard struct {
 	snapshot       *Snapshot
 	enabled        bool
 	useNativeTUI   bool // 是否使用原生TUI（默认 false，使用 Bubble Tea）
+	title          string
 	program        *tea.Program
 	nativeTUI      *NativeTUI // 原生TUI实例
 	updateCh       chan *Snapshot
@@ -255,6 +259,7 @@ type Dashboard struct {
 	programDone    chan struct{} // 用于等待 program goroutine 退出
 	exitCh         chan struct{} // 用于接收退出信号（原生TUI）
 	exitCallback   func()       // 退出回调函数（当原生TUI退出时调用）
+	stopRequested  bool         // Stop() 主动触发的退出（用于区分用户 Ctrl+C / q）
 }
 
 // New 创建新的仪表板
@@ -288,7 +293,8 @@ func New(ts *services.TradingService, useNativeTUI ...bool) *Dashboard {
 	
 	d := &Dashboard{
 		tradingService: ts,
-		snapshot:       &Snapshot{},
+		title:          "VelocityFollow Strategy Dashboard",
+		snapshot:       &Snapshot{Title: "VelocityFollow Strategy Dashboard"},
 		enabled:        true,
 		useNativeTUI:   useNative,
 		updateCh:       make(chan *Snapshot, 10),
@@ -320,6 +326,22 @@ func New(ts *services.TradingService, useNativeTUI ...bool) *Dashboard {
 	return d
 }
 
+// SetTitle 设置 Dashboard 标题（用于多策略复用 UI）。
+func (d *Dashboard) SetTitle(title string) {
+	if d == nil {
+		return
+	}
+	if strings.TrimSpace(title) == "" {
+		return
+	}
+	d.mu.Lock()
+	d.title = title
+	if d.snapshot != nil {
+		d.snapshot.Title = title
+	}
+	d.mu.Unlock()
+}
+
 // SetEnabled 设置是否启用
 func (d *Dashboard) SetEnabled(enabled bool) {
 	d.mu.Lock()
@@ -349,6 +371,7 @@ func (d *Dashboard) CheckAndResetOnMarketChange(market *domain.Market) bool {
 		log.Infof("🔄 [Dashboard] 检测到市场切换: %s -> %s，重置快照", d.snapshot.MarketSlug, market.Slug)
 		// 完全重置快照，清空所有旧数据
 		d.snapshot = &Snapshot{
+			Title:      d.title,
 			MarketSlug: market.Slug,
 		}
 		// 计算周期结束时间和剩余时间
@@ -417,6 +440,8 @@ func (d *Dashboard) UpdateSnapshot(ctx context.Context, market *domain.Market, d
 		if d.snapshot == nil {
 			d.snapshot = &Snapshot{}
 		}
+		// 标题（用于 UI 显示）
+		d.snapshot.Title = d.title
 
 		// 更新市场信息
 		if market != nil {
@@ -506,7 +531,12 @@ func (d *Dashboard) UpdateSnapshot(ctx context.Context, market *domain.Market, d
 			
 			// 风控状态和决策条件（如果为 nil，也要设置为 nil，清空旧数据）
 			d.snapshot.RiskManagement = data.RiskManagement
-			d.snapshot.DecisionConditions = data.DecisionConditions
+			// 决策条件：降低刷新频率，避免原生 UI 底部区域狂闪
+			if data.DecisionConditions != nil {
+				d.updateDecisionConditionsLocked(data.DecisionConditions)
+			} else {
+				d.snapshot.DecisionConditions = nil
+			}
 			
 			// 周期信息（强制更新）
 			d.snapshot.CycleEndTime = data.CycleEndTime
@@ -530,6 +560,8 @@ func (d *Dashboard) UpdateSnapshot(ctx context.Context, market *domain.Market, d
 	if d.snapshot == nil {
 		d.snapshot = &Snapshot{}
 	}
+		// 标题（用于 UI 显示）
+		d.snapshot.Title = d.title
 
 	// 更新市场信息（如果提供了新的市场，强制更新）
 	// 注意：如果市场切换，应该在 CheckAndResetOnMarketChange 中处理，这里只更新市场 slug
@@ -634,79 +666,9 @@ func (d *Dashboard) UpdateSnapshot(ctx context.Context, market *domain.Market, d
 			d.snapshot.RiskManagement = data.RiskManagement
 		}
 
-		// 更新决策条件
-		// 关键修复：只有当 DecisionConditions 真正变化时才更新，避免因为 CooldownRemaining/WarmupRemaining 的微小变化导致频繁渲染
+		// 更新决策条件（降低刷新频率，避免底部区域狂闪）
 		if data.DecisionConditions != nil {
-			// 比较关键字段，只有当真正变化时才更新
-			shouldUpdate := false
-			if d.snapshot.DecisionConditions == nil {
-				shouldUpdate = true
-			} else {
-				old := d.snapshot.DecisionConditions
-				new := data.DecisionConditions
-				// 比较关键字段（不包括实时变化的 CooldownRemaining 和 WarmupRemaining）
-				// 关键修复：对浮点数值使用阈值比较，避免微小变化触发频繁渲染
-				const floatEpsilon = 0.001 // 浮点数比较阈值
-				if old.CanTrade != new.CanTrade ||
-					old.BlockReason != new.BlockReason ||
-					old.UpVelocityOK != new.UpVelocityOK ||
-					absFloat(old.UpVelocityValue-new.UpVelocityValue) > floatEpsilon ||
-					old.UpMoveOK != new.UpMoveOK ||
-					old.UpMoveValue != new.UpMoveValue ||
-					old.DownVelocityOK != new.DownVelocityOK ||
-					absFloat(old.DownVelocityValue-new.DownVelocityValue) > floatEpsilon ||
-					old.DownMoveOK != new.DownMoveOK ||
-					old.DownMoveValue != new.DownMoveValue ||
-					old.Direction != new.Direction ||
-					old.EntryPriceOK != new.EntryPriceOK ||
-					absFloat(old.EntryPriceValue-new.EntryPriceValue) > floatEpsilon ||
-					old.HedgePriceOK != new.HedgePriceOK ||
-					absFloat(old.HedgePriceValue-new.HedgePriceValue) > floatEpsilon ||
-					old.TotalCostOK != new.TotalCostOK ||
-					absFloat(old.TotalCostValue-new.TotalCostValue) > floatEpsilon ||
-					old.IsProfitLocked != new.IsProfitLocked ||
-					absFloat(old.ProfitIfUpWin-new.ProfitIfUpWin) > floatEpsilon ||
-					absFloat(old.ProfitIfDownWin-new.ProfitIfDownWin) > floatEpsilon ||
-					old.CooldownOK != new.CooldownOK ||
-					old.WarmupOK != new.WarmupOK ||
-					old.TradesLimitOK != new.TradesLimitOK ||
-					old.TradesThisCycle != new.TradesThisCycle ||
-					old.HasPendingHedge != new.HasPendingHedge {
-					shouldUpdate = true
-				} else {
-					// 即使关键字段相同，也定期更新 CooldownRemaining 和 WarmupRemaining（但降低频率）
-					// 使用取整后的值比较，避免微小变化触发更新
-					// 关键修复：只有当倒计时的整数部分真正变化时才更新，减少更新频率
-					oldCooldown := int(old.CooldownRemaining)
-					newCooldown := int(new.CooldownRemaining)
-					oldWarmup := int(old.WarmupRemaining)
-					newWarmup := int(new.WarmupRemaining)
-					
-					// 只有当整数部分变化时才更新（减少更新频率）
-					cooldownChanged := oldCooldown != newCooldown
-					warmupChanged := oldWarmup != newWarmup
-					
-					if cooldownChanged || warmupChanged {
-						shouldUpdate = true
-					} else {
-						// 即使整数部分没变化，也更新浮点数值（用于精确显示），但不触发整个对象更新
-						// 直接更新字段，不替换整个对象
-						d.snapshot.DecisionConditions.CooldownRemaining = new.CooldownRemaining
-						d.snapshot.DecisionConditions.WarmupRemaining = new.WarmupRemaining
-					}
-				}
-			}
-			
-			if shouldUpdate {
-				d.snapshot.DecisionConditions = data.DecisionConditions
-			} else {
-				// 关键字段没变化，但需要更新 CooldownRemaining 和 WarmupRemaining（用于倒计时显示）
-				// 直接更新这两个字段，不替换整个对象
-				if d.snapshot.DecisionConditions != nil {
-					d.snapshot.DecisionConditions.CooldownRemaining = data.DecisionConditions.CooldownRemaining
-					d.snapshot.DecisionConditions.WarmupRemaining = data.DecisionConditions.WarmupRemaining
-				}
-			}
+			d.updateDecisionConditionsLocked(data.DecisionConditions)
 		}
 
 		// 更新周期信息
@@ -1106,8 +1068,20 @@ func (d *Dashboard) Start(ctx context.Context) error {
 		}()
 		// 稍微延迟一下，确保日志重定向已生效
 		time.Sleep(100 * time.Millisecond)
-		if _, err := d.program.Run(); err != nil {
-			log.Errorf("Dashboard UI 运行错误: %v", err)
+		_, runErr := d.program.Run()
+		if runErr != nil {
+			log.Errorf("Dashboard UI 运行错误: %v", runErr)
+		}
+
+		// Bubble Tea 退出：如果不是 Stop() 主动触发，视为用户请求退出（ctrl+c/q）
+		// 通过 exitCallback 通知策略/主程序走统一退出链路。
+		d.mu.RLock()
+		stopRequested := d.stopRequested
+		cb := d.exitCallback
+		d.mu.RUnlock()
+		if !stopRequested && cb != nil {
+			log.Infof("🛑 [Dashboard] Bubble Tea UI 已退出，调用退出回调")
+			cb()
 		}
 	}()
 
@@ -1167,6 +1141,65 @@ func (d *Dashboard) ReapplyLogRedirect() {
 	d.applyLogRedirect()
 }
 
+// updateDecisionConditionsLocked 在持有 d.mu 的前提下更新 DecisionConditions。
+// 关键点：只在“关键字段”变化时替换整个对象；否则仅更新倒计时字段（秒级变化）。
+func (d *Dashboard) updateDecisionConditionsLocked(in *DecisionConditions) {
+	if d == nil {
+		return
+	}
+	if in == nil {
+		d.snapshot.DecisionConditions = nil
+		return
+	}
+	if d.snapshot.DecisionConditions == nil {
+		d.snapshot.DecisionConditions = in
+		return
+	}
+
+	old := d.snapshot.DecisionConditions
+	new := in
+
+	const floatEpsilon = 0.001
+	changed := old.CanTrade != new.CanTrade ||
+		old.BlockReason != new.BlockReason ||
+		old.UpVelocityOK != new.UpVelocityOK ||
+		absFloat(old.UpVelocityValue-new.UpVelocityValue) > floatEpsilon ||
+		old.UpMoveOK != new.UpMoveOK ||
+		old.UpMoveValue != new.UpMoveValue ||
+		old.DownVelocityOK != new.DownVelocityOK ||
+		absFloat(old.DownVelocityValue-new.DownVelocityValue) > floatEpsilon ||
+		old.DownMoveOK != new.DownMoveOK ||
+		old.DownMoveValue != new.DownMoveValue ||
+		old.Direction != new.Direction ||
+		old.EntryPriceOK != new.EntryPriceOK ||
+		absFloat(old.EntryPriceValue-new.EntryPriceValue) > floatEpsilon ||
+		old.HedgePriceOK != new.HedgePriceOK ||
+		absFloat(old.HedgePriceValue-new.HedgePriceValue) > floatEpsilon ||
+		old.TotalCostOK != new.TotalCostOK ||
+		absFloat(old.TotalCostValue-new.TotalCostValue) > floatEpsilon ||
+		old.IsProfitLocked != new.IsProfitLocked ||
+		absFloat(old.ProfitIfUpWin-new.ProfitIfUpWin) > floatEpsilon ||
+		absFloat(old.ProfitIfDownWin-new.ProfitIfDownWin) > floatEpsilon ||
+		old.CooldownOK != new.CooldownOK ||
+		old.WarmupOK != new.WarmupOK ||
+		old.TradesLimitOK != new.TradesLimitOK ||
+		old.TradesThisCycle != new.TradesThisCycle ||
+		old.HasPendingHedge != new.HasPendingHedge
+
+	if changed {
+		d.snapshot.DecisionConditions = new
+		return
+	}
+
+	// 只在“整数秒”变化时更新（避免 0.1s 级别抖动导致频繁渲染）
+	if int(old.CooldownRemaining) != int(new.CooldownRemaining) {
+		old.CooldownRemaining = new.CooldownRemaining
+	}
+	if int(old.WarmupRemaining) != int(new.WarmupRemaining) {
+		old.WarmupRemaining = new.WarmupRemaining
+	}
+}
+
 // ResetSnapshot 重置快照数据（用于周期切换时重建UI状态）
 func (d *Dashboard) ResetSnapshot(market *domain.Market) {
 	if !d.enabled {
@@ -1179,6 +1212,7 @@ func (d *Dashboard) ResetSnapshot(market *domain.Market) {
 
 	// 创建新的快照，完全清空所有旧数据
 	d.snapshot = &Snapshot{
+		Title:             d.title,
 		// 重置所有字段为零值
 		YesPrice:           0,
 		NoPrice:            0,
@@ -1342,6 +1376,7 @@ func (d *Dashboard) Stop() {
 	
 	// 停止 Bubble Tea program
 	if d.program != nil {
+		d.stopRequested = true
 		d.program.Quit()
 		// 等待 program goroutine 退出（最多等待 1 秒）
 		select {
@@ -1369,6 +1404,7 @@ func (d *Dashboard) GetSnapshot() *Snapshot {
 
 	// 返回副本
 	return &Snapshot{
+		Title:          d.snapshot.Title,
 		MarketSlug:      d.snapshot.MarketSlug,
 		YesPrice:        d.snapshot.YesPrice,
 		NoPrice:         d.snapshot.NoPrice,

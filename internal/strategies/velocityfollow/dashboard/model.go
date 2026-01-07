@@ -2,7 +2,9 @@ package dashboard
 
 import (
 	"fmt"
+	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -52,6 +54,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
+			// Bubble Tea 会拦截 Ctrl+C，使得外层主程序可能收不到 SIGINT。
+			// 主动向自己发送一次 SIGINT，确保整套程序能走统一的优雅退出链路。
+			_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
 			return m, tea.Quit
 		}
 	case tea.WindowSizeMsg:
@@ -130,16 +135,24 @@ func (m model) renderHeader(snap *Snapshot) string {
 
 	// 显示周期倒计时
 	cycleInfo := ""
-	if snap.CycleRemainingSec > 0 {
-		remaining := time.Duration(snap.CycleRemainingSec) * time.Second
-		minutes := int(remaining.Minutes())
-		seconds := int(remaining.Seconds()) % 60
-		cycleInfo = fmt.Sprintf(" | Cycle End: %dm%02ds", minutes, seconds)
-	} else if !snap.CycleEndTime.IsZero() {
-		cycleInfo = fmt.Sprintf(" | Cycle End: %s", snap.CycleEndTime.Format("15:04:05"))
+	if !snap.CycleEndTime.IsZero() {
+		now := time.Now()
+		if now.Before(snap.CycleEndTime) {
+			remaining := snap.CycleEndTime.Sub(now)
+			minutes := int(remaining.Minutes())
+			seconds := int(remaining.Seconds()) % 60
+			cycleInfo = fmt.Sprintf(" | Cycle End: %dm%02ds", minutes, seconds)
+		} else {
+			cycleInfo = fmt.Sprintf(" | Cycle End: %s", snap.CycleEndTime.Format("15:04:05"))
+		}
 	}
 
-	title := fmt.Sprintf("VelocityFollow Strategy Dashboard | Market: %s | Time: %s%s",
+	titlePrefix := snap.Title
+	if strings.TrimSpace(titlePrefix) == "" {
+		titlePrefix = "Strategy Dashboard"
+	}
+	title := fmt.Sprintf("%s | Market: %s | Time: %s%s",
+		titlePrefix,
 		snap.MarketSlug,
 		time.Now().Format("15:04:05"),
 		cycleInfo)
@@ -682,7 +695,7 @@ type tickMsg time.Time
 // 改进：增加 tick 频率到 50ms，确保 UI 及时更新
 // 注意：tick 函数本身不能直接读取 channel，需要通过 waitForUpdate 来处理
 func (m model) tick() tea.Cmd {
-	return tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
+	return tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }

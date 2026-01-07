@@ -3,8 +3,10 @@ package dashboard
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -51,7 +53,8 @@ func NewNativeTUI() (*NativeTUI, error) {
 	tui := &NativeTUI{
 		screen:       screen,
 		snapshot:     &Snapshot{},
-		updateCh:     make(chan *Snapshot, 10),
+		// 只保留最新快照：避免 backlog 导致“切周期 UI 不同步”
+		updateCh:     make(chan *Snapshot, 1),
 		stopCh:       make(chan struct{}),
 		renderTicker: time.NewTicker(500 * time.Millisecond), // 500ms 刷新频率（进一步降低刷新频率，减少闪烁）
 		needsFullClear: true,
@@ -124,6 +127,7 @@ func (t *NativeTUI) UpdateSnapshot(snapshot *Snapshot) {
 	// 深拷贝快照，避免引用问题
 	// 这样可以确保即使原始快照被修改，TUI 中的快照也不会受影响
 	newSnapshot := &Snapshot{
+		Title:            snapshot.Title,
 		MarketSlug:        snapshot.MarketSlug,
 		YesPrice:          snapshot.YesPrice,
 		NoPrice:           snapshot.NoPrice,
@@ -239,25 +243,21 @@ func (t *NativeTUI) UpdateSnapshot(snapshot *Snapshot) {
 	// 关键修复：发送深拷贝的快照，而不是原始快照
 	// 注意：不在这里立即调用 render()，避免双重渲染导致闪烁
 	// renderLoop 会从 channel 接收快照并触发渲染，renderTicker 也会定期渲染
-	select {
-	case t.updateCh <- newSnapshot:
-		// 成功发送，renderLoop 会处理渲染
-		nativeLog.Debugf("✅ [NativeTUI] 已发送快照到 channel: market=%s", newSnapshot.MarketSlug)
-	default:
-		// channel 满了，清空旧数据后重试
+	// 只保留最新：先 drain，再发送
+	drained := false
+	for !drained {
 		select {
 		case <-t.updateCh:
-			// 清空一个旧数据
 		default:
+			drained = true
 		}
-		select {
-		case t.updateCh <- newSnapshot:
-			nativeLog.Debugf("✅ [NativeTUI] 已发送快照到 channel（重试）: market=%s", newSnapshot.MarketSlug)
-		default:
-			nativeLog.Warnf("⚠️ [NativeTUI] 更新快照失败（channel 满）: market=%s", newSnapshot.MarketSlug)
-			// 如果 channel 仍然满，直接更新快照但不发送到 channel
-			// renderTicker 会在下次 tick 时渲染
-		}
+	}
+	select {
+	case t.updateCh <- newSnapshot:
+		nativeLog.Debugf("✅ [NativeTUI] 已发送快照到 channel: market=%s", newSnapshot.MarketSlug)
+	default:
+		// 理论上不应发生（buffer=1 且已 drain），兜底交给 renderTicker
+		nativeLog.Warnf("⚠️ [NativeTUI] 更新快照失败（channel 满）: market=%s", newSnapshot.MarketSlug)
 	}
 }
 
@@ -296,6 +296,9 @@ func (t *NativeTUI) eventLoop(ctx context.Context) {
 					ev.Rune() == 'q' || ev.Rune() == 'Q' {
 					// 退出
 					nativeLog.Infof("🛑 [NativeTUI] 收到退出按键: key=%v rune=%c，退出事件循环", ev.Key(), ev.Rune())
+
+					// 主动向自己发送 SIGINT，确保外层主程序能收到（tcell 有时会拦截 Ctrl+C）。
+					_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
 					
 					// 调用退出回调，通知 Dashboard
 					t.mu.RLock()
@@ -445,7 +448,12 @@ func (t *NativeTUI) renderHeader(snap *Snapshot, y int) {
 		}
 	}
 
-	title := fmt.Sprintf("VelocityFollow Strategy Dashboard | Market: %s | Time: %s%s",
+	titlePrefix := snap.Title
+	if strings.TrimSpace(titlePrefix) == "" {
+		titlePrefix = "Strategy Dashboard"
+	}
+	title := fmt.Sprintf("%s | Market: %s | Time: %s%s",
+		titlePrefix,
 		snap.MarketSlug,
 		time.Now().Format("15:04:05"),
 		cycleInfo)
