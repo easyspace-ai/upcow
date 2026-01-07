@@ -242,7 +242,11 @@ func (oe *OrderExecutor) calcInitialHedgePrice(ctx context.Context, market *doma
 
 	newLimit := ideal
 	if oe.config.GetAllowNegativeProfitOnHedgeReorder() {
-		maxAllowed := ideal + oe.config.GetMaxNegativeProfitCents()
+		extra := 0
+		if oe.oms != nil && market != nil {
+			extra = oe.oms.hedgePriceExtraCents(market.Slug)
+		}
+		maxAllowed := ideal + oe.config.GetMaxNegativeProfitCents() + extra
 		if maxAllowed < 1 {
 			maxAllowed = 1
 		}

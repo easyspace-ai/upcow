@@ -20,6 +20,7 @@ type OMS struct {
 	config         ConfigInterface
 
 	q *queuedTrading
+	hm *hedgeMetrics
 
 	orderExecutor   *OrderExecutor
 	positionManager *PositionManager
@@ -50,6 +51,7 @@ func New(ts *services.TradingService, cfg ConfigInterface, strategyID string) (*
 		tradingService:  ts,
 		config:          cfg,
 		q:               q,
+		hm:              newHedgeMetrics(),
 		orderExecutor:   oe,
 		positionManager: pm,
 		riskManager:     rm,
@@ -62,6 +64,54 @@ func New(ts *services.TradingService, cfg ConfigInterface, strategyID string) (*
 	rm.SetOMS(oms)
 
 	return oms, nil
+}
+
+// hedgePriceExtraCents 动态提高 hedge 初始价格的可接受范围（仅在“允许负收益”模式下使用）。
+// 目标：在对冲变慢/风险敞口存在时，提高成交确定性（更像职业交易执行）。
+func (o *OMS) hedgePriceExtraCents(marketSlug string) int {
+	if o == nil || o.hm == nil || marketSlug == "" {
+		return 0
+	}
+
+	// 当前风险敞口与 pending hedges
+	exposures := 0
+	if o.riskManager != nil {
+		exposures = len(o.riskManager.GetExposures())
+	}
+	pending := 0
+	o.mu.RLock()
+	pending = len(o.pendingHedges)
+	o.mu.RUnlock()
+
+	ewma := o.hm.getEWMASec(marketSlug)
+
+	extra := 0
+	if exposures > 0 {
+		extra += 2
+	}
+	if pending > 0 {
+		if pending >= 3 {
+			extra += 3
+		} else {
+			extra += pending
+		}
+	}
+	// ewma 耗时越长，越积极（上限 8c）
+	switch {
+	case ewma > 25:
+		extra += 4
+	case ewma > 15:
+		extra += 2
+	case ewma > 8:
+		extra += 1
+	}
+	if extra > 8 {
+		extra = 8
+	}
+	if extra < 0 {
+		extra = 0
+	}
+	return extra
 }
 
 // 写操作统一入口（串行化）
@@ -123,6 +173,15 @@ func (o *OMS) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
 		}
 
 		if isEntryOrder && order.IsFilled() {
+			// 记录 entry 成交时间（用于 hedge EWMA）
+			if o.hm != nil {
+				at := time.Now()
+				if order.FilledAt != nil {
+					at = *order.FilledAt
+				}
+				o.hm.recordEntryFilled(order.OrderID, order.MarketSlug, at)
+			}
+
 			hedgeOrderID := ""
 			o.mu.RLock()
 			if id, exists := o.pendingHedges[order.OrderID]; exists {
@@ -219,9 +278,18 @@ func (o *OMS) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
 
 	o.mu.Lock()
 	if order.IsFilled() && !order.IsEntryOrder {
+		// 记录 hedge 成交耗时（优先用 HedgeOrderID 关联 entry）
+		entryForMetrics := ""
+		if order.HedgeOrderID != nil && *order.HedgeOrderID != "" {
+			entryForMetrics = *order.HedgeOrderID
+		}
+
 		foundInPendingHedges := false
 		for entryID, hedgeID := range o.pendingHedges {
 			if hedgeID == order.OrderID {
+				if entryForMetrics == "" {
+					entryForMetrics = entryID
+				}
 				delete(o.pendingHedges, entryID)
 				log.Infof("✅ [OMS] 对冲订单已成交: entryID=%s hedgeID=%s", entryID, hedgeID)
 				foundInPendingHedges = true
@@ -235,6 +303,9 @@ func (o *OMS) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
 			entryOrderID := *order.HedgeOrderID
 			if _, exists := o.pendingHedges[entryOrderID]; exists {
 				if hedgeID, ok := o.pendingHedges[entryOrderID]; ok && hedgeID == order.OrderID {
+					if entryForMetrics == "" {
+						entryForMetrics = entryOrderID
+					}
 					delete(o.pendingHedges, entryOrderID)
 					log.Infof("✅ [OMS] 对冲订单已成交（通过HedgeOrderID字段关联）: entryID=%s hedgeID=%s", entryOrderID, order.OrderID)
 					foundInPendingHedges = true
@@ -248,6 +319,16 @@ func (o *OMS) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
 			log.Debugf("🔍 [OMS] 对冲订单成交但未在 pendingHedges 中找到: orderID=%s (可能是调价后的新订单，仍触发合并检查)", order.OrderID)
 			shouldTriggerMerge = true
 			marketSlug = order.MarketSlug
+		}
+
+		// 更新 EWMA（锁外执行）
+		if o.hm != nil && entryForMetrics != "" {
+			at := time.Now()
+			if order.FilledAt != nil {
+				at = *order.FilledAt
+			}
+			// 注意：这里不依赖 pendingHedges 是否存在，避免调价后映射丢失时漏统计
+			go o.hm.recordHedgeFilled(entryForMetrics, at)
 		}
 	}
 	o.mu.Unlock()
