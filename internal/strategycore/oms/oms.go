@@ -20,7 +20,7 @@ type OMS struct {
 	tradingService *services.TradingService
 	config         ConfigInterface
 
-	q *queuedTrading
+	q  *queuedTrading
 	hm *hedgeMetrics
 
 	// per-market 预算/限频（更像职业交易执行：避免极端行情写操作风暴）
@@ -40,6 +40,9 @@ type OMS struct {
 
 	mu            sync.RWMutex
 	pendingHedges map[string]string // entryOrderID -> hedgeOrderID
+
+	// 价格盯盘止损协程（entryOrderID -> cancel）
+	priceWatchCancel map[string]context.CancelFunc
 
 	// per-entry 预算 + per-market 冷静期（防止极端行情执行风暴）
 	entryBudgets map[string]*entryBudget
@@ -63,17 +66,18 @@ func New(ts *services.TradingService, cfg ConfigInterface, strategyID string) (*
 	hr := NewHedgeReorder(ts, cfg, nil)
 
 	oms := &OMS{
-		tradingService:  ts,
-		config:          cfg,
-		q:               q,
-		hm:              newHedgeMetrics(),
-		reorderLimiter:  newPerMarketLimiter(30, 30), // 每 market：容量30，按分钟补给30（≈每2秒一次）
-		fakLimiter:      newPerMarketLimiter(10, 10), // 每 market：FAK 更贵，容量10，按分钟补给10
-		orderExecutor:   oe,
-		positionManager: pm,
-		riskManager:     rm,
-		hedgeReorder:    hr,
-		pendingHedges:   make(map[string]string),
+		tradingService:   ts,
+		config:           cfg,
+		q:                q,
+		hm:               newHedgeMetrics(),
+		reorderLimiter:   newPerMarketLimiter(30, 30), // 每 market：容量30，按分钟补给30（≈每2秒一次）
+		fakLimiter:       newPerMarketLimiter(10, 10), // 每 market：FAK 更贵，容量10，按分钟补给10
+		orderExecutor:    oe,
+		positionManager:  pm,
+		riskManager:      rm,
+		hedgeReorder:     hr,
+		pendingHedges:    make(map[string]string),
+		priceWatchCancel: make(map[string]context.CancelFunc),
 	}
 
 	oe.SetOMS(oms)
@@ -184,6 +188,12 @@ func (o *OMS) OnCycle(ctx context.Context, oldMarket *domain.Market, newMarket *
 	defer o.mu.Unlock()
 
 	o.pendingHedges = make(map[string]string)
+	for _, cancel := range o.priceWatchCancel {
+		if cancel != nil {
+			cancel()
+		}
+	}
+	o.priceWatchCancel = make(map[string]context.CancelFunc)
 	o.entryBudgets = make(map[string]*entryBudget)
 	o.cooldowns = make(map[string]cooldownInfo)
 	if o.positionManager != nil {
@@ -317,6 +327,11 @@ func (o *OMS) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
 						log.Debugf("🔄 [OMS] 已启动对冲单重下监控: entryOrderID=%s hedgeOrderID=%s", order.OrderID, hedgeOrderID)
 					}
 				}
+			}
+
+			// 价格止损：Entry 成交后启动盯价协程（优先用价格触发，不再依赖纯时间）
+			if hedgeOrderID != "" {
+				o.startPriceStopWatcher(order, hedgeOrderID)
 			}
 		} else if !order.IsEntryOrder {
 			o.riskManager.UpdateHedgeStatus(order.OrderID, order.Status)
@@ -543,13 +558,21 @@ func (o *OMS) Stop() {
 	if o.q != nil {
 		o.q.Close()
 	}
+	o.mu.Lock()
+	for _, cancel := range o.priceWatchCancel {
+		if cancel != nil {
+			cancel()
+		}
+	}
+	o.priceWatchCancel = make(map[string]context.CancelFunc)
+	o.mu.Unlock()
 	if o.metricsCancel != nil {
 		o.metricsCancel()
 		o.metricsCancel = nil
 	}
 }
 
-func (o *OMS) GetRiskManager() *RiskManager { return o.riskManager }
+func (o *OMS) GetRiskManager() *RiskManager   { return o.riskManager }
 func (o *OMS) GetHedgeReorder() *HedgeReorder { return o.hedgeReorder }
 
 func (o *OMS) GetRiskManagementStatus() *RiskManagementStatus {
@@ -681,15 +704,15 @@ type RiskManagementStatus struct {
 	TotalAggressiveHedges int
 	TotalFakEats          int
 
-	RepriceOldPriceCents     int
-	RepriceNewPriceCents     int
-	RepricePriceChangeCents  int
-	RepriceStrategy          string
-	RepriceEntryCostCents    int
-	RepriceMarketAskCents    int
-	RepriceIdealPriceCents   int
-	RepriceTotalCostCents    int
-	RepriceProfitCents       int
+	RepriceOldPriceCents    int
+	RepriceNewPriceCents    int
+	RepricePriceChangeCents int
+	RepriceStrategy         string
+	RepriceEntryCostCents   int
+	RepriceMarketAskCents   int
+	RepriceIdealPriceCents  int
+	RepriceTotalCostCents   int
+	RepriceProfitCents      int
 }
 
 type RiskExposureInfo struct {
@@ -706,4 +729,3 @@ type RiskExposureInfo struct {
 	NewHedgePriceCents      int
 	CountdownSeconds        float64
 }
-

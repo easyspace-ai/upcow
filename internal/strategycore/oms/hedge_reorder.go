@@ -22,7 +22,7 @@ type HedgeReorder struct {
 	oms                  *OMS
 	riskProfitCalculator *brain.RiskProfitCalculator
 
-	mu                sync.Mutex
+	mu                 sync.Mutex
 	currentAction      string
 	currentActionEntry string
 	currentActionHedge string
@@ -31,15 +31,15 @@ type HedgeReorder struct {
 	totalReorders      int
 	totalFakEats       int
 
-	repriceOldPriceCents     int
-	repriceNewPriceCents     int
-	repricePriceChangeCents  int
-	repriceStrategy          string
-	repriceEntryCostCents    int
-	repriceMarketAskCents    int
-	repriceIdealPriceCents   int
-	repriceTotalCostCents    int
-	repriceProfitCents       int
+	repriceOldPriceCents    int
+	repriceNewPriceCents    int
+	repricePriceChangeCents int
+	repriceStrategy         string
+	repriceEntryCostCents   int
+	repriceMarketAskCents   int
+	repriceIdealPriceCents  int
+	repriceTotalCostCents   int
+	repriceProfitCents      int
 }
 
 func NewHedgeReorder(ts *services.TradingService, cfg ConfigInterface, oms *OMS) *HedgeReorder {
@@ -114,7 +114,9 @@ func (hr *HedgeReorder) MonitorAndReorderHedge(ctx context.Context, market *doma
 						if hr.oms != nil {
 							hr.oms.mu.Lock()
 							if hr.oms.pendingHedges != nil {
-								if _, exists := hr.oms.pendingHedges[entryOrderID]; exists {
+								// 并发安全：只在映射仍指向“当前监控的 hedgeOrderID”时删除，
+								// 避免外部协程（如价格止损）换了 hedge 订单后被误删。
+								if cur, exists := hr.oms.pendingHedges[entryOrderID]; exists && cur == hedgeOrderID {
 									delete(hr.oms.pendingHedges, entryOrderID)
 									reorderLog.Debugf("✅ 对冲单已成交，清除未完成跟踪: entryOrderID=%s hedgeOrderID=%s",
 										entryOrderID, hedgeOrderID)
@@ -131,7 +133,10 @@ func (hr *HedgeReorder) MonitorAndReorderHedge(ctx context.Context, market *doma
 						if hr.oms != nil {
 							hr.oms.mu.Lock()
 							if hr.oms.pendingHedges != nil {
-								delete(hr.oms.pendingHedges, entryOrderID)
+								// 并发安全：仅删除当前映射仍指向该 hedgeOrderID 的情况
+								if cur, exists := hr.oms.pendingHedges[entryOrderID]; exists && cur == hedgeOrderID {
+									delete(hr.oms.pendingHedges, entryOrderID)
+								}
 							}
 							hr.oms.mu.Unlock()
 						}
@@ -291,7 +296,11 @@ func (hr *HedgeReorder) handleFakTimeout(ctx context.Context, market *domain.Mar
 			hr.oms.mu.Lock()
 			if fakHedgeResult.Status == domain.OrderStatusFilled {
 				if hr.oms.pendingHedges != nil {
-					delete(hr.oms.pendingHedges, entryOrderID)
+					// 并发安全：只有当当前映射仍是“旧 hedgeOrderID 或空”时才删除；
+					// 若外部已经切换到新的 hedgeID，这里不应误删。
+					if cur, exists := hr.oms.pendingHedges[entryOrderID]; !exists || cur == hedgeOrderID || cur == fakHedgeResult.OrderID {
+						delete(hr.oms.pendingHedges, entryOrderID)
+					}
 				}
 			} else {
 				hr.oms.pendingHedges[entryOrderID] = fakHedgeResult.OrderID
@@ -533,4 +542,3 @@ func opposite(tokenType domain.TokenType) domain.TokenType {
 	}
 	return domain.TokenTypeUp
 }
-
