@@ -22,6 +22,13 @@ type OMS struct {
 	q *queuedTrading
 	hm *hedgeMetrics
 
+	// per-market 预算/限频（更像职业交易执行：避免极端行情写操作风暴）
+	// 注意：这里限的是“重下/FAK 这类高成本动作”，不会阻塞正常行情下的执行。
+	reorderLimiter *perMarketLimiter
+	fakLimiter     *perMarketLimiter
+
+	metricsCancel context.CancelFunc
+
 	orderExecutor   *OrderExecutor
 	positionManager *PositionManager
 	riskManager     *RiskManager
@@ -52,6 +59,8 @@ func New(ts *services.TradingService, cfg ConfigInterface, strategyID string) (*
 		config:          cfg,
 		q:               q,
 		hm:              newHedgeMetrics(),
+		reorderLimiter:  newPerMarketLimiter(30, 30), // 每 market：容量30，按分钟补给30（≈每2秒一次）
+		fakLimiter:      newPerMarketLimiter(10, 10), // 每 market：FAK 更贵，容量10，按分钟补给10
 		orderExecutor:   oe,
 		positionManager: pm,
 		riskManager:     rm,
@@ -112,6 +121,20 @@ func (o *OMS) hedgePriceExtraCents(marketSlug string) int {
 		extra = 0
 	}
 	return extra
+}
+
+func (o *OMS) allowReorder(marketSlug string) bool {
+	if o == nil || o.reorderLimiter == nil {
+		return true
+	}
+	return o.reorderLimiter.Allow(marketSlug, 1)
+}
+
+func (o *OMS) allowFAK(marketSlug string) bool {
+	if o == nil || o.fakLimiter == nil {
+		return true
+	}
+	return o.fakLimiter.Allow(marketSlug, 1)
 }
 
 // 写操作统一入口（串行化）
@@ -409,6 +432,13 @@ func (o *OMS) Start(ctx context.Context) {
 		o.riskManager.Start(ctx)
 	}
 	go o.startMonitoringForExistingHedges(ctx)
+
+	// 运行指标（debug）
+	if o.metricsCancel == nil {
+		metricsCtx, cancel := context.WithCancel(context.Background())
+		o.metricsCancel = cancel
+		go o.metricsLoop(metricsCtx)
+	}
 }
 
 func (o *OMS) startMonitoringForExistingHedges(ctx context.Context) {
@@ -475,6 +505,10 @@ func (o *OMS) Stop() {
 	}
 	if o.q != nil {
 		o.q.Close()
+	}
+	if o.metricsCancel != nil {
+		o.metricsCancel()
+		o.metricsCancel = nil
 	}
 }
 

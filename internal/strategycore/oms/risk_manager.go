@@ -648,6 +648,11 @@ func (rm *RiskManager) aggressiveHedge(ctx context.Context, exp *RiskExposure, h
 	
 	riskLog.Infof("✅ [获取Market] 成功获取market对象: marketSlug=%s source=%s", exp.MarketSlug, source)
 
+	// FAK 是安全底线：预算耗尽也不阻止执行，只做告警
+	if rm.oms != nil && market != nil && !rm.oms.allowFAK(market.Slug) {
+		riskLog.Warnf("⚠️ [FAK预算] market=%s FAK budget exceeded, still proceeding (safety first)", market.Slug)
+	}
+
 	// 更新状态：正在撤单（如果存在旧订单）
 	if hedgeOrder.OrderID != "" {
 		rm.mu.Lock()
