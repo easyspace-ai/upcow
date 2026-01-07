@@ -3,6 +3,7 @@ package winbet
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -277,11 +278,31 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	}
 	s.mu.Unlock()
 
+	// 周期末保护：最后 N 分钟不再开新仓（更像职业交易系统：避免周期末无法完成对冲/结算异常）
+	if s.Config.CycleEndProtectionMinutes > 0 {
+		endAt := marketCycleEndTime(e.Market)
+		if !endAt.IsZero() && time.Until(endAt) <= time.Duration(s.Config.CycleEndProtectionMinutes)*time.Minute {
+			return nil
+		}
+	}
+
 	// 未对冲风险 gate（与 velocityfollow 一致）
 	if s.oms != nil {
 		hasRisk, err := s.oms.HasUnhedgedRisk(e.Market.Slug)
 		if err == nil && hasRisk {
 			return nil
+		}
+	}
+
+	// 库存偏斜阈值：偏斜过大时禁止继续加仓（只允许风控/对冲流程去修复）
+	if s.Config.InventoryThreshold > 0 && s.brain != nil {
+		s.brain.UpdatePositionState(ctx, e.Market)
+		ps := s.brain.GetPositionState(e.Market.Slug)
+		if ps != nil {
+			diff := math.Abs(ps.UpSize - ps.DownSize)
+			if diff > s.Config.InventoryThreshold {
+				return nil
+			}
 		}
 	}
 
@@ -291,6 +312,12 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	}
 	decision, err := s.brain.MakeDecision(ctx, e)
 	if err != nil || decision == nil || !decision.ShouldTrade {
+		return nil
+	}
+
+	// 动态下单量（只降不升）：根据市场质量/价差缩放，避免薄盘口重仓导致对冲失败与滑点放大
+	decision.EntrySize, decision.HedgeSize = s.dynamicSizeForMarket(ctx, e.Market, decision.EntrySize, decision.HedgeSize)
+	if decision.EntrySize <= 0 || decision.HedgeSize <= 0 {
 		return nil
 	}
 
@@ -308,6 +335,96 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	s.mu.Unlock()
 
 	return nil
+}
+
+// dynamicSizeForMarket 根据市场质量保守缩放下单量（只减少，不增加）。
+func (s *Strategy) dynamicSizeForMarket(ctx context.Context, market *domain.Market, entrySize, hedgeSize float64) (float64, float64) {
+	if s == nil || s.TradingService == nil || market == nil {
+		return entrySize, hedgeSize
+	}
+	if entrySize <= 0 || hedgeSize <= 0 {
+		return entrySize, hedgeSize
+	}
+
+	// 计算最小基准（确保对冲对等）
+	base := math.Min(entrySize, hedgeSize)
+
+	// 取一次 market quality（短超时，失败就不缩放）
+	mqCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+
+	opt := services.MarketQualityOptions{
+		MaxBookAge:     time.Duration(s.Config.MarketQualityMaxBookAgeMs) * time.Millisecond,
+		MaxSpreadPips:  s.Config.MarketQualityMaxSpreadCents * 100,
+		PreferWS:       true,
+		FallbackToREST: true,
+		AllowPartialWS: true,
+	}
+	mq, err := s.TradingService.GetMarketQuality(mqCtx, market, &opt)
+	if err != nil || mq == nil {
+		return base, base
+	}
+
+	factor := 1.0
+
+	// score：越接近门槛越保守（只降不升）
+	minScore := s.Config.MarketQualityMinScore
+	if minScore < 0 {
+		minScore = 0
+	}
+	if minScore > 100 {
+		minScore = 100
+	}
+	if float64(mq.Score) < 100 && float64(mq.Score) >= minScore {
+		span := 100.0 - minScore
+		if span > 0 {
+			rel := (float64(mq.Score) - minScore) / span // 0..1
+			// factor in [0.5..1.0]
+			factor *= 0.5 + 0.5*rel
+		}
+	}
+
+	// spread：接近上限时进一步降仓
+	maxSpread := float64(s.Config.MarketQualityMaxSpreadCents)
+	spreadC := float64(max(mq.YesSpreadPips, mq.NoSpreadPips)) / 100.0
+	if maxSpread > 0 && spreadC > 0 {
+		if spreadC >= 0.75*maxSpread {
+			factor *= 0.7
+		} else if spreadC >= 0.5*maxSpread {
+			factor *= 0.85
+		}
+	}
+
+	// 数据不完整/不新鲜：更保守
+	if !mq.Complete || !mq.Fresh {
+		factor *= 0.7
+	}
+
+	if factor < 0.2 {
+		factor = 0.2
+	}
+	if factor > 1.0 {
+		factor = 1.0
+	}
+
+	newSize := base * factor
+	// 轻量“整形”：保留一位小数，避免过细碎下单
+	newSize = math.Floor(newSize*10.0) / 10.0
+	if newSize <= 0 {
+		return 0, 0
+	}
+	// 不超过基准
+	if newSize > base {
+		newSize = base
+	}
+	return newSize, newSize
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func (s *Strategy) dashboardUpdateLoop(ctx context.Context) {

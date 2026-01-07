@@ -66,6 +66,16 @@ func (oe *OrderExecutor) ExecuteSequential(ctx context.Context, market *domain.M
 		return fmt.Errorf("Entry 订单未成交")
 	}
 
+	// 顺序模式：以“实际成交数量”对冲（更像职业交易：避免 FAK 部分成交导致过度对冲）
+	filledSize := entryOrder.FilledSize
+	if filledSize <= 0 {
+		filledSize = entrySize
+	}
+	hedgeSize = filledSize
+
+	// 顺序模式：根据当前盘口/允许负收益配置，调整初始 hedge 定价，提高对冲完成率
+	hedgePrice = oe.calcInitialHedgePrice(ctx, market, decision.Direction, entryOrder, hedgePrice)
+
 	hedgeOrder, err := oe.placeHedgeOrder(ctx, market, decision.Direction, hedgePrice, hedgeSize)
 	if err != nil {
 		return fmt.Errorf("Hedge 订单失败: %w", err)
@@ -118,6 +128,9 @@ func (oe *OrderExecutor) ExecuteParallel(ctx context.Context, market *domain.Mar
 	if err != nil {
 		return fmt.Errorf("计算订单参数失败: %w", err)
 	}
+
+	// 并发模式：用当前盘口对初始 hedge 做一次更积极定价（仍由后续 HedgeReorder/RiskManager 兜底）
+	hedgePrice = oe.calcInitialHedgePrice(ctx, market, decision.Direction, nil, hedgePrice)
 
 	var entryAssetID, hedgeAssetID string
 	if decision.Direction == domain.TokenTypeUp {
@@ -181,6 +194,76 @@ func (oe *OrderExecutor) ExecuteParallel(ctx context.Context, market *domain.Mar
 	oeLog.Debugf("✅ [OrderExecutor] 并发订单已提交: entryID=%s hedgeID=%s",
 		createdOrders[0].OrderID, createdOrders[1].OrderID)
 	return nil
+}
+
+// calcInitialHedgePrice 依据当前订单簿与“允许负收益”配置，生成更“容易成交”的初始 hedge 限价。
+// - entryOrder 可为 nil（并发模式）；顺序模式建议传入以使用实际成交价/成交数量。
+func (oe *OrderExecutor) calcInitialHedgePrice(ctx context.Context, market *domain.Market, direction domain.TokenType, entryOrder *domain.Order, fallback domain.Price) domain.Price {
+	if oe == nil || oe.tradingService == nil || oe.config == nil || market == nil {
+		return fallback
+	}
+
+	// entry cost cents：优先用成交价
+	entryAskCents := 0
+	if entryOrder != nil {
+		entryAskCents = entryOrder.Price.ToCents()
+		if entryOrder.FilledPrice != nil {
+			entryAskCents = entryOrder.FilledPrice.ToCents()
+		}
+	}
+	if entryAskCents <= 0 {
+		entryAskCents = fallback.ToCents()
+	}
+	if entryAskCents <= 0 {
+		return fallback
+	}
+
+	// 当前 hedge side 的 ask
+	_, yesAsk, _, noAsk, _, err := oe.tradingService.GetTopOfBook(ctx, market)
+	if err != nil {
+		return fallback
+	}
+	marketAskCents := 0
+	if direction == domain.TokenTypeUp {
+		// hedge 买 NO
+		marketAskCents = noAsk.ToCents()
+	} else {
+		// hedge 买 YES
+		marketAskCents = yesAsk.ToCents()
+	}
+
+	ideal := 100 - entryAskCents - oe.config.GetHedgeOffsetCents()
+	if ideal < 1 {
+		ideal = 1
+	}
+	if ideal > 99 {
+		ideal = 99
+	}
+
+	newLimit := ideal
+	if oe.config.GetAllowNegativeProfitOnHedgeReorder() {
+		maxAllowed := ideal + oe.config.GetMaxNegativeProfitCents()
+		if maxAllowed < 1 {
+			maxAllowed = 1
+		}
+		if maxAllowed > 99 {
+			maxAllowed = 99
+		}
+		if marketAskCents > 0 && marketAskCents <= maxAllowed {
+			newLimit = marketAskCents
+		} else {
+			newLimit = maxAllowed
+		}
+	} else {
+		if marketAskCents > 0 && newLimit >= marketAskCents {
+			newLimit = marketAskCents - 1
+		}
+		if newLimit < 1 {
+			newLimit = 1
+		}
+	}
+
+	return domain.Price{Pips: newLimit * 100}
 }
 
 func (oe *OrderExecutor) calculateOrderParams(
