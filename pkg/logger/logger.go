@@ -263,7 +263,7 @@ func CheckAndRotateLogWithForce(config Config, forceRotate bool) error {
 			logFilePath, currentMarketTimestamp, period, basePath)
 	}
 	if Logger != nil {
-		Logger.Debugf(msg)
+		Logger.Debug(msg)
 	} else {
 		// 退回到标准输出（极端情况下）
 		fmt.Println(msg)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/mattn/go-runewidth"
 	"github.com/sirupsen/logrus"
 )
 
@@ -26,6 +27,8 @@ type NativeTUI struct {
 	screen       tcell.Screen
 	snapshot     *Snapshot
 	mu           sync.RWMutex
+	renderMu     sync.Mutex
+	needsFullClear bool
 	updateCh     chan *Snapshot
 	stopCh       chan struct{}
 	renderTicker *time.Ticker
@@ -51,6 +54,7 @@ func NewNativeTUI() (*NativeTUI, error) {
 		updateCh:     make(chan *Snapshot, 10),
 		stopCh:       make(chan struct{}),
 		renderTicker: time.NewTicker(500 * time.Millisecond), // 500ms 刷新频率（进一步降低刷新频率，减少闪烁）
+		needsFullClear: true,
 	}
 
 	// 获取初始屏幕尺寸
@@ -101,6 +105,9 @@ func (t *NativeTUI) Stop() {
 	
 	// 关闭屏幕
 	if t.screen != nil {
+		// 尝试唤醒事件循环，避免 PollEvent/ChannelEvents 卡住
+		// 即使失败也不影响 Fini()
+		t.screen.PostEvent(tcell.NewEventInterrupt(nil))
 		t.screen.Fini()
 	}
 	
@@ -221,62 +228,10 @@ func (t *NativeTUI) UpdateSnapshot(snapshot *Snapshot) {
 		}
 	}
 	
-	// 更新快照（立即生效），然后发送到 channel（触发渲染）
-	// 关键修复：只有当 DecisionConditions 真正变化时才更新，避免频繁渲染
+	// 更新快照并发送到 channel 触发渲染（非阻塞）
+	// 注意：不要基于 DecisionConditions 做“早退优化”，否则会漏掉 MarketSlug/周期/价格等顶层字段变化，
+	// 导致“切周期 UI 不同步 / UI 数据卡住”。渲染频率由 renderLoop 的限流负责。
 	t.mu.Lock()
-	// 比较 DecisionConditions，只有当真正变化时才更新
-	if newSnapshot.DecisionConditions != nil && t.snapshot != nil && t.snapshot.DecisionConditions != nil {
-		old := t.snapshot.DecisionConditions
-		new := newSnapshot.DecisionConditions
-		// 比较关键字段（不包括实时变化的 CooldownRemaining 和 WarmupRemaining）
-		// 关键修复：对浮点数值使用阈值比较，避免微小变化触发频繁渲染
-		const floatEpsilon = 0.001 // 浮点数比较阈值
-		keyFieldsChanged := old.CanTrade != new.CanTrade ||
-			old.BlockReason != new.BlockReason ||
-			old.UpVelocityOK != new.UpVelocityOK ||
-			absFloat(old.UpVelocityValue-new.UpVelocityValue) > floatEpsilon ||
-			old.UpMoveOK != new.UpMoveOK ||
-			old.UpMoveValue != new.UpMoveValue ||
-			old.DownVelocityOK != new.DownVelocityOK ||
-			absFloat(old.DownVelocityValue-new.DownVelocityValue) > floatEpsilon ||
-			old.DownMoveOK != new.DownMoveOK ||
-			old.DownMoveValue != new.DownMoveValue ||
-			old.Direction != new.Direction ||
-			old.EntryPriceOK != new.EntryPriceOK ||
-			absFloat(old.EntryPriceValue-new.EntryPriceValue) > floatEpsilon ||
-			old.HedgePriceOK != new.HedgePriceOK ||
-			absFloat(old.HedgePriceValue-new.HedgePriceValue) > floatEpsilon ||
-			old.TotalCostOK != new.TotalCostOK ||
-			absFloat(old.TotalCostValue-new.TotalCostValue) > floatEpsilon ||
-			old.IsProfitLocked != new.IsProfitLocked ||
-			absFloat(old.ProfitIfUpWin-new.ProfitIfUpWin) > floatEpsilon ||
-			absFloat(old.ProfitIfDownWin-new.ProfitIfDownWin) > floatEpsilon ||
-			old.CooldownOK != new.CooldownOK ||
-			old.WarmupOK != new.WarmupOK ||
-			old.TradesLimitOK != new.TradesLimitOK ||
-			old.TradesThisCycle != new.TradesThisCycle ||
-			old.HasPendingHedge != new.HasPendingHedge
-		
-		if !keyFieldsChanged {
-			// 关键字段没变化，只更新 CooldownRemaining 和 WarmupRemaining（用于倒计时显示）
-			// 使用取整后的值比较，避免微小变化触发更新
-			oldCooldown := int(old.CooldownRemaining)
-			newCooldown := int(new.CooldownRemaining)
-			oldWarmup := int(old.WarmupRemaining)
-			newWarmup := int(new.WarmupRemaining)
-			
-			if oldCooldown == newCooldown && oldWarmup == newWarmup {
-				// 连倒计时都没变化，不更新整个快照，避免触发渲染
-				// 只更新倒计时字段（如果值有微小变化）
-				t.snapshot.DecisionConditions.CooldownRemaining = new.CooldownRemaining
-				t.snapshot.DecisionConditions.WarmupRemaining = new.WarmupRemaining
-				t.mu.Unlock()
-				// 不发送到 channel，不触发渲染
-				return
-			}
-		}
-	}
-	
 	t.snapshot = newSnapshot
 	t.mu.Unlock()
 	
@@ -308,40 +263,15 @@ func (t *NativeTUI) UpdateSnapshot(snapshot *Snapshot) {
 
 // eventLoop 事件处理循环
 func (t *NativeTUI) eventLoop(ctx context.Context) {
-	// 关键修复：使用更频繁的事件检查，确保能及时捕获 Ctrl+C
-	// 同时使用阻塞式事件轮询，而不是定期检查
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-	
-	// 启动一个 goroutine 专门处理键盘事件（阻塞式）
-	eventCh := make(chan tcell.Event, 10)
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.stopCh:
-				return
-			default:
-				// 阻塞式等待事件（这样能及时捕获 Ctrl+C）
-				ev := t.screen.PollEvent()
-				if ev != nil {
-					select {
-					case eventCh <- ev:
-					case <-ctx.Done():
-						return
-					case <-t.stopCh:
-						return
-					}
-				}
-			}
-		}
-	}()
+	// 使用 tcell 的 ChannelEvents，避免 PollEvent goroutine 在 Stop 时卡死
+	eventCh := make(chan tcell.Event, 32)
+	go t.screen.ChannelEvents(eventCh, t.stopCh)
 	
 	for {
 		select {
 		case <-ctx.Done():
 			nativeLog.Infof("🛑 [NativeTUI] 收到 context 取消信号，退出事件循环")
+			t.Stop()
 			return
 		case <-t.stopCh:
 			nativeLog.Infof("🛑 [NativeTUI] 收到停止信号，退出事件循环")
@@ -357,11 +287,11 @@ func (t *NativeTUI) eventLoop(ctx context.Context) {
 				// 关键修复：正确检测 Ctrl+C
 				// tcell 中 Ctrl+C 的检测方式：
 				// - ev.Key() == tcell.KeyCtrlC 或
-				// - ev.Key() == tcell.KeyCtrlL && ev.Rune() == 'c'（某些终端）
+				// - ev.Modifiers() 包含 Ctrl 且 Rune 为 c/C（某些终端）
 				// - ev.Rune() == 3（Ctrl+C 的 ASCII 码）
 				if ev.Key() == tcell.KeyEscape || 
 					ev.Key() == tcell.KeyCtrlC || 
-					(ev.Key() == tcell.KeyCtrlL && ev.Rune() == 'c') ||
+					(ev.Modifiers()&tcell.ModCtrl != 0 && (ev.Rune() == 'c' || ev.Rune() == 'C')) ||
 					ev.Rune() == 3 || // Ctrl+C 的 ASCII 码
 					ev.Rune() == 'q' || ev.Rune() == 'Q' {
 					// 退出
@@ -377,24 +307,19 @@ func (t *NativeTUI) eventLoop(ctx context.Context) {
 					} else {
 						nativeLog.Warnf("⚠️ [NativeTUI] 退出回调为 nil")
 					}
-					
-					// 关闭 stopCh，通知其他 goroutine 退出
-					select {
-					case <-t.stopCh:
-						// 已经关闭了
-					default:
-						close(t.stopCh)
-					}
+					// 立刻恢复终端并停止渲染，避免“按了 Ctrl+C 但程序看起来不退出/终端异常”
+					t.Stop()
 					return
 				}
 			case *tcell.EventResize:
 				// 屏幕尺寸变化
-				t.width, t.height = t.screen.Size()
+				w, h := t.screen.Size()
+				t.renderMu.Lock()
+				t.width, t.height = w, h
+				t.needsFullClear = true
+				t.renderMu.Unlock()
 				t.render()
 			}
-		case <-ticker.C:
-			// 定期检查是否有待处理的事件（备用方案）
-			// 这个 ticker 主要用于处理其他类型的事件
 		}
 	}
 }
@@ -442,6 +367,9 @@ func (t *NativeTUI) renderLoop(ctx context.Context) {
 
 // render 渲染UI
 func (t *NativeTUI) render() {
+	t.renderMu.Lock()
+	defer t.renderMu.Unlock()
+
 	t.mu.RLock()
 	snap := t.snapshot
 	t.mu.RUnlock()
@@ -450,8 +378,14 @@ func (t *NativeTUI) render() {
 		snap = &Snapshot{}
 	}
 
-	// 清空屏幕
-	t.screen.Clear()
+	// 仅在必要时全屏 Clear（例如 resize）。避免每次都 Clear 导致明显闪烁。
+	if t.needsFullClear {
+		t.screen.Clear()
+		t.needsFullClear = false
+	}
+
+	// 避免每次全屏 Clear（会导致明显闪烁）。改为只清理会被覆盖的区域。
+	t.clearHeaderArea()
 
 	// 计算布局
 	availableWidth := t.width - 4
@@ -474,6 +408,20 @@ func (t *NativeTUI) render() {
 
 	// 显示
 	t.screen.Show()
+}
+
+func (t *NativeTUI) clearHeaderArea() {
+	// 标题行背景是蓝色，必须把整行填满，避免残影
+	headerStyle := tcell.StyleDefault.Background(tcell.ColorBlue).Foreground(tcell.ColorWhite)
+	for x := 0; x < t.width; x++ {
+		if t.height > 0 {
+			t.screen.SetContent(x, 0, ' ', nil, headerStyle)
+		}
+		// 预留的空行也清一下，避免上一次的内容残留
+		if t.height > 1 {
+			t.screen.SetContent(x, 1, ' ', nil, tcell.StyleDefault)
+		}
+	}
 }
 
 // renderHeader 渲染标题
@@ -520,6 +468,8 @@ func (t *NativeTUI) renderHeader(snap *Snapshot, y int) {
 func (t *NativeTUI) renderLeftWithBorder(snap *Snapshot, width, startX, startY int) {
 	// 绘制边框
 	t.drawBorder(startX, startY, width, t.height-startY-2)
+	// 清理边框内部区域，避免不 Clear 时残留旧字符
+	t.fillRect(startX+1, startY+1, width-2, t.height-startY-4, tcell.StyleDefault)
 	
 	// 渲染内容（内容区域在边框内）
 	t.renderLeft(snap, width-2, startX+1, startY+1)
@@ -529,9 +479,28 @@ func (t *NativeTUI) renderLeftWithBorder(snap *Snapshot, width, startX, startY i
 func (t *NativeTUI) renderRightWithBorder(snap *Snapshot, width, startX, startY int) {
 	// 绘制边框
 	t.drawBorder(startX, startY, width, t.height-startY-2)
+	// 清理边框内部区域，避免不 Clear 时残留旧字符
+	t.fillRect(startX+1, startY+1, width-2, t.height-startY-4, tcell.StyleDefault)
 	
 	// 渲染内容（内容区域在边框内）
 	t.renderRight(snap, width-2, startX+1, startY+1)
+}
+
+func (t *NativeTUI) fillRect(x, y, w, h int, style tcell.Style) {
+	if w <= 0 || h <= 0 {
+		return
+	}
+	for yy := 0; yy < h; yy++ {
+		if y+yy >= t.height {
+			break
+		}
+		for xx := 0; xx < w; xx++ {
+			if x+xx >= t.width {
+				break
+			}
+			t.screen.SetContent(x+xx, y+yy, ' ', nil, style)
+		}
+	}
 }
 
 // drawBorder 绘制边框
@@ -706,19 +675,39 @@ func (t *NativeTUI) renderText(x, y int, text string, color tcell.Color, styles 
 		style = styles[0]
 	}
 
-	// 关键修复：使用字符索引而不是字节索引
-	// 对于包含多字节字符（如 emoji）的文本，range 返回的是 rune 和字节索引
-	// 但我们需要字符位置，所以使用单独的计数器
+	// 关键修复：正确处理宽字符/组合字符（emoji、变体选择符等）
+	// 否则会出现错位、残影，甚至 “NNotLLocked / NNotHHedged” 这类重复首字母现象。
+	if y >= t.height {
+		return
+	}
+
 	pos := 0
+	lastBaseX := -1
+	var lastBaseRune rune
+	var lastStyle tcell.Style
+	var combining []rune
+
 	for _, r := range text {
-		if x+pos < t.width && y < t.height {
-			t.screen.SetContent(x+pos, y, r, nil, style)
-			// 计算字符宽度（对于多字节字符，可能需要多个显示位置）
-			// 但对于大多数情况，每个 rune 占用一个显示位置
-			pos++
-		} else {
+		if x+pos >= t.width {
 			break
 		}
+		w := runewidth.RuneWidth(r)
+		if w == 0 {
+			// 组合字符（例如 VS16），追加到上一个 base rune
+			if lastBaseX >= 0 {
+				combining = append(combining, r)
+				t.screen.SetContent(lastBaseX, y, lastBaseRune, combining, lastStyle)
+			}
+			continue
+		}
+
+		lastBaseX = x + pos
+		lastBaseRune = r
+		lastStyle = style
+		combining = combining[:0]
+
+		t.screen.SetContent(lastBaseX, y, lastBaseRune, nil, lastStyle)
+		pos += w
 	}
 }
 
