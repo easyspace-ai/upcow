@@ -17,16 +17,16 @@ type Config struct {
 
 	// ====== 速度判定参数 ======
 	WindowSeconds          int     `yaml:"windowSeconds" json:"windowSeconds"`                   // 速度计算窗口（秒）
-	MinMoveCents           int     `yaml:"minMoveCents" json:"minMoveCents"`                    // 窗口内最小位移（分）
+	MinMoveCents           int     `yaml:"minMoveCents" json:"minMoveCents"`                     // 窗口内最小位移（分）
 	MinVelocityCentsPerSec float64 `yaml:"minVelocityCentsPerSec" json:"minVelocityCentsPerSec"` // 最小速度（分/秒）
-	CooldownMs             int     `yaml:"cooldownMs" json:"cooldownMs"`                        // 触发冷却（毫秒）
-	WarmupMs               int     `yaml:"warmupMs" json:"warmupMs"`                            // 周期切换后的预热（毫秒）
-	MaxTradesPerCycle      int     `yaml:"maxTradesPerCycle" json:"maxTradesPerCycle"`          // 每周期最大交易次数（0=不设限）
+	CooldownMs             int     `yaml:"cooldownMs" json:"cooldownMs"`                         // 触发冷却（毫秒）
+	WarmupMs               int     `yaml:"warmupMs" json:"warmupMs"`                             // 周期切换后的预热（毫秒）
+	MaxTradesPerCycle      int     `yaml:"maxTradesPerCycle" json:"maxTradesPerCycle"`           // 每周期最大交易次数（0=不设限）
 
 	// ====== 速度快慢判断参数 ======
 	FastVelocityThresholdCentsPerSec float64 `yaml:"fastVelocityThresholdCentsPerSec" json:"fastVelocityThresholdCentsPerSec"`
-	VelocityHistoryWindowSeconds      int     `yaml:"velocityHistoryWindowSeconds" json:"velocityHistoryWindowSeconds"`
-	VelocityComparisonMultiplier      float64 `yaml:"velocityComparisonMultiplier" json:"velocityComparisonMultiplier"`
+	VelocityHistoryWindowSeconds     int     `yaml:"velocityHistoryWindowSeconds" json:"velocityHistoryWindowSeconds"`
+	VelocityComparisonMultiplier     float64 `yaml:"velocityComparisonMultiplier" json:"velocityComparisonMultiplier"`
 
 	// ====== 慢速策略参数 ======
 	SlowStrategyMaxSpreadCents      int     `yaml:"slowStrategyMaxSpreadCents" json:"slowStrategyMaxSpreadCents"`
@@ -44,7 +44,7 @@ type Config struct {
 	// ====== 订单执行模式 ======
 	OrderExecutionMode        string `yaml:"orderExecutionMode" json:"orderExecutionMode"`               // "sequential" | "parallel"
 	SequentialCheckIntervalMs int    `yaml:"sequentialCheckIntervalMs" json:"sequentialCheckIntervalMs"` // 轮询订单状态间隔（ms）
-	SequentialMaxWaitMs       int    `yaml:"sequentialMaxWaitMs" json:"sequentialMaxWaitMs"`            // Entry 最大等待（ms）
+	SequentialMaxWaitMs       int    `yaml:"sequentialMaxWaitMs" json:"sequentialMaxWaitMs"`             // Entry 最大等待（ms）
 
 	// ====== 对冲单重下机制 ======
 	HedgeReorderTimeoutSeconds        int     `yaml:"hedgeReorderTimeoutSeconds" json:"hedgeReorderTimeoutSeconds"`
@@ -59,6 +59,15 @@ type Config struct {
 	AggressiveHedgeTimeoutSeconds int  `yaml:"aggressiveHedgeTimeoutSeconds" json:"aggressiveHedgeTimeoutSeconds"`
 	MaxAcceptableLossCents        int  `yaml:"maxAcceptableLossCents" json:"maxAcceptableLossCents"`
 
+	// ====== 价格盯盘止损（Entry 成交后盯“可锁定PnL”，不利则立即吃单锁损） ======
+	PriceStopEnabled            bool `yaml:"priceStopEnabled" json:"priceStopEnabled"`
+	PriceStopSoftLossCents      int  `yaml:"priceStopSoftLossCents" json:"priceStopSoftLossCents"`           // 例如 -5：触发撤单+FAK 锁损
+	PriceStopHardLossCents      int  `yaml:"priceStopHardLossCents" json:"priceStopHardLossCents"`           // 例如 -10：紧急锁损（不做确认）
+	PriceTakeProfitCents        int  `yaml:"priceTakeProfitCents" json:"priceTakeProfitCents"`               // 例如 +5：达到阈值时吃单锁利（0=禁用）
+	PriceTakeProfitConfirmTicks int  `yaml:"priceTakeProfitConfirmTicks" json:"priceTakeProfitConfirmTicks"` // 锁利触发防抖
+	PriceStopCheckIntervalMs    int  `yaml:"priceStopCheckIntervalMs" json:"priceStopCheckIntervalMs"`       // 盯盘频率
+	PriceStopConfirmTicks       int  `yaml:"priceStopConfirmTicks" json:"priceStopConfirmTicks"`             // soft 触发连续命中次数（防抖）
+
 	// ====== per-entry 执行预算 + 冷静期（防止单笔把系统拖进重下风暴） ======
 	PerEntryMaxHedgeReorders int `yaml:"perEntryMaxHedgeReorders" json:"perEntryMaxHedgeReorders"`
 	PerEntryMaxHedgeCancels  int `yaml:"perEntryMaxHedgeCancels" json:"perEntryMaxHedgeCancels"`
@@ -71,10 +80,10 @@ type Config struct {
 	ArbitrageBrainUpdateIntervalSeconds int  `yaml:"arbitrageBrainUpdateIntervalSeconds" json:"arbitrageBrainUpdateIntervalSeconds"`
 
 	// ====== Dashboard UI ======
-	DashboardEnabled                           bool `yaml:"dashboardEnabled" json:"dashboardEnabled"`
-	DashboardUseNativeTUI                      bool `yaml:"dashboardUseNativeTUI" json:"dashboardUseNativeTUI"` // 默认 false（Bubble Tea）
-	DashboardPositionReconcileIntervalSeconds  int  `yaml:"dashboardPositionReconcileIntervalSeconds" json:"dashboardPositionReconcileIntervalSeconds"`
-	DashboardRefreshIntervalMs                 int  `yaml:"dashboardRefreshIntervalMs" json:"dashboardRefreshIntervalMs"`
+	DashboardEnabled                          bool `yaml:"dashboardEnabled" json:"dashboardEnabled"`
+	DashboardUseNativeTUI                     bool `yaml:"dashboardUseNativeTUI" json:"dashboardUseNativeTUI"` // 默认 false（Bubble Tea）
+	DashboardPositionReconcileIntervalSeconds int  `yaml:"dashboardPositionReconcileIntervalSeconds" json:"dashboardPositionReconcileIntervalSeconds"`
+	DashboardRefreshIntervalMs                int  `yaml:"dashboardRefreshIntervalMs" json:"dashboardRefreshIntervalMs"`
 
 	// ====== 价格优先选择 ======
 	PreferHigherPrice      bool `yaml:"preferHigherPrice" json:"preferHigherPrice"`
@@ -84,22 +93,22 @@ type Config struct {
 	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
 
 	// ====== 市场质量过滤（强烈建议开启） ======
-	EnableMarketQualityGate     bool    `yaml:"enableMarketQualityGate" json:"enableMarketQualityGate"`             // 是否启用盘口质量 gate
-	MarketQualityMinScore       float64 `yaml:"marketQualityMinScore" json:"marketQualityMinScore"`                 // 最小质量分（0..100）
-	MarketQualityMaxSpreadCents int     `yaml:"marketQualityMaxSpreadCents" json:"marketQualityMaxSpreadCents"`     // 最大一档价差（分）
-	MarketQualityMaxBookAgeMs   int     `yaml:"marketQualityMaxBookAgeMs" json:"marketQualityMaxBookAgeMs"`         // WS 盘口最大年龄（毫秒）
+	EnableMarketQualityGate     bool    `yaml:"enableMarketQualityGate" json:"enableMarketQualityGate"`         // 是否启用盘口质量 gate
+	MarketQualityMinScore       float64 `yaml:"marketQualityMinScore" json:"marketQualityMinScore"`             // 最小质量分（0..100）
+	MarketQualityMaxSpreadCents int     `yaml:"marketQualityMaxSpreadCents" json:"marketQualityMaxSpreadCents"` // 最大一档价差（分）
+	MarketQualityMaxBookAgeMs   int     `yaml:"marketQualityMaxBookAgeMs" json:"marketQualityMaxBookAgeMs"`     // WS 盘口最大年龄（毫秒）
 
 	// ====== 价格稳定性过滤（强烈建议开启） ======
-	PriceStabilityCheckEnabled  bool    `yaml:"priceStabilityCheckEnabled" json:"priceStabilityCheckEnabled"`       // 是否启用价格稳定性检查
-	MaxPriceChangePercent       float64 `yaml:"maxPriceChangePercent" json:"maxPriceChangePercent"`                 // 最大价格变化百分比（窗口内）
-	PriceChangeWindowSeconds    int     `yaml:"priceChangeWindowSeconds" json:"priceChangeWindowSeconds"`           // 价格变化检查窗口（秒）
-	MaxSpreadVolatilityPercent  float64 `yaml:"maxSpreadVolatilityPercent" json:"maxSpreadVolatilityPercent"`       // 最大价差波动百分比（窗口内）
-	PriceStabilityMaxSpreadFilterCents int `yaml:"priceStabilityMaxSpreadFilterCents" json:"priceStabilityMaxSpreadFilterCents"` // 数据清洗：过滤价差超过此阈值（分）的异常数据，避免错误 websocket 数据影响 maxChange 计算
+	PriceStabilityCheckEnabled         bool    `yaml:"priceStabilityCheckEnabled" json:"priceStabilityCheckEnabled"`                 // 是否启用价格稳定性检查
+	MaxPriceChangePercent              float64 `yaml:"maxPriceChangePercent" json:"maxPriceChangePercent"`                           // 最大价格变化百分比（窗口内）
+	PriceChangeWindowSeconds           int     `yaml:"priceChangeWindowSeconds" json:"priceChangeWindowSeconds"`                     // 价格变化检查窗口（秒）
+	MaxSpreadVolatilityPercent         float64 `yaml:"maxSpreadVolatilityPercent" json:"maxSpreadVolatilityPercent"`                 // 最大价差波动百分比（窗口内）
+	PriceStabilityMaxSpreadFilterCents int     `yaml:"priceStabilityMaxSpreadFilterCents" json:"priceStabilityMaxSpreadFilterCents"` // 数据清洗：过滤价差超过此阈值（分）的异常数据，避免错误 websocket 数据影响 maxChange 计算
 
 	// ====== （预留）流动性阈值（后续接入更深档数据再启用） ======
-	MinLiquidityScore   float64 `yaml:"minLiquidityScore" json:"minLiquidityScore"`
-	MinDepthAt1Percent  float64 `yaml:"minDepthAt1Percent" json:"minDepthAt1Percent"`
-	MinTotalLiquidity   float64 `yaml:"minTotalLiquidity" json:"minTotalLiquidity"`
+	MinLiquidityScore  float64 `yaml:"minLiquidityScore" json:"minLiquidityScore"`
+	MinDepthAt1Percent float64 `yaml:"minDepthAt1Percent" json:"minDepthAt1Percent"`
+	MinTotalLiquidity  float64 `yaml:"minTotalLiquidity" json:"minTotalLiquidity"`
 }
 
 func (c *Config) Defaults() error {
@@ -205,6 +214,31 @@ func (c *Config) Defaults() error {
 	}
 	if c.MaxAcceptableLossCents <= 0 {
 		c.MaxAcceptableLossCents = 5
+	}
+
+	// 价格盯盘止损（默认开启：更像职业交易执行，先挂 hedge，若不利则立刻锁损）
+	if !c.PriceStopEnabled {
+		c.PriceStopEnabled = true
+	}
+	if c.PriceStopSoftLossCents == 0 {
+		c.PriceStopSoftLossCents = -5
+	}
+	if c.PriceStopHardLossCents == 0 {
+		c.PriceStopHardLossCents = -10
+	}
+	// 默认开启“达到 +5 立即吃单锁利”，符合“多做对冲单/提高周转”的目标。
+	if c.PriceTakeProfitCents == 0 {
+		c.PriceTakeProfitCents = 5
+	}
+	if c.PriceTakeProfitConfirmTicks <= 0 {
+		c.PriceTakeProfitConfirmTicks = 2
+	}
+	// 事件驱动默认不节流（0=每次 WS 价格变化都评估）；若要限频可显式配置 >0
+	if c.PriceStopCheckIntervalMs < 0 {
+		c.PriceStopCheckIntervalMs = 0
+	}
+	if c.PriceStopConfirmTicks <= 0 {
+		c.PriceStopConfirmTicks = 2
 	}
 
 	// per-entry 执行预算 + 冷静期
@@ -346,6 +380,15 @@ func (c *Config) Validate() error {
 	if c.MaxSpreadVolatilityPercent < 0 {
 		return fmt.Errorf("maxSpreadVolatilityPercent 不合法")
 	}
+	if c.PriceStopCheckIntervalMs < 0 {
+		return fmt.Errorf("priceStopCheckIntervalMs 不合法")
+	}
+	if c.PriceStopConfirmTicks < 0 {
+		return fmt.Errorf("priceStopConfirmTicks 不合法")
+	}
+	if c.PriceTakeProfitConfirmTicks < 0 {
+		return fmt.Errorf("priceTakeProfitConfirmTicks 不合法")
+	}
 	if c.PerEntryMaxHedgeReorders < 0 {
 		return fmt.Errorf("perEntryMaxHedgeReorders 不合法")
 	}
@@ -366,39 +409,56 @@ func (c *Config) Validate() error {
 }
 
 // ====== 实现 velocityfollow/brain.ConfigInterface ======
-func (c *Config) GetWindowSeconds() int                     { return c.WindowSeconds }
-func (c *Config) GetMinMoveCents() int                      { return c.MinMoveCents }
-func (c *Config) GetMinVelocityCentsPerSec() float64        { return c.MinVelocityCentsPerSec }
-func (c *Config) GetPreferHigherPrice() bool                { return c.PreferHigherPrice }
-func (c *Config) GetMinPreferredPriceCents() int            { return c.MinPreferredPriceCents }
-func (c *Config) GetHedgeOffsetCents() int                  { return c.HedgeOffsetCents }
-func (c *Config) GetMinEntryPriceCents() int                { return c.MinEntryPriceCents }
-func (c *Config) GetMaxEntryPriceCents() int                { return c.MaxEntryPriceCents }
-func (c *Config) GetOrderSize() float64                     { return c.OrderSize }
-func (c *Config) GetHedgeOrderSize() float64                { return c.HedgeOrderSize }
-func (c *Config) GetArbitrageBrainEnabled() bool            { return c.ArbitrageBrainEnabled }
-func (c *Config) GetArbitrageBrainUpdateIntervalSeconds() int { return c.ArbitrageBrainUpdateIntervalSeconds }
-func (c *Config) GetWarmupMs() int                          { return c.WarmupMs }
-func (c *Config) GetMaxTradesPerCycle() int                 { return c.MaxTradesPerCycle }
-func (c *Config) GetCooldownMs() int                        { return c.CooldownMs }
-func (c *Config) GetFastVelocityThresholdCentsPerSec() float64 { return c.FastVelocityThresholdCentsPerSec }
-func (c *Config) GetVelocityHistoryWindowSeconds() int      { return c.VelocityHistoryWindowSeconds }
-func (c *Config) GetVelocityComparisonMultiplier() float64  { return c.VelocityComparisonMultiplier }
-func (c *Config) GetSlowStrategyMaxSpreadCents() int        { return c.SlowStrategyMaxSpreadCents }
-func (c *Config) GetSlowStrategyPriceAggressiveness() float64 { return c.SlowStrategyPriceAggressiveness }
+func (c *Config) GetWindowSeconds() int              { return c.WindowSeconds }
+func (c *Config) GetMinMoveCents() int               { return c.MinMoveCents }
+func (c *Config) GetMinVelocityCentsPerSec() float64 { return c.MinVelocityCentsPerSec }
+func (c *Config) GetPreferHigherPrice() bool         { return c.PreferHigherPrice }
+func (c *Config) GetMinPreferredPriceCents() int     { return c.MinPreferredPriceCents }
+func (c *Config) GetHedgeOffsetCents() int           { return c.HedgeOffsetCents }
+func (c *Config) GetMinEntryPriceCents() int         { return c.MinEntryPriceCents }
+func (c *Config) GetMaxEntryPriceCents() int         { return c.MaxEntryPriceCents }
+func (c *Config) GetOrderSize() float64              { return c.OrderSize }
+func (c *Config) GetHedgeOrderSize() float64         { return c.HedgeOrderSize }
+func (c *Config) GetArbitrageBrainEnabled() bool     { return c.ArbitrageBrainEnabled }
+func (c *Config) GetArbitrageBrainUpdateIntervalSeconds() int {
+	return c.ArbitrageBrainUpdateIntervalSeconds
+}
+func (c *Config) GetWarmupMs() int          { return c.WarmupMs }
+func (c *Config) GetMaxTradesPerCycle() int { return c.MaxTradesPerCycle }
+func (c *Config) GetCooldownMs() int        { return c.CooldownMs }
+func (c *Config) GetFastVelocityThresholdCentsPerSec() float64 {
+	return c.FastVelocityThresholdCentsPerSec
+}
+func (c *Config) GetVelocityHistoryWindowSeconds() int     { return c.VelocityHistoryWindowSeconds }
+func (c *Config) GetVelocityComparisonMultiplier() float64 { return c.VelocityComparisonMultiplier }
+func (c *Config) GetSlowStrategyMaxSpreadCents() int       { return c.SlowStrategyMaxSpreadCents }
+func (c *Config) GetSlowStrategyPriceAggressiveness() float64 {
+	return c.SlowStrategyPriceAggressiveness
+}
 
 // ====== 实现 velocityfollow/oms.ConfigInterface ======
-func (c *Config) GetOrderExecutionMode() string           { return c.OrderExecutionMode }
-func (c *Config) GetSequentialCheckIntervalMs() int       { return c.SequentialCheckIntervalMs }
-func (c *Config) GetSequentialMaxWaitMs() int             { return c.SequentialMaxWaitMs }
-func (c *Config) GetRiskManagementEnabled() bool          { return c.RiskManagementEnabled }
-func (c *Config) GetRiskManagementCheckIntervalMs() int   { return c.RiskManagementCheckIntervalMs }
-func (c *Config) GetAggressiveHedgeTimeoutSeconds() int   { return c.AggressiveHedgeTimeoutSeconds }
-func (c *Config) GetMaxAcceptableLossCents() int          { return c.MaxAcceptableLossCents }
-func (c *Config) GetHedgeReorderTimeoutSeconds() int      { return c.HedgeReorderTimeoutSeconds }
-func (c *Config) GetHedgeTimeoutFakSeconds() int          { return c.HedgeTimeoutFakSeconds }
-func (c *Config) GetAllowNegativeProfitOnHedgeReorder() bool { return c.AllowNegativeProfitOnHedgeReorder }
-func (c *Config) GetMaxNegativeProfitCents() int          { return c.MaxNegativeProfitCents }
+func (c *Config) GetOrderExecutionMode() string         { return c.OrderExecutionMode }
+func (c *Config) GetSequentialCheckIntervalMs() int     { return c.SequentialCheckIntervalMs }
+func (c *Config) GetSequentialMaxWaitMs() int           { return c.SequentialMaxWaitMs }
+func (c *Config) GetRiskManagementEnabled() bool        { return c.RiskManagementEnabled }
+func (c *Config) GetRiskManagementCheckIntervalMs() int { return c.RiskManagementCheckIntervalMs }
+func (c *Config) GetAggressiveHedgeTimeoutSeconds() int { return c.AggressiveHedgeTimeoutSeconds }
+func (c *Config) GetMaxAcceptableLossCents() int        { return c.MaxAcceptableLossCents }
+func (c *Config) GetHedgeReorderTimeoutSeconds() int    { return c.HedgeReorderTimeoutSeconds }
+func (c *Config) GetHedgeTimeoutFakSeconds() int        { return c.HedgeTimeoutFakSeconds }
+func (c *Config) GetAllowNegativeProfitOnHedgeReorder() bool {
+	return c.AllowNegativeProfitOnHedgeReorder
+}
+func (c *Config) GetMaxNegativeProfitCents() int { return c.MaxNegativeProfitCents }
+
+// ====== 价格盯盘止损（strategycore/oms 可选读取） ======
+func (c *Config) GetPriceStopEnabled() bool           { return c.PriceStopEnabled }
+func (c *Config) GetPriceStopSoftLossCents() int      { return c.PriceStopSoftLossCents }
+func (c *Config) GetPriceStopHardLossCents() int      { return c.PriceStopHardLossCents }
+func (c *Config) GetPriceTakeProfitCents() int        { return c.PriceTakeProfitCents }
+func (c *Config) GetPriceTakeProfitConfirmTicks() int { return c.PriceTakeProfitConfirmTicks }
+func (c *Config) GetPriceStopCheckIntervalMs() int    { return c.PriceStopCheckIntervalMs }
+func (c *Config) GetPriceStopConfirmTicks() int       { return c.PriceStopConfirmTicks }
 
 // ====== per-entry 执行预算 + 冷静期（strategycore/oms 可选读取） ======
 func (c *Config) GetPerEntryMaxHedgeReorders() int { return c.PerEntryMaxHedgeReorders }
@@ -411,13 +471,14 @@ func (c *Config) GetPerEntryCooldownSeconds() int  { return c.PerEntryCooldownSe
 func (c *Config) GetAutoMerge() common.AutoMergeConfig { return c.AutoMerge }
 
 // ====== winbet/gates 配置 getter ======
-func (c *Config) GetEnableMarketQualityGate() bool     { return c.EnableMarketQualityGate }
-func (c *Config) GetMarketQualityMinScore() float64    { return c.MarketQualityMinScore }
-func (c *Config) GetMarketQualityMaxSpreadCents() int  { return c.MarketQualityMaxSpreadCents }
-func (c *Config) GetMarketQualityMaxBookAgeMs() int    { return c.MarketQualityMaxBookAgeMs }
-func (c *Config) GetPriceStabilityCheckEnabled() bool  { return c.PriceStabilityCheckEnabled }
-func (c *Config) GetMaxPriceChangePercent() float64    { return c.MaxPriceChangePercent }
-func (c *Config) GetPriceChangeWindowSeconds() int     { return c.PriceChangeWindowSeconds }
+func (c *Config) GetEnableMarketQualityGate() bool       { return c.EnableMarketQualityGate }
+func (c *Config) GetMarketQualityMinScore() float64      { return c.MarketQualityMinScore }
+func (c *Config) GetMarketQualityMaxSpreadCents() int    { return c.MarketQualityMaxSpreadCents }
+func (c *Config) GetMarketQualityMaxBookAgeMs() int      { return c.MarketQualityMaxBookAgeMs }
+func (c *Config) GetPriceStabilityCheckEnabled() bool    { return c.PriceStabilityCheckEnabled }
+func (c *Config) GetMaxPriceChangePercent() float64      { return c.MaxPriceChangePercent }
+func (c *Config) GetPriceChangeWindowSeconds() int       { return c.PriceChangeWindowSeconds }
 func (c *Config) GetMaxSpreadVolatilityPercent() float64 { return c.MaxSpreadVolatilityPercent }
-func (c *Config) GetPriceStabilityMaxSpreadFilterCents() int { return c.PriceStabilityMaxSpreadFilterCents }
-
+func (c *Config) GetPriceStabilityMaxSpreadFilterCents() int {
+	return c.PriceStabilityMaxSpreadFilterCents
+}
