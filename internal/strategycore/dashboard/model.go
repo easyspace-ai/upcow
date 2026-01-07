@@ -316,6 +316,8 @@ func (m model) renderDecisionConditions(snap *Snapshot, width int) string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
 	canTradeStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("46"))
 	cannotTradeStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
+	gateOKStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
+	gateBlockedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 
 	dc := snap.DecisionConditions
 	if dc == nil {
@@ -328,6 +330,19 @@ func (m model) renderDecisionConditions(snap *Snapshot, width int) string {
 		lines = append(lines, canTradeStyle.Render("✅ Can Trade"))
 	} else {
 		lines = append(lines, cannotTradeStyle.Render(fmt.Sprintf("❌ Cannot Trade: %s", dc.BlockReason)))
+	}
+
+	// Gate 状态（盘口质量 / 价格稳定性等）
+	if snap.GateReason != "" || !snap.GateAllowed {
+		if snap.GateAllowed {
+			lines = append(lines, gateOKStyle.Render("✅ Market Gate: OK"))
+		} else {
+			reason := snap.GateReason
+			if strings.TrimSpace(reason) == "" {
+				reason = "blocked"
+			}
+			lines = append(lines, gateBlockedStyle.Render(fmt.Sprintf("❌ Market Gate: %s", truncate(reason, 42))))
+		}
 	}
 	lines = append(lines, "")
 

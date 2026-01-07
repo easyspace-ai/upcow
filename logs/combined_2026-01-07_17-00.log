@@ -1,0 +1,3 @@
+[36mINFO[0m[26-01-07 17:14:45] 使用默认配置文件: yml/config.yaml                    
+[36mINFO[0m[26-01-07 17:14:45] 已加载策略配置: strategy=winbet file=yml/winbet.yaml 
+[36mINFO[0m[26-01-07 17:14:45] 策略配置文件覆盖 dry_run: false (来源: yml/winbet.yaml) 

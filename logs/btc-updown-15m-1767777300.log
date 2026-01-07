@@ -1,0 +1,3 @@
+[36mINFO[0m[26-01-07 17:15:00] 🔄 [周期切换] 检测到会话切换，重新注册策略到新会话: btc-updown-15m-1767777300 
+[36mINFO[0m[26-01-07 17:15:00] 🔄 [Capital] 开始合并上一周期持仓: oldMarket=btc-updown-15m-1767777300 positions=0  [36mmodule[0m=capital
+[36mINFO[0m[26-01-07 17:15:00] ✅ [Capital] 周期切换处理完成: oldMarket=btc-updown-15m-1767777300 newMarket=btc-updown-15m-1767777300  [36mmodule[0m=capital

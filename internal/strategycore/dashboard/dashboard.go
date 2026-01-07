@@ -133,6 +133,10 @@ type Snapshot struct {
 	// 决策条件
 	DecisionConditions *DecisionConditions
 
+	// Gate 状态（如盘口质量/价格稳定性），由具体策略写入
+	GateAllowed bool
+	GateReason  string
+
 	// 周期信息
 	CycleEndTime      time.Time
 	CycleRemainingSec float64
@@ -446,6 +450,10 @@ type UpdateData struct {
 	RiskManagement     *RiskManagementStatus
 	DecisionConditions *DecisionConditions
 
+	// Gate 状态（如盘口质量/价格稳定性），由具体策略写入
+	GateAllowed bool
+	GateReason  string
+
 	CycleEndTime      time.Time
 	CycleRemainingSec float64
 }
@@ -544,6 +552,12 @@ func (d *Dashboard) UpdateSnapshot(ctx context.Context, market *domain.Market, d
 				d.snapshot.DecisionConditions = nil
 			}
 
+			// Gate 状态
+			if data.GateReason != "" || data.GateAllowed {
+				d.snapshot.GateAllowed = data.GateAllowed
+				d.snapshot.GateReason = data.GateReason
+			}
+
 			d.snapshot.CycleEndTime = data.CycleEndTime
 			d.snapshot.CycleRemainingSec = data.CycleRemainingSec
 		}
@@ -636,6 +650,11 @@ func (d *Dashboard) UpdateSnapshot(ctx context.Context, market *domain.Market, d
 		}
 		if data.DecisionConditions != nil {
 			d.updateDecisionConditionsLocked(data.DecisionConditions)
+		}
+		// Gate 状态
+		if data.GateReason != "" || data.GateAllowed {
+			d.snapshot.GateAllowed = data.GateAllowed
+			d.snapshot.GateReason = data.GateReason
 		}
 		if !data.CycleEndTime.IsZero() {
 			d.snapshot.CycleEndTime = data.CycleEndTime
@@ -1034,6 +1053,8 @@ func (d *Dashboard) GetSnapshot() *Snapshot {
 		MarketCooldownReason:       d.snapshot.MarketCooldownReason,
 		RiskManagement:     d.snapshot.RiskManagement,
 		DecisionConditions: d.snapshot.DecisionConditions,
+		GateAllowed:        d.snapshot.GateAllowed,
+		GateReason:         d.snapshot.GateReason,
 		CycleEndTime:       d.snapshot.CycleEndTime,
 		CycleRemainingSec:  d.snapshot.CycleRemainingSec,
 	}

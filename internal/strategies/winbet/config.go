@@ -94,6 +94,7 @@ type Config struct {
 	MaxPriceChangePercent       float64 `yaml:"maxPriceChangePercent" json:"maxPriceChangePercent"`                 // 最大价格变化百分比（窗口内）
 	PriceChangeWindowSeconds    int     `yaml:"priceChangeWindowSeconds" json:"priceChangeWindowSeconds"`           // 价格变化检查窗口（秒）
 	MaxSpreadVolatilityPercent  float64 `yaml:"maxSpreadVolatilityPercent" json:"maxSpreadVolatilityPercent"`       // 最大价差波动百分比（窗口内）
+	PriceStabilityMaxSpreadFilterCents int `yaml:"priceStabilityMaxSpreadFilterCents" json:"priceStabilityMaxSpreadFilterCents"` // 数据清洗：过滤价差超过此阈值（分）的异常数据，避免错误 websocket 数据影响 maxChange 计算
 
 	// ====== （预留）流动性阈值（后续接入更深档数据再启用） ======
 	MinLiquidityScore   float64 `yaml:"minLiquidityScore" json:"minLiquidityScore"`
@@ -285,6 +286,10 @@ func (c *Config) Defaults() error {
 	if c.MaxSpreadVolatilityPercent <= 0 {
 		c.MaxSpreadVolatilityPercent = 50.0
 	}
+	// 数据清洗：过滤异常价差数据（默认 15 分，用户观察正常情况下不会大于 10）
+	if c.PriceStabilityMaxSpreadFilterCents <= 0 {
+		c.PriceStabilityMaxSpreadFilterCents = 15
+	}
 	// 预留：流动性阈值（暂不启用计算，先保留字段与默认）
 	if c.MinLiquidityScore <= 0 {
 		c.MinLiquidityScore = 2.0
@@ -414,4 +419,5 @@ func (c *Config) GetPriceStabilityCheckEnabled() bool  { return c.PriceStability
 func (c *Config) GetMaxPriceChangePercent() float64    { return c.MaxPriceChangePercent }
 func (c *Config) GetPriceChangeWindowSeconds() int     { return c.PriceChangeWindowSeconds }
 func (c *Config) GetMaxSpreadVolatilityPercent() float64 { return c.MaxSpreadVolatilityPercent }
+func (c *Config) GetPriceStabilityMaxSpreadFilterCents() int { return c.PriceStabilityMaxSpreadFilterCents }
 

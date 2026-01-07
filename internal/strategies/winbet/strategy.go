@@ -328,6 +328,12 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	// 动态下单量（只降不升）：根据市场质量/价差缩放，避免薄盘口重仓导致对冲失败与滑点放大
 	decision.EntrySize, decision.HedgeSize = s.dynamicSizeForMarket(ctx, e.Market, decision.EntrySize, decision.HedgeSize)
 	if decision.EntrySize <= 0 || decision.HedgeSize <= 0 {
+		log.WithFields(logrus.Fields{
+			"market":  e.Market.Slug,
+			"token":   e.TokenType,
+			"dir":     decision.Direction,
+			"reason":  "dynamic_size_zero",
+		}).Info("winbet: skip trade after dynamic sizing (size<=0)")
 		return nil
 	}
 
@@ -335,7 +341,22 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	if s.oms == nil {
 		return nil
 	}
+	log.WithFields(logrus.Fields{
+		"market":    e.Market.Slug,
+		"token":     e.TokenType,
+		"dir":       decision.Direction,
+		"entrySize": decision.EntrySize,
+		"hedgeSize": decision.HedgeSize,
+	}).Info("winbet: decision ready, executing order")
+
 	if err := s.oms.ExecuteOrder(ctx, e.Market, decision); err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			"market":    e.Market.Slug,
+			"token":     e.TokenType,
+			"dir":       decision.Direction,
+			"entrySize": decision.EntrySize,
+			"hedgeSize": decision.HedgeSize,
+		}).Warn("winbet: ExecuteOrder failed")
 		return nil
 	}
 
@@ -642,6 +663,16 @@ func (s *Strategy) updateDashboard(ctx context.Context, market *domain.Market) {
 		}
 	}
 
+	// Gate 状态：复用最近一次 AllowTrade 结论，避免在 dashboard 中重复跑风控逻辑
+	gateAllowed := true
+	gateReason := ""
+	if s.gates != nil {
+		if allowed, reason, ok := s.gates.GetLastDecision(market.Slug); ok {
+			gateAllowed = allowed
+			gateReason = reason
+		}
+	}
+
 	// merge 状态
 	mergeCount := 0
 	mergeStatus := ""
@@ -692,6 +723,9 @@ func (s *Strategy) updateDashboard(ctx context.Context, market *domain.Market) {
 
 		RiskManagement:     rm,
 		DecisionConditions: dc,
+
+		GateAllowed: gateAllowed,
+		GateReason:  gateReason,
 
 		MergeCount:    mergeCount,
 		MergeStatus:   mergeStatus,

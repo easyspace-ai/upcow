@@ -66,6 +66,19 @@ func (qt *queuedTrading) Close() {
 	}
 }
 
+// IsClosed 检查队列是否已关闭
+func (qt *queuedTrading) IsClosed() bool {
+	if qt == nil {
+		return true
+	}
+	select {
+	case <-qt.done:
+		return true
+	default:
+		return false
+	}
+}
+
 func (qt *queuedTrading) loop() {
 	var lastWrite time.Time
 	for {

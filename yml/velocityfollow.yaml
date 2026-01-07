@@ -86,7 +86,7 @@ exchangeStrategies:
       arbitrageBrainUpdateIntervalSeconds: 10          # 套利分析更新间隔（秒），默认 10
 
       # ====== Dashboard UI ======
-      dashboardEnabled: false                    # 是否启用Dashboard UI，默认 false（如果设置为 true，则启用）
+      dashboardEnabled: true                    # 是否启用Dashboard UI，默认 false（如果设置为 true，则启用）
       dashboardUseNativeTUI: true               # 是否使用原生TUI（默认 true，使用 tcell），false 则使用 Bubble Tea
       dashboardPositionReconcileIntervalSeconds: 5  # Dashboard持仓同步间隔（秒），默认 30 秒（定期从Data API同步持仓，确保本地与真实仓位一致）
 

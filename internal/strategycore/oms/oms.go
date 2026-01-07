@@ -457,6 +457,14 @@ func (o *OMS) GetPendingHedges() map[string]string {
 }
 
 func (o *OMS) Start(ctx context.Context) {
+	// 关键修复：如果队列已关闭（周期切换时 Stop 会关闭），重新创建队列
+	if o.q == nil || o.q.IsClosed() {
+		if o.tradingService != nil {
+			o.q = newQueuedTrading(o.tradingService, 256, 25*time.Millisecond)
+			log.Info("🔄 [OMS] 交易队列已重新创建（周期切换后恢复）")
+		}
+	}
+
 	if o.riskManager != nil {
 		o.riskManager.Start(ctx)
 	}
