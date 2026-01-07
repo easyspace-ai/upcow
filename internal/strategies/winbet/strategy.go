@@ -13,6 +13,7 @@ import (
 	wbbrain "github.com/betbot/gobet/internal/strategies/winbet/brain"
 	wbcapital "github.com/betbot/gobet/internal/strategies/winbet/capital"
 	wbdash "github.com/betbot/gobet/internal/strategies/winbet/dashboard"
+	"github.com/betbot/gobet/internal/strategies/winbet/gates"
 	wboms "github.com/betbot/gobet/internal/strategies/winbet/oms"
 	"github.com/betbot/gobet/pkg/bbgo"
 	"github.com/betbot/gobet/pkg/marketspec"
@@ -40,6 +41,8 @@ type Strategy struct {
 	oms     *wboms.OMS
 	capital *wbcapital.Capital
 	dash    *wbdash.Dashboard
+
+	gates *gates.Gates
 
 	// dashboard loop（独立 ctx，不受周期切换影响）
 	dashboardCtx      context.Context
@@ -93,6 +96,9 @@ func (s *Strategy) Initialize() error {
 		s.dashboardCtx, s.dashboardCancel = context.WithCancel(context.Background())
 		s.dashboardExitCtx, s.dashboardExitCancel = context.WithCancel(context.Background())
 	}
+
+	// Gate（市场质量/稳定性）
+	s.gates = gates.New(&s.Config)
 
 	// 注册订单回调（给 OMS 用）
 	s.orderUpdateOnce.Do(func() {
@@ -218,6 +224,10 @@ func (s *Strategy) OnCycle(ctx context.Context, oldMarket *domain.Market, newMar
 		s.dash.ResetSnapshot(newMarket)
 		s.dash.SendUpdate()
 	}
+
+	if s.gates != nil && newMarket != nil {
+		s.gates.OnCycle(newMarket)
+	}
 }
 
 // OnOrderUpdate 订单更新回调：转发给 OMS
@@ -237,6 +247,14 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	// 关键：无论是否交易，都更新样本（供速度/看板/套利分析）
 	if s.brain != nil {
 		s.brain.UpdateSamplesFromPriceEvent(ctx, e)
+	}
+
+	// 市场质量/稳定性 gate（职业交易员视角：先保证“盘口可交易”再谈信号）
+	if s.gates != nil {
+		ok, _ := s.gates.AllowTrade(ctx, s.TradingService, e.Market)
+		if !ok {
+			return nil
+		}
 	}
 
 	// 周期/冷却/次数 gate（与 velocityfollow 口径对齐）

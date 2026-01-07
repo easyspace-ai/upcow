@@ -75,6 +75,23 @@ type Config struct {
 
 	// ====== 自动合并 complete sets ======
 	AutoMerge common.AutoMergeConfig `yaml:"autoMerge" json:"autoMerge"`
+
+	// ====== 市场质量过滤（强烈建议开启） ======
+	EnableMarketQualityGate     bool    `yaml:"enableMarketQualityGate" json:"enableMarketQualityGate"`             // 是否启用盘口质量 gate
+	MarketQualityMinScore       float64 `yaml:"marketQualityMinScore" json:"marketQualityMinScore"`                 // 最小质量分（0..100）
+	MarketQualityMaxSpreadCents int     `yaml:"marketQualityMaxSpreadCents" json:"marketQualityMaxSpreadCents"`     // 最大一档价差（分）
+	MarketQualityMaxBookAgeMs   int     `yaml:"marketQualityMaxBookAgeMs" json:"marketQualityMaxBookAgeMs"`         // WS 盘口最大年龄（毫秒）
+
+	// ====== 价格稳定性过滤（强烈建议开启） ======
+	PriceStabilityCheckEnabled  bool    `yaml:"priceStabilityCheckEnabled" json:"priceStabilityCheckEnabled"`       // 是否启用价格稳定性检查
+	MaxPriceChangePercent       float64 `yaml:"maxPriceChangePercent" json:"maxPriceChangePercent"`                 // 最大价格变化百分比（窗口内）
+	PriceChangeWindowSeconds    int     `yaml:"priceChangeWindowSeconds" json:"priceChangeWindowSeconds"`           // 价格变化检查窗口（秒）
+	MaxSpreadVolatilityPercent  float64 `yaml:"maxSpreadVolatilityPercent" json:"maxSpreadVolatilityPercent"`       // 最大价差波动百分比（窗口内）
+
+	// ====== （预留）流动性阈值（后续接入更深档数据再启用） ======
+	MinLiquidityScore   float64 `yaml:"minLiquidityScore" json:"minLiquidityScore"`
+	MinDepthAt1Percent  float64 `yaml:"minDepthAt1Percent" json:"minDepthAt1Percent"`
+	MinTotalLiquidity   float64 `yaml:"minTotalLiquidity" json:"minTotalLiquidity"`
 }
 
 func (c *Config) Defaults() error {
@@ -210,6 +227,50 @@ func (c *Config) Defaults() error {
 		c.AutoMerge.Enabled = true
 	}
 	c.AutoMerge.Normalize()
+
+	// 市场质量过滤
+	// 默认启用（更像交易员策略：宁可不做，也别在脏盘口里做）
+	if !c.EnableMarketQualityGate {
+		c.EnableMarketQualityGate = true
+	}
+	if c.MarketQualityMinScore <= 0 {
+		c.MarketQualityMinScore = 70
+	}
+	if c.MarketQualityMaxSpreadCents <= 0 {
+		// 与 MaxSpreadCents 对齐：若用户设置了更严格的 MaxSpreadCents，则沿用
+		if c.MaxSpreadCents > 0 {
+			c.MarketQualityMaxSpreadCents = c.MaxSpreadCents
+		} else {
+			c.MarketQualityMaxSpreadCents = 2
+		}
+	}
+	if c.MarketQualityMaxBookAgeMs <= 0 {
+		c.MarketQualityMaxBookAgeMs = 3000
+	}
+
+	// 价格稳定性过滤
+	if !c.PriceStabilityCheckEnabled {
+		c.PriceStabilityCheckEnabled = true
+	}
+	if c.MaxPriceChangePercent <= 0 {
+		c.MaxPriceChangePercent = 2.0
+	}
+	if c.PriceChangeWindowSeconds <= 0 {
+		c.PriceChangeWindowSeconds = 5
+	}
+	if c.MaxSpreadVolatilityPercent <= 0 {
+		c.MaxSpreadVolatilityPercent = 50.0
+	}
+	// 预留：流动性阈值（暂不启用计算，先保留字段与默认）
+	if c.MinLiquidityScore <= 0 {
+		c.MinLiquidityScore = 2.0
+	}
+	if c.MinDepthAt1Percent <= 0 {
+		c.MinDepthAt1Percent = 10.0
+	}
+	if c.MinTotalLiquidity <= 0 {
+		c.MinTotalLiquidity = 20.0
+	}
 	return nil
 }
 
@@ -237,6 +298,24 @@ func (c *Config) Validate() error {
 	}
 	if c.HedgeOffsetCents < 0 || c.HedgeOffsetCents >= 100 {
 		return fmt.Errorf("hedgeOffsetCents 不合法")
+	}
+	if c.MarketQualityMinScore < 0 || c.MarketQualityMinScore > 100 {
+		return fmt.Errorf("marketQualityMinScore 必须在 [0,100] 范围内")
+	}
+	if c.MarketQualityMaxSpreadCents < 0 {
+		return fmt.Errorf("marketQualityMaxSpreadCents 不合法")
+	}
+	if c.MarketQualityMaxBookAgeMs < 0 {
+		return fmt.Errorf("marketQualityMaxBookAgeMs 不合法")
+	}
+	if c.MaxPriceChangePercent < 0 {
+		return fmt.Errorf("maxPriceChangePercent 不合法")
+	}
+	if c.PriceChangeWindowSeconds < 0 {
+		return fmt.Errorf("priceChangeWindowSeconds 不合法")
+	}
+	if c.MaxSpreadVolatilityPercent < 0 {
+		return fmt.Errorf("maxSpreadVolatilityPercent 不合法")
 	}
 	c.AutoMerge.Normalize()
 	return nil
@@ -279,4 +358,14 @@ func (c *Config) GetMaxNegativeProfitCents() int          { return c.MaxNegative
 
 // ====== 实现 velocityfollow/capital.ConfigInterface ======
 func (c *Config) GetAutoMerge() common.AutoMergeConfig { return c.AutoMerge }
+
+// ====== winbet/gates 配置 getter ======
+func (c *Config) GetEnableMarketQualityGate() bool     { return c.EnableMarketQualityGate }
+func (c *Config) GetMarketQualityMinScore() float64    { return c.MarketQualityMinScore }
+func (c *Config) GetMarketQualityMaxSpreadCents() int  { return c.MarketQualityMaxSpreadCents }
+func (c *Config) GetMarketQualityMaxBookAgeMs() int    { return c.MarketQualityMaxBookAgeMs }
+func (c *Config) GetPriceStabilityCheckEnabled() bool  { return c.PriceStabilityCheckEnabled }
+func (c *Config) GetMaxPriceChangePercent() float64    { return c.MaxPriceChangePercent }
+func (c *Config) GetPriceChangeWindowSeconds() int     { return c.PriceChangeWindowSeconds }
+func (c *Config) GetMaxSpreadVolatilityPercent() float64 { return c.MaxSpreadVolatilityPercent }
 
