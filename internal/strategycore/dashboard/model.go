@@ -238,6 +238,13 @@ func (m model) renderTradingStats(snap *Snapshot, width int) string {
 	} else {
 		lines = append(lines, fmt.Sprintf("Trades:%d Last:-", snap.TradesThisCycle))
 	}
+	if snap.MarketCooldownRemainingSec > 0 {
+		reason := snap.MarketCooldownReason
+		if strings.TrimSpace(reason) == "" {
+			reason = "cooldown"
+		}
+		lines = append(lines, fmt.Sprintf("Cooldown:%.0fs (%s)", snap.MarketCooldownRemainingSec, truncate(reason, 18)))
+	}
 	return strings.Join(lines, "\n")
 }
 

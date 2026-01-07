@@ -294,6 +294,13 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 		}
 	}
 
+	// per-entry 预算触发的 market 冷静期：禁止新开仓，只允许风控/对冲流程继续跑
+	if s.oms != nil {
+		if inCD, _, _ := s.oms.IsMarketInCooldown(e.Market.Slug); inCD {
+			return nil
+		}
+	}
+
 	// 库存偏斜阈值：偏斜过大时禁止继续加仓（只允许风控/对冲流程去修复）
 	if s.Config.InventoryThreshold > 0 && s.brain != nil {
 		s.brain.UpdatePositionState(ctx, e.Market)
@@ -677,6 +684,8 @@ func (s *Strategy) updateDashboard(ctx context.Context, market *domain.Market) {
 		HedgeEWMASec:       ops.HedgeEWMASec,
 		ReorderBudgetSkips: ops.ReorderBudgetSkips,
 		FAKBudgetWarnings:  ops.FAKBudgetWarnings,
+		MarketCooldownRemainingSec: ops.CooldownRemainingSec,
+		MarketCooldownReason:       ops.CooldownReason,
 
 		RiskManagement:     rm,
 		DecisionConditions: dc,

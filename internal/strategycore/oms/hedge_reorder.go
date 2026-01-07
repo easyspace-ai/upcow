@@ -92,6 +92,18 @@ func (hr *HedgeReorder) MonitorAndReorderHedge(ctx context.Context, market *doma
 				continue
 			}
 
+			// per-entry 最大存活时间：到点仍未完成对冲，直接走安全底线（FAK）并触发冷静期，避免“拖延->风暴”
+			if hr.oms != nil && market != nil {
+				_, _, _, maxAge, _ := hr.oms.entryGuardParams()
+				if maxAge > 0 && time.Since(entryFilledTime) > maxAge {
+					reorderLog.Warnf("⏳ [per-entry] entry 超过最大存活时间，触发 FAK 安全对冲并进入冷静期: entryOrderID=%s age=%.1fs maxAge=%.1fs",
+						entryOrderID, time.Since(entryFilledTime).Seconds(), maxAge.Seconds())
+					hr.oms.RecordFAK(entryOrderID, market.Slug, entryFilledTime)
+					hr.handleFakTimeout(ctx, market, entryOrderID, hedgeOrderID, hedgeAsset, hedgeShares, winner)
+					return
+				}
+			}
+
 			hedgeFilled := false
 			if hedgeOrderID != "" {
 				if ord, ok := hr.tradingService.GetOrder(hedgeOrderID); ok && ord != nil {
@@ -146,6 +158,16 @@ func (hr *HedgeReorder) MonitorAndReorderHedge(ctx context.Context, market *doma
 				reorderLog.Infof("⏰ [调价触发] 达到重下超时: now=%s deadline=%s elapsed=%.1fs entryOrderID=%s hedgeOrderID=%s",
 					now.Format("15:04:05"), reorderDeadline.Format("15:04:05"), elapsed, entryOrderID, hedgeOrderID)
 
+				// per-entry 预算：单笔最多重下 N 次；超限后不再重下（只等待 FAK/风控兜底），同时触发冷静期阻止新开仓
+				if hr.oms != nil && market != nil {
+					if !hr.oms.ConsumeReorderAttempt(entryOrderID, market.Slug, entryFilledTime) {
+						reorderLog.Warnf("⏸️ [per-entry] entry 重下预算耗尽，停止重下并等待风控/FAK: entryOrderID=%s", entryOrderID)
+						reorderDeadline = time.Now().Add(5 * time.Second)
+						reorderDone = false
+						continue
+					}
+				}
+
 				// 预算保护：超出预算则不计入 attempts，只延迟再检查，避免把系统拖进“重下风暴”
 				if hr.oms != nil && market != nil && !hr.oms.allowReorder(market.Slug) {
 					reorderLog.Warnf("⏸️ [重下预算] market=%s reorder budget exceeded, postpone", market.Slug)
@@ -187,6 +209,11 @@ func (hr *HedgeReorder) handleFakTimeout(ctx context.Context, market *domain.Mar
 	reorderLog.Warnf("⏰ 对冲单超时未成交（%d秒），撤单并以FAK吃单: entryOrderID=%s hedgeOrderID=%s",
 		hr.config.GetHedgeTimeoutFakSeconds(), entryOrderID, hedgeOrderID)
 
+	// per-entry 记录：FAK 属于安全底线，不阻断，但用于触发冷静期与统计
+	if hr.oms != nil && market != nil {
+		hr.oms.RecordFAK(entryOrderID, market.Slug, time.Now())
+	}
+
 	// FAK 是安全底线：如果预算耗尽，仍执行，但打告警（避免“为了限频而不对冲”）。
 	if hr.oms != nil && market != nil && !hr.oms.allowFAK(market.Slug) {
 		reorderLog.Warnf("⚠️ [FAK预算] market=%s FAK budget exceeded, still proceeding (safety first)", market.Slug)
@@ -195,6 +222,9 @@ func (hr *HedgeReorder) handleFakTimeout(ctx context.Context, market *domain.Mar
 	if hedgeOrderID != "" {
 		var err error
 		if hr.oms != nil {
+			if market != nil {
+				hr.oms.RecordCancel(entryOrderID, market.Slug, time.Now())
+			}
 			err = hr.oms.cancelOrder(ctx, hedgeOrderID)
 		} else {
 			err = hr.tradingService.CancelOrder(ctx, hedgeOrderID)
@@ -304,6 +334,9 @@ func (hr *HedgeReorder) reorderHedge(ctx context.Context, market *domain.Market,
 		reorderLog.Infof("🔄 [调价步骤1-撤单] 开始取消旧对冲单: hedgeOrderID=%s 原价格=%dc", hedgeOrderID, hedgePrice.ToCents())
 		var err error
 		if hr.oms != nil {
+			if market != nil {
+				hr.oms.RecordCancel(entryOrderID, market.Slug, entryFilledTime)
+			}
 			err = hr.oms.cancelOrder(ctx, hedgeOrderID)
 		} else {
 			err = hr.tradingService.CancelOrder(ctx, hedgeOrderID)

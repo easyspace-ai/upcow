@@ -124,6 +124,9 @@ type Snapshot struct {
 	ReorderBudgetSkips int64
 	FAKBudgetWarnings  int64
 
+	MarketCooldownRemainingSec float64
+	MarketCooldownReason       string
+
 	// 风控状态
 	RiskManagement *RiskManagementStatus
 
@@ -437,6 +440,9 @@ type UpdateData struct {
 	ReorderBudgetSkips int64
 	FAKBudgetWarnings  int64
 
+	MarketCooldownRemainingSec float64
+	MarketCooldownReason       string
+
 	RiskManagement     *RiskManagementStatus
 	DecisionConditions *DecisionConditions
 
@@ -528,6 +534,8 @@ func (d *Dashboard) UpdateSnapshot(ctx context.Context, market *domain.Market, d
 			d.snapshot.HedgeEWMASec = data.HedgeEWMASec
 			d.snapshot.ReorderBudgetSkips = data.ReorderBudgetSkips
 			d.snapshot.FAKBudgetWarnings = data.FAKBudgetWarnings
+			d.snapshot.MarketCooldownRemainingSec = data.MarketCooldownRemainingSec
+			d.snapshot.MarketCooldownReason = data.MarketCooldownReason
 
 			d.snapshot.RiskManagement = data.RiskManagement
 			if data.DecisionConditions != nil {
@@ -620,6 +628,8 @@ func (d *Dashboard) UpdateSnapshot(ctx context.Context, market *domain.Market, d
 		d.snapshot.HedgeEWMASec = data.HedgeEWMASec
 		d.snapshot.ReorderBudgetSkips = data.ReorderBudgetSkips
 		d.snapshot.FAKBudgetWarnings = data.FAKBudgetWarnings
+		d.snapshot.MarketCooldownRemainingSec = data.MarketCooldownRemainingSec
+		d.snapshot.MarketCooldownReason = data.MarketCooldownReason
 
 		if data.RiskManagement != nil {
 			d.snapshot.RiskManagement = data.RiskManagement
@@ -1020,6 +1030,8 @@ func (d *Dashboard) GetSnapshot() *Snapshot {
 		HedgeEWMASec:       d.snapshot.HedgeEWMASec,
 		ReorderBudgetSkips: d.snapshot.ReorderBudgetSkips,
 		FAKBudgetWarnings:  d.snapshot.FAKBudgetWarnings,
+		MarketCooldownRemainingSec: d.snapshot.MarketCooldownRemainingSec,
+		MarketCooldownReason:       d.snapshot.MarketCooldownReason,
 		RiskManagement:     d.snapshot.RiskManagement,
 		DecisionConditions: d.snapshot.DecisionConditions,
 		CycleEndTime:       d.snapshot.CycleEndTime,

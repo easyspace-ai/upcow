@@ -41,6 +41,10 @@ type OMS struct {
 	mu            sync.RWMutex
 	pendingHedges map[string]string // entryOrderID -> hedgeOrderID
 
+	// per-entry 预算 + per-market 冷静期（防止极端行情执行风暴）
+	entryBudgets map[string]*entryBudget
+	cooldowns    map[string]cooldownInfo
+
 	capital CapitalInterface
 }
 
@@ -180,6 +184,8 @@ func (o *OMS) OnCycle(ctx context.Context, oldMarket *domain.Market, newMarket *
 	defer o.mu.Unlock()
 
 	o.pendingHedges = make(map[string]string)
+	o.entryBudgets = make(map[string]*entryBudget)
+	o.cooldowns = make(map[string]cooldownInfo)
 	if o.positionManager != nil {
 		o.positionManager.OnCycle(ctx, oldMarket, newMarket)
 	}
@@ -208,6 +214,15 @@ func (o *OMS) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
 		}
 
 		if isEntryOrder && order.IsFilled() {
+			// 初始化 per-entry 预算账本（用于对冲重下/撤单/FAK 限制与冷静期）
+			o.mu.Lock()
+			at := time.Now()
+			if order.FilledAt != nil {
+				at = *order.FilledAt
+			}
+			o.initEntryBudget(order.OrderID, order.MarketSlug, at)
+			o.mu.Unlock()
+
 			// 记录 entry 成交时间（用于 hedge EWMA）
 			if o.hm != nil {
 				at := time.Now()
@@ -326,6 +341,7 @@ func (o *OMS) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
 					entryForMetrics = entryID
 				}
 				delete(o.pendingHedges, entryID)
+				o.clearEntryBudget(entryID)
 				log.Infof("✅ [OMS] 对冲订单已成交: entryID=%s hedgeID=%s", entryID, hedgeID)
 				foundInPendingHedges = true
 				shouldTriggerMerge = true
@@ -342,6 +358,7 @@ func (o *OMS) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
 						entryForMetrics = entryOrderID
 					}
 					delete(o.pendingHedges, entryOrderID)
+					o.clearEntryBudget(entryOrderID)
 					log.Infof("✅ [OMS] 对冲订单已成交（通过HedgeOrderID字段关联）: entryID=%s hedgeID=%s", entryOrderID, order.OrderID)
 					foundInPendingHedges = true
 					shouldTriggerMerge = true

@@ -123,6 +123,8 @@ func (t *NativeTUI) UpdateSnapshot(snapshot *Snapshot) {
 		HedgeEWMASec:      snapshot.HedgeEWMASec,
 		ReorderBudgetSkips: snapshot.ReorderBudgetSkips,
 		FAKBudgetWarnings:  snapshot.FAKBudgetWarnings,
+		MarketCooldownRemainingSec: snapshot.MarketCooldownRemainingSec,
+		MarketCooldownReason:       snapshot.MarketCooldownReason,
 		MergeCount:        snapshot.MergeCount,
 		MergeStatus:       snapshot.MergeStatus,
 		MergeAmount:       snapshot.MergeAmount,
@@ -545,7 +547,16 @@ func (t *NativeTUI) renderRight(snap *Snapshot, width, startX, startY int) {
 		} else {
 			t.renderText(x+1, y, fmt.Sprintf("Trades:%d Last:-", snap.TradesThisCycle), tcell.ColorDefault)
 		}
-		return y + 1
+		y++
+		if snap.MarketCooldownRemainingSec > 0 {
+			reason := snap.MarketCooldownReason
+			if strings.TrimSpace(reason) == "" {
+				reason = "cooldown"
+			}
+			t.renderText(x+1, y, fmt.Sprintf("Cooldown:%.0fs (%s)", snap.MarketCooldownRemainingSec, truncate(reason, 18)), tcell.ColorYellow)
+			y++
+		}
+		return y
 	})
 	y = t.renderSection(snap, "Orders", x, y, width, func(snap *Snapshot, y int) int {
 		t.renderText(x+1, y, fmt.Sprintf("Hedges:%d Open:%d", snap.PendingHedges, snap.OpenOrders), tcell.ColorDefault)

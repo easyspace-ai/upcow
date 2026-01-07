@@ -13,6 +13,9 @@ type OpsMetrics struct {
 
 	ReorderBudgetSkips int64
 	FAKBudgetWarnings  int64
+
+	CooldownRemainingSec float64
+	CooldownReason       string
 }
 
 func (o *OMS) GetOpsMetrics(ctx context.Context, marketSlug string) OpsMetrics {
@@ -35,6 +38,12 @@ func (o *OMS) GetOpsMetrics(ctx context.Context, marketSlug string) OpsMetrics {
 	}
 	if o.hm != nil && marketSlug != "" {
 		m.HedgeEWMASec = o.hm.getEWMASec(marketSlug)
+	}
+	if marketSlug != "" {
+		if inCD, remaining, reason := o.IsMarketInCooldown(marketSlug); inCD {
+			m.CooldownRemainingSec = remaining.Seconds()
+			m.CooldownReason = reason
+		}
 	}
 	return m
 }

@@ -652,6 +652,14 @@ func (rm *RiskManager) aggressiveHedge(ctx context.Context, exp *RiskExposure, h
 	if rm.oms != nil && market != nil && !rm.oms.allowFAK(market.Slug) {
 		riskLog.Warnf("⚠️ [FAK预算] market=%s FAK budget exceeded, still proceeding (safety first)", market.Slug)
 	}
+	// per-entry：记录 FAK（不阻断，只用于冷静期与统计）
+	if rm.oms != nil && market != nil {
+		startAt := time.Now()
+		if exp != nil && !exp.EntryFilledTime.IsZero() {
+			startAt = exp.EntryFilledTime
+		}
+		rm.oms.RecordFAK(exp.EntryOrderID, market.Slug, startAt)
+	}
 
 	// 更新状态：正在撤单（如果存在旧订单）
 	if hedgeOrder.OrderID != "" {
@@ -667,6 +675,13 @@ func (rm *RiskManager) aggressiveHedge(ctx context.Context, exp *RiskExposure, h
 		riskLog.Debugf("🔄 取消旧Hedge订单: hedgeOrderID=%s", hedgeOrder.OrderID)
 		var err error
 		if rm.oms != nil {
+			if market != nil {
+				startAt := time.Now()
+				if exp != nil && !exp.EntryFilledTime.IsZero() {
+					startAt = exp.EntryFilledTime
+				}
+				rm.oms.RecordCancel(exp.EntryOrderID, market.Slug, startAt)
+			}
 			err = rm.oms.cancelOrder(hedgeCtx, hedgeOrder.OrderID)
 		} else {
 			err = rm.tradingService.CancelOrder(hedgeCtx, hedgeOrder.OrderID)

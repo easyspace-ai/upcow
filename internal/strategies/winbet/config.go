@@ -59,6 +59,13 @@ type Config struct {
 	AggressiveHedgeTimeoutSeconds int  `yaml:"aggressiveHedgeTimeoutSeconds" json:"aggressiveHedgeTimeoutSeconds"`
 	MaxAcceptableLossCents        int  `yaml:"maxAcceptableLossCents" json:"maxAcceptableLossCents"`
 
+	// ====== per-entry 执行预算 + 冷静期（防止单笔把系统拖进重下风暴） ======
+	PerEntryMaxHedgeReorders int `yaml:"perEntryMaxHedgeReorders" json:"perEntryMaxHedgeReorders"`
+	PerEntryMaxHedgeCancels  int `yaml:"perEntryMaxHedgeCancels" json:"perEntryMaxHedgeCancels"`
+	PerEntryMaxHedgeFAK      int `yaml:"perEntryMaxHedgeFAK" json:"perEntryMaxHedgeFAK"`
+	PerEntryMaxAgeSeconds    int `yaml:"perEntryMaxAgeSeconds" json:"perEntryMaxAgeSeconds"`
+	PerEntryCooldownSeconds  int `yaml:"perEntryCooldownSeconds" json:"perEntryCooldownSeconds"`
+
 	// ====== 套利分析大脑模块 ======
 	ArbitrageBrainEnabled               bool `yaml:"arbitrageBrainEnabled" json:"arbitrageBrainEnabled"`
 	ArbitrageBrainUpdateIntervalSeconds int  `yaml:"arbitrageBrainUpdateIntervalSeconds" json:"arbitrageBrainUpdateIntervalSeconds"`
@@ -199,6 +206,23 @@ func (c *Config) Defaults() error {
 		c.MaxAcceptableLossCents = 5
 	}
 
+	// per-entry 执行预算 + 冷静期
+	if c.PerEntryMaxHedgeReorders <= 0 {
+		c.PerEntryMaxHedgeReorders = 3
+	}
+	if c.PerEntryMaxHedgeCancels <= 0 {
+		c.PerEntryMaxHedgeCancels = 6
+	}
+	if c.PerEntryMaxHedgeFAK <= 0 {
+		c.PerEntryMaxHedgeFAK = 1
+	}
+	if c.PerEntryMaxAgeSeconds <= 0 {
+		c.PerEntryMaxAgeSeconds = 120
+	}
+	if c.PerEntryCooldownSeconds <= 0 {
+		c.PerEntryCooldownSeconds = 30
+	}
+
 	// 套利分析大脑
 	if !c.ArbitrageBrainEnabled {
 		c.ArbitrageBrainEnabled = true
@@ -317,6 +341,21 @@ func (c *Config) Validate() error {
 	if c.MaxSpreadVolatilityPercent < 0 {
 		return fmt.Errorf("maxSpreadVolatilityPercent 不合法")
 	}
+	if c.PerEntryMaxHedgeReorders < 0 {
+		return fmt.Errorf("perEntryMaxHedgeReorders 不合法")
+	}
+	if c.PerEntryMaxHedgeCancels < 0 {
+		return fmt.Errorf("perEntryMaxHedgeCancels 不合法")
+	}
+	if c.PerEntryMaxHedgeFAK < 0 {
+		return fmt.Errorf("perEntryMaxHedgeFAK 不合法")
+	}
+	if c.PerEntryMaxAgeSeconds < 0 {
+		return fmt.Errorf("perEntryMaxAgeSeconds 不合法")
+	}
+	if c.PerEntryCooldownSeconds < 0 {
+		return fmt.Errorf("perEntryCooldownSeconds 不合法")
+	}
 	c.AutoMerge.Normalize()
 	return nil
 }
@@ -355,6 +394,13 @@ func (c *Config) GetHedgeReorderTimeoutSeconds() int      { return c.HedgeReorde
 func (c *Config) GetHedgeTimeoutFakSeconds() int          { return c.HedgeTimeoutFakSeconds }
 func (c *Config) GetAllowNegativeProfitOnHedgeReorder() bool { return c.AllowNegativeProfitOnHedgeReorder }
 func (c *Config) GetMaxNegativeProfitCents() int          { return c.MaxNegativeProfitCents }
+
+// ====== per-entry 执行预算 + 冷静期（strategycore/oms 可选读取） ======
+func (c *Config) GetPerEntryMaxHedgeReorders() int { return c.PerEntryMaxHedgeReorders }
+func (c *Config) GetPerEntryMaxHedgeCancels() int  { return c.PerEntryMaxHedgeCancels }
+func (c *Config) GetPerEntryMaxHedgeFAK() int      { return c.PerEntryMaxHedgeFAK }
+func (c *Config) GetPerEntryMaxAgeSeconds() int    { return c.PerEntryMaxAgeSeconds }
+func (c *Config) GetPerEntryCooldownSeconds() int  { return c.PerEntryCooldownSeconds }
 
 // ====== 实现 velocityfollow/capital.ConfigInterface ======
 func (c *Config) GetAutoMerge() common.AutoMergeConfig { return c.AutoMerge }
