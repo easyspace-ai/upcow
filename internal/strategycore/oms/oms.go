@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/execution"
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/internal/strategycore/brain"
 	"github.com/sirupsen/logrus"
@@ -17,6 +18,8 @@ var log = logrus.WithField("module", "oms")
 type OMS struct {
 	tradingService *services.TradingService
 	config         ConfigInterface
+
+	q *queuedTrading
 
 	orderExecutor   *OrderExecutor
 	positionManager *PositionManager
@@ -35,6 +38,9 @@ func New(ts *services.TradingService, cfg ConfigInterface, strategyID string) (*
 		return nil, nil
 	}
 
+	// 串行化写操作，避免并发打架（默认 25ms 节流）
+	q := newQueuedTrading(ts, 256, 25*time.Millisecond)
+
 	oe := NewOrderExecutor(ts, cfg, strategyID)
 	pm := NewPositionManager(ts, cfg)
 	rm := NewRiskManager(ts, cfg)
@@ -43,6 +49,7 @@ func New(ts *services.TradingService, cfg ConfigInterface, strategyID string) (*
 	oms := &OMS{
 		tradingService:  ts,
 		config:          cfg,
+		q:               q,
 		orderExecutor:   oe,
 		positionManager: pm,
 		riskManager:     rm,
@@ -55,6 +62,28 @@ func New(ts *services.TradingService, cfg ConfigInterface, strategyID string) (*
 	rm.SetOMS(oms)
 
 	return oms, nil
+}
+
+// 写操作统一入口（串行化）
+func (o *OMS) placeOrder(ctx context.Context, order *domain.Order) (*domain.Order, error) {
+	if o != nil && o.q != nil {
+		return o.q.PlaceOrder(ctx, order)
+	}
+	return o.tradingService.PlaceOrder(ctx, order)
+}
+
+func (o *OMS) cancelOrder(ctx context.Context, orderID string) error {
+	if o != nil && o.q != nil {
+		return o.q.CancelOrder(ctx, orderID)
+	}
+	return o.tradingService.CancelOrder(ctx, orderID)
+}
+
+func (o *OMS) executeMultiLeg(ctx context.Context, req execution.MultiLegRequest) ([]*domain.Order, error) {
+	if o != nil && o.q != nil {
+		return o.q.ExecuteMultiLeg(ctx, req)
+	}
+	return o.tradingService.ExecuteMultiLeg(ctx, req)
 }
 
 func (o *OMS) SetCapital(capital CapitalInterface) {
@@ -362,6 +391,9 @@ func (o *OMS) startMonitoringForExistingHedges(ctx context.Context) {
 func (o *OMS) Stop() {
 	if o.riskManager != nil {
 		o.riskManager.Stop()
+	}
+	if o.q != nil {
+		o.q.Close()
 	}
 }
 

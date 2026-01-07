@@ -660,7 +660,13 @@ func (rm *RiskManager) aggressiveHedge(ctx context.Context, exp *RiskExposure, h
 
 		// 1. 取消旧的Hedge订单
 		riskLog.Debugf("🔄 取消旧Hedge订单: hedgeOrderID=%s", hedgeOrder.OrderID)
-		if err := rm.tradingService.CancelOrder(hedgeCtx, hedgeOrder.OrderID); err != nil {
+		var err error
+		if rm.oms != nil {
+			err = rm.oms.cancelOrder(hedgeCtx, hedgeOrder.OrderID)
+		} else {
+			err = rm.tradingService.CancelOrder(hedgeCtx, hedgeOrder.OrderID)
+		}
+		if err != nil {
 			riskLog.Warnf("⚠️ 取消Hedge订单失败: hedgeOrderID=%s err=%v", hedgeOrder.OrderID, err)
 			// 即使取消失败，也继续尝试（可能订单已经不存在）
 		}
@@ -770,7 +776,12 @@ func (rm *RiskManager) aggressiveHedge(ctx context.Context, exp *RiskExposure, h
 	entryOrderID := exp.EntryOrderID
 	fakHedgeOrder.HedgeOrderID = &entryOrderID
 
-	hedgeResult, err := rm.tradingService.PlaceOrder(hedgeCtx, fakHedgeOrder)
+	var hedgeResult *domain.Order
+	if rm.oms != nil {
+		hedgeResult, err = rm.oms.placeOrder(hedgeCtx, fakHedgeOrder)
+	} else {
+		hedgeResult, err = rm.tradingService.PlaceOrder(hedgeCtx, fakHedgeOrder)
+	}
 	if err != nil {
 		riskLog.Errorf("❌ 激进对冲下单失败: err=%v (Entry已成交，存在风险敞口)", err)
 		return

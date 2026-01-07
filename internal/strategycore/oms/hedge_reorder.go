@@ -179,7 +179,13 @@ func (hr *HedgeReorder) handleFakTimeout(ctx context.Context, market *domain.Mar
 		hr.config.GetHedgeTimeoutFakSeconds(), entryOrderID, hedgeOrderID)
 
 	if hedgeOrderID != "" {
-		if err := hr.tradingService.CancelOrder(ctx, hedgeOrderID); err != nil {
+		var err error
+		if hr.oms != nil {
+			err = hr.oms.cancelOrder(ctx, hedgeOrderID)
+		} else {
+			err = hr.tradingService.CancelOrder(ctx, hedgeOrderID)
+		}
+		if err != nil {
 			reorderLog.Warnf("⚠️ 取消对冲单失败: orderID=%s err=%v", hedgeOrderID, err)
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -222,7 +228,12 @@ func (hr *HedgeReorder) handleFakTimeout(ctx context.Context, market *domain.Mar
 	entryOrderIDRef := entryOrderID
 	fakHedgeOrder.HedgeOrderID = &entryOrderIDRef
 
-	fakHedgeResult, err := hr.tradingService.PlaceOrder(fakCtx, fakHedgeOrder)
+	var fakHedgeResult *domain.Order
+	if hr.oms != nil {
+		fakHedgeResult, err = hr.oms.placeOrder(fakCtx, fakHedgeOrder)
+	} else {
+		fakHedgeResult, err = hr.tradingService.PlaceOrder(fakCtx, fakHedgeOrder)
+	}
 	if err != nil {
 		reorderLog.Errorf("❌ 以FAK吃单失败: err=%v (主单已成交，存在风险敞口)", err)
 		return
@@ -277,7 +288,13 @@ func (hr *HedgeReorder) reorderHedge(ctx context.Context, market *domain.Market,
 
 	if hedgeOrderID != "" {
 		reorderLog.Infof("🔄 [调价步骤1-撤单] 开始取消旧对冲单: hedgeOrderID=%s 原价格=%dc", hedgeOrderID, hedgePrice.ToCents())
-		if err := hr.tradingService.CancelOrder(ctx, hedgeOrderID); err != nil {
+		var err error
+		if hr.oms != nil {
+			err = hr.oms.cancelOrder(ctx, hedgeOrderID)
+		} else {
+			err = hr.tradingService.CancelOrder(ctx, hedgeOrderID)
+		}
+		if err != nil {
 			reorderLog.Errorf("❌ [调价步骤1-撤单] 取消旧对冲单失败: orderID=%s err=%v", hedgeOrderID, err)
 			return "", false
 		}
@@ -404,7 +421,12 @@ func (hr *HedgeReorder) reorderHedge(ctx context.Context, market *domain.Market,
 	newHedgeOrder.HedgeOrderID = &entryOrderIDRef
 
 	reorderLog.Infof("📤 [调价步骤4-重新下单] 提交新对冲单到交易服务...")
-	newHedgeResult, err := hr.tradingService.PlaceOrder(reorderCtx, newHedgeOrder)
+	var newHedgeResult *domain.Order
+	if hr.oms != nil {
+		newHedgeResult, err = hr.oms.placeOrder(reorderCtx, newHedgeOrder)
+	} else {
+		newHedgeResult, err = hr.tradingService.PlaceOrder(reorderCtx, newHedgeOrder)
+	}
 	if err != nil {
 		reorderLog.Errorf("❌ [调价步骤4-重新下单] 重新下对冲单失败: err=%v", err)
 		return "", false

@@ -159,7 +159,12 @@ func (oe *OrderExecutor) ExecuteParallel(ctx context.Context, market *domain.Mar
 		Hedge: execution.AutoHedgeConfig{Enabled: false},
 	}
 
-	createdOrders, err := oe.tradingService.ExecuteMultiLeg(ctx, req)
+	var createdOrders []*domain.Order
+	if oe.oms != nil {
+		createdOrders, err = oe.oms.executeMultiLeg(ctx, req)
+	} else {
+		createdOrders, err = oe.tradingService.ExecuteMultiLeg(ctx, req)
+	}
 	if err != nil {
 		return fmt.Errorf("执行多腿订单失败: %w", err)
 	}
@@ -217,6 +222,9 @@ func (oe *OrderExecutor) placeEntryOrder(ctx context.Context, market *domain.Mar
 		CreatedAt:    time.Now(),
 		OrderType:    types.OrderTypeFAK,
 	}
+	if oe.oms != nil {
+		return oe.oms.placeOrder(ctx, order)
+	}
 	return oe.tradingService.PlaceOrder(ctx, order)
 }
 
@@ -240,6 +248,9 @@ func (oe *OrderExecutor) placeHedgeOrder(ctx context.Context, market *domain.Mar
 		Status:       domain.OrderStatusPending,
 		CreatedAt:    time.Now(),
 		OrderType:    types.OrderTypeGTC,
+	}
+	if oe.oms != nil {
+		return oe.oms.placeOrder(ctx, order)
 	}
 	return oe.tradingService.PlaceOrder(ctx, order)
 }
