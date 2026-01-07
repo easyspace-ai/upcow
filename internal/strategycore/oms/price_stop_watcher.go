@@ -252,8 +252,10 @@ func (o *OMS) lockLossByFAK(
 		Size:         remaining,
 		OrderType:    types.OrderTypeFAK,
 		IsEntryOrder: false,
-		Status:       domain.OrderStatusPending,
-		CreatedAt:    time.Now(),
+		// 风控动作：允许绕过短时 risk-off（否则极端情况下可能拒单，导致敞口扩大）
+		BypassRiskOff: true,
+		Status:        domain.OrderStatusPending,
+		CreatedAt:     time.Now(),
 	}
 	entryRef := entryOrderID
 	fakOrder.HedgeOrderID = &entryRef
