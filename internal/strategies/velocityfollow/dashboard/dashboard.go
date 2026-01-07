@@ -343,7 +343,6 @@ func (d *Dashboard) CheckAndResetOnMarketChange(market *domain.Market) bool {
 	}
 
 	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	// 如果市场 slug 发生变化，说明周期已切换，需要重置快照
 	if d.snapshot != nil && d.snapshot.MarketSlug != "" && d.snapshot.MarketSlug != market.Slug {
@@ -380,15 +379,28 @@ func (d *Dashboard) CheckAndResetOnMarketChange(market *domain.Market) bool {
 				drained = true
 			}
 		}
-		// 发送重置后的快照到 UI
+
+		// 原生 TUI：必须直接推送，否则 updateCh 不会被消费，导致切周期后 UI 不及时刷新
+		if d.useNativeTUI && d.nativeTUI != nil {
+			snapshot := d.snapshot
+			native := d.nativeTUI
+			d.mu.Unlock()
+			native.UpdateSnapshot(snapshot)
+			log.Debugf("✅ [Dashboard] 已发送重置后的快照到原生TUI")
+			return true
+		}
+
+		// Bubble Tea：发送重置后的快照到 UI
 		select {
 		case d.updateCh <- d.snapshot:
 			log.Debugf("✅ [Dashboard] 已发送重置后的快照到 UI")
 		default:
 			log.Warnf("⚠️ [Dashboard] 发送重置后的快照失败（channel 已满）")
 		}
+		d.mu.Unlock()
 		return true // 发生了市场切换
 	}
+	d.mu.Unlock()
 	return false // 没有发生市场切换
 }
 
