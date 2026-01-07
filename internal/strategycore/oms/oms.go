@@ -2,10 +2,12 @@ package oms
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/betbot/gobet/clob/types"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/execution"
 	"github.com/betbot/gobet/internal/services"
@@ -335,11 +337,11 @@ func (o *OMS) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
 
 	var shouldTriggerMerge bool
 	var marketSlug string
+	var entryForMetrics string
 
 	o.mu.Lock()
 	if order.IsFilled() && !order.IsEntryOrder {
 		// 记录 hedge 成交耗时（优先用 HedgeOrderID 关联 entry）
-		entryForMetrics := ""
 		if order.HedgeOrderID != nil && *order.HedgeOrderID != "" {
 			entryForMetrics = *order.HedgeOrderID
 		}
@@ -404,10 +406,47 @@ func (o *OMS) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
 			if o.tradingService != nil {
 				market := o.tradingService.GetCurrentMarketInfo()
 				if market != nil {
-					log.Infof("🔄 [OMS] 对冲单完成，立即触发合并当前周期持仓: market=%s orderID=%s", market.Slug, order.OrderID)
+					log.Infof("🔄 [OMS] 对冲单完成，立即触发合并当前周期持仓: market=%s entryOrderID=%s hedgeOrderID=%s", 
+						market.Slug, entryForMetrics, order.OrderID)
 					go func() {
+						mergeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						defer cancel()
+						
+						// ✅ 从配置获取 merge 触发延迟时间（默认 15 秒）
+						mergeDelaySeconds := 15
+						if o.config != nil {
+							autoMerge := o.config.GetAutoMerge()
+							if autoMerge.MergeTriggerDelaySeconds > 0 {
+								mergeDelaySeconds = autoMerge.MergeTriggerDelaySeconds
+							}
+						}
+						
+						// ✅ 延迟等待，确保持仓数据完全同步到交易所和 Data API
+						log.Infof("⏳ [OMS] 等待 %d 秒，确保持仓数据完全同步: market=%s", mergeDelaySeconds, market.Slug)
+						time.Sleep(time.Duration(mergeDelaySeconds) * time.Second)
+						
+						// ✅ 主动同步持仓数据：从 Data API 获取最新持仓并更新到 OrderEngine
+						log.Infof("🔄 [OMS] 开始同步持仓数据: market=%s", market.Slug)
+						if err := o.tradingService.ReconcileMarketPositionsFromDataAPI(mergeCtx, market); err != nil {
+							log.Warnf("⚠️ [OMS] 同步持仓数据失败: market=%s err=%v (继续执行 merge)", market.Slug, err)
+						} else {
+							log.Infof("✅ [OMS] 持仓数据同步完成: market=%s", market.Slug)
+						}
+						
+						// 短暂延迟，确保持仓数据已写入 OrderEngine
 						time.Sleep(500 * time.Millisecond)
-						o.capital.TryMergeCurrentCycle(context.Background(), market)
+						
+						// 在 merge 前再次检查持仓，记录详细日志
+						positions := o.tradingService.GetOpenPositionsForMarket(market.Slug)
+						log.Infof("🔍 [OMS] Merge 前持仓检查: market=%s 持仓数量=%d", market.Slug, len(positions))
+						for i, pos := range positions {
+							if pos != nil {
+								log.Infof("🔍 [OMS] 持仓[%d]: positionID=%s tokenType=%s size=%.4f status=%s", 
+									i, pos.ID, pos.TokenType, pos.Size, pos.Status)
+							}
+						}
+						
+						o.capital.TryMergeCurrentCycle(mergeCtx, market)
 						log.Debugf("✅ [OMS] 合并操作已触发: market=%s orderID=%s", market.Slug, order.OrderID)
 					}()
 				} else {
@@ -564,6 +603,183 @@ func (o *OMS) Stop() {
 
 func (o *OMS) GetRiskManager() *RiskManager   { return o.riskManager }
 func (o *OMS) GetHedgeReorder() *HedgeReorder { return o.hedgeReorder }
+
+// AutoHedgePosition 自动对冲持仓不平衡（由 PositionMonitor 或策略层调用）
+// hedgeDirection: 要买的对冲方向（TokenTypeUp=买UP，TokenTypeDown=买DOWN）
+// entryOrder: 主单订单（用于启动价格盯盘），如果为 nil 则不启动价格盯盘
+func (o *OMS) AutoHedgePosition(ctx context.Context, market *domain.Market, hedgeDirection domain.TokenType, size float64, entryOrder *domain.Order) error {
+	if o == nil || market == nil || size <= 0 {
+		return fmt.Errorf("参数无效")
+	}
+
+	// 获取当前市场价格
+	_, yesAsk, _, noAsk, _, err := o.tradingService.GetTopOfBook(ctx, market)
+	if err != nil {
+		return fmt.Errorf("获取订单簿价格失败: %w", err)
+	}
+
+	// ✅ 确定对冲订单参数：根据要买的对冲方向选择 AssetID 和价格
+	var hedgeAssetID string
+	var hedgePrice domain.Price
+	var hedgeTokenType domain.TokenType
+	var entryPriceCents int
+	if hedgeDirection == domain.TokenTypeUp {
+		// 要买 UP 来对冲（对冲 DOWN 持仓）
+		hedgeAssetID = market.YesAssetID
+		hedgePrice = yesAsk
+		hedgeTokenType = domain.TokenTypeUp
+	} else {
+		// 要买 DOWN 来对冲（对冲 UP 持仓）
+		hedgeAssetID = market.NoAssetID
+		hedgePrice = noAsk
+		hedgeTokenType = domain.TokenTypeDown
+	}
+
+	// ✅ 计算理想对冲价格：使用 entry 订单的成交价格（如果有）来计算理想对冲价格
+	// 理想对冲价格 = 100 - entry价格 - hedgeOffsetCents
+	// 这样可以确保对冲后的净收益接近 hedgeOffsetCents
+	if entryOrder != nil && entryOrder.FilledPrice != nil {
+		entryPriceCents = entryOrder.FilledPrice.ToCents()
+	} else if entryOrder != nil {
+		entryPriceCents = entryOrder.Price.ToCents()
+	}
+	
+	// 如果配置了 hedgeOffsetCents，且 entry 订单价格已知，计算理想对冲价格
+	if entryPriceCents > 0 && o.config != nil {
+		hedgeOffsetCents := o.config.GetHedgeOffsetCents()
+		idealHedgeCents := 100 - entryPriceCents - hedgeOffsetCents
+		if idealHedgeCents >= 1 && idealHedgeCents <= 99 {
+			// 使用理想价格和市场价格中的较小值（更保守，避免过度支付）
+			currentHedgeCents := hedgePrice.ToCents()
+			if idealHedgeCents < currentHedgeCents {
+				// 从 cents 转换为 Price：1 cent = 0.01，使用 PriceFromDecimal
+				hedgePrice = domain.PriceFromDecimal(float64(idealHedgeCents) / 100.0)
+				log.Debugf("💰 [OMS] 使用理想对冲价格: entryPrice=%dc offset=%dc idealHedge=%dc marketAsk=%dc finalPrice=%dc",
+					entryPriceCents, hedgeOffsetCents, idealHedgeCents, currentHedgeCents, idealHedgeCents)
+			} else {
+				log.Debugf("💰 [OMS] 理想对冲价格高于市场价，使用市场价: entryPrice=%dc offset=%dc idealHedge=%dc marketAsk=%dc finalPrice=%dc",
+					entryPriceCents, hedgeOffsetCents, idealHedgeCents, currentHedgeCents, currentHedgeCents)
+			}
+		}
+	}
+
+	if hedgePrice.Pips <= 0 {
+		return fmt.Errorf("对冲价格无效: %d", hedgePrice.Pips)
+	}
+
+	// ✅ FAK 订单精度要求：
+	// - Price: 2位小数（tick size 0.01）
+	// - Size: 4位小数
+	// - USDC金额: 2位小数
+	// - 最小金额: $1 USDC
+	priceDecimal := hedgePrice.ToDecimal()
+	
+	// 确保价格是 2 位小数
+	priceDecimal = float64(int(priceDecimal*100+0.5)) / 100
+	
+	// 确保数量是 4 位小数
+	hedgeSize := float64(int(size*10000+0.5)) / 10000
+	
+	// 计算 USDC 金额并确保是 2 位小数
+	usdcValue := hedgeSize * priceDecimal
+	usdcValue = float64(int(usdcValue*100+0.5)) / 100
+	
+	// 如果买入订单，确保最小订单金额
+	// ⚠️ 重要：Polymarket 要求市场买入订单（FAK/GTC BUY）的最小金额为 $1 USDC
+	minOrderUSDC := 1.01 // 默认值（留一点余量，避免舍入误差）
+	if o.config != nil {
+		configMinOrderUSDC := o.config.GetMinOrderUSDC()
+		if configMinOrderUSDC > 0 {
+			minOrderUSDC = configMinOrderUSDC
+		}
+	}
+	
+	if priceDecimal > 0 {
+		// 迭代调整，确保最终金额满足最小要求
+		maxIterations := 5
+		for i := 0; i < maxIterations; i++ {
+			usdcValue = hedgeSize * priceDecimal
+			usdcValue = float64(int(usdcValue*100+0.5)) / 100 // 舍入到 2 位小数
+			
+			if usdcValue >= minOrderUSDC {
+				break // 满足要求，退出循环
+			}
+			
+			// 不满足要求，调整 size
+			requiredSize := minOrderUSDC / priceDecimal
+			hedgeSize = float64(int(requiredSize*10000+0.5)) / 10000 // 舍入到 4 位小数
+			
+			// 确保最小 token 数量
+			const minTokenSize = 0.1
+			if hedgeSize < minTokenSize {
+				hedgeSize = minTokenSize
+			}
+		}
+		
+		// 最终检查：如果仍然不满足，强制调整
+		usdcValue = hedgeSize * priceDecimal
+		usdcValue = float64(int(usdcValue*100+0.5)) / 100
+		if usdcValue < minOrderUSDC {
+			// 强制调整到至少满足最小金额要求
+			requiredSize := minOrderUSDC / priceDecimal
+			hedgeSize = float64(int(requiredSize*10000+0.5)) / 10000
+			usdcValue = hedgeSize * priceDecimal
+			usdcValue = float64(int(usdcValue*100+0.5)) / 100
+			log.Warnf("⚠️ [OMS] 强制调整对冲订单大小以满足最小金额要求: size=%.4f price=%.2f usdcValue=%.2f minOrderUSDC=%.2f",
+				hedgeSize, priceDecimal, usdcValue, minOrderUSDC)
+		}
+	}
+	
+	// 将价格转换回 Price 类型
+	hedgePrice = domain.PriceFromDecimal(priceDecimal)
+
+	// ✅ 修复：对冲单使用 GTC 而不是 FAK
+	// FAK 订单要求立即匹配，如果订单簿没有匹配的订单会被取消
+	// 对于对冲单，我们使用 GTC 订单，让它留在订单簿中等待成交
+	// 这样即使当前订单簿暂时没有匹配，订单也会保留，后续有匹配时自动成交
+	// 如果确实需要快速成交，可以使用略高于 ask 的价格（但这里使用 ask 价格即可）
+	hedgeOrder := &domain.Order{
+		MarketSlug:   market.Slug,
+		AssetID:      hedgeAssetID,
+		TokenType:    hedgeTokenType, // ✅ 修复：使用正确的 TokenType（要买的对冲方向）
+		Side:         types.SideBuy,
+		Price:        hedgePrice,
+		Size:         hedgeSize,
+		OrderType:    types.OrderTypeGTC, // ✅ 使用 GTC 而不是 FAK，让订单留在订单簿中等待成交
+		IsEntryOrder: false,
+		BypassRiskOff: true, // 风控动作：允许绕过短时 risk-off
+		DisableSizeAdjust: true, // 严格一对一：避免系统自动放大 size
+		Status:       domain.OrderStatusPending,
+		CreatedAt:    time.Now(),
+	}
+
+	result, err := o.placeOrder(ctx, hedgeOrder)
+	if err != nil {
+		return fmt.Errorf("下对冲单失败: %w", err)
+	}
+
+	if result == nil || result.OrderID == "" {
+		return fmt.Errorf("对冲订单创建失败")
+	}
+
+	log.Infof("✅ [OMS] 自动对冲已执行: market=%s hedgeDirection=%s hedgeTokenType=%s size=%.4f price=%.2f usdcValue=%.2f orderID=%s",
+		market.Slug, hedgeDirection, hedgeTokenType, hedgeSize, priceDecimal, usdcValue, result.OrderID)
+
+	// ✅ 注册到 pendingHedges：确保对冲单能被正确识别为系统订单，避免递归对冲
+	if entryOrder != nil && entryOrder.OrderID != "" {
+		o.RecordPendingHedge(entryOrder.OrderID, result.OrderID)
+		log.Debugf("📝 [OMS] 已注册对冲单到 pendingHedges: entryOrderID=%s hedgeOrderID=%s", entryOrder.OrderID, result.OrderID)
+	}
+
+	// ✅ 启动价格盯盘：如果提供了 entry 订单，在对冲单创建成功后启动价格盯盘
+	// 价格盯盘会实时监控价格变化，一旦超过价格区间（soft/hard stop 或 take profit），立即市价锁定
+	if entryOrder != nil && entryOrder.OrderID != "" {
+		o.startPriceStopWatcher(entryOrder, result.OrderID)
+		log.Debugf("📉 [OMS] 已启动价格盯盘: entryOrderID=%s hedgeOrderID=%s", entryOrder.OrderID, result.OrderID)
+	}
+
+	return nil
+}
 
 func (o *OMS) GetRiskManagementStatus() *RiskManagementStatus {
 	status := &RiskManagementStatus{CurrentAction: "idle"}

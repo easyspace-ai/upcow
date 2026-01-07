@@ -114,11 +114,13 @@ func (o *OMS) priceStopParams() priceStopParams {
 
 func (o *OMS) startPriceStopWatcher(entryOrder *domain.Order, hedgeOrderID string) {
 	if o == nil || entryOrder == nil || entryOrder.OrderID == "" || hedgeOrderID == "" {
+		priceStopLog.Debugf("⚠️ [PriceStop] 跳过注册：参数无效 entryOrder=%v hedgeOrderID=%s", entryOrder != nil, hedgeOrderID)
 		return
 	}
 
 	pp := o.priceStopParams()
 	if !pp.enabled {
+		priceStopLog.Debugf("⚠️ [PriceStop] 跳过注册：功能未启用 entryOrderID=%s", entryOrder.OrderID)
 		return
 	}
 

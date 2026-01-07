@@ -1062,12 +1062,31 @@ func (e *OrderEngine) updatePositionFromTrade(trade *domain.Trade, order *domain
 		// 兜底：使用 trade 的 TokenType
 		tokenType = trade.TokenType
 	}
-	// 最后兜底：根据 AssetID 推断
+	// 最后兜底：根据 AssetID 推断（这是最可靠的，因为 assetID 是唯一标识）
 	if tokenType == "" && trade.Market != nil && order.AssetID != "" {
 		if order.AssetID == trade.Market.YesAssetID {
 			tokenType = domain.TokenTypeUp
 		} else if order.AssetID == trade.Market.NoAssetID {
 			tokenType = domain.TokenTypeDown
+		}
+	}
+
+	// ✅ 关键修复：对于手动下单的订单，order.TokenType 可能错误
+	// 根据 assetID 和 market 重新验证并修正 TokenType（assetID 是最可靠的标识）
+	if trade.Market != nil && order.AssetID != "" {
+		var correctTokenType domain.TokenType
+		if order.AssetID == trade.Market.YesAssetID {
+			correctTokenType = domain.TokenTypeUp
+		} else if order.AssetID == trade.Market.NoAssetID {
+			correctTokenType = domain.TokenTypeDown
+		}
+		// 如果推断出的 TokenType 与 order 的 TokenType 不一致，使用正确的 TokenType
+		if correctTokenType != domain.TokenType("") && tokenType != correctTokenType {
+			orderEngineLog.Warnf("⚠️ [持仓更新] TokenType 不一致，已修正: orderID=%s assetID=%s orderTokenType=%s correctTokenType=%s",
+				order.OrderID, order.AssetID, tokenType, correctTokenType)
+			tokenType = correctTokenType
+			// 更新 order 的 TokenType，确保后续 getPositionID 使用正确的值
+			order.TokenType = correctTokenType
 		}
 	}
 

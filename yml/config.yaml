@@ -23,6 +23,7 @@ log_by_cycle: true
 
 minOrderSize: 0.1
 minShareSize: 5.0
+defaultFeeRateBps: 1000  # 默认订单费率（bps），0=maker费率，1000=10% taker费率
 
 order_status_sync_interval_with_orders: 3
 order_status_sync_interval_without_orders: 30

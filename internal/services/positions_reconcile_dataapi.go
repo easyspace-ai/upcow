@@ -10,7 +10,10 @@ import (
 	"time"
 
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/sirupsen/logrus"
 )
+
+var reconcileLog = logrus.WithField("component", "positions_reconcile")
 
 // FetchMarketTokenSizesFromDataAPI returns the current YES/NO token sizes (shares) for the given market,
 // as observed by Polymarket Data API positions endpoint.
@@ -99,9 +102,11 @@ func (s *TradingService) ReconcileMarketPositionsFromDataAPI(ctx context.Context
 	}
 
 	yesSz, noSz, err := s.FetchMarketTokenSizesFromDataAPI(ctx, market)
-	if err != nil {
+		if err != nil {
+		reconcileLog.Warnf("⚠️ [ReconcileMarketPositions] 从 Data API 获取持仓失败: market=%s err=%v", market.Slug, err)
 		return err
 	}
+	reconcileLog.Infof("📊 [ReconcileMarketPositions] Data API 返回持仓: market=%s UP=%.4f DOWN=%.4f", market.Slug, yesSz, noSz)
 
 	// Helper: upsert a position size
 	upsert := func(token domain.TokenType, desired float64) error {
@@ -111,8 +116,15 @@ func (s *TradingService) ReconcileMarketPositionsFromDataAPI(ctx context.Context
 		}
 		positionID := fmt.Sprintf("%s_%s_%s", market.Slug, assetID, token)
 
-		// If desired <= 0: close if exists
+		// If desired <= 0: check if local position exists
+		// If local position exists and has size > 0, preserve it (Data API may not be synced yet)
 		if desired <= 0 {
+			if p, e := s.GetPosition(positionID); e == nil && p != nil && p.IsOpen() && p.Size > 0 {
+				reconcileLog.Warnf("⚠️ [ReconcileMarketPositions] Data API 返回 0，但本地有持仓，保留本地持仓: positionID=%s tokenType=%s localSize=%.4f", 
+					positionID, token, p.Size)
+				return nil // 保留本地持仓，不覆盖
+			}
+			// Only close if local position doesn't exist or is already closed
 			if p, e := s.GetPosition(positionID); e == nil && p != nil && p.IsOpen() {
 				return s.UpdatePosition(ctx, positionID, func(pp *domain.Position) {
 					pp.Size = 0
@@ -124,6 +136,10 @@ func (s *TradingService) ReconcileMarketPositionsFromDataAPI(ctx context.Context
 
 		// If exists: update size
 		if p, e := s.GetPosition(positionID); e == nil && p != nil {
+			oldSize := p.Size
+			oldStatus := p.Status
+			reconcileLog.Infof("📝 [ReconcileMarketPositions] 更新持仓: positionID=%s tokenType=%s oldSize=%.4f oldStatus=%s newSize=%.4f", 
+				positionID, token, oldSize, oldStatus, desired)
 			return s.UpdatePosition(ctx, positionID, func(pp *domain.Position) {
 				pp.MarketSlug = market.Slug
 				pp.TokenType = token
@@ -136,6 +152,8 @@ func (s *TradingService) ReconcileMarketPositionsFromDataAPI(ctx context.Context
 		}
 
 		// Otherwise: create
+		reconcileLog.Infof("📝 [ReconcileMarketPositions] 创建新持仓: positionID=%s tokenType=%s size=%.4f", 
+			positionID, token, desired)
 		cp := *market
 		return s.CreatePosition(ctx, &domain.Position{
 			ID:         positionID,

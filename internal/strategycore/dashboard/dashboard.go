@@ -137,6 +137,9 @@ type Snapshot struct {
 	GateAllowed bool
 	GateReason  string
 
+	// 价格盯盘状态（实时盯盘协程信息）
+	PriceStopWatches *PriceStopWatchesStatus
+
 	// 周期信息
 	CycleEndTime      time.Time
 	CycleRemainingSec float64
@@ -181,6 +184,32 @@ type RiskExposureInfo struct {
 	OriginalHedgePriceCents int
 	NewHedgePriceCents      int
 	CountdownSeconds        float64
+}
+
+// PriceStopWatchesStatus 价格盯盘状态信息
+type PriceStopWatchesStatus struct {
+	Enabled          bool
+	ActiveWatches    int
+	WatchDetails     []PriceStopWatchInfo
+	SoftLossCents    int
+	HardLossCents    int
+	TakeProfitCents  int
+	ConfirmTicks     int
+	LastEvalTime     time.Time
+}
+
+// PriceStopWatchInfo 单个价格盯盘协程的详细信息
+type PriceStopWatchInfo struct {
+	EntryOrderID     string
+	EntryTokenType   string
+	EntryPriceCents  int
+	EntrySize        float64
+	HedgeOrderID     string
+	CurrentProfitCents int
+	SoftHits         int
+	TakeProfitHits   int
+	LastEvalTime     time.Time
+	Status           string // "monitoring" | "triggered" | "completed"
 }
 
 // DecisionConditions 决策条件状态（复制结构，避免循环导入）
@@ -325,19 +354,23 @@ func (d *Dashboard) applyLogRedirect() {
 		return
 	}
 
+	// 关键修复：只使用 dashboard 日志文件，不包含 stdout，避免日志输出到终端打乱 UI
+	// 原有的日志系统（pkg/logger）已经配置了文件输出，会继续独立写入其配置的文件
+	// Dashboard 只负责写入自己的日志文件
+	// 注意：不修改 logger.Logger 的输出，让它继续使用原有的配置（包含文件输出）
+	
+	// 只使用 dashboard 日志文件（不包含 stdout）
 	logrus.SetOutput(d.logFile)
 	logrus.SetFormatter(&logrus.TextFormatter{
 		FullTimestamp:   true,
 		TimestampFormat: "2006-01-02 15:04:05",
 		DisableColors:   true,
 	})
+	// 注意：不修改 logger.Logger 的输出，让它继续使用原有的配置
+	// 这样原有的日志文件（bot_*.log, market logs）会继续由 logger 系统写入
 	if logger.Logger != nil {
-		logger.Logger.SetOutput(d.logFile)
-		logger.Logger.SetFormatter(&logrus.TextFormatter{
-			FullTimestamp:   true,
-			TimestampFormat: "2006-01-02 15:04:05",
-			DisableColors:   true,
-		})
+		// logger.Logger 保持原有输出配置，不修改
+		// 这样原有日志文件会继续写入，且不会输出到终端（因为 logger 的配置可能已经排除了 stdout）
 	}
 }
 
@@ -454,6 +487,9 @@ type UpdateData struct {
 	GateAllowed bool
 	GateReason  string
 
+	// 价格盯盘状态（实时盯盘协程信息）
+	PriceStopWatches *PriceStopWatchesStatus
+
 	CycleEndTime      time.Time
 	CycleRemainingSec float64
 }
@@ -558,6 +594,8 @@ func (d *Dashboard) UpdateSnapshot(ctx context.Context, market *domain.Market, d
 				d.snapshot.GateReason = data.GateReason
 			}
 
+			d.snapshot.PriceStopWatches = data.PriceStopWatches
+
 			d.snapshot.CycleEndTime = data.CycleEndTime
 			d.snapshot.CycleRemainingSec = data.CycleRemainingSec
 		}
@@ -656,6 +694,7 @@ func (d *Dashboard) UpdateSnapshot(ctx context.Context, market *domain.Market, d
 			d.snapshot.GateAllowed = data.GateAllowed
 			d.snapshot.GateReason = data.GateReason
 		}
+		d.snapshot.PriceStopWatches = data.PriceStopWatches
 		if !data.CycleEndTime.IsZero() {
 			d.snapshot.CycleEndTime = data.CycleEndTime
 		}

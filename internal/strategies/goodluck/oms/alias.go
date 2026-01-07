@@ -1,0 +1,18 @@
+package oms
+
+import (
+	"github.com/betbot/gobet/internal/services"
+	core "github.com/betbot/gobet/internal/strategycore/oms"
+)
+
+// 说明：goodluck/oms 作为 goodluck 的模块边界；实现复用 internal/strategycore/oms。
+
+type ConfigInterface = core.ConfigInterface
+type CapitalInterface = core.CapitalInterface
+
+type OMS = core.OMS
+type OpsMetrics = core.OpsMetrics
+type RiskManagementStatus = core.RiskManagementStatus
+type RiskExposureInfo = core.RiskExposureInfo
+
+func New(ts *services.TradingService, cfg ConfigInterface) (*OMS, error) { return core.New(ts, cfg, "goodluck") }

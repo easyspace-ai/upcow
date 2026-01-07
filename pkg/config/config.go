@@ -141,6 +141,7 @@ type Config struct {
 	DirectModeDebounce                   int                     // 直接回调模式的防抖间隔（毫秒），默认100ms（BBGO风格：只支持直接模式）
 	MinOrderSize                         float64                 // 全局最小下单金额（USDC），默认 1.1（交易所要求 >= 1）
 	MinShareSize                         float64                 // 限价单最小 share 数量，默认 5.0（仅限价单 GTC 时应用）
+	DefaultFeeRateBps                    int                     // 默认订单费率（bps），0=maker费率，1000=10% taker费率，默认0
 	OrderStatusCheckTimeout              int                     // 订单状态检查超时时间（秒），如果WebSocket在此时长内没有更新，则启用API轮询，默认3秒
 	OrderStatusCheckInterval             int                     // 订单状态API轮询间隔（秒），默认3秒
 	OrderStatusSyncIntervalWithOrders    int                     // 有活跃订单时的订单状态同步间隔（秒），默认3秒（官方API限流：150请求/10秒，理论上可支持1秒，但建议3秒以上）
@@ -269,6 +270,7 @@ type ConfigFile struct {
 	DirectModeDebounce                   int     `yaml:"direct_mode_debounce" json:"direct_mode_debounce"` // 直接回调模式的防抖间隔（毫秒），默认100ms（BBGO风格：只支持直接模式）
 	MinOrderSize                         float64 `yaml:"minOrderSize" json:"minOrderSize"`
 	MinShareSize                         float64 `yaml:"minShareSize" json:"minShareSize"`                                                           // 限价单最小 share 数量（仅限价单 GTC 时应用）
+	DefaultFeeRateBps                    int     `yaml:"defaultFeeRateBps" json:"defaultFeeRateBps"`                                               // 默认订单费率（bps），0=maker费率，1000=10% taker费率
 	OrderStatusCheckTimeout              int     `yaml:"order_status_check_timeout" json:"order_status_check_timeout"`                               // WebSocket超时时间（秒），默认3秒
 	OrderStatusCheckInterval             int     `yaml:"order_status_check_interval" json:"order_status_check_interval"`                             // API轮询间隔（秒），默认3秒
 	OrderStatusSyncIntervalWithOrders    int     `yaml:"order_status_sync_interval_with_orders" json:"order_status_sync_interval_with_orders"`       // 有活跃订单时的同步间隔（秒），默认3秒
@@ -514,6 +516,18 @@ func LoadFromFileWithOptions(filePath string, opts LoadOptions) (*Config, error)
 				}
 			}
 			return 5.0 // 默认 5.0 shares（Polymarket 限价单要求）
+		}(),
+		DefaultFeeRateBps: func() int {
+			// 优先级：config file > env > 默认 0（maker 费率）
+			if configFile != nil {
+				return configFile.DefaultFeeRateBps
+			}
+			if envVal := getEnv("DEFAULT_FEE_RATE_BPS", ""); envVal != "" {
+				if v, err := strconv.Atoi(envVal); err == nil {
+					return v
+				}
+			}
+			return 0 // 默认 0 bps（maker 订单费率）
 		}(),
 		OrderStatusCheckTimeout: func() int {
 			if configFile != nil && configFile.OrderStatusCheckTimeout > 0 {

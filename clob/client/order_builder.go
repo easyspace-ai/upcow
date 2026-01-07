@@ -237,14 +237,52 @@ func getOrderRawAmounts(
 
 	if side == types.SideBuy {
 		// 买入：taker 获得 tokens，maker 支付 USDC
-		rawTakerAmt = roundDown(size, roundConfig.Size)
-
-		rawMakerAmt = rawTakerAmt * rawPrice
-		if decimalPlaces(rawMakerAmt) > roundConfig.Amount {
-			rawMakerAmt = roundUp(rawMakerAmt, roundConfig.Amount+4)
-			if decimalPlaces(rawMakerAmt) > roundConfig.Amount {
-				rawMakerAmt = roundDown(rawMakerAmt, roundConfig.Amount)
+		// ⚠️ 重要：买入订单的精度要求（Polymarket 要求）
+		// - maker amount (USDC): 最多 2 位小数
+		// - taker amount (token): 最多 4 位小数
+		// 
+		// 策略：先确定 taker amount（token），然后计算 maker amount（USDC），
+		// 如果 maker amount 精度不符合要求，调整 taker amount 直到两者都满足要求
+		
+		// 初始：确保 taker amount (token) 不超过 4 位小数
+		rawTakerAmt = roundDown(size, 4)
+		
+		// 迭代调整，确保两个金额都满足精度要求
+		maxIterations := 5
+		for i := 0; i < maxIterations; i++ {
+			// 计算 maker amount (USDC)
+			rawMakerAmt = rawTakerAmt * rawPrice
+			
+			// 检查 maker amount 精度
+			makerDecimals := decimalPlaces(rawMakerAmt)
+			if makerDecimals <= 2 {
+				// 精度符合要求，检查 taker amount 精度
+				takerDecimals := decimalPlaces(rawTakerAmt)
+				if takerDecimals <= 4 {
+					// 两个金额都符合精度要求，退出循环
+					break
+				}
 			}
+			
+			// maker amount 精度不符合要求，向下舍入到 2 位小数
+			rawMakerAmt = roundDown(rawMakerAmt, 2)
+			
+			// 重新计算 taker amount 以匹配调整后的 maker amount
+			if rawPrice > 0 {
+				rawTakerAmt = rawMakerAmt / rawPrice
+				// 确保 taker amount 不超过 4 位小数
+				rawTakerAmt = roundDown(rawTakerAmt, 4)
+			} else {
+				break
+			}
+		}
+		
+		// 最终检查：确保两个金额都满足精度要求
+		if decimalPlaces(rawMakerAmt) > 2 {
+			rawMakerAmt = roundDown(rawMakerAmt, 2)
+		}
+		if decimalPlaces(rawTakerAmt) > 4 {
+			rawTakerAmt = roundDown(rawTakerAmt, 4)
 		}
 	} else {
 		// 卖出：maker 获得 tokens，taker 支付 USDC

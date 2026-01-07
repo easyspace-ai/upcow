@@ -128,6 +128,8 @@ func (m model) renderLeft(snap *Snapshot, width int) string {
 	lines = append(lines, "")
 	lines = append(lines, m.renderVelocity(snap, width))
 	lines = append(lines, "")
+	lines = append(lines, m.renderOrderStatus(snap, width))
+	lines = append(lines, "")
 	lines = append(lines, m.renderPositions(snap, width))
 	lines = append(lines, "")
 	if snap.DecisionConditions != nil {
@@ -148,10 +150,12 @@ func (m model) renderRight(snap *Snapshot, width int) string {
 	lines = append(lines, "")
 	lines = append(lines, m.renderTradingStats(snap, width))
 	lines = append(lines, "")
-	lines = append(lines, m.renderOrderStatus(snap, width))
-	lines = append(lines, "")
 	if snap.RiskManagement != nil {
 		lines = append(lines, m.renderRiskManagement(snap, width))
+		lines = append(lines, "")
+	}
+	if snap.PriceStopWatches != nil {
+		lines = append(lines, m.renderPriceStopWatches(snap, width))
 		lines = append(lines, "")
 	}
 	lines = append(lines, m.renderCapitalOps(snap, width))
@@ -491,6 +495,93 @@ func (m model) renderRiskManagement(snap *Snapshot, width int) string {
 		lines = append(lines, fmt.Sprintf("Stats: Reorders:%d Aggressive:%d FAK:%d",
 			rm.TotalReorders, rm.TotalAggressiveHedges, rm.TotalFakEats))
 	}
+	return strings.Join(lines, "\n")
+}
+
+func (m model) renderPriceStopWatches(snap *Snapshot, width int) string {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	enabledStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
+	disabledStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	monitoringStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("226"))
+	triggeredStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	completedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
+	profitStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
+	lossStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+
+	ps := snap.PriceStopWatches
+	if ps == nil {
+		return ""
+	}
+
+	var lines []string
+	lines = append(lines, titleStyle.Render("Price Stop Watches"))
+	lines = append(lines, strings.Repeat("─", width-4))
+
+	if !ps.Enabled {
+		lines = append(lines, disabledStyle.Render("❌ Disabled"))
+		return strings.Join(lines, "\n")
+	}
+
+	lines = append(lines, enabledStyle.Render(fmt.Sprintf("✅ Enabled | Active: %d", ps.ActiveWatches)))
+	lines = append(lines, fmt.Sprintf("Thresholds: Soft:%dc Hard:%dc TP:%dc Confirm:%d",
+		ps.SoftLossCents, ps.HardLossCents, ps.TakeProfitCents, ps.ConfirmTicks))
+
+	if !ps.LastEvalTime.IsZero() {
+		elapsed := time.Since(ps.LastEvalTime)
+		lines = append(lines, fmt.Sprintf("Last Eval: %s ago", formatDuration(elapsed)))
+	}
+
+	if len(ps.WatchDetails) > 0 {
+		lines = append(lines, "")
+		for i, wd := range ps.WatchDetails {
+			if i >= 3 {
+				lines = append(lines, fmt.Sprintf("  ... and %d more", len(ps.WatchDetails)-3))
+				break
+			}
+
+			statusIcon := "🔍"
+			statusColor := monitoringStyle
+			switch wd.Status {
+			case "triggered":
+				statusIcon = "🚨"
+				statusColor = triggeredStyle
+			case "completed":
+				statusIcon = "✅"
+				statusColor = completedStyle
+			}
+
+			profitColor := profitStyle
+			if wd.CurrentProfitCents < 0 {
+				profitColor = lossStyle
+			}
+
+			entryInfo := fmt.Sprintf("%s Entry:%s(%.2f@%dc) ",
+				statusIcon, truncate(wd.EntryOrderID, 8), wd.EntrySize, wd.EntryPriceCents)
+			hedgeInfo := ""
+			if wd.HedgeOrderID != "" {
+				hedgeInfo = fmt.Sprintf("Hedge:%s ", truncate(wd.HedgeOrderID, 8))
+			}
+			profitInfo := profitColor.Render(fmt.Sprintf("PnL:%+dc", wd.CurrentProfitCents))
+			hitsInfo := ""
+			if wd.SoftHits > 0 {
+				hitsInfo = fmt.Sprintf(" Soft:%d", wd.SoftHits)
+			}
+			if wd.TakeProfitHits > 0 {
+				hitsInfo += fmt.Sprintf(" TP:%d", wd.TakeProfitHits)
+			}
+
+			line := fmt.Sprintf("  %s%s%s%s", entryInfo, hedgeInfo, profitInfo, hitsInfo)
+			lines = append(lines, statusColor.Render(line))
+
+			if !wd.LastEvalTime.IsZero() {
+				elapsed := time.Since(wd.LastEvalTime)
+				lines = append(lines, fmt.Sprintf("    Last eval: %s ago", formatDuration(elapsed)))
+			}
+		}
+	} else {
+		lines = append(lines, "  No active watches")
+	}
+
 	return strings.Join(lines, "\n")
 }
 

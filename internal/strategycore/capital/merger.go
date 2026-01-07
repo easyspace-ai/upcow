@@ -152,20 +152,84 @@ func (m *Merger) MergeCurrentCycle(ctx context.Context, market *domain.Market) (
 	}
 
 	positions := m.tradingService.GetOpenPositionsForMarket(market.Slug)
+	mLog.Infof("🔍 [Merger] GetOpenPositionsForMarket 返回 %d 个持仓: market=%s", len(positions), market.Slug)
+	
+	// 详细记录每个匹配的持仓
+	for i, pos := range positions {
+		if pos != nil {
+			mLog.Infof("🔍 [Merger] 匹配持仓[%d]: positionID=%s marketSlug=%s tokenType=%s size=%.4f status=%s",
+				i, pos.ID, pos.MarketSlug, pos.TokenType, pos.Size, pos.Status)
+		}
+	}
+	
 	if len(positions) == 0 {
-		mLog.Debugf("🔍 [Merger] 通过 market.Slug 未获取到持仓，尝试获取所有持仓: market=%s", market.Slug)
+		mLog.Infof("🔍 [Merger] 通过 market.Slug 未获取到持仓，尝试获取所有持仓: market=%s", market.Slug)
 		allPositions := m.tradingService.GetAllPositions()
-		for _, pos := range allPositions {
-			if pos == nil || !pos.IsOpen() || pos.Size <= 0 {
+		mLog.Infof("🔍 [Merger] GetAllPositions 返回 %d 个持仓（总计）", len(allPositions))
+		
+		// 详细记录所有持仓的信息
+		for i, pos := range allPositions {
+			if pos == nil {
+				mLog.Debugf("🔍 [Merger] 持仓[%d] 为 nil", i)
 				continue
 			}
+			
+			// 记录持仓的详细信息
+			positionMarketSlug := pos.MarketSlug
+			if positionMarketSlug == "" && pos.Market != nil {
+				positionMarketSlug = pos.Market.Slug
+			}
+			if positionMarketSlug == "" && pos.EntryOrder != nil {
+				positionMarketSlug = pos.EntryOrder.MarketSlug
+			}
+			
+			positionConditionID := ""
+			if pos.Market != nil {
+				positionConditionID = pos.Market.ConditionID
+			}
+			
+			entryOrderMarketSlug := ""
+			if pos.EntryOrder != nil {
+				entryOrderMarketSlug = pos.EntryOrder.MarketSlug
+			}
+			
+			mLog.Infof("🔍 [Merger] 持仓[%d] 详细信息: positionID=%s marketSlug=%s conditionID=%s entryOrderMarketSlug=%s tokenType=%s size=%.4f status=%s isOpen=%v targetMarketSlug=%s targetConditionID=%s",
+				i, pos.ID, positionMarketSlug, positionConditionID, entryOrderMarketSlug,
+				pos.TokenType, pos.Size, pos.Status, pos.IsOpen(), market.Slug, market.ConditionID)
+			
+			if !pos.IsOpen() {
+				mLog.Debugf("🔍 [Merger] 持仓[%d] 被跳过: 状态不是 open (status=%s)", i, pos.Status)
+				continue
+			}
+			if pos.Size <= 0 {
+				mLog.Debugf("🔍 [Merger] 持仓[%d] 被跳过: 数量 <= 0 (size=%.4f)", i, pos.Size)
+				continue
+			}
+			
+			matched := false
 			if pos.Market != nil && pos.Market.ConditionID == market.ConditionID {
 				positions = append(positions, pos)
+				matched = true
+				mLog.Infof("✅ [Merger] 持仓[%d] 通过 ConditionID 匹配: positionID=%s conditionID=%s",
+					i, pos.ID, pos.Market.ConditionID)
 			} else if pos.EntryOrder != nil && pos.EntryOrder.MarketSlug == market.Slug {
 				positions = append(positions, pos)
+				matched = true
+				mLog.Infof("✅ [Merger] 持仓[%d] 通过 EntryOrder.MarketSlug 匹配: positionID=%s entryOrderMarketSlug=%s",
+					i, pos.ID, pos.EntryOrder.MarketSlug)
+			} else if positionMarketSlug == market.Slug {
+				// 额外检查：通过 position 的 MarketSlug 匹配
+				positions = append(positions, pos)
+				matched = true
+				mLog.Infof("✅ [Merger] 持仓[%d] 通过 Position.MarketSlug 匹配: positionID=%s positionMarketSlug=%s",
+					i, pos.ID, positionMarketSlug)
+			}
+			
+			if !matched {
+				mLog.Debugf("❌ [Merger] 持仓[%d] 未匹配: positionID=%s", i, pos.ID)
 			}
 		}
-		mLog.Debugf("🔍 [Merger] 通过 ConditionID 匹配到 %d 个持仓: market=%s conditionID=%s",
+		mLog.Infof("🔍 [Merger] 通过 ConditionID/EntryOrder/PositionMarketSlug 匹配到 %d 个持仓: market=%s conditionID=%s",
 			len(positions), market.Slug, market.ConditionID)
 	}
 

@@ -64,18 +64,27 @@ func (o *OMS) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) e
 		o.mu.Unlock()
 		return nil
 	}
+	watchesCount := len(o.priceStopWatches)
+	o.mu.Unlock()
+
+	priceStopLog.Debugf("🔍 [PriceStop] 检查 %d 个价格盯盘: market=%s", watchesCount, marketSlug)
+
+	o.mu.Lock()
 	for entryID, w := range o.priceStopWatches {
 		if w == nil || w.marketSlug != marketSlug {
 			continue
 		}
 
+		// 优先使用 pendingHedges 中的最新 hedgeOrderID（重下后会更新）
+		// 如果 pendingHedges 为空，使用 firstHedgeOrderID（初始 hedge 订单）
+		// 这样即使重下过程中 pendingHedges 暂时为空，也能继续监控
 		hedgeID := ""
 		if o.pendingHedges != nil {
 			hedgeID = o.pendingHedges[entryID]
 		}
 		if hedgeID == "" {
-			delete(o.priceStopWatches, entryID)
-			continue
+			// 如果 pendingHedges 为空，尝试使用初始 hedgeOrderID
+			hedgeID = w.firstHedgeOrderID
 		}
 
 		// optional throttle：避免极端 WS 高频导致 CPU 过载（默认 interval=0 不节流）
@@ -85,17 +94,24 @@ func (o *OMS) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) e
 		w.lastEval = now
 
 		// 计算剩余未对冲数量（支持 hedge 部分成交）
+		// 关键修复：即使 hedgeID 为空（订单被取消但新订单还没创建），也继续监控
+		// 因为价格盯盘是基于"可锁定PnL"计算的，不依赖具体订单存在
 		hedgeFilled := 0.0
-		if ord, ok := o.tradingService.GetOrder(hedgeID); ok && ord != nil {
-			if ord.IsFilled() {
-				delete(o.priceStopWatches, entryID)
-				continue
+		remaining := w.entryFilledSize
+		if hedgeID != "" {
+			if ord, ok := o.tradingService.GetOrder(hedgeID); ok && ord != nil {
+				if ord.IsFilled() {
+					// hedge 已完全成交，停止监控
+					delete(o.priceStopWatches, entryID)
+					continue
+				}
+				if ord.FilledSize > 0 {
+					hedgeFilled = ord.FilledSize
+				}
 			}
-			if ord.FilledSize > 0 {
-				hedgeFilled = ord.FilledSize
-			}
+			remaining = w.entryFilledSize - hedgeFilled
 		}
-		remaining := w.entryFilledSize - hedgeFilled
+		// 如果 hedgeID 为空，remaining = entryFilledSize（全部未对冲）
 		if remaining <= 0 {
 			delete(o.priceStopWatches, entryID)
 			continue
@@ -114,6 +130,9 @@ func (o *OMS) OnPriceChanged(ctx context.Context, e *events.PriceChangedEvent) e
 		}
 
 		profitNow := 100 - (w.entryAskCents + hedgeAskCents)
+
+		priceStopLog.Debugf("💰 [PriceStop] 评估: entryID=%s hedgeID=%s entryCost=%dc hedgeAsk=%dc profitNow=%dc softStop=%dc hardStop=%dc",
+			entryID, hedgeID, w.entryAskCents, hedgeAskCents, profitNow, pp.softLossCents, pp.hardLossCents)
 
 		// take profit：达到可锁定利润阈值，优先“立即完成对冲”以提高每周期可做单数（周转）。
 		// 说明：如果 hedge 本来挂得更低（追求更高利润），可能迟迟不成交；此处允许在达到阈值后直接吃单锁利。

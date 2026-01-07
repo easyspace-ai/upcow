@@ -605,6 +605,14 @@ func (s *TradingService) SetMinShareSize(minShareSize float64) {
 	log.Debugf("✅ 已设置限价单最小 share 数量: %.2f（仅限价单 GTC 时应用）", minShareSize)
 }
 
+// SetDefaultFeeRateBps 设置默认订单费率（bps）（无锁版本）
+func (s *TradingService) SetDefaultFeeRateBps(feeRateBps int) {
+	if s.ioExecutor != nil {
+		s.ioExecutor.SetDefaultFeeRateBps(feeRateBps)
+		log.Debugf("✅ 已设置默认订单费率: %d bps", feeRateBps)
+	}
+}
+
 // WaitOrderResult 等待订单处理结果（已废弃，现在通过 OrderEngine 处理）
 // 保留此方法用于向后兼容，但不再使用
 func (s *TradingService) WaitOrderResult(ctx context.Context, orderID string, timeout time.Duration) (*OrderResult, error) {

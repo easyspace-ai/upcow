@@ -3,6 +3,7 @@ package oms
 import (
 	"context"
 
+	"github.com/betbot/gobet/internal/common"
 	"github.com/betbot/gobet/internal/domain"
 )
 
@@ -26,10 +27,15 @@ type ConfigInterface interface {
 	GetAllowNegativeProfitOnHedgeReorder() bool
 	GetMaxNegativeProfitCents() int
 	GetHedgeOffsetCents() int
+
+	// AutoMerge 配置（可选，用于获取 merge 触发延迟时间）
+	GetAutoMerge() common.AutoMergeConfig
+
+	// 最小订单金额配置（USDC）
+	GetMinOrderUSDC() float64
 }
 
 // CapitalInterface Capital 模块接口，避免循环导入
 type CapitalInterface interface {
 	TryMergeCurrentCycle(ctx context.Context, market *domain.Market)
 }
-

@@ -35,6 +35,11 @@ type AutoMergeConfig struct {
 	// ReconcileMaxWaitSeconds: how long to poll Data API to see inventory update (0 disables polling).
 	ReconcileMaxWaitSeconds int `yaml:"reconcileMaxWaitSeconds" json:"reconcileMaxWaitSeconds"`
 
+	// MergeTriggerDelaySeconds: delay before triggering merge and syncing positions (seconds).
+	// This ensures exchange and Data API data are fully synchronized before merge.
+	// Default: 15 seconds.
+	MergeTriggerDelaySeconds int `yaml:"mergeTriggerDelaySeconds" json:"mergeTriggerDelaySeconds"`
+
 	// Metadata: optional relayer metadata (<=500 chars). If empty, a default is used.
 	Metadata string `yaml:"metadata" json:"metadata"`
 }
@@ -54,6 +59,9 @@ func (c *AutoMergeConfig) Normalize() {
 	}
 	if c.ReconcileMaxWaitSeconds < 0 {
 		c.ReconcileMaxWaitSeconds = 0
+	}
+	if c.MergeTriggerDelaySeconds <= 0 {
+		c.MergeTriggerDelaySeconds = 15 // 默认 15 秒
 	}
 	// Safe default: require no open orders if user enables auto merge, unless explicitly set false.
 	if c.OnlyIfNoOpenOrders == false {

@@ -29,6 +29,11 @@ type ioExecutor struct {
 	// - signatureType 用于 CLOB 的签名类型（Browser/GnosisSafe 等）
 	funderAddress string
 	signatureType types.SignatureType
+
+	// 默认订单费率（bps）
+	// - 0 = maker 费率（限价单通常为 0）
+	// - 1000 = 10% taker 费率（市价单通常需要）
+	defaultFeeRateBps int
 }
 
 // newIOExecutor 创建 IO 执行器（包内私有）。
@@ -46,6 +51,11 @@ func newIOExecutor(clobClient *client.Client, dryRun bool) *ioExecutor {
 func (e *ioExecutor) SetFunderAddress(funderAddress string, signatureType types.SignatureType) {
 	e.funderAddress = funderAddress
 	e.signatureType = signatureType
+}
+
+// SetDefaultFeeRateBps 设置默认订单费率（bps）
+func (e *ioExecutor) SetDefaultFeeRateBps(feeRateBps int) {
+	e.defaultFeeRateBps = feeRateBps
 }
 
 // PlaceOrderAsync 异步下单
@@ -223,6 +233,24 @@ func (e *ioExecutor) placeOrderSync(ctx context.Context, order *domain.Order) (*
 		Price:   order.Price.ToDecimal(),
 		Size:    order.Size,
 		Side:    order.Side,
+	}
+
+	// ✅ 对于所有订单类型，如果未设置费率，根据订单类型和配置设置费率
+	// Polymarket 要求所有订单都必须设置费率（不能为 0）
+	// - GTC 订单：如果配置为 0，使用 1000（Polymarket 要求不能为 0）
+	// - FAK/FOK 订单：使用 1000（taker 费率）
+	// - 如果配置了非 0 值，使用配置值
+	if userOrder.FeeRateBps == nil {
+		defaultFeeRateBps := e.defaultFeeRateBps
+		// 如果配置为 0，但 Polymarket 要求不能为 0，则使用 1000
+		// 注意：即使 GTC 订单作为 maker，Polymarket 也要求设置费率
+		if defaultFeeRateBps == 0 {
+			// 根据错误信息，Polymarket 要求费率必须是 1000（taker fee）
+			defaultFeeRateBps = 1000
+			ioExecutorLog.Debugf("📝 [IOExecutor] 配置费率为 0，但 Polymarket 要求不能为 0，使用 1000 bps: orderID=%s", order.OrderID)
+		}
+		userOrder.FeeRateBps = &defaultFeeRateBps
+		ioExecutorLog.Debugf("📝 [IOExecutor] %s 订单使用费率: orderID=%s feeRateBps=%d", orderType, order.OrderID, defaultFeeRateBps)
 	}
 
 	// 创建签名订单

@@ -80,10 +80,11 @@ func NewRiskManager(ts *services.TradingService, cfg ConfigInterface) *RiskManag
 	}
 
 	// 设置激进对冲超时
+	// 如果配置为 0 或未设置，禁用激进对冲（仅依赖价格盯盘机制）
 	if cfg.GetAggressiveHedgeTimeoutSeconds() > 0 {
 		rm.aggressiveTimeout = time.Duration(cfg.GetAggressiveHedgeTimeoutSeconds()) * time.Second
 	} else {
-		rm.aggressiveTimeout = 60 * time.Second // 默认 60 秒
+		rm.aggressiveTimeout = 0 // 禁用激进对冲，仅使用价格盯盘
 	}
 
 	// 设置最大可接受亏损
@@ -284,6 +285,11 @@ func (rm *RiskManager) checkAndHandleRisks(ctx context.Context) {
 
 // handleExposure 处理单个风险敞口
 func (rm *RiskManager) handleExposure(ctx context.Context, exp *RiskExposure) {
+	// 如果激进对冲未启用（超时时间为 0），直接返回，仅依赖价格盯盘机制
+	if rm.aggressiveTimeout <= 0 {
+		return
+	}
+
 	// 检查是否超过激进对冲超时时间
 	if exp.ExposureSeconds < rm.aggressiveTimeout.Seconds() {
 		return

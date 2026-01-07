@@ -6,7 +6,10 @@ import (
 	"time"
 
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/sirupsen/logrus"
 )
+
+var positionsLog = logrus.WithField("component", "positions_service")
 
 // GetPosition 获取仓位（通过 OrderEngine 查询）
 func (p *PositionsService) GetPosition(positionID string) (*domain.Position, error) {
@@ -141,24 +144,52 @@ func (p *PositionsService) GetOpenPositions() []*domain.Position {
 // GetOpenPositionsForMarket 只返回指定 marketSlug 的开放仓位
 func (p *PositionsService) GetOpenPositionsForMarket(marketSlug string) []*domain.Position {
 	positions := p.GetOpenPositions()
+	positionsLog.Infof("🔍 [PositionsService] GetOpenPositions: 返回 %d 个开放持仓", len(positions))
+	
 	if marketSlug == "" {
 		return positions
 	}
+	
 	out := make([]*domain.Position, 0, len(positions))
-	for _, p := range positions {
-		if p == nil {
+	for i, pos := range positions {
+		if pos == nil {
+			positionsLog.Debugf("🔍 [PositionsService] 持仓[%d] 为 nil", i)
 			continue
 		}
-		slug := p.MarketSlug
-		if slug == "" && p.Market != nil {
-			slug = p.Market.Slug
+		
+		slug := pos.MarketSlug
+		if slug == "" && pos.Market != nil {
+			slug = pos.Market.Slug
 		}
-		if slug == "" && p.EntryOrder != nil {
-			slug = p.EntryOrder.MarketSlug
+		if slug == "" && pos.EntryOrder != nil {
+			slug = pos.EntryOrder.MarketSlug
 		}
+		
+		// 详细记录每个持仓的匹配信息
+		positionsLog.Infof("🔍 [PositionsService] 持仓[%d]: positionID=%s positionMarketSlug=%s marketSlug=%s entryOrderMarketSlug=%s tokenType=%s size=%.4f status=%s targetMarketSlug=%s",
+			i, pos.ID, pos.MarketSlug,
+			func() string {
+				if pos.Market != nil {
+					return pos.Market.Slug
+				}
+				return "<nil>"
+			}(),
+			func() string {
+				if pos.EntryOrder != nil {
+					return pos.EntryOrder.MarketSlug
+				}
+				return "<nil>"
+			}(),
+			pos.TokenType, pos.Size, pos.Status, marketSlug)
+		
 		if slug == marketSlug {
-			out = append(out, p)
+			out = append(out, pos)
+			positionsLog.Infof("✅ [PositionsService] 持仓[%d] 匹配成功: positionID=%s slug=%s", i, pos.ID, slug)
+		} else {
+			positionsLog.Debugf("❌ [PositionsService] 持仓[%d] 未匹配: positionID=%s slug=%s targetSlug=%s", i, pos.ID, slug, marketSlug)
 		}
 	}
+	positionsLog.Infof("🔍 [PositionsService] GetOpenPositionsForMarket: 总持仓=%d 匹配持仓=%d marketSlug=%s",
+		len(positions), len(out), marketSlug)
 	return out
 }

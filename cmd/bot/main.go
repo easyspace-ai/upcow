@@ -371,9 +371,10 @@ func main() {
 
 	// 设置最小订单金额（全局配置，不再从某个策略"偷读"）
 	tradingService.SetMinOrderSize(cfg.MinOrderSize)
-
 	// 设置限价单最小 share 数量（仅限价单 GTC 时应用）
 	tradingService.SetMinShareSize(cfg.MinShareSize)
+	// 设置默认订单费率（bps）
+	tradingService.SetDefaultFeeRateBps(cfg.DefaultFeeRateBps)
 
 	// 创建 Environment
 	environ := bbgo.NewEnvironment()

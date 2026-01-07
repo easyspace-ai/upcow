@@ -64,22 +64,35 @@ func (pt *PositionTracker) UpdatePositions(ctx context.Context, market *domain.M
 		if pos.TokenType == domain.TokenTypeUp {
 			state.UpSize += pos.Size
 			state.UpCost += pos.CostBasis
-			if pos.TotalFilledSize > 0 {
-				state.UpAvgPrice = pos.AvgPrice
-			}
+			// 注意：不在这里设置 UpAvgPrice，而是在循环后统一计算加权平均
 		} else if pos.TokenType == domain.TokenTypeDown {
 			state.DownSize += pos.Size
 			state.DownCost += pos.CostBasis
-			if pos.TotalFilledSize > 0 {
-				state.DownAvgPrice = pos.AvgPrice
-			}
+			// 注意：不在这里设置 DownAvgPrice，而是在循环后统一计算加权平均
 		}
+	}
+
+	// 计算加权平均价格（总成本 / 总数量）
+	if state.UpSize > 0 && state.UpCost > 0 {
+		state.UpAvgPrice = state.UpCost / state.UpSize
+	}
+	if state.DownSize > 0 && state.DownCost > 0 {
+		state.DownAvgPrice = state.DownCost / state.DownSize
 	}
 
 	state.IsHedged = state.UpSize > 0 && state.DownSize > 0 &&
 		abs(state.UpSize-state.DownSize) < 1
 
 	pt.positions[market.Slug] = state
+
+	// 如果 size 不一致，记录警告日志
+	if state.UpSize > 0 && state.DownSize > 0 {
+		diff := abs(state.UpSize - state.DownSize)
+		if diff >= 1.0 {
+			ptLog.Warnf("⚠️ [PositionTracker] UP/DOWN size 不一致: market=%s UP=%.4f DOWN=%.4f diff=%.4f hedged=%v",
+				market.Slug, state.UpSize, state.DownSize, diff, state.IsHedged)
+		}
+	}
 
 	ptLog.Debugf("📊 [PositionTracker] 更新持仓: market=%s UP=%.4f DOWN=%.4f hedged=%v",
 		market.Slug, state.UpSize, state.DownSize, state.IsHedged)

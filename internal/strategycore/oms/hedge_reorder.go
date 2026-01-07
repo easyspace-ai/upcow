@@ -128,19 +128,30 @@ func (hr *HedgeReorder) MonitorAndReorderHedge(ctx context.Context, market *doma
 					}
 
 					if ord.Status == domain.OrderStatusCanceled || ord.Status == domain.OrderStatusFailed {
-						reorderLog.Warnf("⚠️ [调价监控] 对冲单已取消或失败，停止监控: orderID=%s status=%s elapsed=%.1fs",
+						reorderLog.Warnf("⚠️ [调价监控] 对冲单已取消或失败，继续监控并尝试重下: orderID=%s status=%s elapsed=%.1fs",
 							hedgeOrderID, ord.Status, elapsed)
+						// 关键修复：不删除 pendingHedges，不清除 entryOrderID，继续监控
+						// 因为 Entry 订单已成交，存在风险敞口，需要继续尝试对冲
+						// 如果重下预算耗尽，等待 FAK 超时或价格盯盘触发
+						// 将 hedgeOrderID 置空，让重下逻辑知道需要重新下单
 						if hr.oms != nil {
 							hr.oms.mu.Lock()
 							if hr.oms.pendingHedges != nil {
-								// 并发安全：仅删除当前映射仍指向该 hedgeOrderID 的情况
+								// 如果当前映射仍指向该 hedgeOrderID，保留 entryOrderID 但清除 hedgeOrderID
+								// 这样系统知道需要重新下单，但不会丢失 Entry 订单的跟踪
 								if cur, exists := hr.oms.pendingHedges[entryOrderID]; exists && cur == hedgeOrderID {
+									// 保留 entryOrderID，但删除其对应的 hedgeOrderID（通过删除再重新设置）
+									// 这样重下逻辑会知道需要创建新的 hedge 订单
 									delete(hr.oms.pendingHedges, entryOrderID)
+									// 不重新设置，让重下逻辑在成功创建新订单时再设置
 								}
 							}
 							hr.oms.mu.Unlock()
 						}
-						return
+						// 不 return，继续监控，等待重下或 FAK 触发
+						hedgeOrderID = "" // 标记为需要重新下单
+						// 重置重下截止时间，让系统立即尝试重下
+						reorderDeadline = time.Now()
 					}
 
 					if int(elapsed)%5 == 0 && ord.Status == domain.OrderStatusOpen {
@@ -167,6 +178,13 @@ func (hr *HedgeReorder) MonitorAndReorderHedge(ctx context.Context, market *doma
 				if hr.oms != nil && market != nil {
 					if !hr.oms.ConsumeReorderAttempt(entryOrderID, market.Slug, entryFilledTime) {
 						reorderLog.Warnf("⏸️ [per-entry] entry 重下预算耗尽，停止重下并等待风控/FAK: entryOrderID=%s", entryOrderID)
+						// 关键修复：如果 FAK 超时已到，立即触发 FAK，不再等待
+						if fakTimeout > 0 && !fakDeadline.IsZero() && now.After(fakDeadline) {
+							reorderLog.Warnf("🚨 [per-entry] 重下预算耗尽且 FAK 超时已到，立即触发 FAK 兜底: entryOrderID=%s", entryOrderID)
+							hr.handleFakTimeout(ctx, market, entryOrderID, hedgeOrderID, hedgeAsset, hedgeShares, winner)
+							return
+						}
+						// 如果 FAK 超时未到，继续等待
 						reorderDeadline = time.Now().Add(5 * time.Second)
 						reorderDone = false
 						continue

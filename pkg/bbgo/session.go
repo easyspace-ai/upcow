@@ -496,31 +496,53 @@ func (s *ExchangeSession) EmitOrderUpdate(ctx context.Context, order *domain.Ord
 		}())
 
 	if order != nil && market != nil {
-		// 1) 有 MarketSlug：严格匹配
-		if order.MarketSlug != "" && market.Slug != "" && order.MarketSlug != market.Slug {
-			sessionLog.Infof("⚠️ [Session %s] 丢弃跨周期订单事件: orderID=%s orderMarket=%s currentMarket=%s",
-				s.Name, order.OrderID, order.MarketSlug, market.Slug)
-			return
-		}
-		// 2) 用 AssetID 匹配（更可靠）
+		// ✅ 修复：优先使用 AssetID 匹配（更可靠），因为 WebSocket 消息中的 market 字段可能是 conditionID 而不是 market slug
+		// 1) 用 AssetID 匹配（最可靠）
+		assetIDMatched := false
 		if order.AssetID != "" && market.YesAssetID != "" && market.NoAssetID != "" {
-			if order.AssetID != market.YesAssetID && order.AssetID != market.NoAssetID {
+			if order.AssetID == market.YesAssetID || order.AssetID == market.NoAssetID {
+				assetIDMatched = true
+				// 补齐 MarketSlug/TokenType（让下游永远有一致的周期归属信息）
+				// ✅ 关键修复：如果 order.MarketSlug 是 conditionID 或与 market.Slug 不匹配，修正为正确的 market slug
+				if order.MarketSlug == "" || order.MarketSlug != market.Slug {
+					if order.MarketSlug != "" && order.MarketSlug != market.Slug {
+						// order.MarketSlug 可能是 conditionID，需要修正
+						sessionLog.Infof("📝 [Session %s] 修正订单 MarketSlug: orderID=%s oldMarketSlug=%s newMarketSlug=%s (可能是 conditionID)",
+							s.Name, order.OrderID, order.MarketSlug, market.Slug)
+					}
+					order.MarketSlug = market.Slug
+				}
+				if order.TokenType == "" {
+					if order.AssetID == market.YesAssetID {
+						order.TokenType = domain.TokenTypeUp
+						sessionLog.Infof("📝 [Session %s] 补齐订单 TokenType: orderID=%s tokenType=up", s.Name, order.OrderID)
+					} else if order.AssetID == market.NoAssetID {
+						order.TokenType = domain.TokenTypeDown
+						sessionLog.Infof("📝 [Session %s] 补齐订单 TokenType: orderID=%s tokenType=down", s.Name, order.OrderID)
+					}
+				}
+			} else {
+				// AssetID 不匹配，丢弃
 				sessionLog.Infof("⚠️ [Session %s] 丢弃非当前 market 的订单事件: orderID=%s assetID=%s currentYES=%s currentNO=%s",
 					s.Name, order.OrderID, order.AssetID, market.YesAssetID, market.NoAssetID)
 				return
 			}
-			// 补齐 MarketSlug/TokenType（让下游永远有一致的周期归属信息）
-			if order.MarketSlug == "" && market.Slug != "" {
-				order.MarketSlug = market.Slug
-				sessionLog.Infof("📝 [Session %s] 补齐订单 MarketSlug: orderID=%s marketSlug=%s", s.Name, order.OrderID, order.MarketSlug)
-			}
-			if order.TokenType == "" {
-				if order.AssetID == market.YesAssetID {
-					order.TokenType = domain.TokenTypeUp
-					sessionLog.Infof("📝 [Session %s] 补齐订单 TokenType: orderID=%s tokenType=up", s.Name, order.OrderID)
-				} else if order.AssetID == market.NoAssetID {
-					order.TokenType = domain.TokenTypeDown
-					sessionLog.Infof("📝 [Session %s] 补齐订单 TokenType: orderID=%s tokenType=down", s.Name, order.OrderID)
+		}
+		
+		// 2) 如果没有 AssetID 匹配，使用 MarketSlug 严格匹配（兜底）
+		if !assetIDMatched {
+			if order.MarketSlug != "" && market.Slug != "" && order.MarketSlug != market.Slug {
+				// ✅ 检查 order.MarketSlug 是否是 conditionID
+				if order.MarketSlug == market.ConditionID {
+					// order.MarketSlug 是 conditionID，修正为 market slug
+					sessionLog.Infof("📝 [Session %s] 修正订单 MarketSlug (conditionID -> slug): orderID=%s conditionID=%s marketSlug=%s",
+						s.Name, order.OrderID, order.MarketSlug, market.Slug)
+					order.MarketSlug = market.Slug
+				} else {
+					// 既不是 AssetID 匹配，也不是 conditionID，丢弃
+					sessionLog.Infof("⚠️ [Session %s] 丢弃跨周期订单事件: orderID=%s orderMarket=%s currentMarket=%s",
+						s.Name, order.OrderID, order.MarketSlug, market.Slug)
+					return
 				}
 			}
 		}

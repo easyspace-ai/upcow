@@ -31,6 +31,7 @@ type Brain struct {
 	positionTracker *PositionTracker
 	decisionEngine  *DecisionEngine
 	arbitrageBrain  *ArbitrageBrain
+	positionMonitor *PositionMonitor // 实时持仓监控器
 }
 
 // New 创建新的 Brain 实例
@@ -43,6 +44,7 @@ func New(ts *services.TradingService, cfg ConfigInterface) (*Brain, error) {
 	de := NewDecisionEngine(cfg)
 	de.SetTradingService(ts) // 注入 TradingService
 	ab := NewArbitrageBrain(ts, cfg)
+	pm := NewPositionMonitor(ts, cfg)
 
 	return &Brain{
 		tradingService:  ts,
@@ -50,6 +52,7 @@ func New(ts *services.TradingService, cfg ConfigInterface) (*Brain, error) {
 		positionTracker: pt,
 		decisionEngine:  de,
 		arbitrageBrain:  ab,
+		positionMonitor: pm,
 	}, nil
 }
 
@@ -72,6 +75,11 @@ func (b *Brain) MakeDecision(ctx context.Context, e *events.PriceChangedEvent) (
 	// 1. 更新持仓状态
 	if b.positionTracker != nil {
 		b.positionTracker.UpdatePositions(ctx, e.Market)
+	}
+
+	// 1.5. 实时监控持仓并自动对冲（在决策前检查，避免继续加仓不平衡的持仓）
+	if b.positionMonitor != nil {
+		_ = b.positionMonitor.CheckAndHedge(ctx, e.Market)
 	}
 
 	// 2. 计算速度并选择方向
@@ -249,4 +257,16 @@ func (b *Brain) Stop() {
 // GetArbitrageBrain 获取 ArbitrageBrain（供外部使用）
 func (b *Brain) GetArbitrageBrain() *ArbitrageBrain {
 	return b.arbitrageBrain
+}
+
+// GetPositionMonitor 获取 PositionMonitor（供外部使用）
+func (b *Brain) GetPositionMonitor() *PositionMonitor {
+	return b.positionMonitor
+}
+
+// SetPositionMonitorHedgeCallback 设置持仓监控器的对冲回调
+func (b *Brain) SetPositionMonitorHedgeCallback(fn func(ctx context.Context, market *domain.Market, analysis *PositionAnalysis) error) {
+	if b.positionMonitor != nil {
+		b.positionMonitor.SetHedgeCallback(fn)
+	}
 }
