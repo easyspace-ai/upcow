@@ -245,13 +245,13 @@ func (c *Config) Defaults() error {
 
 	// Dashboard UI
 	// 注意：不再强制设置 DashboardEnabled 为 true，允许用户通过配置禁用
-	// 如果启用了Dashboard，默认使用原生TUI
+	// 如果启用了Dashboard，默认使用 Bubble Tea（更稳定，避免原生 tcell 的闪烁/残影/不同步问题）
 	// 注意：由于bool零值是false，无法区分"未设置"和"明确设置为false"
-	// 我们采用策略：如果DashboardEnabled为true，默认设置dashboardUseNativeTUI为true
-	// 如果用户想用Bubble Tea，必须在yaml中明确设置 dashboardUseNativeTUI: false
+	// 因此我们采用策略：如果DashboardEnabled为true，默认设置 dashboardUseNativeTUI 为 false
+	// 如果用户想用原生 TUI，则需要在 yaml 中明确设置 dashboardUseNativeTUI: true
 	if c.DashboardEnabled {
-		// 默认使用原生TUI（如果yaml中未设置，bool零值是false，我们需要设置为true）
-		c.DashboardUseNativeTUI = true
+		// 默认使用 Bubble Tea（bool 零值本身就是 false，但这里显式赋值，表达意图）
+		c.DashboardUseNativeTUI = false
 	}
 	if c.DashboardPositionReconcileIntervalSeconds <= 0 {
 		c.DashboardPositionReconcileIntervalSeconds = 15

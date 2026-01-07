@@ -22,6 +22,7 @@ import (
 	//_ "github.com/betbot/gobet/internal/strategies/updownthreshold"
 	_ "github.com/betbot/gobet/internal/strategies/template"
 	_ "github.com/betbot/gobet/internal/strategies/velocityfollow"
+	_ "github.com/betbot/gobet/internal/strategies/winbet"
 	//_ "github.com/betbot/gobet/internal/strategies/velocityhedgehold"
 	//_ "github.com/betbot/gobet/internal/strategies/volmm"
 )

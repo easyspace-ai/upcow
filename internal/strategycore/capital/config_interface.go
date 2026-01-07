@@ -6,3 +6,4 @@ import "github.com/betbot/gobet/internal/common"
 type ConfigInterface interface {
 	GetAutoMerge() common.AutoMergeConfig
 }
+

@@ -648,6 +648,19 @@ func (rm *RiskManager) aggressiveHedge(ctx context.Context, exp *RiskExposure, h
 	
 	riskLog.Infof("✅ [获取Market] 成功获取market对象: marketSlug=%s source=%s", exp.MarketSlug, source)
 
+	// FAK 是安全底线：预算耗尽也不阻止执行，只做告警
+	if rm.oms != nil && market != nil && !rm.oms.allowFAK(market.Slug) {
+		riskLog.Warnf("⚠️ [FAK预算] market=%s FAK budget exceeded, still proceeding (safety first)", market.Slug)
+	}
+	// per-entry：记录 FAK（不阻断，只用于冷静期与统计）
+	if rm.oms != nil && market != nil {
+		startAt := time.Now()
+		if exp != nil && !exp.EntryFilledTime.IsZero() {
+			startAt = exp.EntryFilledTime
+		}
+		rm.oms.RecordFAK(exp.EntryOrderID, market.Slug, startAt)
+	}
+
 	// 更新状态：正在撤单（如果存在旧订单）
 	if hedgeOrder.OrderID != "" {
 		rm.mu.Lock()
@@ -660,7 +673,20 @@ func (rm *RiskManager) aggressiveHedge(ctx context.Context, exp *RiskExposure, h
 
 		// 1. 取消旧的Hedge订单
 		riskLog.Debugf("🔄 取消旧Hedge订单: hedgeOrderID=%s", hedgeOrder.OrderID)
-		if err := rm.tradingService.CancelOrder(hedgeCtx, hedgeOrder.OrderID); err != nil {
+		var err error
+		if rm.oms != nil {
+			if market != nil {
+				startAt := time.Now()
+				if exp != nil && !exp.EntryFilledTime.IsZero() {
+					startAt = exp.EntryFilledTime
+				}
+				rm.oms.RecordCancel(exp.EntryOrderID, market.Slug, startAt)
+			}
+			err = rm.oms.cancelOrder(hedgeCtx, hedgeOrder.OrderID)
+		} else {
+			err = rm.tradingService.CancelOrder(hedgeCtx, hedgeOrder.OrderID)
+		}
+		if err != nil {
 			riskLog.Warnf("⚠️ 取消Hedge订单失败: hedgeOrderID=%s err=%v", hedgeOrder.OrderID, err)
 			// 即使取消失败，也继续尝试（可能订单已经不存在）
 		}
@@ -770,7 +796,12 @@ func (rm *RiskManager) aggressiveHedge(ctx context.Context, exp *RiskExposure, h
 	entryOrderID := exp.EntryOrderID
 	fakHedgeOrder.HedgeOrderID = &entryOrderID
 
-	hedgeResult, err := rm.tradingService.PlaceOrder(hedgeCtx, fakHedgeOrder)
+	var hedgeResult *domain.Order
+	if rm.oms != nil {
+		hedgeResult, err = rm.oms.placeOrder(hedgeCtx, fakHedgeOrder)
+	} else {
+		hedgeResult, err = rm.tradingService.PlaceOrder(hedgeCtx, fakHedgeOrder)
+	}
 	if err != nil {
 		riskLog.Errorf("❌ 激进对冲下单失败: err=%v (Entry已成交，存在风险敞口)", err)
 		return
