@@ -730,35 +730,36 @@ func (o *OMS) AutoHedgePosition(ctx context.Context, market *domain.Market, hedg
 		return fmt.Errorf("对冲价格无效: %d", hedgePrice.Pips)
 	}
 
-	// ✅ GTC 订单精度要求（对冲单使用 GTC）：
-	// - Price: 2位小数（tick size 0.01）
-	// - Size (taker amount): 2位小数（GTC订单要求）
-	// - USDC金额 (maker amount): 4位小数（GTC订单要求）
-	// - 最小金额: $1 USDC
-	// - 最小 size: 5 shares（Polymarket 要求）
-	priceDecimal := hedgePrice.ToDecimal()
-	
-	// 确保价格是 2 位小数
-	priceDecimal = float64(int(priceDecimal*100+0.5)) / 100
-	
-	// ✅ 修复：GTC订单要求 taker amount (token) 最多2位小数，不是4位小数
-	// 先舍入到2位小数
-	hedgeSize := float64(int(size*100+0.5)) / 100
-	
-	// 计算 USDC 金额（maker amount），GTC订单要求最多4位小数
-	usdcValue := hedgeSize * priceDecimal
-	usdcValue = float64(int(usdcValue*10000+0.5)) / 10000 // 舍入到4位小数
-	
-	// ✅ 修复：检查最小 size 要求（Polymarket 要求 GTC 订单最小 size 为 5）
+	// ✅ 对冲单精度/最小值处理（关键：避免“强制放大到 5 shares”导致过度对冲）
+	//
+	// Polymarket 的限价单（GTC）通常要求最小 size=5 shares；
+	// 但策略的对冲必须尽量与 entry/不平衡 size 一致，否则会引发 PositionMonitor 连锁对冲。
+	//
+	// 处理策略：
+	// - size < 5 shares：使用 FAK（taker 精度 4 位）来对冲，不再强制放大到 5
+	// - size >= 5 shares：使用 GTC（taker 精度 2 位）作为更稳健的挂单对冲
+	orderType := types.OrderTypeGTC
 	const minGTCShareSize = 5.0
-	if hedgeSize < minGTCShareSize {
-		hedgeSize = minGTCShareSize
-		// 重新计算 USDC 金额
-		usdcValue = hedgeSize * priceDecimal
-		usdcValue = float64(int(usdcValue*10000+0.5)) / 10000
-		log.Warnf("⚠️ [OMS] 对冲订单 size 小于最小值 5，自动调整: size=%.2f → %.2f (GTC订单要求)",
-			size, hedgeSize)
+	if size < minGTCShareSize {
+		orderType = types.OrderTypeFAK
 	}
+
+	priceDecimal := hedgePrice.ToDecimal()
+	// 确保价格是 2 位小数（tick size 0.01）
+	priceDecimal = float64(int(priceDecimal*100+0.5)) / 100
+
+	// hedgeSize 精度随订单类型变化：
+	// - GTC: token(taker) <= 2 decimals
+	// - FAK: token(taker) <= 4 decimals（更细，适合小额精确对冲）
+	hedgeSize := size
+	if orderType == types.OrderTypeGTC {
+		hedgeSize = float64(int(size*100+0.5)) / 100
+	} else {
+		hedgeSize = float64(int(size*10000+0.5)) / 10000
+	}
+
+	// 计算 USDC 金额（仅用于日志/最小金额检查）
+	usdcValue := hedgeSize * priceDecimal
 	
 	// 如果买入订单，确保最小订单金额
 	// ⚠️ 重要：Polymarket 要求市场买入订单（FAK/GTC BUY）的最小金额为 $1 USDC
@@ -770,23 +771,23 @@ func (o *OMS) AutoHedgePosition(ctx context.Context, market *domain.Market, hedg
 		}
 	}
 	
-	// ✅ 修复：对于对冲订单（entryOrder != nil），需要满足最小size要求（5），但尽量保持接近Entry订单大小
-	// 如果Entry订单size < 5，需要调整到5以满足Polymarket要求
+	// 对冲订单（entryOrder != nil）：尽量保持与 entry size 一致，不做“强制放大到 5 shares”的调整
 	if entryOrder != nil {
 		originalEntrySize := entryOrder.FilledSize
 		if originalEntrySize <= 0 {
 			originalEntrySize = entryOrder.Size
 		}
 		
-		// 如果调整后的size与原始Entry size差异较大，记录警告
-		if hedgeSize > originalEntrySize*1.2 { // 允许20%的差异
+		// 如果因为精度舍入造成偏差较大，记录警告（避免隐性过度对冲）
+		if originalEntrySize > 0 && hedgeSize > originalEntrySize*1.2 { // 允许20%的差异
 			log.Warnf("⚠️ [OMS] 对冲订单 size 因最小要求调整: entrySize=%.4f hedgeSize=%.2f (GTC订单最小size=5)",
 				originalEntrySize, hedgeSize)
 		}
 		
 		// 检查金额是否满足最小要求
 		if usdcValue < minOrderUSDC {
-			log.Warnf("⚠️ [OMS] 对冲订单金额不足最小要求: size=%.2f price=%.2f usdcValue=%.4f minOrderUSDC=%.2f entrySize=%.4f",
+			log.Warnf("⚠️ [OMS] 对冲订单金额不足最小要求（可能被交易所拒绝）: orderType=%s size=%.4f price=%.2f usdcValue=%.4f minOrderUSDC=%.2f entrySize=%.4f",
+				orderType,
 				hedgeSize, priceDecimal, usdcValue, minOrderUSDC, originalEntrySize)
 		}
 	} else {
@@ -818,9 +819,10 @@ func (o *OMS) AutoHedgePosition(ctx context.Context, market *domain.Market, hedg
 			if usdcValue < minOrderUSDC {
 				// 强制调整到至少满足最小金额要求
 				requiredSize := minOrderUSDC / priceDecimal
-				hedgeSize = float64(int(requiredSize*100+0.5)) / 100 // GTC订单：2位小数
-				if hedgeSize < minGTCShareSize {
-					hedgeSize = minGTCShareSize
+				if orderType == types.OrderTypeGTC {
+					hedgeSize = float64(int(requiredSize*100+0.5)) / 100 // GTC订单：2位小数
+				} else {
+					hedgeSize = float64(int(requiredSize*10000+0.5)) / 10000 // FAK订单：4位小数
 				}
 				usdcValue = hedgeSize * priceDecimal
 				usdcValue = float64(int(usdcValue*10000+0.5)) / 10000
@@ -833,11 +835,6 @@ func (o *OMS) AutoHedgePosition(ctx context.Context, market *domain.Market, hedg
 	// 将价格转换回 Price 类型
 	hedgePrice = domain.PriceFromDecimal(priceDecimal)
 
-	// ✅ 修复：对冲单使用 GTC 而不是 FAK
-	// FAK 订单要求立即匹配，如果订单簿没有匹配的订单会被取消
-	// 对于对冲单，我们使用 GTC 订单，让它留在订单簿中等待成交
-	// 这样即使当前订单簿暂时没有匹配，订单也会保留，后续有匹配时自动成交
-	// 如果确实需要快速成交，可以使用略高于 ask 的价格（但这里使用 ask 价格即可）
 	hedgeOrder := &domain.Order{
 		MarketSlug:   market.Slug,
 		AssetID:      hedgeAssetID,
@@ -845,12 +842,17 @@ func (o *OMS) AutoHedgePosition(ctx context.Context, market *domain.Market, hedg
 		Side:         types.SideBuy,
 		Price:        hedgePrice,
 		Size:         hedgeSize,
-		OrderType:    types.OrderTypeGTC, // ✅ 使用 GTC 而不是 FAK，让订单留在订单簿中等待成交
+		OrderType:    orderType,
 		IsEntryOrder: false,
 		BypassRiskOff: true, // 风控动作：允许绕过短时 risk-off
 		DisableSizeAdjust: true, // 严格一对一：避免系统自动放大 size
 		Status:       domain.OrderStatusPending,
 		CreatedAt:    time.Now(),
+	}
+	// 关联 entry（便于系统识别“这是对冲单”，避免递归/误判）
+	if entryOrder != nil && entryOrder.OrderID != "" {
+		id := entryOrder.OrderID
+		hedgeOrder.HedgeOrderID = &id
 	}
 
 	result, err := o.placeOrder(ctx, hedgeOrder)
@@ -862,8 +864,8 @@ func (o *OMS) AutoHedgePosition(ctx context.Context, market *domain.Market, hedg
 		return fmt.Errorf("对冲订单创建失败")
 	}
 
-	log.Infof("✅ [OMS] 自动对冲已执行: market=%s hedgeDirection=%s hedgeTokenType=%s size=%.4f price=%.2f usdcValue=%.2f orderID=%s",
-		market.Slug, hedgeDirection, hedgeTokenType, hedgeSize, priceDecimal, usdcValue, result.OrderID)
+	log.Infof("✅ [OMS] 自动对冲已执行: market=%s hedgeDirection=%s hedgeTokenType=%s orderType=%s size=%.4f price=%.2f usdcValue=%.4f orderID=%s",
+		market.Slug, hedgeDirection, hedgeTokenType, orderType, hedgeSize, priceDecimal, usdcValue, result.OrderID)
 
 	// ✅ 注册到 pendingHedges：确保对冲单能被正确识别为系统订单，避免递归对冲
 	if entryOrder != nil && entryOrder.OrderID != "" {

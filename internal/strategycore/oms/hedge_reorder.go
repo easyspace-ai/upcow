@@ -289,6 +289,8 @@ func (hr *HedgeReorder) handleFakTimeout(ctx context.Context, market *domain.Mar
 		Size:         hedgeShares,
 		OrderType:    types.OrderTypeFAK,
 		IsEntryOrder: false,
+		BypassRiskOff: true,
+		DisableSizeAdjust: true, // 避免系统层自动放大/改写 size
 		Status:       domain.OrderStatusPending,
 		CreatedAt:    time.Now(),
 	}
@@ -479,6 +481,14 @@ func (hr *HedgeReorder) reorderHedge(ctx context.Context, market *domain.Market,
 	reorderLog.Infof("🔄 [调价步骤4-重新下单] 准备重新下单: 原价格=%dc 新价格=%dc 价格变化=%+dc size=%.4f",
 		oldHedgePriceCents, newLimitCents, priceChange, hedgeShares)
 
+	// Polymarket 通常对 GTC 限价单要求最小 size=5 shares。
+	// 若 hedgeShares < 5，这里改用 FAK 以避免“强制放大到 5”造成过度对冲。
+	orderType := types.OrderTypeGTC
+	const minGTCShareSize = 5.0
+	if hedgeShares < minGTCShareSize {
+		orderType = types.OrderTypeFAK
+	}
+
 	newHedgeOrder := &domain.Order{
 		MarketSlug:   market.Slug,
 		AssetID:      hedgeAsset,
@@ -486,8 +496,10 @@ func (hr *HedgeReorder) reorderHedge(ctx context.Context, market *domain.Market,
 		Side:         types.SideBuy,
 		Price:        newHedgePrice,
 		Size:         hedgeShares,
-		OrderType:    types.OrderTypeGTC,
+		OrderType:    orderType,
 		IsEntryOrder: false,
+		BypassRiskOff: true,
+		DisableSizeAdjust: true, // 避免系统层自动放大/改写 size
 		Status:       domain.OrderStatusPending,
 		CreatedAt:    time.Now(),
 	}
