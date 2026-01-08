@@ -61,6 +61,13 @@ type Config struct {
 	// 顺序下单：主 leg 最长等待成交时间（毫秒），超时则撤单并回到 idle
 	SequentialPrimaryMaxWaitMs int `json:"sequentialPrimaryMaxWaitMs" yaml:"sequentialPrimaryMaxWaitMs"`
 
+	// ===== 成交确认（WS -> API 兜底）=====
+	// 主单下单后：优先等待 WebSocket 成交确认；若超过该时间仍未确认，则调用 API SyncOrderStatus 再判定。
+	// 默认 5 秒。
+	WsFillConfirmTimeoutSeconds int `json:"wsFillConfirmTimeoutSeconds" yaml:"wsFillConfirmTimeoutSeconds"`
+	// 若经过 API 确认后仍未成交：是否撤单（默认 true）。
+	CancelIfNotFilledAfterConfirm *bool `json:"cancelIfNotFilledAfterConfirm" yaml:"cancelIfNotFilledAfterConfirm"`
+
 	// ===== 订单类型（主/对冲可分别配置）=====
 	// limit: 限价挂单（GTC，使用锁利目标价）
 	// taker: 吃单（FAK，使用 bestAsk + takerOffsetCents）
@@ -141,7 +148,17 @@ func (c *Config) Defaults() {
 		c.SequentialPrimaryMaxCents = 95
 	}
 	if c.SequentialPrimaryMaxWaitMs <= 0 {
-		c.SequentialPrimaryMaxWaitMs = 2000
+		// 顺序模式下主单等待成交的“硬超时”，默认给到 >= WS确认(5s) + API兜底窗口
+		c.SequentialPrimaryMaxWaitMs = 7000
+	}
+
+	if c.WsFillConfirmTimeoutSeconds <= 0 {
+		c.WsFillConfirmTimeoutSeconds = 5
+	}
+	// 默认开启撤单（避免资金被卡住），允许用户显式设置为 false
+	if c.CancelIfNotFilledAfterConfirm == nil {
+		v := true
+		c.CancelIfNotFilledAfterConfirm = &v
 	}
 
 	if c.PrimaryOrderStyle == "" {
@@ -240,6 +257,9 @@ func (c *Config) Validate() error {
 	}
 	if c.SequentialPrimaryMaxWaitMs < 0 {
 		return fmt.Errorf("sequentialPrimaryMaxWaitMs must be >= 0")
+	}
+	if c.WsFillConfirmTimeoutSeconds < 0 {
+		return fmt.Errorf("wsFillConfirmTimeoutSeconds must be >= 0")
 	}
 
 	switch c.PrimaryOrderStyle {

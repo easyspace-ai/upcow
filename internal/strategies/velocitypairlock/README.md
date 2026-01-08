@@ -62,6 +62,10 @@ exchangeStrategies:
       sequentialPrimaryMaxCents: 80
       sequentialPrimaryMaxWaitMs: 2000
 
+      # ===== 成交确认（WS -> API 兜底）=====
+      wsFillConfirmTimeoutSeconds: 5
+      cancelIfNotFilledAfterConfirm: true
+
       # ===== 对冲后实时盯盘锁损 =====
       priceStopEnabled: true
       priceStopCheckIntervalMs: 200

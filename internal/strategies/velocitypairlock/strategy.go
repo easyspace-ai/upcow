@@ -317,6 +317,119 @@ func (s *Strategy) makeBuyOrderForToken(market *domain.Market, token domain.Toke
 	}, nil
 }
 
+func (s *Strategy) wsConfirmWait() time.Duration {
+	sec := s.st.cfg.WsFillConfirmTimeoutSeconds
+	if sec <= 0 {
+		return 0
+	}
+	return time.Duration(sec) * time.Second
+}
+
+func (s *Strategy) cancelIfNotFilledAfterConfirm() bool {
+	if s.st.cfg.CancelIfNotFilledAfterConfirm == nil {
+		return true
+	}
+	return *s.st.cfg.CancelIfNotFilledAfterConfirm
+}
+
+func (s *Strategy) syncOrderStatusBestEffort(orderID string) {
+	if s.TradingService == nil || orderID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = s.TradingService.SyncOrderStatus(ctx, orderID)
+	// 给 OrderEngine/回调一个短暂窗口（避免立刻读到旧状态）
+	time.Sleep(120 * time.Millisecond)
+}
+
+func (s *Strategy) schedulePrimaryConfirm(primaryID string) {
+	wait := s.wsConfirmWait()
+	if wait <= 0 || primaryID == "" {
+		return
+	}
+	time.AfterFunc(wait, func() {
+		// 仍在等主单成交才执行兜底确认
+		s.st.mu.Lock()
+		if s.st.rt.phase != phasePrimaryOpen || s.st.rt.primaryOrderID != primaryID || s.st.rt.primaryFilled {
+			s.st.mu.Unlock()
+			return
+		}
+		s.st.mu.Unlock()
+
+		s.syncOrderStatusBestEffort(primaryID)
+
+		s.st.mu.Lock()
+		if s.st.rt.phase != phasePrimaryOpen || s.st.rt.primaryOrderID != primaryID || s.st.rt.primaryFilled {
+			s.st.mu.Unlock()
+			return
+		}
+		shouldCancel := s.cancelIfNotFilledAfterConfirm()
+		s.st.mu.Unlock()
+
+		if !shouldCancel {
+			s.log.Warnf("⏳ 主单 WS 未确认且 API 仍未成交（按配置不撤单）：orderID=%s", primaryID)
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.TradingService.CancelOrder(ctx, primaryID)
+
+		s.st.mu.Lock()
+		if s.st.rt.phase == phasePrimaryOpen && s.st.rt.primaryOrderID == primaryID && !s.st.rt.primaryFilled {
+			s.log.Warnf("⏳ 主单 WS 未确认且 API 仍未成交，已撤单并重置：orderID=%s", primaryID)
+			s.resetPairLocked("primary_ws_timeout_cancel")
+			s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+		}
+		s.st.mu.Unlock()
+	})
+}
+
+func (s *Strategy) scheduleParallelConfirm(upID string, downID string) {
+	wait := s.wsConfirmWait()
+	if wait <= 0 || upID == "" || downID == "" {
+		return
+	}
+	time.AfterFunc(wait, func() {
+		s.st.mu.Lock()
+		// 仅当仍处于并发 open 且“完全没收到成交确认”时才兜底（否则交给盯盘/后续流程）
+		if s.st.rt.phase != phaseOpen || s.st.rt.upOrderID != upID || s.st.rt.downOrderID != downID || s.st.rt.upFilled || s.st.rt.downFilled {
+			s.st.mu.Unlock()
+			return
+		}
+		s.st.mu.Unlock()
+
+		s.syncOrderStatusBestEffort(upID)
+		s.syncOrderStatusBestEffort(downID)
+
+		s.st.mu.Lock()
+		if s.st.rt.phase != phaseOpen || s.st.rt.upOrderID != upID || s.st.rt.downOrderID != downID || s.st.rt.upFilled || s.st.rt.downFilled {
+			s.st.mu.Unlock()
+			return
+		}
+		shouldCancel := s.cancelIfNotFilledAfterConfirm()
+		s.st.mu.Unlock()
+
+		if !shouldCancel {
+			s.log.Warnf("⏳ 并发下单 WS 未确认且 API 仍未成交（按配置不撤单）：upID=%s downID=%s", upID, downID)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.TradingService.CancelOrder(ctx, upID)
+		_ = s.TradingService.CancelOrder(ctx, downID)
+
+		s.st.mu.Lock()
+		if s.st.rt.phase == phaseOpen && s.st.rt.upOrderID == upID && s.st.rt.downOrderID == downID && !s.st.rt.upFilled && !s.st.rt.downFilled {
+			s.log.Warnf("⏳ 并发下单 WS 未确认且 API 仍未成交，已撤单并重置：upID=%s downID=%s", upID, downID)
+			s.resetPairLocked("parallel_ws_timeout_cancel")
+			s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+		}
+		s.st.mu.Unlock()
+	})
+}
+
 // OnPriceChanged implements stream.PriceChangeHandler.
 func (s *Strategy) OnPriceChanged(ctx context.Context, ev *events.PriceChangedEvent) error {
 	if !s.Config.Enabled {
@@ -639,31 +752,26 @@ func (s *Strategy) placePairAsync(primaryToken domain.TokenType, market *domain.
 		s.log.Infof("✅ sequential：主 leg 已下单｜token=%s price=%dc orderID=%s hedgeTarget=%dc profit=%dc size=%.2f",
 			primaryToken, primaryCents, primaryID, hedgeCents, s.st.cfg.ProfitCents, s.st.cfg.OrderSize)
 
-		// 超时撤主 leg
-		wait := time.Duration(s.st.cfg.SequentialPrimaryMaxWaitMs) * time.Millisecond
-		if wait > 0 {
-			time.AfterFunc(wait, func() {
+		// WS -> API 兜底成交确认（5 秒默认）
+		s.schedulePrimaryConfirm(primaryID)
+
+		// 额外硬超时（避免极端情况下长时间卡住）
+		hard := time.Duration(s.st.cfg.SequentialPrimaryMaxWaitMs) * time.Millisecond
+		if hard > 0 {
+			time.AfterFunc(hard, func() {
 				s.st.mu.Lock()
 				if s.st.rt.phase != phasePrimaryOpen || s.st.rt.primaryOrderID != primaryID || s.st.rt.primaryFilled {
 					s.st.mu.Unlock()
 					return
 				}
-				mkt := s.st.rt.market
 				s.st.mu.Unlock()
-
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				_ = s.TradingService.CancelOrder(ctx, primaryID)
 				s.st.mu.Lock()
-				// 仍然处于等待态才 reset
 				if s.st.rt.phase == phasePrimaryOpen && s.st.rt.primaryOrderID == primaryID && !s.st.rt.primaryFilled {
-					s.log.Warnf("⏱️ 主 leg 等待成交超时，已尝试撤单并重置：orderID=%s market=%s", primaryID, func() string {
-						if mkt != nil {
-							return mkt.Slug
-						}
-						return ""
-					}())
-					s.resetPairLocked("sequential_primary_timeout")
+					s.log.Warnf("⏱️ 主单硬超时，已撤单并重置：orderID=%s", primaryID)
+					s.resetPairLocked("primary_hard_timeout_cancel")
 					s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
 				}
 				s.st.mu.Unlock()
@@ -759,6 +867,9 @@ func (s *Strategy) placePairAsync(primaryToken domain.TokenType, market *domain.
 	s.st.rt.tradesThisCycle++
 	s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
 	s.st.mu.Unlock()
+
+	// WS -> API 兜底确认（避免 WS 延迟导致“看起来没成交”）
+	s.scheduleParallelConfirm(upID, downID)
 
 	s.log.Infof("✅ 速度触发：双边挂单已创建｜UP=%dc(%s) DOWN=%dc(%s) profit=%dc size=%.2f",
 		upPriceCents, upID, downPriceCents, downID, s.st.cfg.ProfitCents, s.st.cfg.OrderSize)

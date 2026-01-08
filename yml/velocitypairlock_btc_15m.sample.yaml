@@ -49,6 +49,11 @@ exchangeStrategies:
       # 主 leg 最多等 2 秒成交，超时撤单并回到 idle
       sequentialPrimaryMaxWaitMs: 2000
 
+      # ===== 成交确认（WS -> API 兜底）=====
+      wsFillConfirmTimeoutSeconds: 5
+      # 兜底确认后仍未成交：是否撤单
+      cancelIfNotFilledAfterConfirm: true
+
       # ===== 对冲后实时盯盘锁损 =====
       priceStopEnabled: true
       priceStopCheckIntervalMs: 200
