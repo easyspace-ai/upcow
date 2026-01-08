@@ -5,11 +5,11 @@
 # - exchangeStrategies 按 bbgo main 风格挂载
 
 market:
-  symbol: btc
+  symbol: eth
   timeframe: 15m
   kind: updown
 
-dry_run: true
+dry_run: false
 
 exchangeStrategies:
   - on: polymarket
@@ -19,9 +19,9 @@ exchangeStrategies:
       decisionOnly: false
 
       # ===== 速度触发 =====
-      windowSeconds: 10
-      minMoveCents: 3
-      minVelocityCentsPerSec: 0.3
+      windowSeconds: 5
+      minMoveCents: 4
+      minVelocityCentsPerSec: 0.4
       # 速度方向策略：positive=只在价格上涨（正速率）时触发；abs=按绝对值触发
       velocityDirectionMode: positive
       # 当 UP/DOWN 同时满足触发条件时，选择正速率更大的那一侧作为主 leg
@@ -31,9 +31,9 @@ exchangeStrategies:
       # ===== 锁利挂单 =====
       # 示例：profitCents=3 时，如果 UP 参考价为 70，则 DOWN 会挂 27（锁 3 个点）
       profitCents: 3
-      orderSize: 5
-      minEntryPriceCents: 5
-      maxEntryPriceCents: 95
+      orderSize: 6
+      minEntryPriceCents: 15
+      maxEntryPriceCents: 85
       minOrderUSDC: 1.01
 
       # ===== 下单模式 =====
@@ -41,15 +41,15 @@ exchangeStrategies:
       # sequential: 顺序下单（先主 leg，主成交后再对冲）
       orderExecutionMode: sequential
       # 主/对冲下单方式：limit | taker
-      primaryOrderStyle: limit
+      primaryOrderStyle: taker
       hedgeOrderStyle: limit
       # taker 模式吃单价格：bestAsk + offset（分）
-      takerOffsetCents: 0
+      takerOffsetCents: 1
       # 顺序模式 gate：只有主 leg 价格在区间内才允许先主后对冲
-      sequentialPrimaryMinCents: 40
-      sequentialPrimaryMaxCents: 80
+      sequentialPrimaryMinCents: 70
+      sequentialPrimaryMaxCents: 88
       # 主 leg 最多等 2 秒成交，超时撤单并回到 idle
-      sequentialPrimaryMaxWaitMs: 2000
+      sequentialPrimaryMaxWaitMs: 5000
 
       # ===== 成交确认（WS -> API 兜底）=====
       wsFillConfirmTimeoutSeconds: 5
@@ -66,13 +66,13 @@ exchangeStrategies:
       # ===== 对冲后实时盯盘锁损 =====
       priceStopEnabled: true
       priceStopCheckIntervalMs: 200
-      priceStopSoftLossCents: -5
-      priceStopHardLossCents: -10
-      maxAcceptableLossCents: 20
+      priceStopSoftLossCents: -20
+      priceStopHardLossCents: -40
+      maxAcceptableLossCents: 30
 
       # ===== 周期保护 =====
-      cycleEndProtectionMinutes: 1
-      maxTradesPerCycle: 0
+      cycleEndProtectionMinutes: 3
+      maxTradesPerCycle: 2
 
       # ===== 成交后自动合并释放资金 =====
       autoMerge:
@@ -80,7 +80,7 @@ exchangeStrategies:
         minCompleteSets: 5
         maxCompleteSetsPerRun: 0
         mergeRatio: 1.0
-        intervalSeconds: 15
+        intervalSeconds: 45
         onlyIfNoOpenOrders: false
         reconcileAfterMerge: true
         reconcileMaxWaitSeconds: 30

@@ -62,6 +62,10 @@ type pairRuntime struct {
 	sweeperCancel  context.CancelFunc
 	sweeperRunning bool
 
+	// autoMerge 定期轮询（检查持仓并触发 merge）
+	mergePollerCancel  context.CancelFunc
+	mergePollerRunning bool
+
 	// 开对次数（每周期）
 	tradesThisCycle int
 

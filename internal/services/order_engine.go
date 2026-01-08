@@ -910,7 +910,42 @@ func (e *OrderEngine) handleProcessTrade(cmd *ProcessTradeCommand) {
 		// 重要：不能因为 orderID 不匹配就丢弃成交，否则仓位/报表会变成 0（你的日志里正是这种情况）
 		// Polymarket 的 trade 消息里 orderID 可能是 taker/maker 的不同 ID，甚至会出现“对手方 ID”。
 		// 我们的目标是：只要这是一笔“属于本账户”的成交（User WS 已保证），就必须按 assetID/market 更新仓位。
-		order = e.bestEffortMatchOrderForTrade(trade)
+		// 先尝试用 taker_order_id 匹配（因为我们的策略使用 taker 模式）
+		if trade.TakerOrderID != "" {
+			if takerOrder, ok := e.orderStore[trade.TakerOrderID]; ok && takerOrder != nil {
+				order = takerOrder
+				exists = true
+				// 更新 trade.OrderID 为匹配到的订单ID，确保后续处理使用正确的ID
+				trade.OrderID = trade.TakerOrderID
+				orderEngineLog.Debugf("✅ [Trade匹配] 通过 taker_order_id 匹配到订单: tradeID=%s takerOrderID=%s", trade.ID, trade.TakerOrderID)
+			}
+		}
+		
+		// 如果 taker_order_id 不匹配，尝试所有 maker_orders 中的 order_id
+		if !exists && len(trade.MakerOrderIDs) > 0 {
+			for _, makerOrderID := range trade.MakerOrderIDs {
+				if makerOrder, ok := e.orderStore[makerOrderID]; ok && makerOrder != nil {
+					order = makerOrder
+					exists = true
+					// 更新 trade.OrderID 为匹配到的订单ID
+					trade.OrderID = makerOrderID
+					orderEngineLog.Debugf("✅ [Trade匹配] 通过 maker_order_id 匹配到订单: tradeID=%s makerOrderID=%s", trade.ID, makerOrderID)
+					break
+				}
+			}
+		}
+		
+		// 如果直接匹配失败，尝试通过属性匹配（bestEffortMatchOrderForTrade）
+		if !exists {
+			order = e.bestEffortMatchOrderForTrade(trade)
+			if order != nil {
+				// 匹配成功，更新 trade.OrderID 为匹配到的订单ID
+				trade.OrderID = order.OrderID
+				orderEngineLog.Debugf("✅ [Trade匹配] 通过属性匹配到订单: tradeID=%s matchedOrderID=%s", trade.ID, order.OrderID)
+			}
+		}
+		
+		// 如果所有匹配都失败，创建 synthetic 订单
 		if order == nil {
 			order = e.syntheticOrderFromTrade(trade)
 		}

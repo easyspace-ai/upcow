@@ -10,6 +10,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/betbot/gobet/clob/types"
+	"github.com/betbot/gobet/internal/common"
 	"github.com/betbot/gobet/internal/events"
 	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/internal/orderutil"
@@ -96,7 +97,7 @@ func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
 }
 
 // OnCycle 在周期切换时重置状态（避免跨周期污染）。
-func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, newMarket *domain.Market) {
+func (s *Strategy) OnCycle(ctx context.Context, oldMarket *domain.Market, newMarket *domain.Market) {
 	s.st.mu.Lock()
 	defer s.st.mu.Unlock()
 
@@ -111,6 +112,19 @@ func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, newMarket *domai
 	if s.st.downVel != nil {
 		s.st.downVel.Reset()
 	}
+	
+	// 如果有旧周期，启动 goroutine 合并上一周期的持仓
+	if oldMarket != nil && s.st.cfg.AutoMerge.Enabled && s.TradingService != nil {
+		cfg := s.st.cfg.AutoMerge
+		tradingService := s.TradingService
+		log := s.log
+		
+		// 在独立的 goroutine 中运行，不阻塞周期切换
+		go func() {
+			s.mergePreviousCyclePositions(ctx, oldMarket, cfg, tradingService, log)
+		}()
+	}
+	
 	s.st.rt.market = newMarket
 	s.st.rt.tradesThisCycle = 0
 	s.resetPairLocked("cycle_switch")
@@ -136,8 +150,19 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 
 	// 启动后台收敛 sweeper（防止挂单堆积占用资金）
 	s.startSweeperIfNeeded()
+	
+	// 启动 autoMerge 定期轮询（检查持仓并触发 merge）
+	s.startAutoMergePollerIfNeeded()
 
 	<-ctx.Done()
+	
+	// 清理后台 goroutine（确保程序可以正常退出）
+	s.st.mu.Lock()
+	s.stopSweeperLocked()
+	s.stopMonitorLocked()
+	s.stopAutoMergePollerLocked()
+	s.st.mu.Unlock()
+	
 	return ctx.Err()
 }
 
@@ -169,12 +194,80 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 	}
 
 	// 顺序模式：主 leg 成交 -> 下对冲 leg
-	if s.st.rt.phase == phasePrimaryOpen && s.st.rt.primaryOrderID != "" && order.OrderID == s.st.rt.primaryOrderID {
-		if order.Status == domain.OrderStatusFilled {
+	if s.st.rt.phase == phasePrimaryOpen && s.st.rt.primaryOrderID != "" {
+		// 方案1: 严格匹配 OrderID（保持现有逻辑）
+		if order.OrderID == s.st.rt.primaryOrderID {
+			if order.Status == domain.OrderStatusFilled {
+				// 防止重复处理：如果已经标记为成交，跳过
+				if s.st.rt.primaryFilled {
+					s.st.mu.Unlock()
+					return nil
+				}
+				s.st.rt.primaryFilled = true
+				s.st.rt.primaryFillCents = order.Price.ToCents()
+				s.st.rt.primaryFillSize = order.ExecutedSize()
+				s.log.Infof("✅ 主 leg 成交：orderID=%s token=%s price=%dc size=%.2f", order.OrderID, s.st.rt.primaryToken, s.st.rt.primaryFillCents, s.st.rt.primaryFillSize)
+				// 下对冲单放到 goroutine（避免阻塞 WS）
+				market := s.st.rt.market
+				hedgeToken := s.st.rt.hedgeToken
+				hedgeCents := s.st.rt.hedgeTargetCents
+				size := s.st.rt.primaryFillSize
+				s.st.rt.phase = phasePlacing
+				s.st.mu.Unlock()
+				go s.placeHedgeAfterPrimaryFilled(market, hedgeToken, hedgeCents, size)
+				return nil
+			}
+			if order.Status == domain.OrderStatusCanceled || order.Status == domain.OrderStatusFailed {
+				// 检查订单是否已经成交（可能状态更新顺序不对，先收到 failed 后收到 filled）
+				// 如果 filledSize > 0，说明订单实际上已经成交，应该优先处理成交逻辑
+				if order.ExecutedSize() > 0 {
+					s.log.Warnf("⚠️ 主 leg 收到 %s 状态但已成交（filledSize=%.2f），按成交处理：orderID=%s", 
+						order.Status, order.ExecutedSize(), order.OrderID)
+					// 按成交处理
+					if !s.st.rt.primaryFilled {
+						s.st.rt.primaryFilled = true
+						s.st.rt.primaryFillCents = order.Price.ToCents()
+						s.st.rt.primaryFillSize = order.ExecutedSize()
+						s.log.Infof("✅ 主 leg 成交：orderID=%s token=%s price=%dc size=%.2f", 
+							order.OrderID, s.st.rt.primaryToken, s.st.rt.primaryFillCents, s.st.rt.primaryFillSize)
+						// 下对冲单放到 goroutine（避免阻塞 WS）
+						market := s.st.rt.market
+						hedgeToken := s.st.rt.hedgeToken
+						hedgeCents := s.st.rt.hedgeTargetCents
+						size := s.st.rt.primaryFillSize
+						s.st.rt.phase = phasePlacing
+						s.st.mu.Unlock()
+						go s.placeHedgeAfterPrimaryFilled(market, hedgeToken, hedgeCents, size)
+						return nil
+					}
+					s.st.mu.Unlock()
+					return nil
+				}
+				// 订单确实失败且未成交，重置
+				s.log.Warnf("⚠️ 主 leg 进入终态但未成交：orderID=%s status=%s，重置本对", order.OrderID, order.Status)
+				s.resetPairLocked("primary_terminal")
+				s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+				s.st.mu.Unlock()
+				return nil
+			}
+			s.st.mu.Unlock()
+			return nil
+		}
+		
+		// 方案2: 如果 OrderID 不匹配，尝试通过属性匹配（处理 trade 消息中 orderID 不同的情况）
+		if order.Status == domain.OrderStatusFilled && s.isSamePrimaryOrder(order) {
+			// 防止重复处理：如果已经标记为成交，跳过
+			if s.st.rt.primaryFilled {
+				s.st.mu.Unlock()
+				return nil
+			}
+			// 更新 primaryOrderID 为实际成交的 orderID
+			s.st.rt.primaryOrderID = order.OrderID
 			s.st.rt.primaryFilled = true
 			s.st.rt.primaryFillCents = order.Price.ToCents()
 			s.st.rt.primaryFillSize = order.ExecutedSize()
-			s.log.Infof("✅ 主 leg 成交：orderID=%s token=%s price=%dc size=%.2f", order.OrderID, s.st.rt.primaryToken, s.st.rt.primaryFillCents, s.st.rt.primaryFillSize)
+			s.log.Infof("✅ 主 leg 成交（通过属性匹配）: orderID=%s token=%s price=%dc size=%.2f (原始orderID=%s)", 
+				order.OrderID, s.st.rt.primaryToken, s.st.rt.primaryFillCents, s.st.rt.primaryFillSize, s.st.rt.primaryOrderID)
 			// 下对冲单放到 goroutine（避免阻塞 WS）
 			market := s.st.rt.market
 			hedgeToken := s.st.rt.hedgeToken
@@ -185,38 +278,56 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 			go s.placeHedgeAfterPrimaryFilled(market, hedgeToken, hedgeCents, size)
 			return nil
 		}
-		if order.Status == domain.OrderStatusCanceled || order.Status == domain.OrderStatusFailed {
-			s.log.Warnf("⚠️ 主 leg 进入终态但未成交：orderID=%s status=%s，重置本对", order.OrderID, order.Status)
-			s.resetPairLocked("primary_terminal")
-			s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
-			s.st.mu.Unlock()
-			return nil
-		}
-		s.st.mu.Unlock()
-		return nil
 	}
 
 	// 顺序模式：对冲 leg 状态
-	if s.st.rt.phase == phaseHedgeOpen && s.st.rt.hedgeOrderID != "" && order.OrderID == s.st.rt.hedgeOrderID {
-		if order.Status == domain.OrderStatusFilled {
+	if s.st.rt.phase == phaseHedgeOpen && s.st.rt.hedgeOrderID != "" {
+		// 方案1: 严格匹配 OrderID（保持现有逻辑）
+		if order.OrderID == s.st.rt.hedgeOrderID {
+			if order.Status == domain.OrderStatusFilled {
+				// 防止重复处理：如果已经标记为成交，跳过
+				if s.st.rt.hedgeFilled {
+					s.st.mu.Unlock()
+					return nil
+				}
+				s.st.rt.hedgeFilled = true
+				s.log.Infof("✅ 对冲 leg 成交：orderID=%s token=%s", order.OrderID, s.st.rt.hedgeToken)
+				s.stopMonitorLocked()
+				s.st.rt.phase = phaseFilled
+				s.triggerAutoMergeLocked()
+				s.st.mu.Unlock()
+				return nil
+			}
+			if order.Status == domain.OrderStatusCanceled || order.Status == domain.OrderStatusFailed {
+				s.log.Warnf("⚠️ 对冲 leg 进入终态但未成交：orderID=%s status=%s，重置本对", order.OrderID, order.Status)
+				s.stopMonitorLocked()
+				s.resetPairLocked("hedge_terminal")
+				s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+				s.st.mu.Unlock()
+				return nil
+			}
+			s.st.mu.Unlock()
+			return nil
+		}
+		
+		// 方案2: 如果 OrderID 不匹配，尝试通过属性匹配（处理 trade 消息中 orderID 不同的情况）
+		if order.Status == domain.OrderStatusFilled && s.isSameHedgeOrder(order) {
+			// 防止重复处理：如果已经标记为成交，跳过
+			if s.st.rt.hedgeFilled {
+				s.st.mu.Unlock()
+				return nil
+			}
+			// 更新 hedgeOrderID 为实际成交的 orderID
+			s.st.rt.hedgeOrderID = order.OrderID
 			s.st.rt.hedgeFilled = true
-			s.log.Infof("✅ 对冲 leg 成交：orderID=%s token=%s", order.OrderID, s.st.rt.hedgeToken)
+			s.log.Infof("✅ 对冲 leg 成交（通过属性匹配）: orderID=%s token=%s (原始orderID=%s)", 
+				order.OrderID, s.st.rt.hedgeToken, s.st.rt.hedgeOrderID)
 			s.stopMonitorLocked()
 			s.st.rt.phase = phaseFilled
 			s.triggerAutoMergeLocked()
 			s.st.mu.Unlock()
 			return nil
 		}
-		if order.Status == domain.OrderStatusCanceled || order.Status == domain.OrderStatusFailed {
-			s.log.Warnf("⚠️ 对冲 leg 进入终态但未成交：orderID=%s status=%s，重置本对", order.OrderID, order.Status)
-			s.stopMonitorLocked()
-			s.resetPairLocked("hedge_terminal")
-			s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
-			s.st.mu.Unlock()
-			return nil
-		}
-		s.st.mu.Unlock()
-		return nil
 	}
 
 	// 并发模式：两边订单状态（维持原逻辑）
@@ -355,13 +466,20 @@ func (s *Strategy) syncOrderStatusBestEffort(orderID string) {
 	time.Sleep(120 * time.Millisecond)
 }
 
-func (s *Strategy) cancelOrderAndConfirmClosed(orderID string) {
+// cancelOrderResult 撤单结果
+type cancelOrderResult struct {
+	Canceled bool // 是否成功撤单
+	Filled   bool // 订单是否已成交（撤单时发现订单已成交）
+}
+
+func (s *Strategy) cancelOrderAndConfirmClosed(orderID string) cancelOrderResult {
+	result := cancelOrderResult{}
 	if s.TradingService == nil || orderID == "" {
-		return
+		return result
 	}
 	if s.st.cfg.DecisionOnly {
 		s.log.Warnf("🧪 decisionOnly：跳过撤单+确认：orderID=%s", orderID)
-		return
+		return result
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	_ = s.TradingService.CancelOrder(ctx, orderID)
@@ -382,13 +500,29 @@ func (s *Strategy) cancelOrderAndConfirmClosed(orderID string) {
 		if s.TradingService != nil {
 			if o, ok := s.TradingService.GetOrder(orderID); ok && o != nil {
 				switch o.Status {
-				case domain.OrderStatusFilled, domain.OrderStatusCanceled, domain.OrderStatusFailed:
-					return
+				case domain.OrderStatusFilled:
+					result.Filled = true
+					return result
+				case domain.OrderStatusCanceled, domain.OrderStatusFailed:
+					result.Canceled = true
+					return result
 				}
 			}
 		}
 		time.Sleep(interval)
 	}
+	// 超时后，再次检查一次订单状态
+	if s.TradingService != nil {
+		if o, ok := s.TradingService.GetOrder(orderID); ok && o != nil {
+			switch o.Status {
+			case domain.OrderStatusFilled:
+				result.Filled = true
+			case domain.OrderStatusCanceled, domain.OrderStatusFailed:
+				result.Canceled = true
+			}
+		}
+	}
+	return result
 }
 
 func (s *Strategy) isOrderInCurrentMarket(order *domain.Order, market *domain.Market) bool {
@@ -444,10 +578,23 @@ func (s *Strategy) sweepOnce() {
 	s.st.mu.Lock()
 	market := s.st.rt.market
 	allowed := s.snapshotAllowedOrderIDsLocked()
+	phase := s.st.rt.phase
+	primaryFilled := s.st.rt.primaryFilled
+	hedgeFilled := s.st.rt.hedgeFilled
+	upFilled := s.st.rt.upFilled
+	downFilled := s.st.rt.downFilled
 	s.st.mu.Unlock()
 	if market == nil {
 		return
 	}
+	
+	// 持仓检测兜底机制：如果订单都已成交但策略状态未更新，通过持仓检测触发 merge
+	if (phase == phaseHedgeOpen || phase == phasePrimaryOpen || phase == phaseOpen) && 
+	   s.st.cfg.AutoMerge.Enabled {
+		s.checkPositionsAndTriggerMergeIfNeeded(market, phase, primaryFilled, hedgeFilled, upFilled, downFilled)
+	}
+	
+	// 订单收敛扫单
 	orders := s.TradingService.GetActiveOrders()
 	for _, o := range orders {
 		if o == nil || o.OrderID == "" {
@@ -1080,6 +1227,28 @@ func (s *Strategy) placeHedgeAfterPrimaryFilled(market *domain.Market, hedgeToke
 		s.st.mu.Unlock()
 		return
 	}
+	
+	// 状态检查：防止重复下单
+	// 如果状态已经不是 phasePlacing 或 phasePrimaryOpen，说明已经有对冲单在途或已成交，不需要再下
+	s.st.mu.Lock()
+	if s.st.rt.phase != phasePlacing && s.st.rt.phase != phasePrimaryOpen {
+		s.st.mu.Unlock()
+		s.log.Warnf("⚠️ 跳过对冲单下单：状态已变化 phase=%s（可能已有对冲单在途或已成交）", s.st.rt.phase)
+		return
+	}
+	// 如果已经有对冲单在途，不需要再下
+	if s.st.rt.hedgeOrderID != "" {
+		s.st.mu.Unlock()
+		s.log.Warnf("⚠️ 跳过对冲单下单：已有对冲单在途 hedgeOrderID=%s", s.st.rt.hedgeOrderID)
+		return
+	}
+	// 如果主 leg 未成交，不应该下对冲单
+	if !s.st.rt.primaryFilled {
+		s.st.mu.Unlock()
+		s.log.Warnf("⚠️ 跳过对冲单下单：主 leg 未成交 primaryFilled=false")
+		return
+	}
+	s.st.mu.Unlock()
 	assetID := market.NoAssetID
 	if hedgeToken == domain.TokenTypeUp {
 		assetID = market.YesAssetID
@@ -1283,7 +1452,27 @@ func (s *Strategy) executeStopLoss(oldHedgeOrderID string, hedgeToken domain.Tok
 		return
 	}
 	// 1) 撤掉旧对冲单
-	s.cancelOrderAndConfirmClosed(oldHedgeOrderID)
+	cancelResult := s.cancelOrderAndConfirmClosed(oldHedgeOrderID)
+	
+	// 如果订单在撤单过程中已成交，不需要下新单
+	if cancelResult.Filled {
+		s.log.Infof("✅ 止损撤单时发现订单已成交：orderID=%s，无需下新单", oldHedgeOrderID)
+		s.st.mu.Lock()
+		// 更新状态，确保策略知道订单已成交
+		if s.st.rt.phase == phaseHedgeOpen && s.st.rt.hedgeOrderID == oldHedgeOrderID {
+			s.st.rt.hedgeFilled = true
+			s.st.rt.phase = phaseFilled
+			s.stopMonitorLocked()
+			s.triggerAutoMergeLocked()
+		}
+		s.st.mu.Unlock()
+		return
+	}
+	
+	// 如果撤单失败且订单未成交，记录警告但继续尝试下新单（可能是网络问题）
+	if !cancelResult.Canceled && !cancelResult.Filled {
+		s.log.Warnf("⚠️ 止损撤单未确认：orderID=%s（可能仍在挂单中），继续下新单", oldHedgeOrderID)
+	}
 
 	// 2) 新建锁损对冲单（更激进）
 	s.st.mu.Lock()
@@ -1419,6 +1608,409 @@ func (s *Strategy) resetPairLocked(reason string) {
 func priceFromCents(c int) domain.Price {
 	// 1 cent = 100 pips
 	return domain.Price{Pips: c * 100}
+}
+
+// isSamePrimaryOrder 检查订单是否与主 leg 订单匹配（通过属性而非 OrderID）
+// 用于处理 trade 消息中 orderID 与下单时返回的 orderID 不同的情况
+func (s *Strategy) isSamePrimaryOrder(order *domain.Order) bool {
+	if order == nil || s.st.rt.market == nil {
+		return false
+	}
+	
+	// 检查 assetID 和 token type
+	expectedAssetID := s.st.rt.market.NoAssetID
+	if s.st.rt.primaryToken == domain.TokenTypeUp {
+		expectedAssetID = s.st.rt.market.YesAssetID
+	}
+	if order.AssetID != expectedAssetID {
+		return false
+	}
+	
+	// 检查 side (应该是 BUY)
+	if order.Side != types.SideBuy {
+		return false
+	}
+	
+	// 检查价格（如果有对冲目标价，可以估算主 leg 价格范围）
+	if s.st.rt.hedgeTargetCents > 0 {
+		// 估算主 leg 价格：100 - hedgeTarget - profitCents
+		expectedPriceCents := 100 - s.st.rt.hedgeTargetCents - s.st.cfg.ProfitCents
+		actualPriceCents := order.Price.ToCents()
+		priceDiff := int(math.Abs(float64(actualPriceCents - expectedPriceCents)))
+		// 允许 ±10c 的误差（考虑到实际成交价格可能与目标价略有差异）
+		if priceDiff > 10 {
+			return false
+		}
+	}
+	
+	// 检查时间（订单应该是最近创建的，比如 60 秒内）
+	if order.CreatedAt.IsZero() {
+		return false
+	}
+	if time.Since(order.CreatedAt) > 60*time.Second {
+		return false
+	}
+	
+	// 检查订单数量（应该在合理范围内，比如 ±20%）
+	if s.st.cfg.OrderSize > 0 {
+		sizeDiff := math.Abs(order.Size - s.st.cfg.OrderSize)
+		if sizeDiff > s.st.cfg.OrderSize*0.2 {
+			return false
+		}
+	}
+	
+	return true
+}
+
+// isSameHedgeOrder 检查订单是否与对冲 leg 订单匹配（通过属性而非 OrderID）
+// 用于处理 trade 消息中 orderID 与下单时返回的 orderID 不同的情况
+func (s *Strategy) isSameHedgeOrder(order *domain.Order) bool {
+	if order == nil || s.st.rt.market == nil {
+		return false
+	}
+	
+	// 检查 assetID 和 token type
+	expectedAssetID := s.st.rt.market.NoAssetID
+	if s.st.rt.hedgeToken == domain.TokenTypeUp {
+		expectedAssetID = s.st.rt.market.YesAssetID
+	}
+	if order.AssetID != expectedAssetID {
+		return false
+	}
+	
+	// 检查 side (应该是 BUY)
+	if order.Side != types.SideBuy {
+		return false
+	}
+	
+	// 检查价格（对冲目标价应该在合理范围内）
+	if s.st.rt.hedgeTargetCents > 0 {
+		actualPriceCents := order.Price.ToCents()
+		priceDiff := int(math.Abs(float64(actualPriceCents - s.st.rt.hedgeTargetCents)))
+		// 允许 ±10c 的误差（考虑到实际成交价格可能与目标价略有差异）
+		if priceDiff > 10 {
+			return false
+		}
+	}
+	
+	// 检查时间（订单应该是最近创建的，比如 60 秒内）
+	if order.CreatedAt.IsZero() {
+		return false
+	}
+	if time.Since(order.CreatedAt) > 60*time.Second {
+		return false
+	}
+	
+	// 检查订单数量（应该在合理范围内，比如 ±20%）
+	// 对冲单的数量应该与主 leg 的成交数量匹配
+	expectedSize := s.st.cfg.OrderSize
+	if s.st.rt.primaryFillSize > 0 {
+		expectedSize = s.st.rt.primaryFillSize
+	}
+	if expectedSize > 0 {
+		sizeDiff := math.Abs(order.Size - expectedSize)
+		if sizeDiff > expectedSize*0.2 {
+			return false
+		}
+	}
+	
+	return true
+}
+
+// checkPositionsAndTriggerMergeIfNeeded 通过持仓检测兜底机制
+// 如果两个订单都已成交（通过持仓判断），但策略状态未更新，则触发 merge
+func (s *Strategy) checkPositionsAndTriggerMergeIfNeeded(
+	market *domain.Market,
+	phase pairPhase,
+	primaryFilled, hedgeFilled, upFilled, downFilled bool,
+) {
+	if s.TradingService == nil || market == nil || !s.st.cfg.AutoMerge.Enabled {
+		return
+	}
+	
+	// 顺序模式：检查主 leg 和对冲 leg 是否都已成交
+	if phase == phaseHedgeOpen || phase == phasePrimaryOpen {
+		// 如果策略状态显示都已成交，不需要检查持仓
+		if (phase == phaseHedgeOpen && primaryFilled && hedgeFilled) ||
+		   (phase == phasePrimaryOpen && primaryFilled) {
+			return
+		}
+		
+		// 检查持仓：如果 UP 和 DOWN 都有持仓，说明两个订单都已成交
+		positions := s.TradingService.GetOpenPositionsForMarket(market.Slug)
+		var upSize, downSize float64
+		for _, p := range positions {
+			if p == nil || !p.IsOpen() || p.Size <= 0 {
+				continue
+			}
+			if p.TokenType == domain.TokenTypeUp {
+				upSize += p.Size
+			} else if p.TokenType == domain.TokenTypeDown {
+				downSize += p.Size
+			}
+		}
+		
+		// 如果两个仓位都存在且数量匹配（说明两个订单都已成交）
+		if upSize > 0 && downSize > 0 {
+			// 检查数量是否匹配（允许 ±20% 误差）
+			minSize := math.Min(upSize, downSize)
+			maxSize := math.Max(upSize, downSize)
+			if maxSize > 0 && (maxSize-minSize)/maxSize <= 0.2 {
+				s.st.mu.Lock()
+				// 再次检查状态（避免并发问题）
+				if (s.st.rt.phase == phaseHedgeOpen || s.st.rt.phase == phasePrimaryOpen) &&
+				   !s.st.rt.primaryFilled && !s.st.rt.hedgeFilled {
+					s.log.Warnf("🔍 [持仓检测] 发现两个仓位都已存在但策略状态未更新：UP=%.2f DOWN=%.2f phase=%s，触发 merge", 
+						upSize, downSize, s.st.rt.phase)
+					// 更新状态并触发 merge
+					s.st.rt.primaryFilled = true
+					s.st.rt.hedgeFilled = true
+					s.st.rt.phase = phaseFilled
+					s.stopMonitorLocked()
+					s.triggerAutoMergeLocked()
+				}
+				s.st.mu.Unlock()
+			}
+		}
+		return
+	}
+	
+	// 并发模式：检查 UP 和 DOWN 是否都已成交
+	if phase == phaseOpen {
+		// 如果策略状态显示都已成交，不需要检查持仓
+		if upFilled && downFilled {
+			return
+		}
+		
+		// 检查持仓：如果 UP 和 DOWN 都有持仓，说明两个订单都已成交
+		positions := s.TradingService.GetOpenPositionsForMarket(market.Slug)
+		var upSize, downSize float64
+		for _, p := range positions {
+			if p == nil || !p.IsOpen() || p.Size <= 0 {
+				continue
+			}
+			if p.TokenType == domain.TokenTypeUp {
+				upSize += p.Size
+			} else if p.TokenType == domain.TokenTypeDown {
+				downSize += p.Size
+			}
+		}
+		
+		// 如果两个仓位都存在且数量匹配（说明两个订单都已成交）
+		if upSize > 0 && downSize > 0 {
+			// 检查数量是否匹配（允许 ±20% 误差）
+			minSize := math.Min(upSize, downSize)
+			maxSize := math.Max(upSize, downSize)
+			if maxSize > 0 && (maxSize-minSize)/maxSize <= 0.2 {
+				s.st.mu.Lock()
+				// 再次检查状态（避免并发问题）
+				if s.st.rt.phase == phaseOpen && !s.st.rt.upFilled && !s.st.rt.downFilled {
+					s.log.Warnf("🔍 [持仓检测] 发现两个仓位都已存在但策略状态未更新：UP=%.2f DOWN=%.2f，触发 merge", 
+						upSize, downSize)
+					// 更新状态并触发 merge
+					s.st.rt.upFilled = true
+					s.st.rt.downFilled = true
+					s.st.rt.phase = phaseFilled
+					s.stopMonitorLocked()
+					s.triggerAutoMergeLocked()
+				}
+				s.st.mu.Unlock()
+			}
+		}
+	}
+}
+
+// startAutoMergePollerIfNeeded 启动 autoMerge 定期轮询
+// 定期检查持仓，如果发现双向持仓就触发 merge
+func (s *Strategy) startAutoMergePollerIfNeeded() {
+	if !s.st.cfg.AutoMerge.Enabled {
+		return
+	}
+	s.st.mu.Lock()
+	defer s.st.mu.Unlock()
+	if s.st.rt.mergePollerRunning {
+		return
+	}
+	
+	interval := time.Duration(s.st.cfg.AutoMerge.IntervalSeconds) * time.Second
+	if interval <= 0 {
+		interval = 45 * time.Second // 默认 45 秒
+	}
+	
+	ctx, cancel := context.WithCancel(context.Background())
+	s.st.rt.mergePollerCancel = cancel
+	s.st.rt.mergePollerRunning = true
+	
+	s.log.Infof("🔄 启动 autoMerge 定期轮询：interval=%v", interval)
+	
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.pollAutoMergeOnce()
+			}
+		}
+	}()
+}
+
+// stopAutoMergePollerLocked 停止 autoMerge 定期轮询
+func (s *Strategy) stopAutoMergePollerLocked() {
+	if s.st.rt.mergePollerCancel != nil {
+		s.st.rt.mergePollerCancel()
+		s.st.rt.mergePollerCancel = nil
+	}
+	s.st.rt.mergePollerRunning = false
+}
+
+// pollAutoMergeOnce 定期轮询检查持仓并触发 merge
+// 只要是在本周期的双向持仓都可以合并
+func (s *Strategy) pollAutoMergeOnce() {
+	if !s.st.cfg.AutoMerge.Enabled || s.TradingService == nil {
+		return
+	}
+	
+	s.st.mu.Lock()
+	market := s.st.rt.market
+	s.st.mu.Unlock()
+	
+	if market == nil || !market.IsValid() {
+		return
+	}
+	
+	// 检查持仓：获取当前市场的所有开放持仓
+	positions := s.TradingService.GetOpenPositionsForMarket(market.Slug)
+	if len(positions) == 0 {
+		return
+	}
+	
+	var upSize, downSize float64
+	for _, p := range positions {
+		if p == nil || !p.IsOpen() || p.Size <= 0 {
+			continue
+		}
+		if p.TokenType == domain.TokenTypeUp {
+			upSize += p.Size
+		} else if p.TokenType == domain.TokenTypeDown {
+			downSize += p.Size
+		}
+	}
+	
+	// 如果两个仓位都存在，计算可合并的 complete sets
+	if upSize > 0 && downSize > 0 {
+		complete := math.Min(upSize, downSize)
+		
+		// 检查是否满足最小合并数量
+		if s.st.cfg.AutoMerge.MinCompleteSets > 0 && complete < s.st.cfg.AutoMerge.MinCompleteSets {
+			return
+		}
+		
+		// 检查是否正在合并中（避免重复触发）
+		s.st.mu.Lock()
+		if s.st.rt.phase == phaseMerging {
+			s.st.mu.Unlock()
+			return
+		}
+		s.st.mu.Unlock()
+		
+		// 触发 merge（不更新策略状态，因为这是定期轮询，不是订单成交触发）
+		s.log.Infof("🔄 [定期轮询] 发现双向持仓：UP=%.2f DOWN=%.2f complete=%.2f，触发 merge", 
+			upSize, downSize, complete)
+		
+		cfg := s.st.cfg.AutoMerge
+		s.st.rt.autoMergeCtl.MaybeAutoMerge(
+			context.Background(),
+			s.TradingService,
+			market,
+			cfg,
+			func(format string, args ...any) { s.log.Infof(format, args...) },
+			func(status string, amount float64, txHash string, err error) {
+				// 回调里只做日志记录，不更新策略状态（因为这是定期轮询）
+				if status == "balance_refreshed" || status == "completed" {
+					s.log.Infof("✅ [定期轮询] merge 完成：amount=%.6f tx=%s", amount, txHash)
+				}
+				if status == "failed" && err != nil {
+					s.log.Warnf("⚠️ [定期轮询] merge 失败：amount=%.6f err=%v", amount, err)
+				}
+			},
+		)
+	}
+}
+
+// mergePreviousCyclePositions 合并上一周期的持仓
+// 在周期切换后，启动独立的 goroutine 来合并上一周期的双向持仓
+func (s *Strategy) mergePreviousCyclePositions(
+	ctx context.Context,
+	oldMarket *domain.Market,
+	cfg common.AutoMergeConfig,
+	tradingService *services.TradingService,
+	log *logrus.Entry,
+) {
+	if oldMarket == nil || !oldMarket.IsValid() || oldMarket.Slug == "" {
+		return
+	}
+	
+	// 等待一小段时间，确保周期切换完成，持仓数据已同步
+	time.Sleep(2 * time.Second)
+	
+	// 检查上一周期的持仓
+	positions := tradingService.GetOpenPositionsForMarket(oldMarket.Slug)
+	if len(positions) == 0 {
+		log.Debugf("🔄 [周期切换] 上一周期 %s 无持仓，跳过 merge", oldMarket.Slug)
+		return
+	}
+	
+	var upSize, downSize float64
+	for _, p := range positions {
+		if p == nil || !p.IsOpen() || p.Size <= 0 {
+			continue
+		}
+		if p.TokenType == domain.TokenTypeUp {
+			upSize += p.Size
+		} else if p.TokenType == domain.TokenTypeDown {
+			downSize += p.Size
+		}
+	}
+	
+	// 如果两个仓位都存在，计算可合并的 complete sets
+	if upSize > 0 && downSize > 0 {
+		complete := math.Min(upSize, downSize)
+		
+		// 检查是否满足最小合并数量
+		if cfg.MinCompleteSets > 0 && complete < cfg.MinCompleteSets {
+			log.Infof("🔄 [周期切换] 上一周期 %s 持仓不足：UP=%.2f DOWN=%.2f complete=%.2f < minCompleteSets=%.2f，跳过 merge",
+				oldMarket.Slug, upSize, downSize, complete, cfg.MinCompleteSets)
+			return
+		}
+		
+		log.Infof("🔄 [周期切换] 发现上一周期 %s 有双向持仓：UP=%.2f DOWN=%.2f complete=%.2f，开始 merge",
+			oldMarket.Slug, upSize, downSize, complete)
+		
+		// 使用独立的 AutoMergeController 实例，避免与新周期的 merge 冲突
+		var previousCycleMergeCtl common.AutoMergeController
+		
+		previousCycleMergeCtl.MaybeAutoMerge(
+			ctx,
+			tradingService,
+			oldMarket,
+			cfg,
+			func(format string, args ...any) { log.Infof("[上一周期] "+format, args...) },
+			func(status string, amount float64, txHash string, err error) {
+				// 回调里只做日志记录
+				if status == "balance_refreshed" || status == "completed" {
+					log.Infof("✅ [周期切换] 上一周期 %s merge 完成：amount=%.6f tx=%s", oldMarket.Slug, amount, txHash)
+				}
+				if status == "failed" && err != nil {
+					log.Warnf("⚠️ [周期切换] 上一周期 %s merge 失败：amount=%.6f err=%v", oldMarket.Slug, amount, err)
+				}
+			},
+		)
+	} else {
+		log.Debugf("🔄 [周期切换] 上一周期 %s 无双向持仓：UP=%.2f DOWN=%.2f，跳过 merge", oldMarket.Slug, upSize, downSize)
+	}
 }
 
 // ===== compile-time guard =====

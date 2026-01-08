@@ -1,0 +1,24 @@
+[36mINFO[0m[26-01-09 01:45:00] 🔄 [周期切换] 检测到会话切换，重新注册策略到新会话: eth-updown-15m-1767894300 
+[36mINFO[0m[26-01-09 01:45:00] 🔄 [周期切换] 准备调用策略 velocitypairlock 的 Subscribe 方法  [36mcomponent[0m=trader
+[36mINFO[0m[26-01-09 01:45:00] ✅ [Session polymarket] 注册价格变化处理器，当前 handlers 数量=2  [36mcomponent[0m=session
+[36mINFO[0m[26-01-09 01:45:00] ✅ [周期切换] 策略 velocitypairlock 的 Subscribe 方法执行完成  [36mcomponent[0m=trader
+[36mINFO[0m[26-01-09 01:45:00] ✅ [周期切换] 策略 velocitypairlock 已订阅会话 polymarket  [36mcomponent[0m=trader
+[36mINFO[0m[26-01-09 01:45:00] 🔄 [周期切换] 策略 velocitypairlock 已切换到新 session=polymarket  [36mcomponent[0m=trader
+[36mINFO[0m[26-01-09 01:45:00] ✅ [周期切换] 策略已切换到新 session，market=eth-updown-15m-1767894300 
+[36mINFO[0m[26-01-09 01:45:00] 🔄 启动 autoMerge 定期轮询：interval=45s              [36mstrategy[0m=velocitypairlock
+[36mINFO[0m[26-01-09 01:45:00] 🔄 [切换市场] 已更新市场信息: eth-updown-15m-1767894300   [36mcomponent[0m=market_stream
+[36mINFO[0m[26-01-09 01:45:00] ✅ [切换市场] 已发送旧市场退订(UP): eth-updown-15m-1767893400  [36mcomponent[0m=market_stream
+[36mINFO[0m[26-01-09 01:45:00] ✅ [切换市场] 已订阅新市场(UP-only): eth-updown-15m-1767894300  [36mcomponent[0m=market_stream
+[36mINFO[0m[26-01-09 01:45:00] 📊 [切换市场] 订阅状态验证: 已订阅资产数量=2, 期望资产=[115035319089..., 698788674234...]  [36mcomponent[0m=market_stream
+[36mINFO[0m[26-01-09 01:45:00] ✅ 已切换到下一个市场（动态订阅）: eth-updown-15m-1767894300  [36mcomponent[0m=market_scheduler
+[36mINFO[0m[26-01-09 01:45:02] 🔍 [PositionsService] GetOpenPositions: 返回 0 个开放持仓  [36mcomponent[0m=positions_service
+[36mINFO[0m[26-01-09 01:45:02] 🔍 [PositionsService] GetOpenPositionsForMarket: 总持仓=0 匹配持仓=0 marketSlug=eth-updown-15m-1767894300  [36mcomponent[0m=positions_service
+[36mINFO[0m[26-01-09 01:45:03] ⏸️ sequential gate：主 leg 价格不在区间内，跳过：primary=51c range=[70,88]  [36mstrategy[0m=velocitypairlock
+[36mINFO[0m[26-01-09 01:45:06] ⏸️ sequential gate：主 leg 价格不在区间内，跳过：primary=66c range=[70,88]  [36mstrategy[0m=velocitypairlock
+[36mINFO[0m[26-01-09 01:45:13] ⏸️ sequential gate：主 leg 价格不在区间内，跳过：primary=38c range=[70,88]  [36mstrategy[0m=velocitypairlock
+[36mINFO[0m[26-01-09 01:45:32] ⏸️ sequential gate：主 leg 价格不在区间内，跳过：primary=44c range=[70,88]  [36mstrategy[0m=velocitypairlock
+[36mINFO[0m[26-01-09 01:45:45] 🔍 [PositionsService] GetOpenPositions: 返回 0 个开放持仓  [36mcomponent[0m=positions_service
+[36mINFO[0m[26-01-09 01:45:45] 🔍 [PositionsService] GetOpenPositionsForMarket: 总持仓=0 匹配持仓=0 marketSlug=eth-updown-15m-1767894300  [36mcomponent[0m=positions_service
+[36mINFO[0m[26-01-09 01:46:01] ⏸️ sequential gate：主 leg 价格不在区间内，跳过：primary=44c range=[70,88]  [36mstrategy[0m=velocitypairlock
+[36mINFO[0m[26-01-09 01:46:30] 🔍 [PositionsService] GetOpenPositions: 返回 0 个开放持仓  [36mcomponent[0m=positions_service
+[36mINFO[0m[26-01-09 01:46:30] 🔍 [PositionsService] GetOpenPositionsForMarket: 总持仓=0 匹配持仓=0 marketSlug=eth-updown-15m-1767894300  [36mcomponent[0m=positions_service

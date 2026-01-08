@@ -38,8 +38,8 @@ func (s *TradingService) FetchMarketTokenSizesFromDataAPI(ctx context.Context, m
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// bounded request
-	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// bounded request (增加超时时间到20秒，因为 Data API 可能响应较慢)
+	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
 	// sizeThreshold=0 to not miss small balances; limit=500 should be enough for single-bot
@@ -50,7 +50,7 @@ func (s *TradingService) FetchMarketTokenSizesFromDataAPI(ctx context.Context, m
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 20 * time.Second}
 	resp, e := client.Do(req)
 	if e != nil {
 		return 0, 0, e
@@ -102,7 +102,7 @@ func (s *TradingService) ReconcileMarketPositionsFromDataAPI(ctx context.Context
 	}
 
 	yesSz, noSz, err := s.FetchMarketTokenSizesFromDataAPI(ctx, market)
-		if err != nil {
+	if err != nil {
 		reconcileLog.Warnf("⚠️ [ReconcileMarketPositions] 从 Data API 获取持仓失败: market=%s err=%v", market.Slug, err)
 		return err
 	}
@@ -120,7 +120,7 @@ func (s *TradingService) ReconcileMarketPositionsFromDataAPI(ctx context.Context
 		// If local position exists and has size > 0, preserve it (Data API may not be synced yet)
 		if desired <= 0 {
 			if p, e := s.GetPosition(positionID); e == nil && p != nil && p.IsOpen() && p.Size > 0 {
-				reconcileLog.Warnf("⚠️ [ReconcileMarketPositions] Data API 返回 0，但本地有持仓，保留本地持仓: positionID=%s tokenType=%s localSize=%.4f", 
+				reconcileLog.Warnf("⚠️ [ReconcileMarketPositions] Data API 返回 0，但本地有持仓，保留本地持仓: positionID=%s tokenType=%s localSize=%.4f",
 					positionID, token, p.Size)
 				return nil // 保留本地持仓，不覆盖
 			}
@@ -138,7 +138,7 @@ func (s *TradingService) ReconcileMarketPositionsFromDataAPI(ctx context.Context
 		if p, e := s.GetPosition(positionID); e == nil && p != nil {
 			oldSize := p.Size
 			oldStatus := p.Status
-			reconcileLog.Infof("📝 [ReconcileMarketPositions] 更新持仓: positionID=%s tokenType=%s oldSize=%.4f oldStatus=%s newSize=%.4f", 
+			reconcileLog.Infof("📝 [ReconcileMarketPositions] 更新持仓: positionID=%s tokenType=%s oldSize=%.4f oldStatus=%s newSize=%.4f",
 				positionID, token, oldSize, oldStatus, desired)
 			return s.UpdatePosition(ctx, positionID, func(pp *domain.Position) {
 				pp.MarketSlug = market.Slug
@@ -152,7 +152,7 @@ func (s *TradingService) ReconcileMarketPositionsFromDataAPI(ctx context.Context
 		}
 
 		// Otherwise: create
-		reconcileLog.Infof("📝 [ReconcileMarketPositions] 创建新持仓: positionID=%s tokenType=%s size=%.4f", 
+		reconcileLog.Infof("📝 [ReconcileMarketPositions] 创建新持仓: positionID=%s tokenType=%s size=%.4f",
 			positionID, token, desired)
 		cp := *market
 		return s.CreatePosition(ctx, &domain.Position{
@@ -174,4 +174,3 @@ func (s *TradingService) ReconcileMarketPositionsFromDataAPI(ctx context.Context
 	}
 	return nil
 }
-

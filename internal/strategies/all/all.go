@@ -23,7 +23,7 @@ import (
 	//_ "github.com/betbot/gobet/internal/strategies/template"
 	//_ "github.com/betbot/gobet/internal/strategies/velocityfollow"
 	//_ "github.com/betbot/gobet/internal/strategies/winbet" // 已删除：goodluck 已完全替代 winbet
-	_ "github.com/betbot/gobet/internal/strategies/goodluck"
+	//_ "github.com/betbot/gobet/internal/strategies/goodluck"
 	_ "github.com/betbot/gobet/internal/strategies/velocitypairlock"
 	//_ "github.com/betbot/gobet/internal/strategies/velocityhedgehold"
 	//_ "github.com/betbot/gobet/internal/strategies/volmm"

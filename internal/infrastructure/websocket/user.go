@@ -1112,23 +1112,28 @@ func (u *UserWebSocket) handleTradeMessage(ctx context.Context, msg map[string]i
 		side = types.SideSell
 	}
 
-	// 确定订单 ID（优先检查 maker_orders，因为手动订单通常是 maker）
-	// 如果 maker_orders 中有订单，优先使用（手动订单通常是 maker）
-	// 如果没有，再使用 taker_order_id
-	orderID := ""
-	if len(makerOrders) > 0 {
-		// 从 maker_orders 中获取第一个订单 ID（手动订单通常是 maker）
-		if makerOrder, ok := makerOrders[0].(map[string]interface{}); ok {
-			if id, ok := makerOrder["order_id"].(string); ok {
-				orderID = id
-				userLog.Debugf("📝 [Trade] 使用 maker_order_id 作为 OrderID: orderID=%s tradeID=%s", orderID, tradeID)
+	// 收集所有可能的订单 ID（taker 和所有 maker）
+	// 根据官方文档，trade 消息包含 taker_order_id 和 maker_orders 数组
+	// 我们需要同时检查这些 ID，看哪个匹配我们的订单
+	takerOrderIDStr := takerOrderID
+	makerOrderIDs := make([]string, 0, len(makerOrders))
+	for _, makerOrderAny := range makerOrders {
+		if makerOrder, ok := makerOrderAny.(map[string]interface{}); ok {
+			if id, ok := makerOrder["order_id"].(string); ok && id != "" {
+				makerOrderIDs = append(makerOrderIDs, id)
 			}
 		}
 	}
-	// 如果没有 maker_order_id，使用 taker_order_id
-	if orderID == "" && takerOrderID != "" {
-		orderID = takerOrderID
+	
+	// 确定订单 ID（优先使用 taker_order_id，因为我们的策略使用 taker 模式）
+	// 如果 taker_order_id 不存在，再使用 maker_orders 中的第一个
+	orderID := ""
+	if takerOrderIDStr != "" {
+		orderID = takerOrderIDStr
 		userLog.Debugf("📝 [Trade] 使用 taker_order_id 作为 OrderID: orderID=%s tradeID=%s", orderID, tradeID)
+	} else if len(makerOrderIDs) > 0 {
+		orderID = makerOrderIDs[0]
+		userLog.Debugf("📝 [Trade] 使用 maker_order_id 作为 OrderID: orderID=%s tradeID=%s", orderID, tradeID)
 	}
 
 	if orderID == "" {
@@ -1146,13 +1151,15 @@ func (u *UserWebSocket) handleTradeMessage(ctx context.Context, msg map[string]i
 		tradeTime = t
 	}
 	trade := &domain.Trade{
-		ID:      tradeID,
-		OrderID: orderID,
-		AssetID: assetID,
-		Side:    side,
-		Price:   price,
-		Size:    size,
-		Time:    tradeTime,
+		ID:            tradeID,
+		OrderID:       orderID,
+		TakerOrderID:  takerOrderIDStr,
+		MakerOrderIDs: makerOrderIDs,
+		AssetID:       assetID,
+		Side:          side,
+		Price:         price,
+		Size:          size,
+		Time:          tradeTime,
 	}
 
 	// 解析 fee_rate_bps（如果存在），并计算手续费（USDC）
