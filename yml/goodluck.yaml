@@ -29,7 +29,7 @@ market:
   #   "15m": "{symbol}-updown-{timeframe}-{timestamp}"
 
 # 纸交易模式：true=不真实下单（仅打印日志）；false=真实交易
-dry_run: true
+dry_run: false
 
 exchangeStrategies:
   - on: polymarket
@@ -64,10 +64,10 @@ exchangeStrategies:
       slowStrategyPriceAggressiveness: 0.8    # 慢速策略价格激进程度（0-1），越高越接近市场价
 
       # ====== 下单安全参数 ======
-      hedgeOffsetCents: 2            # 对冲价格偏移（分），在理想价格基础上增加此偏移以提高成交率
-      minEntryPriceCents: 11          # Entry 订单最小价格（分），低于此价格不交易
-      maxEntryPriceCents: 89         # Entry 订单最大价格（分），高于此价格不交易
-      maxSpreadCents: 0             # 允许的最大价差（分），0=不限制
+      hedgeOffsetCents: 3            # 对冲价格偏移（分），在理想价格基础上增加此偏移以提高成交率
+      minEntryPriceCents: 5          # Entry 订单最小价格（分），低于此价格不交易
+      maxEntryPriceCents: 95         # Entry 订单最大价格（分），高于此价格不交易
+      maxSpreadCents: 5             # 允许的最大价差（分），0=不限制
       minOrderUSDC: 1.01            # 最小订单金额（USDC），Polymarket 要求市场买入订单至少 $1，默认 1.01（留余量避免舍入误差）
 
       # ====== 周期保护 ======
@@ -93,8 +93,8 @@ exchangeStrategies:
 
       # ====== 实时锁利/锁损（WS 事件驱动） ======
       priceStopEnabled: true                  # 是否启用价格盯盘止损，Entry成交后实时监控价格变化
-      priceStopSoftLossCents: -5              # 软止损阈值（分），达到此亏损时撤单+FAK锁损
-      priceStopHardLossCents: -10             # 硬止损阈值（分），达到此亏损时紧急FAK锁损（不做确认）
+      priceStopSoftLossCents: -10              # 软止损阈值（分），达到此亏损时撤单+FAK锁损
+      priceStopHardLossCents: -20             # 硬止损阈值（分），达到此亏损时紧急FAK锁损（不做确认）
       priceTakeProfitCents: 5                 # 止盈阈值（分），达到此盈利时吃单锁利，0=禁用
       priceTakeProfitConfirmTicks: 2          # 止盈触发防抖次数，需连续命中此次数才触发
       priceStopCheckIntervalMs: 100             # 盯盘检查间隔（毫秒），从0改为100ms以降低CPU使用（对冲测试时不需要极速响应）
@@ -117,9 +117,9 @@ exchangeStrategies:
       # - 小仓位/碎单环境把 minHedgeSize 设为 5，并适当提高 cooldown，避免抖动对冲
       positionMonitorEnabled: true              # 是否启用持仓监控/自动对冲
       positionMonitorCheckIntervalMs: 2000      # 持仓检查间隔（毫秒），定期检查持仓平衡情况
-      positionMonitorMaxExposureThreshold: 1.0  # 最大允许的持仓不平衡阈值（shares），超过此值触发对冲
+      positionMonitorMaxExposureThreshold: 3.0  # 最大允许的持仓不平衡阈值（shares），超过此值触发对冲
       positionMonitorMaxExposureRatio: 0.1     # 最大允许的持仓不平衡比例（0-1），超过此比例触发对冲
-      positionMonitorMaxLossCents: 50          # 最大允许亏损（分），超过此亏损时强制对冲
+      positionMonitorMaxLossCents: 30          # 最大允许亏损（分），超过此亏损时强制对冲
       positionMonitorMinHedgeSize: 0.0         # 最小对冲数量（shares），小于此差异时不做"平衡性对冲"（除非触发亏损风险）
       positionMonitorCooldownMs: 1500          # 对冲冷却时间（毫秒），避免频繁触发对冲
 
@@ -137,7 +137,7 @@ exchangeStrategies:
       autoMerge:
         enabled: true
         # 合并触发门槛（shares）
-        minCompleteSets: 0.1
+        minCompleteSets: 5
         # 每次最多合并（0=不限制）
         maxCompleteSetsPerRun: 0
         # 合并比例（0..1]
