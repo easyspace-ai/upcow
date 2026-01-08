@@ -1,0 +1,49 @@
+# 速度触发双向限价对冲（BTC 15m）
+#
+# 说明：
+# - market/dry_run 是策略文件级别的覆盖（可选）
+# - exchangeStrategies 按 bbgo main 风格挂载
+
+market:
+  symbol: btc
+  timeframe: 15m
+  kind: updown
+
+dry_run: false
+
+exchangeStrategies:
+  - on: polymarket
+    velocitypairlock:
+      enabled: true
+
+      # ===== 速度触发 =====
+      windowSeconds: 10
+      minMoveCents: 3
+      minVelocityCentsPerSec: 0.3
+      cooldownMs: 3000
+
+      # ===== 锁利挂单 =====
+      # 示例：profitCents=3 时，如果 UP 参考价为 70，则 DOWN 会挂 27（锁 3 个点）
+      profitCents: 3
+      orderSize: 5
+      minEntryPriceCents: 5
+      maxEntryPriceCents: 95
+      minOrderUSDC: 1.01
+
+      # ===== 周期保护 =====
+      cycleEndProtectionMinutes: 1
+      maxTradesPerCycle: 0
+
+      # ===== 成交后自动合并释放资金 =====
+      autoMerge:
+        enabled: true
+        minCompleteSets: 5
+        maxCompleteSetsPerRun: 0
+        mergeRatio: 1.0
+        intervalSeconds: 15
+        onlyIfNoOpenOrders: false
+        reconcileAfterMerge: true
+        reconcileMaxWaitSeconds: 30
+        mergeTriggerDelaySeconds: 30
+        metadata: "velocitypairlock:autoMerge"
+
