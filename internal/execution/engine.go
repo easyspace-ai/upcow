@@ -36,6 +36,12 @@ type LegIntent struct {
 	OrderType types.OrderType
 	TickSize  types.TickSize // 价格精度（可选）
 	NegRisk   *bool          // 是否为负风险市场（可选）
+	// IsEntry: 标记该腿是否为 Entry（用于风控/监控语义；hedge/平衡腿应为 false）。
+	IsEntry bool
+	// BypassRiskOff: 风控动作（hedge/止损）可绕过短时 risk-off。
+	BypassRiskOff bool
+	// DisableSizeAdjust: 禁用系统层自动 size 调整（避免被放大到 minShareSize=5 等导致过度对冲）。
+	DisableSizeAdjust bool
 }
 
 type AutoHedgeConfig struct {
@@ -223,6 +229,13 @@ func (e *ExecutionEngine) placeAllLegs(ctx context.Context, req MultiLegRequest)
 				errC <- fmt.Errorf("invalid leg %d", i)
 				return
 			}
+			// Polymarket 对 GTC 限价单常见最小 size=5 shares。
+			// 对于 hedge 腿（非 entry），若 size < 5，直接用 FAK，避免“系统/交易所把它放大到 5”导致过度对冲。
+			orderType := leg.OrderType
+			const minGTCShareSize = 5.0
+			if !leg.IsEntry && orderType == types.OrderTypeGTC && leg.Size < minGTCShareSize {
+				orderType = types.OrderTypeFAK
+			}
 			order := &domain.Order{
 				MarketSlug:   req.MarketSlug,
 				AssetID:      leg.AssetID,
@@ -230,10 +243,12 @@ func (e *ExecutionEngine) placeAllLegs(ctx context.Context, req MultiLegRequest)
 				Price:        leg.Price,
 				Size:         leg.Size,
 				TokenType:    leg.TokenType,
-				IsEntryOrder: true,
+				IsEntryOrder: leg.IsEntry,
+				BypassRiskOff: leg.BypassRiskOff,
+				DisableSizeAdjust: leg.DisableSizeAdjust,
 				Status:       domain.OrderStatusPending,
 				CreatedAt:    time.Now(),
-				OrderType:    leg.OrderType,
+				OrderType:    orderType,
 				TickSize:     leg.TickSize, // 使用 LegIntent 中的精度信息
 				NegRisk:      leg.NegRisk,   // 使用 LegIntent 中的 neg_risk 信息
 			}
@@ -377,7 +392,7 @@ func computeInFlightKey(req MultiLegRequest) string {
 	// 找到入场订单（通常是 FAK 订单）作为主要标识
 	var entryLeg *LegIntent
 	for i := range req.Legs {
-		if req.Legs[i].OrderType == types.OrderTypeFAK || req.Legs[i].Name == "taker_buy_winner" {
+		if req.Legs[i].IsEntry || req.Legs[i].OrderType == types.OrderTypeFAK || req.Legs[i].Name == "taker_buy_winner" {
 			entryLeg = &req.Legs[i]
 			break
 		}

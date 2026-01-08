@@ -28,6 +28,8 @@ type PositionMonitor struct {
 	maxExposureThreshold float64 // 最大允许的持仓不平衡阈值（shares）
 	maxExposureRatio     float64 // 最大允许的持仓不平衡比例（0-1）
 	maxLossCents         int     // 最大允许亏损（分）
+	minHedgeSize         float64 // 小于该差异时不做“平衡性对冲”（除非触发亏损风险）
+	hedgeCooldown        time.Duration
 
 	// 状态跟踪
 	lastCheckTime    time.Time
@@ -81,15 +83,46 @@ func NewPositionMonitor(ts *services.TradingService, cfg ConfigInterface) *Posit
 		return nil
 	}
 
+	enabled := true
+	if !cfg.GetPositionMonitorEnabled() {
+		enabled = false
+	}
+	interval := 2 * time.Second
+	if ms := cfg.GetPositionMonitorCheckIntervalMs(); ms > 0 {
+		interval = time.Duration(ms) * time.Millisecond
+	}
+	maxExposureThreshold := cfg.GetPositionMonitorMaxExposureThreshold()
+	if maxExposureThreshold <= 0 {
+		maxExposureThreshold = 1.0
+	}
+	maxExposureRatio := cfg.GetPositionMonitorMaxExposureRatio()
+	if maxExposureRatio <= 0 {
+		maxExposureRatio = 0.1
+	}
+	maxLossCents := cfg.GetPositionMonitorMaxLossCents()
+	if maxLossCents <= 0 {
+		maxLossCents = 50
+	}
+	minHedge := cfg.GetPositionMonitorMinHedgeSize()
+	if minHedge < 0 {
+		minHedge = 0
+	}
+	cooldown := time.Duration(cfg.GetPositionMonitorCooldownMs()) * time.Millisecond
+	if cooldown < 0 {
+		cooldown = 0
+	}
+
 	pm := &PositionMonitor{
 		tradingService:  ts,
 		config:          cfg,
 		riskCalculator:  NewRiskProfitCalculator(ts),
-		enabled:         true,
-		checkInterval:   2 * time.Second, // 默认 2 秒检查一次
-		maxExposureThreshold: 1.0,       // 默认允许 1 share 的差异
-		maxExposureRatio:     0.1,       // 默认允许 10% 的不平衡
-		maxLossCents:         50,        // 默认最大允许 50 分（0.5 USDC）的亏损
+		enabled:         enabled,
+		checkInterval:   interval,
+		maxExposureThreshold: maxExposureThreshold,
+		maxExposureRatio:     maxExposureRatio,
+		maxLossCents:         maxLossCents,
+		minHedgeSize:         minHedge,
+		hedgeCooldown:        cooldown,
 	}
 
 	return pm
@@ -263,6 +296,15 @@ func (pm *PositionMonitor) CheckAndHedge(ctx context.Context, market *domain.Mar
 		return nil
 	}
 
+	// 防抖：两次自动对冲之间必须间隔 hedgeCooldown
+	pm.mu.RLock()
+	cooldown := pm.hedgeCooldown
+	lastHedge := pm.lastAutoHedgeTime
+	pm.mu.RUnlock()
+	if cooldown > 0 && !lastHedge.IsZero() && time.Since(lastHedge) < cooldown {
+		return nil
+	}
+
 	analysis, err := pm.AnalyzePosition(ctx, market)
 	if err != nil {
 		return err
@@ -274,6 +316,20 @@ func (pm *PositionMonitor) CheckAndHedge(ctx context.Context, market *domain.Mar
 
 	// 如果检测到风险且需要对冲
 	if analysis.RequiresHedge && analysis.HedgeSize > 0 {
+		// 小差异不做“平衡性对冲”（避免碎单抖动），除非已经触发亏损风险。
+		pm.mu.RLock()
+		minHedge := pm.minHedgeSize
+		maxLoss := pm.maxLossCents
+		pm.mu.RUnlock()
+		if minHedge > 0 && analysis.HedgeSize < minHedge {
+			// 如果当前亏损未超过阈值，认为属于“平衡性抖动”，跳过
+			if analysis.CurrentLossCents <= maxLoss {
+				pmLog.Debugf("⏭️ [PositionMonitor] 差异小于最小对冲阈值，跳过自动对冲: market=%s hedgeSize=%.4f minHedge=%.4f loss=%dc<=%dc",
+					market.Slug, analysis.HedgeSize, minHedge, analysis.CurrentLossCents, maxLoss)
+				return nil
+			}
+		}
+
 		pmLog.Warnf("🚨 [PositionMonitor] 检测到持仓风险，需要自动对冲: market=%s reason=%s hedgeDirection=%s hedgeSize=%.4f",
 			market.Slug, analysis.RiskReason, analysis.HedgeDirection, analysis.HedgeSize)
 

@@ -170,6 +170,7 @@ func (oe *OrderExecutor) ExecuteParallel(ctx context.Context, market *domain.Mar
 				Price:     entryPrice,
 				Size:      entrySize,
 				OrderType: types.OrderTypeFAK,
+				IsEntry:   true,
 			},
 			{
 				Name:      "hedge",
@@ -178,7 +179,11 @@ func (oe *OrderExecutor) ExecuteParallel(ctx context.Context, market *domain.Mar
 				Side:      types.SideBuy,
 				Price:     hedgePrice,
 				Size:      hedgeSize,
+				// 由执行引擎兜底：若 size<5，会自动改用 FAK，避免强制放大到 5 shares
 				OrderType: types.OrderTypeGTC,
+				IsEntry:   false,
+				BypassRiskOff: true,
+				DisableSizeAdjust: true,
 			},
 		},
 		Hedge: execution.AutoHedgeConfig{Enabled: false},
@@ -336,6 +341,15 @@ func (oe *OrderExecutor) placeHedgeOrder(ctx context.Context, market *domain.Mar
 		assetID = market.NoAssetID
 	}
 
+	// Polymarket 对 GTC 限价单常见最小 size=5 shares。
+	// 顺序模式下 hedgeSize 取自 entry 的实际成交量，可能小于 5；
+	// 这里对小额 hedge 直接用 FAK，避免被系统/交易所强制放大到 5 引发过度对冲。
+	orderType := types.OrderTypeGTC
+	const minGTCShareSize = 5.0
+	if size < minGTCShareSize {
+		orderType = types.OrderTypeFAK
+	}
+
 	order := &domain.Order{
 		MarketSlug:      market.Slug,
 		AssetID:         assetID,
@@ -346,8 +360,9 @@ func (oe *OrderExecutor) placeHedgeOrder(ctx context.Context, market *domain.Mar
 		IsEntryOrder:    false,
 		Status:          domain.OrderStatusPending,
 		CreatedAt:       time.Now(),
-		OrderType:       types.OrderTypeGTC,
+		OrderType:       orderType,
 		DisableSizeAdjust: true, // ✅ 严格一对一：避免系统自动放大 size，确保对冲数量与 Entry 成交数量一致
+		BypassRiskOff:   true,  // 风控动作：避免 risk-off 期间出不了场
 	}
 	if oe.oms != nil {
 		return oe.oms.placeOrder(ctx, order)

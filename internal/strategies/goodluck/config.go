@@ -85,6 +85,15 @@ type Config struct {
 	ArbitrageBrainEnabled               bool `yaml:"arbitrageBrainEnabled" json:"arbitrageBrainEnabled"`
 	ArbitrageBrainUpdateIntervalSeconds int  `yaml:"arbitrageBrainUpdateIntervalSeconds" json:"arbitrageBrainUpdateIntervalSeconds"`
 
+	// ====== PositionMonitor（持仓监控/自动对冲） ======
+	PositionMonitorEnabled              bool    `yaml:"positionMonitorEnabled" json:"positionMonitorEnabled"`
+	PositionMonitorCheckIntervalMs      int     `yaml:"positionMonitorCheckIntervalMs" json:"positionMonitorCheckIntervalMs"`
+	PositionMonitorMaxExposureThreshold float64 `yaml:"positionMonitorMaxExposureThreshold" json:"positionMonitorMaxExposureThreshold"`
+	PositionMonitorMaxExposureRatio     float64 `yaml:"positionMonitorMaxExposureRatio" json:"positionMonitorMaxExposureRatio"`
+	PositionMonitorMaxLossCents         int     `yaml:"positionMonitorMaxLossCents" json:"positionMonitorMaxLossCents"`
+	PositionMonitorMinHedgeSize         float64 `yaml:"positionMonitorMinHedgeSize" json:"positionMonitorMinHedgeSize"`
+	PositionMonitorCooldownMs           int     `yaml:"positionMonitorCooldownMs" json:"positionMonitorCooldownMs"`
+
 	// ====== Dashboard UI ======
 	DashboardEnabled                          bool `yaml:"dashboardEnabled" json:"dashboardEnabled"`
 	DashboardUseNativeTUI                     bool `yaml:"dashboardUseNativeTUI" json:"dashboardUseNativeTUI"` // 默认 false（Bubble Tea）
@@ -287,6 +296,34 @@ func (c *Config) Defaults() error {
 		c.ArbitrageBrainUpdateIntervalSeconds = 10
 	}
 
+	// PositionMonitor（持仓监控/自动对冲）
+	// 默认开启，但加入冷却与最小对冲阈值以减少抖动。
+	if !c.PositionMonitorEnabled {
+		c.PositionMonitorEnabled = true
+	}
+	if c.PositionMonitorCheckIntervalMs <= 0 {
+		c.PositionMonitorCheckIntervalMs = 2000
+	}
+	if c.PositionMonitorMaxExposureThreshold <= 0 {
+		c.PositionMonitorMaxExposureThreshold = 1.0
+	}
+	if c.PositionMonitorMaxExposureRatio <= 0 {
+		c.PositionMonitorMaxExposureRatio = 0.1
+	}
+	if c.PositionMonitorMaxLossCents <= 0 {
+		c.PositionMonitorMaxLossCents = 50
+	}
+	if c.PositionMonitorMinHedgeSize < 0 {
+		c.PositionMonitorMinHedgeSize = 0
+	}
+	// 默认 1500ms，避免每个 price tick 都触发对冲
+	if c.PositionMonitorCooldownMs < 0 {
+		c.PositionMonitorCooldownMs = 0
+	}
+	if c.PositionMonitorCooldownMs == 0 {
+		c.PositionMonitorCooldownMs = 1500
+	}
+
 	// Dashboard
 	if c.DashboardEnabled {
 		c.DashboardUseNativeTUI = false
@@ -425,6 +462,24 @@ func (c *Config) Validate() error {
 	if c.PerEntryCooldownSeconds < 0 {
 		return fmt.Errorf("perEntryCooldownSeconds 不合法")
 	}
+	if c.PositionMonitorCheckIntervalMs < 0 {
+		return fmt.Errorf("positionMonitorCheckIntervalMs 不合法")
+	}
+	if c.PositionMonitorMaxExposureThreshold < 0 {
+		return fmt.Errorf("positionMonitorMaxExposureThreshold 不合法")
+	}
+	if c.PositionMonitorMaxExposureRatio < 0 {
+		return fmt.Errorf("positionMonitorMaxExposureRatio 不合法")
+	}
+	if c.PositionMonitorMaxLossCents < 0 {
+		return fmt.Errorf("positionMonitorMaxLossCents 不合法")
+	}
+	if c.PositionMonitorMinHedgeSize < 0 {
+		return fmt.Errorf("positionMonitorMinHedgeSize 不合法")
+	}
+	if c.PositionMonitorCooldownMs < 0 {
+		return fmt.Errorf("positionMonitorCooldownMs 不合法")
+	}
 	c.AutoMerge.Normalize()
 	return nil
 }
@@ -457,6 +512,19 @@ func (c *Config) GetSlowStrategyMaxSpreadCents() int       { return c.SlowStrate
 func (c *Config) GetSlowStrategyPriceAggressiveness() float64 {
 	return c.SlowStrategyPriceAggressiveness
 }
+
+// ====== PositionMonitor getters（实现 strategycore/brain.ConfigInterface） ======
+func (c *Config) GetPositionMonitorEnabled() bool { return c.PositionMonitorEnabled }
+func (c *Config) GetPositionMonitorCheckIntervalMs() int {
+	return c.PositionMonitorCheckIntervalMs
+}
+func (c *Config) GetPositionMonitorMaxExposureThreshold() float64 {
+	return c.PositionMonitorMaxExposureThreshold
+}
+func (c *Config) GetPositionMonitorMaxExposureRatio() float64 { return c.PositionMonitorMaxExposureRatio }
+func (c *Config) GetPositionMonitorMaxLossCents() int         { return c.PositionMonitorMaxLossCents }
+func (c *Config) GetPositionMonitorMinHedgeSize() float64     { return c.PositionMonitorMinHedgeSize }
+func (c *Config) GetPositionMonitorCooldownMs() int           { return c.PositionMonitorCooldownMs }
 
 // ====== 实现 velocityfollow/oms.ConfigInterface ======
 func (c *Config) GetOrderExecutionMode() string         { return c.OrderExecutionMode }
