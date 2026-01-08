@@ -350,16 +350,15 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, ev *events.PriceChangedEv
 	switch ev.TokenType {
 	case domain.TokenTypeUp:
 		s.st.upVel.Add(now, newCents)
-		shouldTrigger = s.velocityHitLocked(s.st.upVel)
-		primaryToken = domain.TokenTypeUp
 	case domain.TokenTypeDown:
 		s.st.downVel.Add(now, newCents)
-		shouldTrigger = s.velocityHitLocked(s.st.downVel)
-		primaryToken = domain.TokenTypeDown
 	default:
 		s.st.mu.Unlock()
 		return nil
 	}
+
+	// 基于“速度方向 + 大小”选择主方向
+	primaryToken, shouldTrigger = s.pickPrimaryByVelocityLocked()
 
 	// 状态门禁：同一时刻只允许一对在途
 	if s.st.rt.phase != phaseIdle {
@@ -392,21 +391,58 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, ev *events.PriceChangedEv
 	return nil
 }
 
-func (s *Strategy) velocityHitLocked(t *VelocityTracker) bool {
+func (s *Strategy) velocityHitLocked(t *VelocityTracker) (vel float64, ok bool) {
 	if t == nil {
-		return false
+		return 0, false
 	}
 	vel, move, _, ok := t.VelocityCentsPerSec()
 	if !ok {
-		return false
+		return 0, false
 	}
 	if s.st.cfg.MinMoveCents > 0 && int(math.Abs(float64(move))) < s.st.cfg.MinMoveCents {
-		return false
+		return 0, false
 	}
-	if math.Abs(vel) < s.st.cfg.MinVelocityCentsPerSec {
-		return false
+	switch s.st.cfg.VelocityDirectionMode {
+	case "abs":
+		if math.Abs(vel) < s.st.cfg.MinVelocityCentsPerSec {
+			return 0, false
+		}
+		return vel, true
+	default: // "positive"
+		if vel < s.st.cfg.MinVelocityCentsPerSec {
+			return 0, false
+		}
+		return vel, true
 	}
-	return true
+}
+
+// pickPrimaryByVelocityLocked：在持锁状态下选择主方向。
+// 规则：
+// - positive 模式：只允许 vel >= threshold 的 token 触发
+// - abs 模式：允许 |vel| >= threshold 触发（兼容）
+// - 当两边都满足时，选择“vel 更大”的一侧作为主 leg（max_velocity）
+func (s *Strategy) pickPrimaryByVelocityLocked() (primary domain.TokenType, trigger bool) {
+	upVel, upOK := s.velocityHitLocked(s.st.upVel)
+	downVel, downOK := s.velocityHitLocked(s.st.downVel)
+
+	if !upOK && !downOK {
+		return "", false
+	}
+	if upOK && !downOK {
+		return domain.TokenTypeUp, true
+	}
+	if downOK && !upOK {
+		return domain.TokenTypeDown, true
+	}
+	// both OK
+	switch s.st.cfg.PrimaryPickMode {
+	default: // "max_velocity"
+		// abs 模式下可能出现负数 vel，这里用“更大”的那个；如果你想 abs 模式也用 |vel| 比较，可再加一个选项
+		if upVel >= downVel {
+			return domain.TokenTypeUp, true
+		}
+		return domain.TokenTypeDown, true
+	}
 }
 
 func (s *Strategy) isInCycleEndProtectionLocked(now time.Time) bool {

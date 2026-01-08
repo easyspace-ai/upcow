@@ -20,6 +20,10 @@ exchangeStrategies:
       windowSeconds: 10
       minMoveCents: 3
       minVelocityCentsPerSec: 0.3
+      # 速度方向策略：positive=只在价格上涨（正速率）时触发；abs=按绝对值触发
+      velocityDirectionMode: positive
+      # 当 UP/DOWN 同时满足触发条件时，选择正速率更大的那一侧作为主 leg
+      primaryPickMode: max_velocity
       cooldownMs: 3000
 
       # ===== 锁利挂单 =====

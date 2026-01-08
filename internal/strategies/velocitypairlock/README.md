@@ -3,6 +3,7 @@
 ## 目标（对应你的需求）
 
 - **触发条件**：当 UP 或 DOWN 的价格在指定窗口内的“变化速度（分/秒）”达到阈值
+  - 默认：只在**正速率**（价格上涨）时触发主单（你们要的：正速率时下主单）
 - **下单动作**：支持两种模式
   - **并发下单**：同时下 UP 与 DOWN（主/对冲的下单方式可分别配置：限价/吃单）
   - **顺序下单**：先下“主 leg”，主 leg 成交后再下“对冲 leg”（同样支持主/对冲分别配置限价/吃单）
@@ -37,6 +38,8 @@ exchangeStrategies:
       windowSeconds: 10
       minMoveCents: 3
       minVelocityCentsPerSec: 0.3
+      velocityDirectionMode: positive
+      primaryPickMode: max_velocity
       cooldownMs: 3000
 
       profitCents: 3

@@ -19,6 +19,13 @@ type Config struct {
 	WindowSeconds          int     `json:"windowSeconds" yaml:"windowSeconds"`                   // 速度计算窗口（秒）
 	MinMoveCents           int     `json:"minMoveCents" yaml:"minMoveCents"`                     // 窗口内最小位移（分）
 	MinVelocityCentsPerSec float64 `json:"minVelocityCentsPerSec" yaml:"minVelocityCentsPerSec"` // 最小速度阈值（分/秒）
+	// 速度方向策略：
+	// - positive: 只在速度为正（价格上涨）时触发（你们想要的：正速率时下主单）
+	// - abs:      速度取绝对值触发（兼容旧逻辑）
+	VelocityDirectionMode string `json:"velocityDirectionMode" yaml:"velocityDirectionMode"`
+	// 主方向选择策略（当 UP 与 DOWN 同时满足触发条件时）：
+	// - max_velocity: 选择正速率更大的那一侧作为主 leg
+	PrimaryPickMode string `json:"primaryPickMode" yaml:"primaryPickMode"`
 	CooldownMs             int     `json:"cooldownMs" yaml:"cooldownMs"`                         // 触发后冷却（毫秒）
 
 	// ===== 挂单：锁定利润 =====
@@ -91,6 +98,12 @@ func (c *Config) Defaults() {
 	}
 	if c.MinVelocityCentsPerSec <= 0 {
 		c.MinVelocityCentsPerSec = 0.3
+	}
+	if c.VelocityDirectionMode == "" {
+		c.VelocityDirectionMode = "positive"
+	}
+	if c.PrimaryPickMode == "" {
+		c.PrimaryPickMode = "max_velocity"
 	}
 	if c.CooldownMs <= 0 {
 		c.CooldownMs = 3000
@@ -171,6 +184,16 @@ func (c *Config) Validate() error {
 	}
 	if c.MinVelocityCentsPerSec <= 0 {
 		return fmt.Errorf("minVelocityCentsPerSec must be > 0")
+	}
+	switch c.VelocityDirectionMode {
+	case "", "positive", "abs":
+	default:
+		return fmt.Errorf("velocityDirectionMode must be one of: positive|abs")
+	}
+	switch c.PrimaryPickMode {
+	case "", "max_velocity":
+	default:
+		return fmt.Errorf("primaryPickMode must be one of: max_velocity")
 	}
 	if c.CooldownMs < 0 {
 		return fmt.Errorf("cooldownMs must be >= 0")
