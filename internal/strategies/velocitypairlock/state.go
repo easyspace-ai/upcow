@@ -58,6 +58,10 @@ type pairRuntime struct {
 	monitorCancel   context.CancelFunc
 	monitorRunning  bool
 
+	// 订单收敛 sweeper（防止挂单堆积）
+	sweeperCancel  context.CancelFunc
+	sweeperRunning bool
+
 	// 开对次数（每周期）
 	tradesThisCycle int
 

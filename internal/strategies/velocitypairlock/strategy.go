@@ -102,6 +102,8 @@ func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, newMarket *domai
 
 	// 停止盯盘协程
 	s.stopMonitorLocked()
+	// 停止收敛 sweeper（随后会在 Run 中/新周期再启动）
+	s.stopSweeperLocked()
 
 	if s.st.upVel != nil {
 		s.st.upVel.Reset()
@@ -131,6 +133,9 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 		s.st.rt.market = session.Market()
 		s.st.mu.Unlock()
 	}
+
+	// 启动后台收敛 sweeper（防止挂单堆积占用资金）
+	s.startSweeperIfNeeded()
 
 	<-ctx.Done()
 	return ctx.Err()
@@ -332,6 +337,13 @@ func (s *Strategy) cancelIfNotFilledAfterConfirm() bool {
 	return *s.st.cfg.CancelIfNotFilledAfterConfirm
 }
 
+func (s *Strategy) enforceOrderConvergence() bool {
+	if s.st.cfg.EnforceOrderConvergence == nil {
+		return true
+	}
+	return *s.st.cfg.EnforceOrderConvergence
+}
+
 func (s *Strategy) syncOrderStatusBestEffort(orderID string) {
 	if s.TradingService == nil || orderID == "" {
 		return
@@ -341,6 +353,149 @@ func (s *Strategy) syncOrderStatusBestEffort(orderID string) {
 	_ = s.TradingService.SyncOrderStatus(ctx, orderID)
 	// 给 OrderEngine/回调一个短暂窗口（避免立刻读到旧状态）
 	time.Sleep(120 * time.Millisecond)
+}
+
+func (s *Strategy) cancelOrderAndConfirmClosed(orderID string) {
+	if s.TradingService == nil || orderID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_ = s.TradingService.CancelOrder(ctx, orderID)
+	cancel()
+
+	// API 兜底确认：轮询 SyncOrderStatus + 本地状态直到不再 open/partial/pending（或超时）
+	timeout := time.Duration(s.st.cfg.CancelConfirmTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 6 * time.Second
+	}
+	interval := time.Duration(s.st.cfg.CancelConfirmPollIntervalMs) * time.Millisecond
+	if interval <= 0 {
+		interval = 500 * time.Millisecond
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		s.syncOrderStatusBestEffort(orderID)
+		if s.TradingService != nil {
+			if o, ok := s.TradingService.GetOrder(orderID); ok && o != nil {
+				switch o.Status {
+				case domain.OrderStatusFilled, domain.OrderStatusCanceled, domain.OrderStatusFailed:
+					return
+				}
+			}
+		}
+		time.Sleep(interval)
+	}
+}
+
+func (s *Strategy) isOrderInCurrentMarket(order *domain.Order, market *domain.Market) bool {
+	if order == nil || market == nil {
+		return false
+	}
+	// 以 assetID 为最可靠的隔离键
+	if order.AssetID != "" && (order.AssetID == market.YesAssetID || order.AssetID == market.NoAssetID) {
+		return true
+	}
+	// 兜底用 marketSlug
+	if order.MarketSlug != "" && order.MarketSlug == market.Slug {
+		return true
+	}
+	return false
+}
+
+func (s *Strategy) countOpenOrdersInMarket(market *domain.Market) int {
+	if s.TradingService == nil || market == nil {
+		return 0
+	}
+	orders := s.TradingService.GetActiveOrders()
+	n := 0
+	for _, o := range orders {
+		if s.isOrderInCurrentMarket(o, market) {
+			n++
+		}
+	}
+	return n
+}
+
+func (s *Strategy) snapshotAllowedOrderIDsLocked() map[string]bool {
+	allowed := make(map[string]bool, 4)
+	if s.st.rt.upOrderID != "" {
+		allowed[s.st.rt.upOrderID] = true
+	}
+	if s.st.rt.downOrderID != "" {
+		allowed[s.st.rt.downOrderID] = true
+	}
+	if s.st.rt.primaryOrderID != "" {
+		allowed[s.st.rt.primaryOrderID] = true
+	}
+	if s.st.rt.hedgeOrderID != "" {
+		allowed[s.st.rt.hedgeOrderID] = true
+	}
+	return allowed
+}
+
+func (s *Strategy) sweepOnce() {
+	if !s.enforceOrderConvergence() || s.TradingService == nil {
+		return
+	}
+	s.st.mu.Lock()
+	market := s.st.rt.market
+	allowed := s.snapshotAllowedOrderIDsLocked()
+	s.st.mu.Unlock()
+	if market == nil {
+		return
+	}
+	orders := s.TradingService.GetActiveOrders()
+	for _, o := range orders {
+		if o == nil || o.OrderID == "" {
+			continue
+		}
+		if !s.isOrderInCurrentMarket(o, market) {
+			continue
+		}
+		if allowed[o.OrderID] {
+			continue
+		}
+		s.log.Warnf("🧹 收敛扫单：发现非当前 pair 订单，撤单：orderID=%s status=%s", o.OrderID, o.Status)
+		s.cancelOrderAndConfirmClosed(o.OrderID)
+	}
+}
+
+func (s *Strategy) startSweeperIfNeeded() {
+	if !s.enforceOrderConvergence() {
+		return
+	}
+	s.st.mu.Lock()
+	defer s.st.mu.Unlock()
+	if s.st.rt.sweeperRunning {
+		return
+	}
+	interval := time.Duration(s.st.cfg.ConvergeIntervalMs) * time.Millisecond
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.st.rt.sweeperCancel = cancel
+	s.st.rt.sweeperRunning = true
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.sweepOnce()
+			}
+		}
+	}()
+}
+
+func (s *Strategy) stopSweeperLocked() {
+	if s.st.rt.sweeperCancel != nil {
+		s.st.rt.sweeperCancel()
+		s.st.rt.sweeperCancel = nil
+	}
+	s.st.rt.sweeperRunning = false
 }
 
 func (s *Strategy) schedulePrimaryConfirm(primaryID string) {
@@ -371,9 +526,7 @@ func (s *Strategy) schedulePrimaryConfirm(primaryID string) {
 			s.log.Warnf("⏳ 主单 WS 未确认且 API 仍未成交（按配置不撤单）：orderID=%s", primaryID)
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = s.TradingService.CancelOrder(ctx, primaryID)
+		s.cancelOrderAndConfirmClosed(primaryID)
 
 		s.st.mu.Lock()
 		if s.st.rt.phase == phasePrimaryOpen && s.st.rt.primaryOrderID == primaryID && !s.st.rt.primaryFilled {
@@ -415,10 +568,8 @@ func (s *Strategy) scheduleParallelConfirm(upID string, downID string) {
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = s.TradingService.CancelOrder(ctx, upID)
-		_ = s.TradingService.CancelOrder(ctx, downID)
+		s.cancelOrderAndConfirmClosed(upID)
+		s.cancelOrderAndConfirmClosed(downID)
 
 		s.st.mu.Lock()
 		if s.st.rt.phase == phaseOpen && s.st.rt.upOrderID == upID && s.st.rt.downOrderID == downID && !s.st.rt.upFilled && !s.st.rt.downFilled {
@@ -605,6 +756,22 @@ func (s *Strategy) placePairAsync(primaryToken domain.TokenType, market *domain.
 		return
 	}
 
+	// open orders 上限门禁：避免“挂一堆单占用资金”
+	if s.st.cfg.MaxOpenOrdersInMarket > 0 {
+		openN := s.countOpenOrdersInMarket(market)
+		if openN > s.st.cfg.MaxOpenOrdersInMarket {
+			s.log.Warnf("🛑 当前 market open orders 过多，禁止开新仓：open=%d max=%d market=%s（触发收敛）",
+				openN, s.st.cfg.MaxOpenOrdersInMarket, market.Slug)
+			// 异步收敛一次
+			go s.sweepOnce()
+			s.st.mu.Lock()
+			s.resetPairLocked("too_many_open_orders")
+			s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+			s.st.mu.Unlock()
+			return
+		}
+	}
+
 	// 取两边当前 bestAsk 作为“挂单参考价”（买单）。
 	// 注意：这里取 bestAsk 是为了提高成交率；如果你想更偏 maker，可改为 bestBid。
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -765,9 +932,7 @@ func (s *Strategy) placePairAsync(primaryToken domain.TokenType, market *domain.
 					return
 				}
 				s.st.mu.Unlock()
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				_ = s.TradingService.CancelOrder(ctx, primaryID)
+				s.cancelOrderAndConfirmClosed(primaryID)
 				s.st.mu.Lock()
 				if s.st.rt.phase == phasePrimaryOpen && s.st.rt.primaryOrderID == primaryID && !s.st.rt.primaryFilled {
 					s.log.Warnf("⏱️ 主单硬超时，已撤单并重置：orderID=%s", primaryID)
@@ -1071,9 +1236,7 @@ func (s *Strategy) executeStopLoss(oldHedgeOrderID string, hedgeToken domain.Tok
 		return
 	}
 	// 1) 撤掉旧对冲单
-	cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = s.TradingService.CancelOrder(cctx, oldHedgeOrderID)
+	s.cancelOrderAndConfirmClosed(oldHedgeOrderID)
 
 	// 2) 新建锁损对冲单（更激进）
 	s.st.mu.Lock()
@@ -1181,6 +1344,7 @@ func (s *Strategy) triggerAutoMergeLocked() {
 
 func (s *Strategy) resetPairLocked(reason string) {
 	s.stopMonitorLocked()
+	s.stopSweeperLocked()
 	s.st.rt.phase = phaseIdle
 	s.st.rt.upOrderID = ""
 	s.st.rt.downOrderID = ""

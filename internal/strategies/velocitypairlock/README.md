@@ -66,6 +66,13 @@ exchangeStrategies:
       wsFillConfirmTimeoutSeconds: 5
       cancelIfNotFilledAfterConfirm: true
 
+      # ===== 订单收敛（防止挂单堆积占用资金）=====
+      enforceOrderConvergence: true
+      convergeIntervalMs: 2000
+      maxOpenOrdersInMarket: 2
+      cancelConfirmTimeoutSeconds: 6
+      cancelConfirmPollIntervalMs: 500
+
       # ===== 对冲后实时盯盘锁损 =====
       priceStopEnabled: true
       priceStopCheckIntervalMs: 200

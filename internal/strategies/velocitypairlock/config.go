@@ -68,6 +68,20 @@ type Config struct {
 	// 若经过 API 确认后仍未成交：是否撤单（默认 true）。
 	CancelIfNotFilledAfterConfirm *bool `json:"cancelIfNotFilledAfterConfirm" yaml:"cancelIfNotFilledAfterConfirm"`
 
+	// ===== 防重复下单/资金占用：订单收敛（强烈建议开启）=====
+	// 开启后策略会周期性扫描当前 market 的 open orders：
+	// - 若发现“非本策略当前 pair 的订单”，会主动撤单收敛，避免挂一堆单占用资金
+	// - 若策略处于 idle，则会尝试清空当前 market 的残留订单
+	EnforceOrderConvergence *bool `json:"enforceOrderConvergence" yaml:"enforceOrderConvergence"`
+	ConvergeIntervalMs      int  `json:"convergeIntervalMs" yaml:"convergeIntervalMs"`
+	// 当前 market 允许的最大 open orders 数（超过则禁止开新仓，并触发一次收敛）
+	MaxOpenOrdersInMarket int `json:"maxOpenOrdersInMarket" yaml:"maxOpenOrdersInMarket"`
+
+	// ===== 撤单确认（API 兜底）=====
+	// CancelOrder 后，轮询 API 同步订单状态直到订单不再 open（或超时）。
+	CancelConfirmTimeoutSeconds  int `json:"cancelConfirmTimeoutSeconds" yaml:"cancelConfirmTimeoutSeconds"`
+	CancelConfirmPollIntervalMs  int `json:"cancelConfirmPollIntervalMs" yaml:"cancelConfirmPollIntervalMs"`
+
 	// ===== 订单类型（主/对冲可分别配置）=====
 	// limit: 限价挂单（GTC，使用锁利目标价）
 	// taker: 吃单（FAK，使用 bestAsk + takerOffsetCents）
@@ -159,6 +173,24 @@ func (c *Config) Defaults() {
 	if c.CancelIfNotFilledAfterConfirm == nil {
 		v := true
 		c.CancelIfNotFilledAfterConfirm = &v
+	}
+
+	// 默认开启收敛（避免订单堆积占用资金）；用户可显式设为 false 关闭
+	if c.EnforceOrderConvergence == nil {
+		v := true
+		c.EnforceOrderConvergence = &v
+	}
+	if c.ConvergeIntervalMs <= 0 {
+		c.ConvergeIntervalMs = 2000
+	}
+	if c.MaxOpenOrdersInMarket <= 0 {
+		c.MaxOpenOrdersInMarket = 2
+	}
+	if c.CancelConfirmTimeoutSeconds <= 0 {
+		c.CancelConfirmTimeoutSeconds = 6
+	}
+	if c.CancelConfirmPollIntervalMs <= 0 {
+		c.CancelConfirmPollIntervalMs = 500
 	}
 
 	if c.PrimaryOrderStyle == "" {
@@ -260,6 +292,18 @@ func (c *Config) Validate() error {
 	}
 	if c.WsFillConfirmTimeoutSeconds < 0 {
 		return fmt.Errorf("wsFillConfirmTimeoutSeconds must be >= 0")
+	}
+	if c.ConvergeIntervalMs < 0 {
+		return fmt.Errorf("convergeIntervalMs must be >= 0")
+	}
+	if c.MaxOpenOrdersInMarket < 0 {
+		return fmt.Errorf("maxOpenOrdersInMarket must be >= 0")
+	}
+	if c.CancelConfirmTimeoutSeconds < 0 {
+		return fmt.Errorf("cancelConfirmTimeoutSeconds must be >= 0")
+	}
+	if c.CancelConfirmPollIntervalMs < 0 {
+		return fmt.Errorf("cancelConfirmPollIntervalMs must be >= 0")
 	}
 
 	switch c.PrimaryOrderStyle {
