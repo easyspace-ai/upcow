@@ -301,6 +301,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 						// 检查1：如果订单的 HedgeOrderID 字段不为空，说明这是系统创建的对冲单
 						if order.HedgeOrderID != nil && *order.HedgeOrderID != "" {
 							isSystemOrder = true
+							log.Debugf("🔍 [GoodLuck] 订单在 pendingHedges 中（通过 HedgeOrderID）: orderID=%s hedgeOrderID=%s", order.OrderID, *order.HedgeOrderID)
 						}
 						
 						// 检查2：检查订单是否在 pendingHedges 中
@@ -310,6 +311,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 							for _, hedgeID := range pendingHedges {
 								if hedgeID == order.OrderID {
 									isSystemOrder = true
+									log.Debugf("🔍 [GoodLuck] 订单是系统创建的对冲单（在 pendingHedges 中作为 hedgeOrderID）: orderID=%s", order.OrderID)
 									break
 								}
 							}
@@ -317,6 +319,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 							if !isSystemOrder {
 								if _, exists := pendingHedges[order.OrderID]; exists {
 									isSystemOrder = true
+									log.Debugf("🔍 [GoodLuck] 订单是系统创建的 entry 单（在 pendingHedges 中作为 entryOrderID）: orderID=%s", order.OrderID)
 								}
 							}
 						}
@@ -326,14 +329,31 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 							if len(order.OrderID) >= 2 && order.OrderID[:2] == "0x" {
 								// OrderID 以 `0x` 开头，且通过了前面的检查，说明是手动下单
 								isEntryOrder = true
+								log.Debugf("🔍 [GoodLuck] 检测到手动订单（OrderID 以 0x 开头）: orderID=%s", order.OrderID)
 							} else if len(order.OrderID) >= 6 && order.OrderID[:6] == "order_" {
 								// OrderID 以 `order_` 开头，说明是系统创建的订单
 								isSystemOrder = true
+								log.Debugf("🔍 [GoodLuck] 订单是系统创建的（OrderID 以 order_ 开头）: orderID=%s", order.OrderID)
+							} else if len(order.OrderID) >= 9 && order.OrderID[:9] == "ws_trade:" {
+								// OrderID 以 `ws_trade:` 开头，说明是从 trade 消息创建的 synthetic order
+								// 这可能是手动订单（因为系统订单通常有对应的 order 消息）
+								// 但需要进一步检查：如果订单不在 pendingHedges 中，且是买单，可能是手动订单
+								isEntryOrder = true
+								log.Debugf("🔍 [GoodLuck] 检测到可能的手动订单（synthetic order from trade）: orderID=%s", order.OrderID)
 							}
 						}
 					}
 				}
 			}
+			
+			// 添加调试日志
+			log.WithFields(logrus.Fields{
+				"orderID":      order.OrderID,
+				"tokenType":   order.TokenType,
+				"side":        order.Side,
+				"isEntryOrder": isEntryOrder,
+				"filledSize":  order.FilledSize,
+			}).Debugf("🔍 [GoodLuck] 手动订单检测结果")
 
 			if isEntryOrder && s.oms != nil && s.TradingService != nil {
 				// 标记为已处理
@@ -493,7 +513,10 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 	}
 
 	// 动态下单量（只降不升）：根据市场质量/价差缩放，避免薄盘口重仓导致对冲失败与滑点放大
-	decision.EntrySize, decision.HedgeSize = s.dynamicSizeForMarket(ctx, e.Market, decision.EntrySize, decision.HedgeSize)
+	// ✅ 检查是否启用动态缩放
+	if s.Config.GetEnableDynamicSize() {
+		decision.EntrySize, decision.HedgeSize = s.dynamicSizeForMarket(ctx, e.Market, decision.EntrySize, decision.HedgeSize)
+	}
 	if decision.EntrySize <= 0 || decision.HedgeSize <= 0 {
 		log.WithFields(logrus.Fields{
 			"market": e.Market.Slug,
@@ -502,6 +525,41 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 			"reason": "dynamic_size_zero",
 		}).Info("goodluck: skip trade after dynamic sizing (size<=0)")
 		return nil
+	}
+
+	// 检查是否已有未成交的Entry订单（避免重复下单）
+	// ✅ 改进：不仅检查 IsEntryOrder，还检查所有相同方向的未成交订单
+	if s.TradingService != nil {
+		activeOrders := s.TradingService.GetActiveOrders()
+		for _, order := range activeOrders {
+			if order != nil && order.MarketSlug == e.Market.Slug {
+				// 检查订单方向是否匹配，且订单未成交
+				if order.TokenType == decision.Direction && 
+				   (order.Status == domain.OrderStatusPending || !order.IsFinalStatus()) {
+					// 如果是Entry订单，直接跳过
+					if order.IsEntryOrder {
+						log.WithFields(logrus.Fields{
+							"market":    e.Market.Slug,
+							"token":     e.TokenType,
+							"dir":       decision.Direction,
+							"orderID":   order.OrderID,
+							"reason":    "existing_entry_order",
+						}).Debug("goodluck: skip trade, existing entry order pending")
+						return nil
+					}
+					// ✅ 新增：如果不是Entry订单，但方向相同且未成交，也跳过（可能是自动对冲订单）
+					// 这样可以避免在已有未成交订单的情况下重复下单
+					log.WithFields(logrus.Fields{
+						"market":    e.Market.Slug,
+						"token":     e.TokenType,
+						"dir":       decision.Direction,
+						"orderID":   order.OrderID,
+						"reason":    "existing_order_same_direction",
+					}).Debug("goodluck: skip trade, existing order in same direction pending")
+					return nil
+				}
+			}
+		}
 	}
 
 	// 执行
@@ -524,6 +582,12 @@ func (s *Strategy) OnPriceChanged(ctx context.Context, e *events.PriceChangedEve
 			"entrySize": decision.EntrySize,
 			"hedgeSize": decision.HedgeSize,
 		}).Warn("goodluck: ExecuteOrder failed")
+		
+		// ✅ 修复：即使 ExecuteOrder 失败，也更新 lastTriggerTime 以触发冷却期
+		// 这样可以防止在订单失败后立即重试，避免频繁下单
+		s.mu.Lock()
+		s.lastTriggerTime = now
+		s.mu.Unlock()
 		return nil
 	}
 
@@ -615,6 +679,24 @@ func (s *Strategy) dynamicSizeForMarket(ctx context.Context, market *domain.Mark
 	if newSize > base {
 		newSize = base
 	}
+	
+	// ✅ 添加日志：如果订单大小被缩放，记录原因
+	if newSize < base {
+		log.WithFields(logrus.Fields{
+			"market":        market.Slug,
+			"originalSize":  base,
+			"adjustedSize":  newSize,
+			"factor":        factor,
+			"mqScore":       mq.Score,
+			"minScore":      minScore,
+			"spreadCents":   spreadC,
+			"maxSpread":     maxSpread,
+			"complete":      mq.Complete,
+			"fresh":         mq.Fresh,
+		}).Infof("📊 [GoodLuck] 订单大小已缩放: %.1f → %.1f (factor=%.3f, score=%d, spread=%.2fc)",
+			base, newSize, factor, mq.Score, spreadC)
+	}
+	
 	return newSize, newSize
 }
 

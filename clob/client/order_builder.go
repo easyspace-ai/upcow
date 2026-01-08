@@ -85,11 +85,17 @@ func (ob *OrderBuilder) BuildOrder(ctx context.Context, userOrder *types.UserOrd
 	}
 
 	// 计算 maker/taker 金额
+	// 确定订单类型（用于精度计算）
+	orderType := types.OrderTypeGTC // 默认 GTC
+	if options.OrderType != nil {
+		orderType = *options.OrderType
+	}
 	rawMakerAmt, rawTakerAmt, err := getOrderRawAmounts(
 		userOrder.Side,
 		userOrder.Size,
 		userOrder.Price,
 		roundConfig,
+		orderType,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("计算金额失败: %w", err)
@@ -232,57 +238,116 @@ func getOrderRawAmounts(
 	size float64,
 	price float64,
 	roundConfig RoundConfig,
+	orderType types.OrderType,
 ) (rawMakerAmt float64, rawTakerAmt float64, err error) {
 	rawPrice := roundNormal(price, roundConfig.Price)
 
 	if side == types.SideBuy {
 		// 买入：taker 获得 tokens，maker 支付 USDC
-		// ⚠️ 重要：买入订单的精度要求（Polymarket 要求）
+		// ⚠️ 重要：买入订单的精度要求根据订单类型不同（Polymarket 要求）
+		// 
+		// FAK/FOK 订单（市价单）：
 		// - maker amount (USDC): 最多 2 位小数
 		// - taker amount (token): 最多 4 位小数
-		// 
-		// 策略：先确定 taker amount（token），然后计算 maker amount（USDC），
-		// 如果 maker amount 精度不符合要求，调整 taker amount 直到两者都满足要求
+		//
+		// GTC 订单（限价单）：
+		// - maker amount (USDC): 最多 4 位小数
+		// - taker amount (token): 最多 2 位小数
 		
-		// 初始：确保 taker amount (token) 不超过 4 位小数
-		rawTakerAmt = roundDown(size, 4)
+		isGTC := orderType == types.OrderTypeGTC || orderType == types.OrderTypeGTD
 		
-		// 迭代调整，确保两个金额都满足精度要求
-		maxIterations := 5
-		for i := 0; i < maxIterations; i++ {
-			// 计算 maker amount (USDC)
-			rawMakerAmt = rawTakerAmt * rawPrice
+		if isGTC {
+			// GTC 订单：maker amount (USDC) 4 位小数，taker amount (token) 2 位小数
+			// 初始：确保 taker amount (token) 不超过 2 位小数
+			rawTakerAmt = roundDown(size, 2)
 			
-			// 检查 maker amount 精度
-			makerDecimals := decimalPlaces(rawMakerAmt)
-			if makerDecimals <= 2 {
-				// 精度符合要求，检查 taker amount 精度
+			// 迭代调整，确保两个金额都满足精度要求
+			maxIterations := 5
+			for i := 0; i < maxIterations; i++ {
+				// 计算 maker amount (USDC)
+				rawMakerAmt = rawTakerAmt * rawPrice
+				
+				// 检查精度
+				makerDecimals := decimalPlaces(rawMakerAmt)
 				takerDecimals := decimalPlaces(rawTakerAmt)
-				if takerDecimals <= 4 {
+				if makerDecimals <= 4 && takerDecimals <= 2 {
 					// 两个金额都符合精度要求，退出循环
 					break
 				}
+				
+				// maker amount 精度不符合要求，向下舍入到 4 位小数
+				if makerDecimals > 4 {
+					rawMakerAmt = roundDown(rawMakerAmt, 4)
+					// 重新计算 taker amount 以匹配调整后的 maker amount
+					if rawPrice > 0 {
+						rawTakerAmt = rawMakerAmt / rawPrice
+						// 确保 taker amount 不超过 2 位小数
+						rawTakerAmt = roundDown(rawTakerAmt, 2)
+					} else {
+						break
+					}
+				} else if takerDecimals > 2 {
+					// taker amount 精度不符合要求，向下舍入到 2 位小数
+					rawTakerAmt = roundDown(rawTakerAmt, 2)
+					// 重新计算 maker amount
+					rawMakerAmt = rawTakerAmt * rawPrice
+					rawMakerAmt = roundDown(rawMakerAmt, 4)
+				}
 			}
 			
-			// maker amount 精度不符合要求，向下舍入到 2 位小数
-			rawMakerAmt = roundDown(rawMakerAmt, 2)
+			// 最终检查：确保两个金额都满足精度要求
+			if decimalPlaces(rawMakerAmt) > 4 {
+				rawMakerAmt = roundDown(rawMakerAmt, 4)
+			}
+			if decimalPlaces(rawTakerAmt) > 2 {
+				rawTakerAmt = roundDown(rawTakerAmt, 2)
+			}
+		} else {
+			// FAK/FOK 订单：maker amount (USDC) 2 位小数，taker amount (token) 4 位小数
+			// 初始：确保 taker amount (token) 不超过 4 位小数
+			rawTakerAmt = roundDown(size, 4)
 			
-			// 重新计算 taker amount 以匹配调整后的 maker amount
-			if rawPrice > 0 {
-				rawTakerAmt = rawMakerAmt / rawPrice
-				// 确保 taker amount 不超过 4 位小数
+			// 迭代调整，确保两个金额都满足精度要求
+			maxIterations := 5
+			for i := 0; i < maxIterations; i++ {
+				// 计算 maker amount (USDC)
+				rawMakerAmt = rawTakerAmt * rawPrice
+				
+				// 检查精度
+				makerDecimals := decimalPlaces(rawMakerAmt)
+				takerDecimals := decimalPlaces(rawTakerAmt)
+				if makerDecimals <= 2 && takerDecimals <= 4 {
+					// 两个金额都符合精度要求，退出循环
+					break
+				}
+				
+				// maker amount 精度不符合要求，向下舍入到 2 位小数
+				if makerDecimals > 2 {
+					rawMakerAmt = roundDown(rawMakerAmt, 2)
+					// 重新计算 taker amount 以匹配调整后的 maker amount
+					if rawPrice > 0 {
+						rawTakerAmt = rawMakerAmt / rawPrice
+						// 确保 taker amount 不超过 4 位小数
+						rawTakerAmt = roundDown(rawTakerAmt, 4)
+					} else {
+						break
+					}
+				} else if takerDecimals > 4 {
+					// taker amount 精度不符合要求，向下舍入到 4 位小数
+					rawTakerAmt = roundDown(rawTakerAmt, 4)
+					// 重新计算 maker amount
+					rawMakerAmt = rawTakerAmt * rawPrice
+					rawMakerAmt = roundDown(rawMakerAmt, 2)
+				}
+			}
+			
+			// 最终检查：确保两个金额都满足精度要求
+			if decimalPlaces(rawMakerAmt) > 2 {
+				rawMakerAmt = roundDown(rawMakerAmt, 2)
+			}
+			if decimalPlaces(rawTakerAmt) > 4 {
 				rawTakerAmt = roundDown(rawTakerAmt, 4)
-			} else {
-				break
 			}
-		}
-		
-		// 最终检查：确保两个金额都满足精度要求
-		if decimalPlaces(rawMakerAmt) > 2 {
-			rawMakerAmt = roundDown(rawMakerAmt, 2)
-		}
-		if decimalPlaces(rawTakerAmt) > 4 {
-			rawTakerAmt = roundDown(rawTakerAmt, 4)
 		}
 	} else {
 		// 卖出：maker 获得 tokens，taker 支付 USDC

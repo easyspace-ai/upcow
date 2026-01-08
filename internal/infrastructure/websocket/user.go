@@ -1112,15 +1112,23 @@ func (u *UserWebSocket) handleTradeMessage(ctx context.Context, msg map[string]i
 		side = types.SideSell
 	}
 
-	// 确定订单 ID（优先使用 taker_order_id，如果没有则从 maker_orders 中获取）
-	orderID := takerOrderID
-	if orderID == "" && len(makerOrders) > 0 {
-		// 从 maker_orders 中获取第一个订单 ID
+	// 确定订单 ID（优先检查 maker_orders，因为手动订单通常是 maker）
+	// 如果 maker_orders 中有订单，优先使用（手动订单通常是 maker）
+	// 如果没有，再使用 taker_order_id
+	orderID := ""
+	if len(makerOrders) > 0 {
+		// 从 maker_orders 中获取第一个订单 ID（手动订单通常是 maker）
 		if makerOrder, ok := makerOrders[0].(map[string]interface{}); ok {
 			if id, ok := makerOrder["order_id"].(string); ok {
 				orderID = id
+				userLog.Debugf("📝 [Trade] 使用 maker_order_id 作为 OrderID: orderID=%s tradeID=%s", orderID, tradeID)
 			}
 		}
+	}
+	// 如果没有 maker_order_id，使用 taker_order_id
+	if orderID == "" && takerOrderID != "" {
+		orderID = takerOrderID
+		userLog.Debugf("📝 [Trade] 使用 taker_order_id 作为 OrderID: orderID=%s tradeID=%s", orderID, tradeID)
 	}
 
 	if orderID == "" {

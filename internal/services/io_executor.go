@@ -213,8 +213,9 @@ func (e *ioExecutor) placeOrderSync(ctx context.Context, order *domain.Order) (*
 
 	// 创建订单选项（优先使用订单中指定的精度信息）
 	options := &types.CreateOrderOptions{
-		TickSize: types.TickSize0001, // 默认值
-		NegRisk:  boolPtr(false),     // 默认值
+		TickSize:  types.TickSize0001, // 默认值
+		NegRisk:   boolPtr(false),     // 默认值
+		OrderType: &orderType,         // 传递订单类型，用于精度计算
 	}
 
 	// 如果订单中指定了 TickSize，使用订单的值

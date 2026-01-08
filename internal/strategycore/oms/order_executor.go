@@ -61,9 +61,21 @@ func (oe *OrderExecutor) ExecuteSequential(ctx context.Context, market *domain.M
 	if err != nil {
 		return fmt.Errorf("等待 Entry 订单成交失败: %w", err)
 	}
+	
+	// 兜底检查：即使 waitForOrderFill 返回 false，也检查订单实际状态
+	// 这可以处理订单在等待开始前就已经通过 WebSocket 快速成交的情况
 	if !entryFilled {
-		oeLog.Warnf("⚠️ [OrderExecutor] Entry 订单未在指定时间内成交: orderID=%s", entryOrder.OrderID)
-		return fmt.Errorf("Entry 订单未成交")
+		// 重新获取订单状态，确保使用最新数据
+		latestOrder, exists := oe.tradingService.GetOrder(entryOrder.OrderID)
+		if exists && latestOrder.IsFilled() {
+			oeLog.Infof("✅ [OrderExecutor] Entry 订单已成交（兜底检查发现）: orderID=%s filledSize=%.4f", 
+				entryOrder.OrderID, latestOrder.FilledSize)
+			entryOrder = latestOrder // 使用最新的订单数据
+			entryFilled = true
+		} else {
+			oeLog.Warnf("⚠️ [OrderExecutor] Entry 订单未在指定时间内成交: orderID=%s", entryOrder.OrderID)
+			return fmt.Errorf("Entry 订单未成交")
+		}
 	}
 
 	// 顺序模式：以“实际成交数量”对冲（更像职业交易：避免 FAK 部分成交导致过度对冲）
@@ -325,16 +337,17 @@ func (oe *OrderExecutor) placeHedgeOrder(ctx context.Context, market *domain.Mar
 	}
 
 	order := &domain.Order{
-		MarketSlug:   market.Slug,
-		AssetID:      assetID,
-		Side:         types.SideBuy,
-		Price:        price,
-		Size:         size,
-		TokenType:    hedgeDirection,
-		IsEntryOrder: false,
-		Status:       domain.OrderStatusPending,
-		CreatedAt:    time.Now(),
-		OrderType:    types.OrderTypeGTC,
+		MarketSlug:      market.Slug,
+		AssetID:         assetID,
+		Side:            types.SideBuy,
+		Price:           price,
+		Size:            size,
+		TokenType:       hedgeDirection,
+		IsEntryOrder:    false,
+		Status:          domain.OrderStatusPending,
+		CreatedAt:       time.Now(),
+		OrderType:       types.OrderTypeGTC,
+		DisableSizeAdjust: true, // ✅ 严格一对一：避免系统自动放大 size，确保对冲数量与 Entry 成交数量一致
 	}
 	if oe.oms != nil {
 		return oe.oms.placeOrder(ctx, order)
@@ -343,6 +356,13 @@ func (oe *OrderExecutor) placeHedgeOrder(ctx context.Context, market *domain.Mar
 }
 
 func (oe *OrderExecutor) waitForOrderFill(ctx context.Context, orderID string, maxWait time.Duration) (bool, error) {
+	// 在开始等待前先检查一次订单状态，处理订单已经快速成交的情况
+	order, exists := oe.tradingService.GetOrder(orderID)
+	if exists && order.IsFilled() {
+		oeLog.Debugf("✅ [OrderExecutor] Entry 订单已成交（等待前检查）: orderID=%s", orderID)
+		return true, nil
+	}
+
 	checkInterval := time.Duration(oe.config.GetSequentialCheckIntervalMs()) * time.Millisecond
 	deadline := time.Now().Add(maxWait)
 	for time.Now().Before(deadline) {
@@ -352,7 +372,7 @@ func (oe *OrderExecutor) waitForOrderFill(ctx context.Context, orderID string, m
 		default:
 		}
 		order, exists := oe.tradingService.GetOrder(orderID)
-		if exists && order != nil && order.IsFilled() {
+		if exists && order.IsFilled() {
 			return true, nil
 		}
 		time.Sleep(checkInterval)

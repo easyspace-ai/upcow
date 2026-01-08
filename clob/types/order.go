@@ -142,8 +142,9 @@ type OpenOrderParams struct {
 
 // CreateOrderOptions 创建订单选项
 type CreateOrderOptions struct {
-	TickSize TickSize
-	NegRisk  *bool
+	TickSize  TickSize
+	NegRisk   *bool
+	OrderType *OrderType // 订单类型（可选，用于精度计算）
 }
 
 // OrderScoringParams 订单评分参数

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/betbot/gobet/internal/domain"
 	"github.com/betbot/gobet/pkg/config"
 	sdkapi "github.com/betbot/gobet/pkg/sdk/api"
 	sdkrelayer "github.com/betbot/gobet/pkg/sdk/relayer"
@@ -44,21 +45,32 @@ func (s *TradingService) MergeCompleteSetsViaRelayer(ctx context.Context, condit
 	}
 
 	// fail-safe: do not merge while system paused (same spirit as other "trade-like" actions)
-	if e := s.allowPlaceOrder(nil); e != nil {
+	// ✅ 修复：合并操作是平仓操作（将 tokens 换回 USDC），应该允许绕过 risk-off
+	// 传入一个虚拟订单对象，设置 BypassRiskOff=true，允许在 risk-off 期间执行合并
+	virtualOrder := &domain.Order{
+		BypassRiskOff: true, // 合并操作允许绕过 risk-off（平仓操作）
+	}
+	if e := s.allowPlaceOrder(virtualOrder); e != nil {
 		return "", e
 	}
 
 	// in-flight gate (avoid repeated merge clicks / repeated triggers)
+	// 注意：允许并发 merge，但防止完全相同的 merge 请求（相同的 conditionID 和 amount）
+	// 如果希望完全允许并发，可以注释掉下面的代码
 	key := fmt.Sprintf("merge|%s|%0.6f", strings.ToLower(conditionID), round6(amount))
 	if s.inFlightDeduper != nil {
 		if e := s.inFlightDeduper.TryAcquire(key); e != nil {
-			return "", e
+			// 允许并发：如果遇到 duplicate in-flight，记录日志但不阻止
+			// 这样可以允许不同 amount 的 merge 并发执行
+			// 如果希望完全阻止重复请求，可以取消下面的注释并 return
+			// return "", e
+		} else {
+			defer func() {
+				if err != nil {
+					s.inFlightDeduper.Release(key)
+				}
+			}()
 		}
-		defer func() {
-			if err != nil {
-				s.inFlightDeduper.Release(key)
-			}
-		}()
 	}
 
 	if s.dryRun {

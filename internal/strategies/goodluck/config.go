@@ -18,6 +18,7 @@ type Config struct {
 	// ====== 交易参数 ======
 	OrderSize      float64 `yaml:"orderSize" json:"orderSize"`           // Entry shares 数量
 	HedgeOrderSize float64 `yaml:"hedgeOrderSize" json:"hedgeOrderSize"` // Hedge shares 数量（0=自动跟随 orderSize）
+	EnableDynamicSize bool  `yaml:"enableDynamicSize" json:"enableDynamicSize"` // 是否启用动态订单大小缩放（根据市场质量/价差缩放，默认false=禁用）
 
 	// ====== 速度判定参数 ======
 	WindowSeconds          int     `yaml:"windowSeconds" json:"windowSeconds"`                   // 速度计算窗口（秒）
@@ -132,6 +133,11 @@ func (c *Config) Defaults() error {
 	}
 	if c.HedgeOrderSize < 0 {
 		c.HedgeOrderSize = 0
+	}
+	// 动态订单大小缩放：默认禁用（false）
+	// 如果启用，会根据市场质量/价差自动缩放订单大小（只降不升）
+	if !c.EnableDynamicSize {
+		c.EnableDynamicSize = false // 默认禁用
 	}
 
 	if c.WindowSeconds <= 0 {
@@ -434,6 +440,7 @@ func (c *Config) GetMinEntryPriceCents() int         { return c.MinEntryPriceCen
 func (c *Config) GetMaxEntryPriceCents() int         { return c.MaxEntryPriceCents }
 func (c *Config) GetOrderSize() float64              { return c.OrderSize }
 func (c *Config) GetHedgeOrderSize() float64         { return c.HedgeOrderSize }
+func (c *Config) GetEnableDynamicSize() bool         { return c.EnableDynamicSize }
 func (c *Config) GetArbitrageBrainEnabled() bool     { return c.ArbitrageBrainEnabled }
 func (c *Config) GetArbitrageBrainUpdateIntervalSeconds() int {
 	return c.ArbitrageBrainUpdateIntervalSeconds

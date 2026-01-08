@@ -50,6 +50,9 @@ type OMS struct {
 	entryBudgets map[string]*entryBudget
 	cooldowns    map[string]cooldownInfo
 
+	// 兜底机制去重：防止同一个 entryOrderID 重复创建对冲订单
+	hedgeFallbackOnce map[string]*sync.Once
+
 	capital CapitalInterface
 }
 
@@ -68,18 +71,19 @@ func New(ts *services.TradingService, cfg ConfigInterface, strategyID string) (*
 	hr := NewHedgeReorder(ts, cfg, nil)
 
 	oms := &OMS{
-		tradingService:   ts,
-		config:           cfg,
-		q:                q,
-		hm:               newHedgeMetrics(),
-		reorderLimiter:   newPerMarketLimiter(30, 30), // 每 market：容量30，按分钟补给30（≈每2秒一次）
-		fakLimiter:       newPerMarketLimiter(10, 10), // 每 market：FAK 更贵，容量10，按分钟补给10
-		orderExecutor:    oe,
-		positionManager:  pm,
-		riskManager:      rm,
-		hedgeReorder:     hr,
-		pendingHedges:    make(map[string]string),
-		priceStopWatches: make(map[string]*priceStopWatch),
+		tradingService:    ts,
+		config:            cfg,
+		q:                 q,
+		hm:                newHedgeMetrics(),
+		reorderLimiter:    newPerMarketLimiter(30, 30), // 每 market：容量30，按分钟补给30（≈每2秒一次）
+		fakLimiter:        newPerMarketLimiter(10, 10), // 每 market：FAK 更贵，容量10，按分钟补给10
+		orderExecutor:     oe,
+		positionManager:   pm,
+		riskManager:       rm,
+		hedgeReorder:      hr,
+		pendingHedges:     make(map[string]string),
+		priceStopWatches:  make(map[string]*priceStopWatch),
+		hedgeFallbackOnce: make(map[string]*sync.Once),
 	}
 
 	oe.SetOMS(oms)
@@ -247,18 +251,77 @@ func (o *OMS) OnOrderUpdate(ctx context.Context, order *domain.Order) error {
 			o.mu.RUnlock()
 
 			if hedgeOrderID == "" && o.config != nil && o.config.GetOrderExecutionMode() == "sequential" {
+				// 兜底机制：延迟检查一次，如果还是没有 Hedge 订单，则自动创建
+				// ✅ 使用 sync.Once 防止重复创建（同一个 entryOrderID 可能触发多次 OnOrderUpdate）
+				o.mu.Lock()
+				onceKey := fmt.Sprintf("hedge_fallback_%s", order.OrderID)
+				once, exists := o.hedgeFallbackOnce[onceKey]
+				if !exists {
+					once = &sync.Once{}
+					if o.hedgeFallbackOnce == nil {
+						o.hedgeFallbackOnce = make(map[string]*sync.Once)
+					}
+					o.hedgeFallbackOnce[onceKey] = once
+				}
+				o.mu.Unlock()
+				
 				go func() {
-					time.Sleep(100 * time.Millisecond)
-					o.mu.RLock()
-					if id, exists := o.pendingHedges[order.OrderID]; exists {
-						hedgeOrderID = id
-					}
-					o.mu.RUnlock()
+					once.Do(func() {
+						time.Sleep(100 * time.Millisecond)
+						o.mu.RLock()
+						if id, exists := o.pendingHedges[order.OrderID]; exists {
+							hedgeOrderID = id
+						}
+						o.mu.RUnlock()
 
-					if hedgeOrderID != "" && o.riskManager != nil {
-						o.riskManager.UpdateHedgeOrderID(order.OrderID, hedgeOrderID)
-						log.Debugf("🔄 [OMS] 延迟找到 Hedge 订单ID: entryOrderID=%s hedgeOrderID=%s", order.OrderID, hedgeOrderID)
-					}
+						if hedgeOrderID != "" && o.riskManager != nil {
+							o.riskManager.UpdateHedgeOrderID(order.OrderID, hedgeOrderID)
+							log.Debugf("🔄 [OMS] 延迟找到 Hedge 订单ID: entryOrderID=%s hedgeOrderID=%s", order.OrderID, hedgeOrderID)
+						} else {
+							// 再次检查，避免并发创建
+							o.mu.RLock()
+							if id, exists := o.pendingHedges[order.OrderID]; exists {
+								hedgeOrderID = id
+							}
+							o.mu.RUnlock()
+							
+							if hedgeOrderID != "" {
+								log.Debugf("🔄 [OMS] 二次检查找到 Hedge 订单ID: entryOrderID=%s hedgeOrderID=%s", order.OrderID, hedgeOrderID)
+								return
+							}
+							
+							// 兜底：Entry 订单成交但没有 Hedge 订单，自动创建 Hedge 订单
+							log.Warnf("🚨 [OMS] 检测到 Entry 订单成交但无 Hedge 订单，自动创建对冲单: entryOrderID=%s direction=%s filledSize=%.4f",
+								order.OrderID, order.TokenType, order.FilledSize)
+							
+							market := o.tradingService.GetCurrentMarketInfo()
+							if market != nil && market.Slug == order.MarketSlug {
+								// 确定对冲方向
+								var hedgeDirection domain.TokenType
+								if order.TokenType == domain.TokenTypeUp {
+									hedgeDirection = domain.TokenTypeDown
+								} else {
+									hedgeDirection = domain.TokenTypeUp
+								}
+								
+								// 使用实际成交数量
+								hedgeSize := order.FilledSize
+								if hedgeSize <= 0 {
+									hedgeSize = order.Size
+								}
+								
+								// 创建对冲订单
+								hedgeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+								defer cancel()
+								if err := o.AutoHedgePosition(hedgeCtx, market, hedgeDirection, hedgeSize, order); err != nil {
+									log.Errorf("❌ [OMS] 自动创建对冲单失败: entryOrderID=%s err=%v", order.OrderID, err)
+								} else {
+									log.Infof("✅ [OMS] 已自动创建对冲单（兜底机制）: entryOrderID=%s hedgeDirection=%s hedgeSize=%.4f",
+										order.OrderID, hedgeDirection, hedgeSize)
+								}
+							}
+						}
+					})
 				}()
 			}
 
@@ -667,22 +730,35 @@ func (o *OMS) AutoHedgePosition(ctx context.Context, market *domain.Market, hedg
 		return fmt.Errorf("对冲价格无效: %d", hedgePrice.Pips)
 	}
 
-	// ✅ FAK 订单精度要求：
+	// ✅ GTC 订单精度要求（对冲单使用 GTC）：
 	// - Price: 2位小数（tick size 0.01）
-	// - Size: 4位小数
-	// - USDC金额: 2位小数
+	// - Size (taker amount): 2位小数（GTC订单要求）
+	// - USDC金额 (maker amount): 4位小数（GTC订单要求）
 	// - 最小金额: $1 USDC
+	// - 最小 size: 5 shares（Polymarket 要求）
 	priceDecimal := hedgePrice.ToDecimal()
 	
 	// 确保价格是 2 位小数
 	priceDecimal = float64(int(priceDecimal*100+0.5)) / 100
 	
-	// 确保数量是 4 位小数
-	hedgeSize := float64(int(size*10000+0.5)) / 10000
+	// ✅ 修复：GTC订单要求 taker amount (token) 最多2位小数，不是4位小数
+	// 先舍入到2位小数
+	hedgeSize := float64(int(size*100+0.5)) / 100
 	
-	// 计算 USDC 金额并确保是 2 位小数
+	// 计算 USDC 金额（maker amount），GTC订单要求最多4位小数
 	usdcValue := hedgeSize * priceDecimal
-	usdcValue = float64(int(usdcValue*100+0.5)) / 100
+	usdcValue = float64(int(usdcValue*10000+0.5)) / 10000 // 舍入到4位小数
+	
+	// ✅ 修复：检查最小 size 要求（Polymarket 要求 GTC 订单最小 size 为 5）
+	const minGTCShareSize = 5.0
+	if hedgeSize < minGTCShareSize {
+		hedgeSize = minGTCShareSize
+		// 重新计算 USDC 金额
+		usdcValue = hedgeSize * priceDecimal
+		usdcValue = float64(int(usdcValue*10000+0.5)) / 10000
+		log.Warnf("⚠️ [OMS] 对冲订单 size 小于最小值 5，自动调整: size=%.2f → %.2f (GTC订单要求)",
+			size, hedgeSize)
+	}
 	
 	// 如果买入订单，确保最小订单金额
 	// ⚠️ 重要：Polymarket 要求市场买入订单（FAK/GTC BUY）的最小金额为 $1 USDC
@@ -694,39 +770,63 @@ func (o *OMS) AutoHedgePosition(ctx context.Context, market *domain.Market, hedg
 		}
 	}
 	
-	if priceDecimal > 0 {
-		// 迭代调整，确保最终金额满足最小要求
-		maxIterations := 5
-		for i := 0; i < maxIterations; i++ {
-			usdcValue = hedgeSize * priceDecimal
-			usdcValue = float64(int(usdcValue*100+0.5)) / 100 // 舍入到 2 位小数
-			
-			if usdcValue >= minOrderUSDC {
-				break // 满足要求，退出循环
-			}
-			
-			// 不满足要求，调整 size
-			requiredSize := minOrderUSDC / priceDecimal
-			hedgeSize = float64(int(requiredSize*10000+0.5)) / 10000 // 舍入到 4 位小数
-			
-			// 确保最小 token 数量
-			const minTokenSize = 0.1
-			if hedgeSize < minTokenSize {
-				hedgeSize = minTokenSize
-			}
+	// ✅ 修复：对于对冲订单（entryOrder != nil），需要满足最小size要求（5），但尽量保持接近Entry订单大小
+	// 如果Entry订单size < 5，需要调整到5以满足Polymarket要求
+	if entryOrder != nil {
+		originalEntrySize := entryOrder.FilledSize
+		if originalEntrySize <= 0 {
+			originalEntrySize = entryOrder.Size
 		}
 		
-		// 最终检查：如果仍然不满足，强制调整
-		usdcValue = hedgeSize * priceDecimal
-		usdcValue = float64(int(usdcValue*100+0.5)) / 100
+		// 如果调整后的size与原始Entry size差异较大，记录警告
+		if hedgeSize > originalEntrySize*1.2 { // 允许20%的差异
+			log.Warnf("⚠️ [OMS] 对冲订单 size 因最小要求调整: entrySize=%.4f hedgeSize=%.2f (GTC订单最小size=5)",
+				originalEntrySize, hedgeSize)
+		}
+		
+		// 检查金额是否满足最小要求
 		if usdcValue < minOrderUSDC {
-			// 强制调整到至少满足最小金额要求
-			requiredSize := minOrderUSDC / priceDecimal
-			hedgeSize = float64(int(requiredSize*10000+0.5)) / 10000
+			log.Warnf("⚠️ [OMS] 对冲订单金额不足最小要求: size=%.2f price=%.2f usdcValue=%.4f minOrderUSDC=%.2f entrySize=%.4f",
+				hedgeSize, priceDecimal, usdcValue, minOrderUSDC, originalEntrySize)
+		}
+	} else {
+		// 非对冲订单（PositionMonitor 场景），可以调整 size 以满足最小金额
+		if priceDecimal > 0 {
+			// 迭代调整，确保最终金额满足最小要求
+			maxIterations := 5
+			for i := 0; i < maxIterations; i++ {
+				usdcValue = hedgeSize * priceDecimal
+				usdcValue = float64(int(usdcValue*10000+0.5)) / 10000 // GTC订单：4位小数
+				
+				if usdcValue >= minOrderUSDC {
+					break // 满足要求，退出循环
+				}
+				
+				// 不满足要求，调整 size（GTC订单：2位小数）
+				requiredSize := minOrderUSDC / priceDecimal
+				hedgeSize = float64(int(requiredSize*100+0.5)) / 100 // 舍入到2位小数
+				
+				// 确保最小 size（5）
+				if hedgeSize < minGTCShareSize {
+					hedgeSize = minGTCShareSize
+				}
+			}
+			
+			// 最终检查：如果仍然不满足，强制调整
 			usdcValue = hedgeSize * priceDecimal
-			usdcValue = float64(int(usdcValue*100+0.5)) / 100
-			log.Warnf("⚠️ [OMS] 强制调整对冲订单大小以满足最小金额要求: size=%.4f price=%.2f usdcValue=%.2f minOrderUSDC=%.2f",
-				hedgeSize, priceDecimal, usdcValue, minOrderUSDC)
+			usdcValue = float64(int(usdcValue*10000+0.5)) / 10000
+			if usdcValue < minOrderUSDC {
+				// 强制调整到至少满足最小金额要求
+				requiredSize := minOrderUSDC / priceDecimal
+				hedgeSize = float64(int(requiredSize*100+0.5)) / 100 // GTC订单：2位小数
+				if hedgeSize < minGTCShareSize {
+					hedgeSize = minGTCShareSize
+				}
+				usdcValue = hedgeSize * priceDecimal
+				usdcValue = float64(int(usdcValue*10000+0.5)) / 10000
+				log.Warnf("⚠️ [OMS] 强制调整对冲订单大小以满足最小金额要求: size=%.2f price=%.2f usdcValue=%.4f minOrderUSDC=%.2f",
+					hedgeSize, priceDecimal, usdcValue, minOrderUSDC)
+			}
 		}
 	}
 	

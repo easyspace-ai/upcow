@@ -145,6 +145,18 @@ func (rm *RiskManager) RegisterEntry(entryOrder *domain.Order, hedgeOrderID stri
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
+	// ✅ 修复：检查是否已经注册过，避免重复注册和重复日志
+	// 如果已经存在，只更新 hedgeOrderID（如果之前为空）
+	if existing, exists := rm.exposures[entryOrder.OrderID]; exists {
+		if existing.HedgeOrderID == "" && hedgeOrderID != "" {
+			existing.HedgeOrderID = hedgeOrderID
+			existing.HedgeStatus = domain.OrderStatusPending
+			riskLog.Debugf("🔄 更新已注册风险敞口的 Hedge 订单ID: entryOrderID=%s hedgeOrderID=%s",
+				entryOrder.OrderID, hedgeOrderID)
+		}
+		return // 已注册，跳过
+	}
+
 	exposure := &RiskExposure{
 		MarketSlug:      entryOrder.MarketSlug,
 		EntryOrderID:    entryOrder.OrderID,
@@ -285,6 +297,50 @@ func (rm *RiskManager) checkAndHandleRisks(ctx context.Context) {
 
 // handleExposure 处理单个风险敞口
 func (rm *RiskManager) handleExposure(ctx context.Context, exp *RiskExposure) {
+	// 即使激进对冲未启用（超时时间为 0），也要检查是否有未创建的对冲订单
+	// 如果 Entry 成交但没有 Hedge 订单，应该立即创建对冲订单
+	if exp.HedgeOrderID == "" {
+		riskLog.Warnf("🚨 检测到风险敞口且无对冲单: entryOrderID=%s exposure=%.1f秒（Entry成交时Hedge订单尚未创建）",
+			exp.EntryOrderID, exp.ExposureSeconds)
+		
+		// 获取market对象（多种方式，带重试和降级方案）
+		market, source := rm.getMarketForAggressiveHedge(ctx, exp, nil)
+		if market == nil {
+			riskLog.Errorf("❌ 无法获取market对象，无法执行对冲: marketSlug=%s source=%s", exp.MarketSlug, source)
+			return
+		}
+		
+		riskLog.Infof("✅ [获取Market] 成功获取market对象: marketSlug=%s source=%s", exp.MarketSlug, source)
+		
+		// 确定对冲方向
+		var hedgeDirection domain.TokenType
+		if exp.EntryTokenType == domain.TokenTypeUp {
+			hedgeDirection = domain.TokenTypeDown
+		} else {
+			hedgeDirection = domain.TokenTypeUp
+		}
+		
+		// 获取 Entry 订单信息
+		entryOrder, ok := rm.tradingService.GetOrder(exp.EntryOrderID)
+		if !ok || entryOrder == nil {
+			riskLog.Warnf("⚠️ 无法获取 Entry 订单信息: entryOrderID=%s", exp.EntryOrderID)
+			return
+		}
+		
+		// 通过 OMS 创建对冲订单
+		if rm.oms != nil {
+			hedgeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := rm.oms.AutoHedgePosition(hedgeCtx, market, hedgeDirection, exp.EntrySize, entryOrder); err != nil {
+				riskLog.Errorf("❌ 自动创建对冲单失败: entryOrderID=%s err=%v", exp.EntryOrderID, err)
+			} else {
+				riskLog.Infof("✅ 已自动创建对冲单（风险检查）: entryOrderID=%s hedgeDirection=%s hedgeSize=%.4f",
+					exp.EntryOrderID, hedgeDirection, exp.EntrySize)
+			}
+		}
+		return
+	}
+	
 	// 如果激进对冲未启用（超时时间为 0），直接返回，仅依赖价格盯盘机制
 	if rm.aggressiveTimeout <= 0 {
 		return
