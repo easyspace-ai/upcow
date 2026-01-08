@@ -99,6 +99,9 @@ func (s *Strategy) OnCycle(_ context.Context, _ *domain.Market, newMarket *domai
 	s.st.mu.Lock()
 	defer s.st.mu.Unlock()
 
+	// 停止盯盘协程
+	s.stopMonitorLocked()
+
 	if s.st.upVel != nil {
 		s.st.upVel.Reset()
 	}
@@ -145,14 +148,64 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 	s.st.mu.Lock()
 	defer s.st.mu.Unlock()
 
-	// 只关心当前一对的两个订单
-	if s.st.rt.phase != phaseOpen && s.st.rt.phase != phaseFilled && s.st.rt.phase != phaseMerging {
+	// 只关心当前一对相关的订单
+	if s.st.rt.phase != phaseOpen &&
+		s.st.rt.phase != phasePrimaryOpen &&
+		s.st.rt.phase != phaseHedgeOpen &&
+		s.st.rt.phase != phaseFilled &&
+		s.st.rt.phase != phaseMerging {
 		return nil
 	}
 	if order.OrderID == "" {
 		return nil
 	}
 
+	// 顺序模式：主 leg 成交 -> 下对冲 leg
+	if s.st.rt.phase == phasePrimaryOpen && s.st.rt.primaryOrderID != "" && order.OrderID == s.st.rt.primaryOrderID {
+		if order.Status == domain.OrderStatusFilled {
+			s.st.rt.primaryFilled = true
+			s.st.rt.primaryFillCents = order.Price.ToCents()
+			s.st.rt.primaryFillSize = order.ExecutedSize()
+			s.log.Infof("✅ 主 leg 成交：orderID=%s token=%s price=%dc size=%.2f", order.OrderID, s.st.rt.primaryToken, s.st.rt.primaryFillCents, s.st.rt.primaryFillSize)
+			// 下对冲单放到 goroutine（避免阻塞 WS）
+			market := s.st.rt.market
+			hedgeToken := s.st.rt.hedgeToken
+			hedgeCents := s.st.rt.hedgeTargetCents
+			size := s.st.rt.primaryFillSize
+			s.st.rt.phase = phasePlacing
+			go s.placeHedgeAfterPrimaryFilled(market, hedgeToken, hedgeCents, size)
+			return nil
+		}
+		if order.Status == domain.OrderStatusCanceled || order.Status == domain.OrderStatusFailed {
+			s.log.Warnf("⚠️ 主 leg 进入终态但未成交：orderID=%s status=%s，重置本对", order.OrderID, order.Status)
+			s.resetPairLocked("primary_terminal")
+			s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+			return nil
+		}
+		return nil
+	}
+
+	// 顺序模式：对冲 leg 状态
+	if s.st.rt.phase == phaseHedgeOpen && s.st.rt.hedgeOrderID != "" && order.OrderID == s.st.rt.hedgeOrderID {
+		if order.Status == domain.OrderStatusFilled {
+			s.st.rt.hedgeFilled = true
+			s.log.Infof("✅ 对冲 leg 成交：orderID=%s token=%s", order.OrderID, s.st.rt.hedgeToken)
+			s.stopMonitorLocked()
+			s.st.rt.phase = phaseFilled
+			s.triggerAutoMergeLocked()
+			return nil
+		}
+		if order.Status == domain.OrderStatusCanceled || order.Status == domain.OrderStatusFailed {
+			s.log.Warnf("⚠️ 对冲 leg 进入终态但未成交：orderID=%s status=%s，重置本对", order.OrderID, order.Status)
+			s.stopMonitorLocked()
+			s.resetPairLocked("hedge_terminal")
+			s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+			return nil
+		}
+		return nil
+	}
+
+	// 并发模式：两边订单状态（维持原逻辑）
 	updated := false
 	if s.st.rt.upOrderID != "" && order.OrderID == s.st.rt.upOrderID {
 		if order.Status == domain.OrderStatusFilled {
@@ -177,12 +230,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 		}
 	}
 
-	if !updated {
-		return nil
-	}
-
-	// 两边都成交：触发 merge
-	if s.st.rt.upFilled && s.st.rt.downFilled {
+	if updated && s.st.rt.upFilled && s.st.rt.downFilled {
 		if s.st.rt.phase != phaseMerging {
 			s.st.rt.phase = phaseFilled
 			s.triggerAutoMergeLocked()
@@ -389,6 +437,20 @@ func (s *Strategy) placePairAsync(primaryToken domain.TokenType, market *domain.
 		upPriceCents = plan.hedgeCents
 	}
 
+	// 顺序模式 gate：只允许主 leg 价格在区间内时走 sequential
+	if s.st.cfg.OrderExecutionMode == "sequential" {
+		primaryCents := plan.primaryCents
+		if primaryCents < s.st.cfg.SequentialPrimaryMinCents || primaryCents > s.st.cfg.SequentialPrimaryMaxCents {
+			s.log.Infof("⏸️ sequential gate：主 leg 价格不在区间内，跳过：primary=%dc range=[%d,%d]",
+				primaryCents, s.st.cfg.SequentialPrimaryMinCents, s.st.cfg.SequentialPrimaryMaxCents)
+			s.st.mu.Lock()
+			s.resetPairLocked("sequential_gate")
+			s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+			s.st.mu.Unlock()
+			return
+		}
+	}
+
 	// 最小金额检查（不做 size 自动放大，避免破坏“一对一”对冲；用户可自行调大 orderSize）
 	if float64(upPriceCents)/100.0*s.st.cfg.OrderSize < s.st.cfg.MinOrderUSDC ||
 		float64(downPriceCents)/100.0*s.st.cfg.OrderSize < s.st.cfg.MinOrderUSDC {
@@ -401,6 +463,101 @@ func (s *Strategy) placePairAsync(primaryToken domain.TokenType, market *domain.
 		return
 	}
 
+	if s.st.cfg.OrderExecutionMode == "sequential" {
+		// 顺序：只下主 leg，等待成交后再下对冲
+		primaryToken := plan.primaryToken
+		primaryCents := plan.primaryCents
+		hedgeCents := plan.hedgeCents
+
+		primaryAsset := market.YesAssetID
+		hedgeAsset := market.NoAssetID
+		hedgeToken := domain.TokenTypeDown
+		if primaryToken == domain.TokenTypeDown {
+			primaryAsset = market.NoAssetID
+			hedgeAsset = market.YesAssetID
+			hedgeToken = domain.TokenTypeUp
+		}
+
+		primaryOrder := domain.Order{
+			MarketSlug:   market.Slug,
+			AssetID:      primaryAsset,
+			Side:         types.SideBuy,
+			Price:        priceFromCents(primaryCents),
+			Size:         s.st.cfg.OrderSize,
+			TokenType:    primaryToken,
+			IsEntryOrder: true,
+			Status:       domain.OrderStatusPending,
+			CreatedAt:    time.Now(),
+			OrderType:    types.OrderTypeGTC,
+		}
+
+		submitCtx, submitCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer submitCancel()
+		created, err := s.orderExecutor.SubmitOrders(submitCtx, primaryOrder)
+		if err != nil || len(created) == 0 || created[0] == nil || created[0].OrderID == "" {
+			s.log.Warnf("❌ sequential 主 leg 下单失败：err=%v primary=%dc", err, primaryCents)
+			s.st.mu.Lock()
+			s.resetPairLocked("sequential_primary_submit_failed")
+			s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+			s.st.mu.Unlock()
+			return
+		}
+
+		primaryID := created[0].OrderID
+		s.st.mu.Lock()
+		s.st.rt.market = market
+		s.st.rt.primaryToken = primaryToken
+		s.st.rt.primaryOrderID = primaryID
+		s.st.rt.primaryFilled = false
+		s.st.rt.primaryFillCents = 0
+		s.st.rt.hedgeToken = hedgeToken
+		s.st.rt.hedgeOrderID = ""
+		s.st.rt.hedgeFilled = false
+		s.st.rt.hedgeTargetCents = hedgeCents
+		s.st.rt.stopLevel = stopNone
+		s.st.rt.phase = phasePrimaryOpen
+		s.st.rt.tradesThisCycle++
+		s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+		s.st.mu.Unlock()
+
+		s.log.Infof("✅ sequential：主 leg 已下单｜token=%s price=%dc orderID=%s hedgeTarget=%dc profit=%dc size=%.2f",
+			primaryToken, primaryCents, primaryID, hedgeCents, s.st.cfg.ProfitCents, s.st.cfg.OrderSize)
+
+		// 超时撤主 leg
+		wait := time.Duration(s.st.cfg.SequentialPrimaryMaxWaitMs) * time.Millisecond
+		if wait > 0 {
+			time.AfterFunc(wait, func() {
+				s.st.mu.Lock()
+				if s.st.rt.phase != phasePrimaryOpen || s.st.rt.primaryOrderID != primaryID || s.st.rt.primaryFilled {
+					s.st.mu.Unlock()
+					return
+				}
+				mkt := s.st.rt.market
+				s.st.mu.Unlock()
+
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = s.TradingService.CancelOrder(ctx, primaryID)
+				s.st.mu.Lock()
+				// 仍然处于等待态才 reset
+				if s.st.rt.phase == phasePrimaryOpen && s.st.rt.primaryOrderID == primaryID && !s.st.rt.primaryFilled {
+					s.log.Warnf("⏱️ 主 leg 等待成交超时，已尝试撤单并重置：orderID=%s market=%s", primaryID, func() string {
+						if mkt != nil {
+							return mkt.Slug
+						}
+						return ""
+					}())
+					s.resetPairLocked("sequential_primary_timeout")
+					s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+				}
+				s.st.mu.Unlock()
+			})
+		}
+		_ = hedgeAsset
+		return
+	}
+
+	// parallel：并发提交 UP+DOWN
 	upOrder := domain.Order{
 		MarketSlug:   market.Slug,
 		AssetID:      market.YesAssetID,
@@ -479,6 +636,233 @@ func (s *Strategy) placePairAsync(primaryToken domain.TokenType, market *domain.
 		upPriceCents, upID, downPriceCents, downID, s.st.cfg.ProfitCents, s.st.cfg.OrderSize)
 }
 
+func (s *Strategy) placeHedgeAfterPrimaryFilled(market *domain.Market, hedgeToken domain.TokenType, hedgeCents int, size float64) {
+	if market == nil || s.TradingService == nil || s.orderExecutor == nil {
+		s.st.mu.Lock()
+		s.resetPairLocked("hedge_missing_deps")
+		s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+		s.st.mu.Unlock()
+		return
+	}
+	assetID := market.NoAssetID
+	if hedgeToken == domain.TokenTypeUp {
+		assetID = market.YesAssetID
+	}
+	hedgeOrder := domain.Order{
+		MarketSlug:   market.Slug,
+		AssetID:      assetID,
+		Side:         types.SideBuy,
+		Price:        priceFromCents(hedgeCents),
+		Size:         size,
+		TokenType:    hedgeToken,
+		IsEntryOrder: true,
+		Status:       domain.OrderStatusPending,
+		CreatedAt:    time.Now(),
+		OrderType:    types.OrderTypeGTC,
+		BypassRiskOff: true, // 对冲属于“降低风险”
+	}
+	submitCtx, submitCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer submitCancel()
+	created, err := s.orderExecutor.SubmitOrders(submitCtx, hedgeOrder)
+	if err != nil || len(created) == 0 || created[0] == nil || created[0].OrderID == "" {
+		s.log.Warnf("❌ 对冲 leg 下单失败：err=%v hedge=%dc token=%s", err, hedgeCents, hedgeToken)
+		s.st.mu.Lock()
+		s.resetPairLocked("hedge_submit_failed")
+		s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+		s.st.mu.Unlock()
+		return
+	}
+
+	hedgeID := created[0].OrderID
+	s.st.mu.Lock()
+	s.st.rt.hedgeOrderID = hedgeID
+	s.st.rt.hedgeFilled = false
+	s.st.rt.phase = phaseHedgeOpen
+	s.st.mu.Unlock()
+
+	s.log.Infof("✅ 对冲 leg 已下单｜token=%s price=%dc orderID=%s size=%.2f", hedgeToken, hedgeCents, hedgeID, size)
+
+	// 启动盯盘止损
+	if s.st.cfg.PriceStopEnabled {
+		s.startMonitorIfNeeded()
+	}
+}
+
+func (s *Strategy) startMonitorIfNeeded() {
+	s.st.mu.Lock()
+	defer s.st.mu.Unlock()
+	// 仅在 hedgeOpen 才盯盘
+	if s.st.rt.monitorRunning || s.st.rt.phase != phaseHedgeOpen || s.st.rt.hedgeOrderID == "" {
+		return
+	}
+	interval := time.Duration(s.st.cfg.PriceStopCheckIntervalMs) * time.Millisecond
+	if interval <= 0 {
+		interval = 200 * time.Millisecond
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.st.rt.monitorCancel = cancel
+	s.st.rt.monitorRunning = true
+	hedgeOrderID := s.st.rt.hedgeOrderID
+	s.log.Infof("👀 启动盯盘止损：interval=%s hedgeOrderID=%s", interval, hedgeOrderID)
+	go s.monitorLoop(ctx, interval, hedgeOrderID)
+}
+
+func (s *Strategy) stopMonitorLocked() {
+	if s.st.rt.monitorCancel != nil {
+		s.st.rt.monitorCancel()
+		s.st.rt.monitorCancel = nil
+	}
+	s.st.rt.monitorRunning = false
+	s.st.rt.stopLevel = stopNone
+}
+
+func (s *Strategy) monitorLoop(ctx context.Context, interval time.Duration, hedgeOrderID string) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.checkStopLossOnce(ctx, hedgeOrderID)
+		}
+	}
+}
+
+func (s *Strategy) checkStopLossOnce(ctx context.Context, hedgeOrderID string) {
+	_ = ctx
+	if s.TradingService == nil {
+		return
+	}
+
+	s.st.mu.Lock()
+	if s.st.rt.phase != phaseHedgeOpen || s.st.rt.hedgeOrderID != hedgeOrderID || s.st.rt.hedgeFilled {
+		s.st.mu.Unlock()
+		return
+	}
+	market := s.st.rt.market
+	primaryFill := s.st.rt.primaryFillCents
+	hedgeToken := s.st.rt.hedgeToken
+	soft := s.st.cfg.PriceStopSoftLossCents
+	hard := s.st.cfg.PriceStopHardLossCents
+	maxLoss := s.st.cfg.MaxAcceptableLossCents
+	currentLevel := s.st.rt.stopLevel
+	s.st.mu.Unlock()
+
+	if market == nil || primaryFill <= 0 {
+		return
+	}
+	assetID := market.NoAssetID
+	if hedgeToken == domain.TokenTypeUp {
+		assetID = market.YesAssetID
+	}
+	// 取当前对冲侧 bestAsk（买单）
+	cctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	p, err := orderutil.QuoteBuyPrice(cctx, s.TradingService, assetID, 0)
+	if err != nil {
+		return
+	}
+	hedgeAsk := p.ToCents()
+	// 预计锁定收益（分）：100 - (primary + hedgeAsk)
+	pnl := 100 - (primaryFill + hedgeAsk)
+
+	// pnl 为负：亏损
+	if pnl >= 0 {
+		return
+	}
+
+	// 超过最大可接受亏损：不自动锁损（避免“为了对冲”吃得太贵）
+	if -pnl > maxLoss {
+		s.log.Warnf("🛑 预计锁损亏损过大，拒绝自动锁损：pnl=%dc maxLoss=%dc primary=%dc hedgeAsk=%dc",
+			pnl, maxLoss, primaryFill, hedgeAsk)
+		// 风控降频：短时间不再开新仓
+		s.TradingService.TriggerRiskOff(5*time.Second, "velocitypairlock_stoploss_too_large")
+		return
+	}
+
+	// 达到 hard：撤旧对冲单 -> FAK 吃单
+	if pnl <= hard && currentLevel != stopHard {
+		s.log.Warnf("🔻 触发硬锁损：pnl=%dc (<=%dc) 先撤对冲单再 FAK 锁损", pnl, hard)
+		go s.executeStopLoss(hedgeOrderID, hedgeToken, market, hedgeAsk, types.OrderTypeFAK)
+		s.st.mu.Lock()
+		if s.st.rt.hedgeOrderID == hedgeOrderID && s.st.rt.phase == phaseHedgeOpen {
+			s.st.rt.stopLevel = stopHard
+		}
+		s.st.mu.Unlock()
+		return
+	}
+
+	// 达到 soft：撤旧对冲单 -> GTC@bestAsk（更激进，尽量成交，但不强制）
+	if pnl <= soft && currentLevel == stopNone {
+		s.log.Warnf("🔸 触发软锁损：pnl=%dc (<=%dc) 先撤对冲单再提价对冲", pnl, soft)
+		go s.executeStopLoss(hedgeOrderID, hedgeToken, market, hedgeAsk, types.OrderTypeGTC)
+		s.st.mu.Lock()
+		if s.st.rt.hedgeOrderID == hedgeOrderID && s.st.rt.phase == phaseHedgeOpen {
+			s.st.rt.stopLevel = stopSoft
+		}
+		s.st.mu.Unlock()
+		return
+	}
+}
+
+func (s *Strategy) executeStopLoss(oldHedgeOrderID string, hedgeToken domain.TokenType, market *domain.Market, newPriceCents int, orderType types.OrderType) {
+	if s.TradingService == nil || s.orderExecutor == nil || market == nil {
+		return
+	}
+	// 1) 撤掉旧对冲单
+	cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = s.TradingService.CancelOrder(cctx, oldHedgeOrderID)
+
+	// 2) 新建锁损对冲单（更激进）
+	s.st.mu.Lock()
+	// 若状态已变化（比如已经成交/重置），退出
+	if s.st.rt.phase != phaseHedgeOpen || s.st.rt.hedgeOrderID != oldHedgeOrderID || s.st.rt.hedgeFilled {
+		s.st.mu.Unlock()
+		return
+	}
+	size := s.st.rt.primaryFillSize
+	if size <= 0 {
+		size = s.st.cfg.OrderSize
+	}
+	s.st.mu.Unlock()
+
+	assetID := market.NoAssetID
+	if hedgeToken == domain.TokenTypeUp {
+		assetID = market.YesAssetID
+	}
+	newOrder := domain.Order{
+		MarketSlug:    market.Slug,
+		AssetID:       assetID,
+		Side:          types.SideBuy,
+		Price:         priceFromCents(newPriceCents),
+		Size:          size,
+		TokenType:     hedgeToken,
+		IsEntryOrder:  true,
+		Status:        domain.OrderStatusPending,
+		CreatedAt:     time.Now(),
+		OrderType:     orderType,
+		BypassRiskOff: true,
+	}
+	submitCtx, submitCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer submitCancel()
+	created, err := s.orderExecutor.SubmitOrders(submitCtx, newOrder)
+	if err != nil || len(created) == 0 || created[0] == nil || created[0].OrderID == "" {
+		s.log.Warnf("❌ 锁损对冲下单失败：err=%v type=%s price=%dc", err, orderType, newPriceCents)
+		return
+	}
+	newID := created[0].OrderID
+	s.st.mu.Lock()
+	if s.st.rt.phase == phaseHedgeOpen && s.st.rt.hedgeOrderID == oldHedgeOrderID {
+		s.st.rt.hedgeOrderID = newID
+		s.st.rt.hedgeFilled = false
+		// 盯盘协程继续盯（但需要同步 hedgeOrderID）
+		s.log.Warnf("✅ 已替换对冲单：old=%s new=%s type=%s price=%dc", oldHedgeOrderID, newID, orderType, newPriceCents)
+	}
+	s.st.mu.Unlock()
+}
+
 func (s *Strategy) triggerAutoMergeLocked() {
 	if !s.st.cfg.AutoMerge.Enabled {
 		s.log.Infof("ℹ️ 双边已成交，但 autoMerge 未启用：等待结算（不合并释放资金）")
@@ -536,11 +920,22 @@ func (s *Strategy) triggerAutoMergeLocked() {
 }
 
 func (s *Strategy) resetPairLocked(reason string) {
+	s.stopMonitorLocked()
 	s.st.rt.phase = phaseIdle
 	s.st.rt.upOrderID = ""
 	s.st.rt.downOrderID = ""
 	s.st.rt.upFilled = false
 	s.st.rt.downFilled = false
+	s.st.rt.primaryToken = ""
+	s.st.rt.primaryOrderID = ""
+	s.st.rt.primaryFilled = false
+	s.st.rt.primaryFillCents = 0
+	s.st.rt.primaryFillSize = 0
+	s.st.rt.hedgeToken = ""
+	s.st.rt.hedgeOrderID = ""
+	s.st.rt.hedgeFilled = false
+	s.st.rt.hedgeTargetCents = 0
+	s.st.rt.stopLevel = stopNone
 	_ = reason
 }
 

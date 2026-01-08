@@ -42,6 +42,31 @@ type Config struct {
 	// 每周期最多开几对（0=不限制）
 	MaxTradesPerCycle int `json:"maxTradesPerCycle" yaml:"maxTradesPerCycle"`
 
+	// ===== 下单模式 =====
+	// parallel: 并发下单（同时提交 UP+DOWN 两个限价单）
+	// sequential: 顺序下单（先下主 leg，主 leg 成交后再下对冲 leg）
+	OrderExecutionMode string `json:"orderExecutionMode" yaml:"orderExecutionMode"`
+
+	// 顺序下单模式 gate：只有当“主 leg 价格”落在该区间内，才允许进入 sequential 流程
+	SequentialPrimaryMinCents int `json:"sequentialPrimaryMinCents" yaml:"sequentialPrimaryMinCents"`
+	SequentialPrimaryMaxCents int `json:"sequentialPrimaryMaxCents" yaml:"sequentialPrimaryMaxCents"`
+
+	// 顺序下单：主 leg 最长等待成交时间（毫秒），超时则撤单并回到 idle
+	SequentialPrimaryMaxWaitMs int `json:"sequentialPrimaryMaxWaitMs" yaml:"sequentialPrimaryMaxWaitMs"`
+
+	// ===== 对冲后实时盯盘止损（顺序下单专用，也可用于并发模式的“未完成锁定”）=====
+	PriceStopEnabled bool `json:"priceStopEnabled" yaml:"priceStopEnabled"`
+	// 盯盘间隔（毫秒），建议 100~500ms
+	PriceStopCheckIntervalMs int `json:"priceStopCheckIntervalMs" yaml:"priceStopCheckIntervalMs"`
+	// 触发锁损的区间阈值（单位：分，负数表示亏损）。
+	// 例：-5~-10
+	// - Soft: 达到 -5（或更差）时：撤掉旧对冲单，改用更激进的对冲价（GTC@bestAsk）
+	// - Hard: 达到 -10（或更差）时：撤掉旧对冲单，直接 FAK 吃单锁损
+	PriceStopSoftLossCents int `json:"priceStopSoftLossCents" yaml:"priceStopSoftLossCents"`
+	PriceStopHardLossCents int `json:"priceStopHardLossCents" yaml:"priceStopHardLossCents"`
+	// 最大可接受亏损（分，正数）。当预计锁损会超过该值时，不执行自动锁损（触发风控降频并报警日志）。
+	MaxAcceptableLossCents int `json:"maxAcceptableLossCents" yaml:"maxAcceptableLossCents"`
+
 	// 成交后自动 merge complete sets（YES+NO -> USDC），用于释放资金继续开单
 	AutoMerge common.AutoMergeConfig `json:"autoMerge" yaml:"autoMerge"`
 }
@@ -82,6 +107,33 @@ func (c *Config) Defaults() {
 	}
 	if c.MaxTradesPerCycle < 0 {
 		c.MaxTradesPerCycle = 0
+	}
+
+	if c.OrderExecutionMode == "" {
+		c.OrderExecutionMode = "parallel"
+	}
+	if c.SequentialPrimaryMinCents <= 0 {
+		// 默认给一个比较合理的区间（可按你们策略调）
+		c.SequentialPrimaryMinCents = 5
+	}
+	if c.SequentialPrimaryMaxCents <= 0 {
+		c.SequentialPrimaryMaxCents = 95
+	}
+	if c.SequentialPrimaryMaxWaitMs <= 0 {
+		c.SequentialPrimaryMaxWaitMs = 2000
+	}
+
+	if c.PriceStopCheckIntervalMs <= 0 {
+		c.PriceStopCheckIntervalMs = 200
+	}
+	if c.PriceStopSoftLossCents == 0 {
+		c.PriceStopSoftLossCents = -5
+	}
+	if c.PriceStopHardLossCents == 0 {
+		c.PriceStopHardLossCents = -10
+	}
+	if c.MaxAcceptableLossCents <= 0 {
+		c.MaxAcceptableLossCents = 20
 	}
 	c.AutoMerge.Normalize()
 }
@@ -128,6 +180,41 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxTradesPerCycle < 0 {
 		return fmt.Errorf("maxTradesPerCycle must be >= 0")
+	}
+
+	switch c.OrderExecutionMode {
+	case "", "parallel", "sequential":
+		// ok
+	default:
+		return fmt.Errorf("orderExecutionMode must be one of: parallel|sequential")
+	}
+	if c.SequentialPrimaryMinCents <= 0 || c.SequentialPrimaryMinCents >= 100 {
+		return fmt.Errorf("sequentialPrimaryMinCents must be within (0,100)")
+	}
+	if c.SequentialPrimaryMaxCents <= 0 || c.SequentialPrimaryMaxCents >= 100 {
+		return fmt.Errorf("sequentialPrimaryMaxCents must be within (0,100)")
+	}
+	if c.SequentialPrimaryMinCents > c.SequentialPrimaryMaxCents {
+		return fmt.Errorf("sequentialPrimaryMinCents must be <= sequentialPrimaryMaxCents")
+	}
+	if c.SequentialPrimaryMaxWaitMs < 0 {
+		return fmt.Errorf("sequentialPrimaryMaxWaitMs must be >= 0")
+	}
+
+	if c.PriceStopCheckIntervalMs < 0 {
+		return fmt.Errorf("priceStopCheckIntervalMs must be >= 0")
+	}
+	if c.PriceStopEnabled {
+		// 期望 soft > hard（例如 -5 > -10）
+		if c.PriceStopSoftLossCents >= 0 || c.PriceStopHardLossCents >= 0 {
+			return fmt.Errorf("priceStopSoftLossCents/priceStopHardLossCents must be negative (loss cents)")
+		}
+		if c.PriceStopSoftLossCents <= c.PriceStopHardLossCents {
+			return fmt.Errorf("priceStopSoftLossCents must be > priceStopHardLossCents (e.g. -5 > -10)")
+		}
+		if c.MaxAcceptableLossCents <= 0 {
+			return fmt.Errorf("maxAcceptableLossCents must be > 0")
+		}
 	}
 	return nil
 }

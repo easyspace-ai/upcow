@@ -30,6 +30,23 @@ exchangeStrategies:
       maxEntryPriceCents: 95
       minOrderUSDC: 1.01
 
+      # ===== 下单模式 =====
+      # parallel: 并发下单（同时提交 UP+DOWN）
+      # sequential: 顺序下单（先主 leg，主成交后再对冲）
+      orderExecutionMode: sequential
+      # 顺序模式 gate：只有主 leg 价格在区间内才允许先主后对冲
+      sequentialPrimaryMinCents: 40
+      sequentialPrimaryMaxCents: 80
+      # 主 leg 最多等 2 秒成交，超时撤单并回到 idle
+      sequentialPrimaryMaxWaitMs: 2000
+
+      # ===== 对冲后实时盯盘锁损 =====
+      priceStopEnabled: true
+      priceStopCheckIntervalMs: 200
+      priceStopSoftLossCents: -5
+      priceStopHardLossCents: -10
+      maxAcceptableLossCents: 20
+
       # ===== 周期保护 =====
       cycleEndProtectionMinutes: 1
       maxTradesPerCycle: 0

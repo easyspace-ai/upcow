@@ -3,7 +3,9 @@
 ## 目标（对应你的需求）
 
 - **触发条件**：当 UP 或 DOWN 的价格在指定窗口内的“变化速度（分/秒）”达到阈值
-- **下单动作**：同时在 UP 与 DOWN 两边挂 **BUY 限价单（GTC）**
+- **下单动作**：支持两种模式
+  - **并发下单**：同时在 UP 与 DOWN 两边挂 **BUY 限价单（GTC）**
+  - **顺序下单**：先下“主 leg”限价单，主 leg 成交后再下“对冲 leg”
 - **锁定利润**：两边目标成交价满足 `UP + DOWN <= 100 - profitCents`
   - 示例：`profitCents=3`，当选择 `UP=70` 则 `DOWN=27`（锁 3 个点）
 - **资金复用**：两边都成交后，触发 **merge complete sets（YES+NO -> USDC）** 释放资金
@@ -21,7 +23,7 @@
 - `state.go`
   - 策略运行期状态机（idle/placing/open/filled/merging/cooldown）
 - `strategy.go`
-  - 事件驱动主逻辑（价格触发、异步下单、监听成交、触发 auto-merge）
+  - 事件驱动主逻辑（价格触发、并发/顺序下单、监听成交、对冲后盯盘止损、触发 auto-merge）
 
 ## 配置方式（bbgo main 风格）
 
@@ -42,6 +44,23 @@ exchangeStrategies:
       minEntryPriceCents: 5
       maxEntryPriceCents: 95
       minOrderUSDC: 1.01
+
+      # ===== 下单模式 =====
+      # parallel | sequential
+      orderExecutionMode: sequential
+      # 顺序模式 gate：只在主 leg 价格处于区间时才允许“先主后对冲”
+      sequentialPrimaryMinCents: 40
+      sequentialPrimaryMaxCents: 80
+      sequentialPrimaryMaxWaitMs: 2000
+
+      # ===== 对冲后实时盯盘锁损 =====
+      priceStopEnabled: true
+      priceStopCheckIntervalMs: 200
+      # 亏损区间：-5~-10（soft=-5, hard=-10）
+      priceStopSoftLossCents: -5
+      priceStopHardLossCents: -10
+      # 最大可接受亏损（超过则拒绝自动锁损）
+      maxAcceptableLossCents: 20
 
       cycleEndProtectionMinutes: 1
       maxTradesPerCycle: 0
