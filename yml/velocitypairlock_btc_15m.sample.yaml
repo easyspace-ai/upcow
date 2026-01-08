@@ -1,0 +1,89 @@
+# 速度触发双向限价对冲（BTC 15m）
+#
+# 说明：
+# - market/dry_run 是策略文件级别的覆盖（可选）
+# - exchangeStrategies 按 bbgo main 风格挂载
+
+market:
+  symbol: btc
+  timeframe: 15m
+  kind: updown
+
+dry_run: false
+
+exchangeStrategies:
+  - on: polymarket
+    velocitypairlock:
+      enabled: true
+      # 🧪 演练模式：只输出决策日志，不真实下单/撤单/合并
+      decisionOnly: false
+
+      # ===== 速度触发 =====
+      windowSeconds: 10
+      minMoveCents: 3
+      minVelocityCentsPerSec: 0.3
+      # 速度方向策略：positive=只在价格上涨（正速率）时触发；abs=按绝对值触发
+      velocityDirectionMode: positive
+      # 当 UP/DOWN 同时满足触发条件时，选择正速率更大的那一侧作为主 leg
+      primaryPickMode: max_velocity
+      cooldownMs: 3000
+
+      # ===== 锁利挂单 =====
+      # 示例：profitCents=3 时，如果 UP 参考价为 70，则 DOWN 会挂 27（锁 3 个点）
+      profitCents: 3
+      orderSize: 5
+      minEntryPriceCents: 5
+      maxEntryPriceCents: 95
+      minOrderUSDC: 1.01
+
+      # ===== 下单模式 =====
+      # parallel: 并发下单（同时提交 UP+DOWN）
+      # sequential: 顺序下单（先主 leg，主成交后再对冲）
+      orderExecutionMode: sequential
+      # 主/对冲下单方式：limit | taker
+      primaryOrderStyle: limit
+      hedgeOrderStyle: limit
+      # taker 模式吃单价格：bestAsk + offset（分）
+      takerOffsetCents: 0
+      # 顺序模式 gate：只有主 leg 价格在区间内才允许先主后对冲
+      sequentialPrimaryMinCents: 40
+      sequentialPrimaryMaxCents: 80
+      # 主 leg 最多等 2 秒成交，超时撤单并回到 idle
+      sequentialPrimaryMaxWaitMs: 2000
+
+      # ===== 成交确认（WS -> API 兜底）=====
+      wsFillConfirmTimeoutSeconds: 5
+      # 兜底确认后仍未成交：是否撤单
+      cancelIfNotFilledAfterConfirm: true
+
+      # ===== 订单收敛（防止重复下单/挂单堆积占用资金）=====
+      enforceOrderConvergence: true
+      convergeIntervalMs: 2000
+      maxOpenOrdersInMarket: 2
+      cancelConfirmTimeoutSeconds: 6
+      cancelConfirmPollIntervalMs: 500
+
+      # ===== 对冲后实时盯盘锁损 =====
+      priceStopEnabled: true
+      priceStopCheckIntervalMs: 200
+      priceStopSoftLossCents: -5
+      priceStopHardLossCents: -10
+      maxAcceptableLossCents: 20
+
+      # ===== 周期保护 =====
+      cycleEndProtectionMinutes: 1
+      maxTradesPerCycle: 0
+
+      # ===== 成交后自动合并释放资金 =====
+      autoMerge:
+        enabled: true
+        minCompleteSets: 5
+        maxCompleteSetsPerRun: 0
+        mergeRatio: 1.0
+        intervalSeconds: 15
+        onlyIfNoOpenOrders: false
+        reconcileAfterMerge: true
+        reconcileMaxWaitSeconds: 30
+        mergeTriggerDelaySeconds: 30
+        metadata: "velocitypairlock:autoMerge"
+
