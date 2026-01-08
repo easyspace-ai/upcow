@@ -359,6 +359,10 @@ func (s *Strategy) cancelOrderAndConfirmClosed(orderID string) {
 	if s.TradingService == nil || orderID == "" {
 		return
 	}
+	if s.st.cfg.DecisionOnly {
+		s.log.Warnf("🧪 decisionOnly：跳过撤单+确认：orderID=%s", orderID)
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	_ = s.TradingService.CancelOrder(ctx, orderID)
 	cancel()
@@ -453,6 +457,10 @@ func (s *Strategy) sweepOnce() {
 			continue
 		}
 		if allowed[o.OrderID] {
+			continue
+		}
+		if s.st.cfg.DecisionOnly {
+			s.log.Warnf("🧪 decisionOnly：收敛扫单发现非当前 pair 订单（不撤单）：orderID=%s status=%s", o.OrderID, o.Status)
 			continue
 		}
 		s.log.Warnf("🧹 收敛扫单：发现非当前 pair 订单，撤单：orderID=%s status=%s", o.OrderID, o.Status)
@@ -887,6 +895,16 @@ func (s *Strategy) placePairAsync(primaryToken domain.TokenType, market *domain.
 		}
 		primaryOrder.AssetID = primaryAsset
 
+		if s.st.cfg.DecisionOnly {
+			s.log.Warnf("🧪 decisionOnly：将下主 leg（不真实下单）｜token=%s style=%s priceTarget=%dc bestAsk=%dc size=%.2f",
+				primaryToken, s.st.cfg.PrimaryOrderStyle, primaryCents, bestAskCents, s.st.cfg.OrderSize)
+			s.st.mu.Lock()
+			s.resetPairLocked("decision_only_primary")
+			s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+			s.st.mu.Unlock()
+			return
+		}
+
 		submitCtx, submitCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer submitCancel()
 		created, err := s.orderExecutor.SubmitOrders(submitCtx, primaryOrder)
@@ -968,6 +986,20 @@ func (s *Strategy) placePairAsync(primaryToken domain.TokenType, market *domain.
 		s.log.Warnf("❌ parallel 构造 DOWN 订单失败：err=%v", err)
 		s.st.mu.Lock()
 		s.resetPairLocked("parallel_down_build_failed")
+		s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+		s.st.mu.Unlock()
+		return
+	}
+
+	if s.st.cfg.DecisionOnly {
+		s.log.Warnf("🧪 decisionOnly：将并发下单（不真实下单）｜primary=%s profit=%dc upStyle=%s upTarget=%dc upBestAsk=%dc downStyle=%s downTarget=%dc downBestAsk=%dc size=%.2f",
+			plan.primaryToken, s.st.cfg.ProfitCents,
+			upStyle, upPriceCents, upAsk.ToCents(),
+			downStyle, downPriceCents, downAsk.ToCents(),
+			s.st.cfg.OrderSize,
+		)
+		s.st.mu.Lock()
+		s.resetPairLocked("decision_only_parallel")
 		s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
 		s.st.mu.Unlock()
 		return
@@ -1079,6 +1111,16 @@ func (s *Strategy) placeHedgeAfterPrimaryFilled(market *domain.Market, hedgeToke
 		return
 	}
 	hedgeOrder.AssetID = assetID
+
+	if s.st.cfg.DecisionOnly {
+		s.log.Warnf("🧪 decisionOnly：将下对冲 leg（不真实下单）｜token=%s style=%s hedgeTarget=%dc bestAsk=%dc size=%.2f",
+			hedgeToken, s.st.cfg.HedgeOrderStyle, hedgeCents, bestAskCents, size)
+		s.st.mu.Lock()
+		s.resetPairLocked("decision_only_hedge")
+		s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+		s.st.mu.Unlock()
+		return
+	}
 
 	submitCtx, submitCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer submitCancel()
@@ -1235,6 +1277,11 @@ func (s *Strategy) executeStopLoss(oldHedgeOrderID string, hedgeToken domain.Tok
 	if s.TradingService == nil || s.orderExecutor == nil || market == nil {
 		return
 	}
+	if s.st.cfg.DecisionOnly {
+		s.log.Warnf("🧪 decisionOnly：将锁损（不真实撤单/下单）｜oldHedge=%s token=%s orderType=%s newPrice=%dc",
+			oldHedgeOrderID, hedgeToken, orderType, newPriceCents)
+		return
+	}
 	// 1) 撤掉旧对冲单
 	s.cancelOrderAndConfirmClosed(oldHedgeOrderID)
 
@@ -1287,6 +1334,12 @@ func (s *Strategy) executeStopLoss(oldHedgeOrderID string, hedgeToken domain.Tok
 }
 
 func (s *Strategy) triggerAutoMergeLocked() {
+	if s.st.cfg.DecisionOnly {
+		s.log.Warnf("🧪 decisionOnly：跳过 autoMerge（不真实合并），重置回 idle")
+		s.resetPairLocked("decision_only_merge_skip")
+		s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+		return
+	}
 	if !s.st.cfg.AutoMerge.Enabled {
 		s.log.Infof("ℹ️ 双边已成交，但 autoMerge 未启用：等待结算（不合并释放资金）")
 		s.st.rt.phase = phaseCooldown

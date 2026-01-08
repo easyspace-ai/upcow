@@ -14,6 +14,8 @@ import (
 // - 其余复杂能力（盘口质量、止盈止损、重下/FAK 等）作为后续可插拔模块再引入，避免一开始把策略做成“巨无霸”
 type Config struct {
 	Enabled bool `json:"enabled" yaml:"enabled"`
+	// 仅决策模式：true 时不真实下单/撤单/合并，只输出日志用于演练与验证（强烈建议首次上线前开启）
+	DecisionOnly bool `json:"decisionOnly" yaml:"decisionOnly"`
 
 	// ===== 信号：价格速度 =====
 	WindowSeconds          int     `json:"windowSeconds" yaml:"windowSeconds"`                   // 速度计算窗口（秒）
@@ -111,6 +113,7 @@ func (c *Config) Defaults() {
 	if c == nil {
 		return
 	}
+	// DecisionOnly 默认 false（不需要显式设置）
 	if c.WindowSeconds <= 0 {
 		c.WindowSeconds = 10
 	}
@@ -225,6 +228,7 @@ func (c *Config) Validate() error {
 	if !c.Enabled {
 		return nil
 	}
+	// DecisionOnly 无需额外校验
 	if c.WindowSeconds <= 0 {
 		return fmt.Errorf("windowSeconds must be > 0")
 	}

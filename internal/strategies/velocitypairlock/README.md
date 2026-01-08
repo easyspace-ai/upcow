@@ -35,6 +35,8 @@ exchangeStrategies:
   - on: polymarket
     velocitypairlock:
       enabled: true
+      # 🧪 演练模式：只输出决策日志，不真实下单/撤单/合并
+      decisionOnly: false
       windowSeconds: 10
       minMoveCents: 3
       minVelocityCentsPerSec: 0.3
