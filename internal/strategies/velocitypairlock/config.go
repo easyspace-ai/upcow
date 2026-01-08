@@ -54,6 +54,14 @@ type Config struct {
 	// 顺序下单：主 leg 最长等待成交时间（毫秒），超时则撤单并回到 idle
 	SequentialPrimaryMaxWaitMs int `json:"sequentialPrimaryMaxWaitMs" yaml:"sequentialPrimaryMaxWaitMs"`
 
+	// ===== 订单类型（主/对冲可分别配置）=====
+	// limit: 限价挂单（GTC，使用锁利目标价）
+	// taker: 吃单（FAK，使用 bestAsk + takerOffsetCents）
+	PrimaryOrderStyle string `json:"primaryOrderStyle" yaml:"primaryOrderStyle"`
+	HedgeOrderStyle   string `json:"hedgeOrderStyle" yaml:"hedgeOrderStyle"`
+	// taker 下单时的价格偏移（分），用于提高成交率（buy: bestAsk + offset）
+	TakerOffsetCents int `json:"takerOffsetCents" yaml:"takerOffsetCents"`
+
 	// ===== 对冲后实时盯盘止损（顺序下单专用，也可用于并发模式的“未完成锁定”）=====
 	PriceStopEnabled bool `json:"priceStopEnabled" yaml:"priceStopEnabled"`
 	// 盯盘间隔（毫秒），建议 100~500ms
@@ -121,6 +129,16 @@ func (c *Config) Defaults() {
 	}
 	if c.SequentialPrimaryMaxWaitMs <= 0 {
 		c.SequentialPrimaryMaxWaitMs = 2000
+	}
+
+	if c.PrimaryOrderStyle == "" {
+		c.PrimaryOrderStyle = "limit"
+	}
+	if c.HedgeOrderStyle == "" {
+		c.HedgeOrderStyle = "limit"
+	}
+	if c.TakerOffsetCents < 0 {
+		c.TakerOffsetCents = 0
 	}
 
 	if c.PriceStopCheckIntervalMs <= 0 {
@@ -199,6 +217,20 @@ func (c *Config) Validate() error {
 	}
 	if c.SequentialPrimaryMaxWaitMs < 0 {
 		return fmt.Errorf("sequentialPrimaryMaxWaitMs must be >= 0")
+	}
+
+	switch c.PrimaryOrderStyle {
+	case "", "limit", "taker":
+	default:
+		return fmt.Errorf("primaryOrderStyle must be one of: limit|taker")
+	}
+	switch c.HedgeOrderStyle {
+	case "", "limit", "taker":
+	default:
+		return fmt.Errorf("hedgeOrderStyle must be one of: limit|taker")
+	}
+	if c.TakerOffsetCents < 0 {
+		return fmt.Errorf("takerOffsetCents must be >= 0")
 	}
 
 	if c.PriceStopCheckIntervalMs < 0 {

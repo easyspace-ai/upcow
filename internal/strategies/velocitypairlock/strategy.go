@@ -2,6 +2,7 @@ package velocitypairlock
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sync/atomic"
 	"time"
@@ -146,7 +147,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 	}
 
 	s.st.mu.Lock()
-	defer s.st.mu.Unlock()
+	needStartMonitor := false
 
 	// 只关心当前一对相关的订单
 	if s.st.rt.phase != phaseOpen &&
@@ -154,9 +155,11 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 		s.st.rt.phase != phaseHedgeOpen &&
 		s.st.rt.phase != phaseFilled &&
 		s.st.rt.phase != phaseMerging {
+		s.st.mu.Unlock()
 		return nil
 	}
 	if order.OrderID == "" {
+		s.st.mu.Unlock()
 		return nil
 	}
 
@@ -173,6 +176,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 			hedgeCents := s.st.rt.hedgeTargetCents
 			size := s.st.rt.primaryFillSize
 			s.st.rt.phase = phasePlacing
+			s.st.mu.Unlock()
 			go s.placeHedgeAfterPrimaryFilled(market, hedgeToken, hedgeCents, size)
 			return nil
 		}
@@ -180,8 +184,10 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 			s.log.Warnf("⚠️ 主 leg 进入终态但未成交：orderID=%s status=%s，重置本对", order.OrderID, order.Status)
 			s.resetPairLocked("primary_terminal")
 			s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+			s.st.mu.Unlock()
 			return nil
 		}
+		s.st.mu.Unlock()
 		return nil
 	}
 
@@ -193,6 +199,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 			s.stopMonitorLocked()
 			s.st.rt.phase = phaseFilled
 			s.triggerAutoMergeLocked()
+			s.st.mu.Unlock()
 			return nil
 		}
 		if order.Status == domain.OrderStatusCanceled || order.Status == domain.OrderStatusFailed {
@@ -200,8 +207,10 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 			s.stopMonitorLocked()
 			s.resetPairLocked("hedge_terminal")
 			s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+			s.st.mu.Unlock()
 			return nil
 		}
+		s.st.mu.Unlock()
 		return nil
 	}
 
@@ -215,6 +224,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 			s.log.Warnf("⚠️ UP 订单进入终态但未成交：orderID=%s status=%s，重置本对", order.OrderID, order.Status)
 			s.resetPairLocked("up_terminal")
 			s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+			s.st.mu.Unlock()
 			return nil
 		}
 	}
@@ -226,6 +236,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 			s.log.Warnf("⚠️ DOWN 订单进入终态但未成交：orderID=%s status=%s，重置本对", order.OrderID, order.Status)
 			s.resetPairLocked("down_terminal")
 			s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+			s.st.mu.Unlock()
 			return nil
 		}
 	}
@@ -233,10 +244,77 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 	if updated && s.st.rt.upFilled && s.st.rt.downFilled {
 		if s.st.rt.phase != phaseMerging {
 			s.st.rt.phase = phaseFilled
+			s.stopMonitorLocked()
 			s.triggerAutoMergeLocked()
 		}
+		s.st.mu.Unlock()
+		return nil
+	}
+
+	// 并发模式：只成交了一边，另一边未成交 -> 进入 hedge_open 并启动盯盘锁损
+	if updated && s.st.rt.phase == phaseOpen && s.st.cfg.PriceStopEnabled {
+		oneFilled := (s.st.rt.upFilled && !s.st.rt.downFilled) || (!s.st.rt.upFilled && s.st.rt.downFilled)
+		if oneFilled && !s.st.rt.monitorRunning {
+			// 注意：这里的 order 可能是 UP 或 DOWN 的更新；只在“刚刚收到 filled 的那条”更新 primaryFill*
+			if order.Status == domain.OrderStatusFilled {
+				s.st.rt.primaryFillCents = order.Price.ToCents()
+				s.st.rt.primaryFillSize = order.ExecutedSize()
+			}
+			// 进入 hedge_open（盯盘目标：未成交的那条订单）
+			s.st.rt.phase = phaseHedgeOpen
+			s.st.rt.stopLevel = stopNone
+			needStartMonitor = true
+		}
+	}
+
+	s.st.mu.Unlock()
+	if needStartMonitor {
+		s.startMonitorIfNeeded()
 	}
 	return nil
+}
+
+func clampCents(v int, min int, max int) int {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
+func (s *Strategy) makeBuyOrderForToken(market *domain.Market, token domain.TokenType, targetCents int, bestAskCents int, style string, size float64, bypassRiskOff bool) (domain.Order, error) {
+	if market == nil {
+		return domain.Order{}, fmt.Errorf("market is nil")
+	}
+	if token != domain.TokenTypeUp && token != domain.TokenTypeDown {
+		return domain.Order{}, fmt.Errorf("invalid token type: %s", token)
+	}
+	assetID := market.NoAssetID
+	if token == domain.TokenTypeUp {
+		assetID = market.YesAssetID
+	}
+	orderType := types.OrderTypeGTC
+	priceCents := targetCents
+	if style == "taker" {
+		// FAK 吃单：bestAsk + offset（buy）
+		orderType = types.OrderTypeFAK
+		priceCents = clampCents(bestAskCents+s.st.cfg.TakerOffsetCents, 1, 99)
+	}
+	return domain.Order{
+		MarketSlug:    market.Slug,
+		AssetID:       assetID,
+		Side:          types.SideBuy,
+		Price:         priceFromCents(priceCents),
+		Size:          size,
+		TokenType:     token,
+		IsEntryOrder:  true,
+		Status:        domain.OrderStatusPending,
+		CreatedAt:     time.Now(),
+		OrderType:     orderType,
+		BypassRiskOff: bypassRiskOff,
+	}, nil
 }
 
 // OnPriceChanged implements stream.PriceChangeHandler.
@@ -478,18 +556,20 @@ func (s *Strategy) placePairAsync(primaryToken domain.TokenType, market *domain.
 			hedgeToken = domain.TokenTypeUp
 		}
 
-		primaryOrder := domain.Order{
-			MarketSlug:   market.Slug,
-			AssetID:      primaryAsset,
-			Side:         types.SideBuy,
-			Price:        priceFromCents(primaryCents),
-			Size:         s.st.cfg.OrderSize,
-			TokenType:    primaryToken,
-			IsEntryOrder: true,
-			Status:       domain.OrderStatusPending,
-			CreatedAt:    time.Now(),
-			OrderType:    types.OrderTypeGTC,
+		bestAskCents := upAsk.ToCents()
+		if primaryToken == domain.TokenTypeDown {
+			bestAskCents = downAsk.ToCents()
 		}
+		primaryOrder, err := s.makeBuyOrderForToken(market, primaryToken, primaryCents, bestAskCents, s.st.cfg.PrimaryOrderStyle, s.st.cfg.OrderSize, false)
+		if err != nil {
+			s.log.Warnf("❌ sequential 主 leg 构造订单失败：err=%v", err)
+			s.st.mu.Lock()
+			s.resetPairLocked("sequential_primary_build_failed")
+			s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+			s.st.mu.Unlock()
+			return
+		}
+		primaryOrder.AssetID = primaryAsset
 
 		submitCtx, submitCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer submitCancel()
@@ -557,30 +637,31 @@ func (s *Strategy) placePairAsync(primaryToken domain.TokenType, market *domain.
 		return
 	}
 
-	// parallel：并发提交 UP+DOWN
-	upOrder := domain.Order{
-		MarketSlug:   market.Slug,
-		AssetID:      market.YesAssetID,
-		Side:         types.SideBuy,
-		Price:        priceFromCents(upPriceCents),
-		Size:         s.st.cfg.OrderSize,
-		TokenType:    domain.TokenTypeUp,
-		IsEntryOrder: true,
-		Status:       domain.OrderStatusPending,
-		CreatedAt:    time.Now(),
-		OrderType:    types.OrderTypeGTC,
+	// parallel：并发提交 UP+DOWN（主/对冲可分别配置下单类型）
+	upStyle := s.st.cfg.HedgeOrderStyle
+	downStyle := s.st.cfg.HedgeOrderStyle
+	if plan.primaryToken == domain.TokenTypeUp {
+		upStyle = s.st.cfg.PrimaryOrderStyle
+	} else {
+		downStyle = s.st.cfg.PrimaryOrderStyle
 	}
-	downOrder := domain.Order{
-		MarketSlug:   market.Slug,
-		AssetID:      market.NoAssetID,
-		Side:         types.SideBuy,
-		Price:        priceFromCents(downPriceCents),
-		Size:         s.st.cfg.OrderSize,
-		TokenType:    domain.TokenTypeDown,
-		IsEntryOrder: true,
-		Status:       domain.OrderStatusPending,
-		CreatedAt:    time.Now(),
-		OrderType:    types.OrderTypeGTC,
+	upOrder, err := s.makeBuyOrderForToken(market, domain.TokenTypeUp, upPriceCents, upAsk.ToCents(), upStyle, s.st.cfg.OrderSize, false)
+	if err != nil {
+		s.log.Warnf("❌ parallel 构造 UP 订单失败：err=%v", err)
+		s.st.mu.Lock()
+		s.resetPairLocked("parallel_up_build_failed")
+		s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+		s.st.mu.Unlock()
+		return
+	}
+	downOrder, err := s.makeBuyOrderForToken(market, domain.TokenTypeDown, downPriceCents, downAsk.ToCents(), downStyle, s.st.cfg.OrderSize, false)
+	if err != nil {
+		s.log.Warnf("❌ parallel 构造 DOWN 订单失败：err=%v", err)
+		s.st.mu.Lock()
+		s.resetPairLocked("parallel_down_build_failed")
+		s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+		s.st.mu.Unlock()
+		return
 	}
 
 	submitCtx, submitCancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -627,6 +708,17 @@ func (s *Strategy) placePairAsync(primaryToken domain.TokenType, market *domain.
 	s.st.rt.downOrderID = downID
 	s.st.rt.upFilled = false
 	s.st.rt.downFilled = false
+	// 记录本次 primary/hedge（用于并发模式下一边成交后的盯盘锁损）
+	s.st.rt.primaryToken = plan.primaryToken
+	if plan.primaryToken == domain.TokenTypeUp {
+		s.st.rt.primaryOrderID = upID
+		s.st.rt.hedgeToken = domain.TokenTypeDown
+		s.st.rt.hedgeOrderID = downID
+	} else {
+		s.st.rt.primaryOrderID = downID
+		s.st.rt.hedgeToken = domain.TokenTypeUp
+		s.st.rt.hedgeOrderID = upID
+	}
 	s.st.rt.phase = phaseOpen
 	s.st.rt.tradesThisCycle++
 	s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
@@ -648,19 +740,34 @@ func (s *Strategy) placeHedgeAfterPrimaryFilled(market *domain.Market, hedgeToke
 	if hedgeToken == domain.TokenTypeUp {
 		assetID = market.YesAssetID
 	}
-	hedgeOrder := domain.Order{
-		MarketSlug:   market.Slug,
-		AssetID:      assetID,
-		Side:         types.SideBuy,
-		Price:        priceFromCents(hedgeCents),
-		Size:         size,
-		TokenType:    hedgeToken,
-		IsEntryOrder: true,
-		Status:       domain.OrderStatusPending,
-		CreatedAt:    time.Now(),
-		OrderType:    types.OrderTypeGTC,
-		BypassRiskOff: true, // 对冲属于“降低风险”
+
+	// 对冲单下单方式（limit/taker）
+	bestAskCents := 0
+	if s.st.cfg.HedgeOrderStyle == "taker" {
+		cctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		p, err := orderutil.QuoteBuyPrice(cctx, s.TradingService, assetID, 0)
+		if err != nil {
+			s.log.Warnf("❌ 对冲单吃单模式获取 bestAsk 失败：err=%v", err)
+			s.st.mu.Lock()
+			s.resetPairLocked("hedge_taker_quote_failed")
+			s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+			s.st.mu.Unlock()
+			return
+		}
+		bestAskCents = p.ToCents()
 	}
+	hedgeOrder, err := s.makeBuyOrderForToken(market, hedgeToken, hedgeCents, bestAskCents, s.st.cfg.HedgeOrderStyle, size, true)
+	if err != nil {
+		s.log.Warnf("❌ 对冲单构造失败：err=%v", err)
+		s.st.mu.Lock()
+		s.resetPairLocked("hedge_build_failed")
+		s.st.rt.cooldownUntil = time.Now().Add(s.st.cfg.CooldownDuration())
+		s.st.mu.Unlock()
+		return
+	}
+	hedgeOrder.AssetID = assetID
+
 	submitCtx, submitCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer submitCancel()
 	created, err := s.orderExecutor.SubmitOrders(submitCtx, hedgeOrder)
@@ -784,7 +891,7 @@ func (s *Strategy) checkStopLossOnce(ctx context.Context, hedgeOrderID string) {
 	// 达到 hard：撤旧对冲单 -> FAK 吃单
 	if pnl <= hard && currentLevel != stopHard {
 		s.log.Warnf("🔻 触发硬锁损：pnl=%dc (<=%dc) 先撤对冲单再 FAK 锁损", pnl, hard)
-		go s.executeStopLoss(hedgeOrderID, hedgeToken, market, hedgeAsk, types.OrderTypeFAK)
+		go s.executeStopLoss(hedgeOrderID, hedgeToken, market, hedgeAsk+s.st.cfg.TakerOffsetCents, types.OrderTypeFAK)
 		s.st.mu.Lock()
 		if s.st.rt.hedgeOrderID == hedgeOrderID && s.st.rt.phase == phaseHedgeOpen {
 			s.st.rt.stopLevel = stopHard
@@ -796,7 +903,13 @@ func (s *Strategy) checkStopLossOnce(ctx context.Context, hedgeOrderID string) {
 	// 达到 soft：撤旧对冲单 -> GTC@bestAsk（更激进，尽量成交，但不强制）
 	if pnl <= soft && currentLevel == stopNone {
 		s.log.Warnf("🔸 触发软锁损：pnl=%dc (<=%dc) 先撤对冲单再提价对冲", pnl, soft)
-		go s.executeStopLoss(hedgeOrderID, hedgeToken, market, hedgeAsk, types.OrderTypeGTC)
+		ot := types.OrderTypeGTC
+		price := hedgeAsk
+		if s.st.cfg.HedgeOrderStyle == "taker" {
+			ot = types.OrderTypeFAK
+			price = hedgeAsk + s.st.cfg.TakerOffsetCents
+		}
+		go s.executeStopLoss(hedgeOrderID, hedgeToken, market, price, ot)
 		s.st.mu.Lock()
 		if s.st.rt.hedgeOrderID == hedgeOrderID && s.st.rt.phase == phaseHedgeOpen {
 			s.st.rt.stopLevel = stopSoft
@@ -836,7 +949,7 @@ func (s *Strategy) executeStopLoss(oldHedgeOrderID string, hedgeToken domain.Tok
 		MarketSlug:    market.Slug,
 		AssetID:       assetID,
 		Side:          types.SideBuy,
-		Price:         priceFromCents(newPriceCents),
+		Price:         priceFromCents(clampCents(newPriceCents, 1, 99)),
 		Size:          size,
 		TokenType:     hedgeToken,
 		IsEntryOrder:  true,

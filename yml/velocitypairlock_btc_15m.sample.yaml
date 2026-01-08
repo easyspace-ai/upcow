@@ -34,6 +34,11 @@ exchangeStrategies:
       # parallel: 并发下单（同时提交 UP+DOWN）
       # sequential: 顺序下单（先主 leg，主成交后再对冲）
       orderExecutionMode: sequential
+      # 主/对冲下单方式：limit | taker
+      primaryOrderStyle: limit
+      hedgeOrderStyle: limit
+      # taker 模式吃单价格：bestAsk + offset（分）
+      takerOffsetCents: 0
       # 顺序模式 gate：只有主 leg 价格在区间内才允许先主后对冲
       sequentialPrimaryMinCents: 40
       sequentialPrimaryMaxCents: 80

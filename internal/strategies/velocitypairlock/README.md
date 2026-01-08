@@ -4,8 +4,8 @@
 
 - **触发条件**：当 UP 或 DOWN 的价格在指定窗口内的“变化速度（分/秒）”达到阈值
 - **下单动作**：支持两种模式
-  - **并发下单**：同时在 UP 与 DOWN 两边挂 **BUY 限价单（GTC）**
-  - **顺序下单**：先下“主 leg”限价单，主 leg 成交后再下“对冲 leg”
+  - **并发下单**：同时下 UP 与 DOWN（主/对冲的下单方式可分别配置：限价/吃单）
+  - **顺序下单**：先下“主 leg”，主 leg 成交后再下“对冲 leg”（同样支持主/对冲分别配置限价/吃单）
 - **锁定利润**：两边目标成交价满足 `UP + DOWN <= 100 - profitCents`
   - 示例：`profitCents=3`，当选择 `UP=70` 则 `DOWN=27`（锁 3 个点）
 - **资金复用**：两边都成交后，触发 **merge complete sets（YES+NO -> USDC）** 释放资金
@@ -48,6 +48,12 @@ exchangeStrategies:
       # ===== 下单模式 =====
       # parallel | sequential
       orderExecutionMode: sequential
+      # 主/对冲下单方式：
+      # - limit: 限价挂单（GTC，使用锁利目标价）
+      # - taker: 吃单（FAK，使用 bestAsk + takerOffsetCents）
+      primaryOrderStyle: limit
+      hedgeOrderStyle: limit
+      takerOffsetCents: 0
       # 顺序模式 gate：只在主 leg 价格处于区间时才允许“先主后对冲”
       sequentialPrimaryMinCents: 40
       sequentialPrimaryMaxCents: 80
