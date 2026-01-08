@@ -1,0 +1,62 @@
+# binancepredict：基于 Binance 秒级 K 线预测的镜像套利策略
+#
+# 策略说明：
+# - 使用 Binance Futures 1s K 线预测 BTC 涨跌方向
+# - 在 Polymarket 镜像订单薄上进行双向对冲套利
+# - Entry（Taker FAK）+ Hedge（Maker GTC）锁定利润
+# - 利用镜像关系：UP Ask + DOWN Bid = 1
+#
+# 适用场景：BTC 15分钟周期，适合波动较大的市场
+
+# 市场配置
+market:
+  symbol: "btc"
+  timeframe: "15m"
+  kind: "updown"
+
+# 纸交易模式
+# true = 仅模拟交易，false = 真实交易
+dry_run: true
+
+exchangeStrategies:
+  - on: polymarket
+    binancepredict:
+      # ====== 资金规模 ======
+      orderSize: 10                    # 每次交易 shares
+      skipBalanceCheck: true
+      maxTotalCapitalUSDC: 100        # 最大总资金限制（USDC），0=不限制
+      requireFullyHedgedBeforeNewEntry: true  # 是否要求完全对冲后才能开新单
+
+      # ====== Binance 预测参数 ======
+      predictionWindowSeconds: 5      # 预测窗口（秒）
+      minPriceChangeBps: 10            # 最小价格变化（bps）才触发预测
+      predictionCooldownMs: 1000      # 预测冷却时间（毫秒）
+
+      # ====== 订单参数 ======
+      entryPriceOffsetCents: 0        # Entry 价格偏移（cents，0=best ask/bid）
+      hedgePriceOffsetCents: -1       # Hedge 价格偏移（cents，负数=比镜像价低）
+      minProfitCents: 2               # 最小利润要求（cents）
+
+      # ====== 风险控制 ======
+      hedgeTimeoutSeconds: 10         # Hedge 超时时间（秒）
+      maxUnhedgedLossCents: 5        # 未对冲最大亏损（cents）
+      enableStopLoss: true            # 启用止损
+      cycleEndProtectionMinutes: 2   # 周期结束前保护（分钟）
+
+      # ====== 镜像价格验证 ======
+      maxMirrorDeviationCents: 1      # 最大镜像偏差（cents），超过此值跳过交易
+
+      # ====== 市场质量过滤 ======
+      enableMarketQualityGate: true
+      marketQualityMinScore: 60
+      marketQualityMaxSpreadCents: 10
+      marketQualityMaxBookAgeMs: 2500
+
+      # ====== 自动合并订单 ======
+      autoMerge:
+        enabled: true                 # 启用自动合并
+        minCompleteSets: 5            # 至少 5 shares 才触发合并
+        maxCompleteSetsPerRun: 20     # 每次最多合并 20 shares
+        mergeRatio: 1.0              # 100% 合并
+        intervalSeconds: 60          # 每 60 秒检查一次
+        onlyIfNoOpenOrders: false    # 不要求没有活跃订单

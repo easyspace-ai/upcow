@@ -1,0 +1,29 @@
+# velocityhedgehold：动量 Entry + 互补价挂 Hedge；对冲成功后持有到结算
+#
+# 策略说明：
+# - Entry：当价格速度满足条件时，立即买入（FAK 订单）
+# - Hedge：同时在对侧挂限价单（GTC），价格为 100 - entryPrice - hedgeOffsetCents
+# - 成功对冲：双边等量持仓，持有到结算（不做止盈/主动出场）
+# - 未对冲超时/止损：执行止损（取消挂单 + SELL FAK 平掉所有持仓）
+#
+# 适用场景：BTC 15分钟周期，适合波动较大的市场
+
+# 市场配置
+market:
+  symbol: "btc"
+  timeframe: "15m"
+  kind: "updown"
+
+# 纸交易模式
+# true = 仅模拟交易，false = 真实交易
+dry_run:  false
+
+
+exchangeStrategies:
+  - on: polymarket
+    orderlistener:
+      # ====== 资金规模（约 40 USDC/次）======
+
+
+      profitTargetCents: 3
+    

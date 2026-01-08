@@ -1,0 +1,106 @@
+# velocityhedgehold：动量 Entry + 互补价挂 Hedge；对冲成功后持有到结算
+#
+# 策略说明：
+# - Entry：当价格速度满足条件时，立即买入（FAK 订单）
+# - Hedge：同时在对侧挂限价单（GTC），价格为 100 - entryPrice - hedgeOffsetCents
+# - 成功对冲：双边等量持仓，持有到结算（不做止盈/主动出场）
+# - 未对冲超时/止损：执行止损（取消挂单 + SELL FAK 平掉所有持仓）
+#
+# 适用场景：BTC 15分钟周期，适合波动较大的市场
+
+# 市场配置
+market:
+  symbol: "btc"
+  timeframe: "15m"
+  kind: "updown"
+
+# 纸交易模式
+# true = 仅模拟交易，false = 真实交易
+dry_run:  false
+
+
+exchangeStrategies:
+  - on: polymarket
+    velocityhedgehold:
+      # ====== 资金规模（约 40 USDC/次）======
+
+
+      orderSize: 8
+      skipBalanceCheck: true
+      strictOneToOneHedge: true
+      enableHedgeTakerFallback: true
+      hedgeMonitorIntervalMs: 500
+
+      # ====== 总资金限制与完全对冲要求 ======
+      maxTotalCapitalUSDC: 30              # 最大总资金限制（USDC），当总持仓价值超过此限制时禁止开新单（0=不限制）
+      requireFullyHedgedBeforeNewEntry: true # 是否要求完全对冲后才能开新单（true=必须一对完全锁定后才能开新单，更安全）
+
+      # ====== 信号：绝对变化/双向 + 盘口跳变 ======
+      signalMode: "abs"          # abs=绝对变化（双向）
+      signalToken: "up"          # 只盯 UP（另一侧用 100-price 互补推导），当启用涨势方向选择时此参数会被覆盖
+      signalSource: "best_mid"   # best_mid=盘口跳变（bid/ask mid）
+
+      # ====== 涨势方向选择 ======
+      # 根据价格判断哪一边是"涨"的，优先买"涨"的那一边
+      bullishPriceThresholdCents: 60  # 价格阈值（cents），>= 此价格的一边是"涨"的（0=不启用，使用 signalToken）
+
+      # ====== 触发阈值（优化：基于实际速度统计调整）======
+      # 实际速度统计：平均1.208 c/s, 最小0.723 c/s, 最大1.806 c/s
+      # 当前阈值0.20 c/s过于保守，实际速度远高于阈值（约3.6-9倍）
+      # 优化目标：在保持信号质量的前提下，增加交易频率
+      windowSeconds: 3            # 从3秒降到2秒，捕获更短期波动（必须是整数）
+      minMoveCents: 5            # 从5c降到3c，实际交易delta在2-5c之间
+      minVelocityCentsPerSec: 0.38  # 从0.20降到0.18，仍远低于实际最小速度0.723 c/s
+
+      cooldownMs: 900            # 从900ms降到600ms，允许更频繁交易
+      warmupMs: 1200             # 从1200ms降到1000ms，更快开始交易
+      maxTradesPerCycle: 5       # 设为0表示不限制交易次数（原100）
+
+      # ====== 波动过滤（避免在波动太大时开仓，降低对冲失败风险）======
+      # 当价格变化速度或幅度超过这些阈值时，跳过开仓
+      # 默认已启用，可以根据实际情况调整（设置为 0 可禁用）
+      maxVelocityCentsPerSec: 3.0  # 最大速度（c/s），超过此速度不开仓（默认 2.0，0=不限制）
+      maxMoveCents: 7             # 最大变化幅度（cents），超过此幅度不开仓（默认 10，0=不限制）
+
+      # ====== 价格范围过滤（避免在极端价格时开仓）======
+      # 当价格低于 minPriceCents 或高于 maxPriceCents 时，不开仓
+      minPriceCents: 5           # 最小价格（cents），低于此价格不开仓（0=不限制）
+      maxPriceCents: 95           # 最大价格（cents），高于此价格不开仓（0=不限制）
+
+      # ====== 对冲与未对冲风控 ======
+      hedgeOffsetCents: 1
+      hedgeReorderTimeoutSeconds: 12
+      unhedgedMaxSeconds: 45
+      unhedgedStopLossCents: 8
+
+      # ====== 过度对冲控制 ======
+      # 当 Hedge 订单金额 < minOrderSize 时，是否允许适度过度对冲以满足最小金额要求
+      allowModerateOverHedge: true    # true=允许适度过度对冲，false=直接止损（保守）
+      maxOverHedgeRatio: 0.1          # 最大过度对冲比例（0.1=10%，即 hedgeShares 最多比 entryFilledSize 多 10%）
+
+      cycleEndProtectionMinutes: 2
+
+      # ====== 市场质量过滤（建议保持开启）======
+      enableMarketQualityGate: true
+      marketQualityMinScore: 60
+      marketQualityMaxSpreadCents: 10
+      marketQualityMaxBookAgeMs: 2500
+
+      # ====== 方向 bias（当前先关闭；需启用 Binance WS 才有效）======
+      useBinanceFastBias: false
+      biasMode: "hard"
+      fastBiasWindowSeconds: 30
+      fastBiasMinMoveBps: 15
+      fastBiasMinHoldSeconds: 2
+
+      useBinanceOpen1mBias: false
+      requireBiasReady: false
+
+      # ===== 自动合并订单 =====
+      autoMerge:
+        enabled: true                    # 启用自动合并
+        minCompleteSets: 5              # 至少 5 shares 才触发合并（可选）
+        maxCompleteSetsPerRun: 10        # 每次最多合并 20 shares（可选，避免一次性合并太多）
+        mergeRatio: 1.0                 # 100% 合并（默认）
+        intervalSeconds: 30             # 每 60 秒检查一次（默认）
+        onlyIfNoOpenOrders: false       # 不要求没有活跃订单（默认）

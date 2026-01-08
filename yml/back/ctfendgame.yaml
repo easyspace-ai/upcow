@@ -1,0 +1,57 @@
+# ctfendgame：新周期开始立刻 split，本周期尾盘卖弱（5–15），不确定不动（merge 兜底）
+#
+# 依赖说明：
+# - 若要用 Relayer（推荐，gasless + 代理钱包持仓），需同时满足：
+#   - base config 里 wallet.funder_address 已配置
+#   - 环境变量：BUILDER_API_KEY / BUILDER_SECRET / BUILDER_PASS_PHRASE
+# - 若缺少 relayer 配置，会 fallback 到 direct split（需要 EOA 有 USDC 授权 + MATIC）
+
+market:
+  symbol: "btc"
+  timeframe: "15m"
+  kind: "updown"
+
+# 纸交易模式：true=仅日志演练（不会真实 split/下单），false=真实执行
+dry_run: false
+
+exchangeStrategies:
+  - on: polymarket
+    ctfendgame:
+      # ===== 周期与规模 =====
+      timeframe: "15m"
+      orderSize: 20.0              # shares：尾盘卖弱总量（建议≈splitAmount）
+
+      # ===== 新周期开始：立刻拆分并校验持仓 =====
+      enableAutoSplitOnCycleStart: true
+      splitAmount: 20.0            # USDC：每周期拆分数量（建议与 orderSize 对齐）
+      rpcURL: "https://polygon-rpc.com"
+      chainID: 137
+      holdingsCheckOnCycleStart: true
+      holdingsExpectedMinRatio: 0.98
+
+      # ===== 不确定不动（摇摆区）=====
+      uncertainMinCents: 30
+      uncertainMaxCents: 70
+
+      # ===== 尾盘卖弱触发窗口 =====
+      endgameWindowSecs: 500        # <=3分钟才考虑卖弱
+      weakSellMinCents: 5
+      weakSellMaxCents: 10
+
+      # 强弱明确（V0 用盘口价格近似）
+      minStrongWeakDiffCents: 10
+      minStrongSideCents: 90
+
+      # ===== 执行与风控 =====
+      warmupMs: 1200
+      maxSpreadCents: 5
+      maxSellSequencesPerCycle: 1
+      maxAttemptsPerCycle: 6
+      cooldownMs: 250
+      sellSplits: [15,10,7,5]
+
+      # ===== 强方卖出配置（卖出弱方后立即挂强方卖单）=====
+      # 注意：强方卖出数量会根据 sellSplits 比例动态计算（orderSize * sellSplits[batchIndex]）
+      # strongSellPrices 长度必须与 sellSplits 长度一致
+      enableStrongSellAfterWeak: true    # 卖出弱方后是否立即挂强方卖单
+      strongSellPrices: [90,92,94,96] # 强方卖出价格数组（cents），按批次索引使用，长度需与 sellSplits 一致

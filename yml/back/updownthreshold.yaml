@@ -1,0 +1,28 @@
+# updownthreshold 策略配置示例：
+# - 同时监控 up/down 两方向
+# - 任一方向价格从 <70c 跨越到 >=70c：买入 orderSize
+# - 买入后如果跌到 <=30c：止损卖出
+market:
+  symbol: "btc"
+  timeframe: "15m"
+  kind: "updown"
+
+# 纸交易模式（可从策略配置文件读取，会覆盖主配置文件中的设置）
+# true = 仅模拟交易，false = 真实交易
+dry_run: false
+
+exchangeStrategies:
+  - on: polymarket
+    updownthreshold:
+      orderSize: 10.0
+      tokenType: ""          # ""=同时监控 up/down；"up"/"down"=只监控单方向
+
+      entryCents: 79
+      stopLossCents: 40
+
+      oncePerCycle: true     # 默认 true：每个周期只允许入场一次（止损不受影响）
+      warmupMs: 1200         # 默认 1200ms
+      maxSpreadCents: 5      # 默认 5
+      maxBuyPriceCents: 99   # 默认 99（不限制）
+      delayedEntryMinutes: 12 # 周期开始后延迟多少分钟才开始交易，默认 8
+                             # 延迟期后，只要价格 >= entryCents 就买入（不需要"越过"逻辑）

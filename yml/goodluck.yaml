@@ -1,0 +1,175 @@
+# GoodLuck 策略配置（策略文件）
+# 用法示例：
+#   - 只加载该策略文件（覆盖 market/dry_run）：
+#       ./bin/bot -strategy goodluck
+#   - 或显式指定目录：
+#       ./bin/bot -strategies-dir yml/strategies
+#
+# 注意：这是"策略配置文件"，不包含钱包私钥等全局配置。
+# 全局配置请放到 yml/config.yaml（可参考 yml/config.yaml.example）。
+#
+# GoodLuck 策略说明：
+# - 基于 WinBet 策略，支持两种模式：
+#   1. 自动下单模式（manualOrderMode: false，默认）：
+#      - 根据价格变化自动下单和对冲，与 WinBet 功能对齐
+#      - 工作流程：价格变化 -> 决策 -> 自动下单 -> 自动对冲 -> 监控管理
+#   2. 手动下单模式（manualOrderMode: true）：
+#      - 只做对冲，不主动下单，主要用于测试对冲功能
+#      - 工作流程：手动下单 -> 检测订单填充 -> 自动启动对冲监控 -> 自动创建对冲订单 -> 监控管理
+
+market:
+  # 交易标的：btc/eth/sol/xrp...
+  symbol: eth
+  # 周期：15m/1h/4h...
+  timeframe: 15m
+  # 市场类型：默认 updown
+  kind: updown
+  # 如你使用 slug 模板，可以在这里显式写 slugTemplates（可选）
+  # slugTemplates:
+  #   "15m": "{symbol}-updown-{timeframe}-{timestamp}"
+
+# 纸交易模式：true=不真实下单（仅打印日志）；false=真实交易
+dry_run: true
+
+exchangeStrategies:
+  - on: polymarket
+    goodluck:
+      # ====== 下单模式选择 ======
+      # manualOrderMode: false（默认）= 自动下单模式，根据价格变化自动下单和对冲
+      # manualOrderMode: true = 手动下单模式，只做对冲，不主动下单
+      manualOrderMode: false
+
+      # ====== 交易参数 ======
+      # 说明：orderSize/hedgeOrderSize 单位是 shares（不是 USDC）。
+      # 建议从保守开始（比如 5 shares），确认稳定后再逐步加大。
+      orderSize: 6                    # Entry 订单数量（shares），建议从保守开始
+      hedgeOrderSize: 0              # 对冲订单数量（shares），0=自动跟随 orderSize
+      enableDynamicSize: false       # 是否启用动态订单大小缩放（根据市场质量/价差缩放，默认false=禁用）
+
+      # ====== 速度判定参数 ======
+      windowSeconds: 10              # 速度计算窗口时长（秒），用于计算价格变化速度
+      minMoveCents: 3                # 窗口内最小价格位移（分），低于此值不触发交易
+      minVelocityCentsPerSec: 0.3    # 最小速度阈值（分/秒），价格变化速度需超过此值才交易
+      cooldownMs: 3000               # 触发交易后的冷却时间（毫秒），防止频繁交易
+      warmupMs: 800                  # 周期切换后的预热时间（毫秒），预热期内不交易
+      maxTradesPerCycle: 1           # 每个周期最大交易次数，0=不设限
+
+      # ====== 速度快慢判断参数 ======
+      fastVelocityThresholdCentsPerSec: 0.5  # 快速速度阈值（分/秒），超过此值视为快速行情
+      velocityHistoryWindowSeconds: 60        # 速度历史窗口（秒），用于计算平均速度
+      velocityComparisonMultiplier: 1.5        # 速度比较倍数，当前速度需超过历史平均的倍数才交易
+
+      # ====== 慢速策略参数 ======
+      slowStrategyMaxSpreadCents: 3           # 慢速策略允许的最大价差（分），超过此值不交易
+      slowStrategyPriceAggressiveness: 0.8    # 慢速策略价格激进程度（0-1），越高越接近市场价
+
+      # ====== 下单安全参数 ======
+      hedgeOffsetCents: 2            # 对冲价格偏移（分），在理想价格基础上增加此偏移以提高成交率
+      minEntryPriceCents: 11          # Entry 订单最小价格（分），低于此价格不交易
+      maxEntryPriceCents: 89         # Entry 订单最大价格（分），高于此价格不交易
+      maxSpreadCents: 0             # 允许的最大价差（分），0=不限制
+      minOrderUSDC: 1.01            # 最小订单金额（USDC），Polymarket 要求市场买入订单至少 $1，默认 1.01（留余量避免舍入误差）
+
+      # ====== 周期保护 ======
+      cycleEndProtectionMinutes: 1   # 周期结束前保护时间（分钟），此时间内不再开新仓，避免无法完成对冲
+
+      # ====== 订单执行模式 ======
+      orderExecutionMode: sequential   # 执行模式：sequential=顺序执行（先Entry后Hedge），parallel=并行执行
+      sequentialCheckIntervalMs: 20   # 顺序模式下检查订单状态的间隔（毫秒）
+      sequentialMaxWaitMs: 2000       # Entry 订单最大等待时间（毫秒），超时后继续执行 Hedge
+
+      # ====== 对冲单重下机制 ======
+      hedgeReorderTimeoutSeconds: 10          # 对冲单超时重下时间（秒），超时后取消旧单并重新下单（从15秒缩短到10秒，更及时）
+      hedgeTimeoutFakSeconds: 30              # 对冲单超时后强制 FAK 吃单时间（秒），30秒作为兜底机制（从0改为30）
+      allowNegativeProfitOnHedgeReorder: true # 是否允许重下时出现负收益（小亏总比大亏好）
+      maxNegativeProfitCents: 20              # 重下时允许的最大负收益（分），超过此值不重下
+      inventoryThreshold: 0                  # 库存偏斜阈值（shares），超过此值禁止继续加仓，0=不限制
+
+      # ====== 智能风险管理系统 ======
+      riskManagementEnabled: true            # 是否启用风险管理系统
+      riskManagementCheckIntervalMs: 5000    # 风险检查间隔（毫秒），定期检查未对冲风险
+      aggressiveHedgeTimeoutSeconds: 0      # 激进对冲超时时间（秒），0=禁用（仅使用价格盯盘机制）
+      maxAcceptableLossCents: 20              # 激进对冲时允许的最大亏损（分），超过2倍阈值会拒绝执行（已禁用激进对冲时此参数无效）
+
+      # ====== 实时锁利/锁损（WS 事件驱动） ======
+      priceStopEnabled: true                  # 是否启用价格盯盘止损，Entry成交后实时监控价格变化
+      priceStopSoftLossCents: -5              # 软止损阈值（分），达到此亏损时撤单+FAK锁损
+      priceStopHardLossCents: -10             # 硬止损阈值（分），达到此亏损时紧急FAK锁损（不做确认）
+      priceTakeProfitCents: 5                 # 止盈阈值（分），达到此盈利时吃单锁利，0=禁用
+      priceTakeProfitConfirmTicks: 2          # 止盈触发防抖次数，需连续命中此次数才触发
+      priceStopCheckIntervalMs: 100             # 盯盘检查间隔（毫秒），从0改为100ms以降低CPU使用（对冲测试时不需要极速响应）
+      priceStopConfirmTicks: 2                # 软止损触发防抖次数，需连续命中此次数才触发
+
+      # ====== per-entry 预算 + 冷静期（防止单笔重下风暴） ======
+      perEntryMaxHedgeReorders: 5    # 每个Entry最多重下次数，超过后停止重下等待风控/FAK（从3增加到5，给更多重试机会）
+      perEntryMaxHedgeCancels: 8     # 每个Entry最多撤单次数，防止撤单风暴（从6增加到8，配合重下次数增加）
+      perEntryMaxHedgeFAK: 1         # 每个Entry最多FAK次数，防止FAK风暴
+      perEntryMaxAgeSeconds: 120     # Entry最大存活时间（秒），超过后进入冷静期
+      perEntryCooldownSeconds: 30    # Entry冷静期时长（秒），冷静期内禁止新开仓
+
+      # ====== 套利分析大脑模块 ======
+      arbitrageBrainEnabled: false              # 是否启用套利分析大脑（对冲测试时可禁用以降低CPU使用）
+      arbitrageBrainUpdateIntervalSeconds: 10  # 套利分析更新间隔（秒）
+
+      # ====== PositionMonitor（持仓监控/自动对冲）======
+      # 说明：实时监控持仓平衡情况，在持仓不平衡时自动触发对冲
+      # 建议：
+      # - 小仓位/碎单环境把 minHedgeSize 设为 5，并适当提高 cooldown，避免抖动对冲
+      positionMonitorEnabled: true              # 是否启用持仓监控/自动对冲
+      positionMonitorCheckIntervalMs: 2000      # 持仓检查间隔（毫秒），定期检查持仓平衡情况
+      positionMonitorMaxExposureThreshold: 1.0  # 最大允许的持仓不平衡阈值（shares），超过此值触发对冲
+      positionMonitorMaxExposureRatio: 0.1     # 最大允许的持仓不平衡比例（0-1），超过此比例触发对冲
+      positionMonitorMaxLossCents: 50          # 最大允许亏损（分），超过此亏损时强制对冲
+      positionMonitorMinHedgeSize: 0.0         # 最小对冲数量（shares），小于此差异时不做"平衡性对冲"（除非触发亏损风险）
+      positionMonitorCooldownMs: 1500          # 对冲冷却时间（毫秒），避免频繁触发对冲
+
+      # ====== Dashboard UI ======
+      dashboardEnabled: true                          # 是否启用 Dashboard 界面
+      dashboardUseNativeTUI: false                    # 是否使用原生TUI（false=使用Bubble Tea）
+      dashboardPositionReconcileIntervalSeconds: 15   # 持仓对账间隔（秒），定期同步实际持仓
+      dashboardRefreshIntervalMs: 500                 # Dashboard刷新间隔（毫秒），从100ms增加到500ms以降低CPU使用
+
+      # ====== 价格优先选择 ======
+      preferHigherPrice: false        # 是否优先选择更高价格（用于提高成交率）
+      minPreferredPriceCents: 50      # 最小偏好价格（分），低于此价格不优先选择
+
+      # ====== 自动合并 complete sets ======
+      autoMerge:
+        enabled: true
+        # 合并触发门槛（shares）
+        minCompleteSets: 0.1
+        # 每次最多合并（0=不限制）
+        maxCompleteSetsPerRun: 0
+        # 合并比例（0..1]
+        mergeRatio: 1.0
+        # 合并最小间隔（秒）
+        intervalSeconds: 15
+        # 安全：当前市场无活跃订单才合并
+        onlyIfNoOpenOrders: false
+        # 合并后同步持仓（Data API）
+        reconcileAfterMerge: true
+        reconcileMaxWaitSeconds: 30
+        # 合并触发前延迟时间（秒），确保持仓数据完全同步到交易所和 Data API
+        mergeTriggerDelaySeconds: 30
+        # 可选：写入 relayer metadata（<=500 chars）
+        metadata: "goodluck:autoMerge"
+
+      # ====== 市场质量过滤（强烈建议开启） ======
+      enableMarketQualityGate: true          # 是否启用市场质量过滤，过滤低质量盘口
+      marketQualityMinScore: 70              # 最小市场质量分（0-100），低于此分不交易
+      marketQualityMaxSpreadCents: 2         # 最大一档价差（分），超过此价差不交易
+      marketQualityMaxBookAgeMs: 3000        # 盘口数据最大年龄（毫秒），超过此年龄认为数据过期
+
+      # ====== 价格稳定性过滤（强烈建议开启） ======
+      priceStabilityCheckEnabled: true        # 是否启用价格稳定性检查，过滤价格波动过大的市场
+      maxPriceChangePercent: 90.0              # 最大价格变化百分比（窗口内），超过此值不交易
+      priceChangeWindowSeconds: 5             # 价格变化检查窗口（秒），计算此窗口内的价格波动
+      maxSpreadVolatilityPercent: 50.0        # 最大价差波动百分比（窗口内），超过此值不交易
+      # 数据清洗：过滤价差超过此阈值（分）的异常数据，避免错误 websocket 数据影响 maxChange 计算
+      # 正常情况下价差不会大于 10，默认设为 15 以过滤明显异常数据
+      priceStabilityMaxSpreadFilterCents: 15  # 数据清洗阈值（分），过滤价差超过此值的异常数据
+
+      # ====== 预留：更深档流动性阈值（目前策略未启用计算，仅保留字段） ======
+      minLiquidityScore: 2.0          # 最小流动性评分（预留字段，暂未启用）
+      minDepthAt1Percent: 10.0       # 1%价格深度最小流动性（预留字段，暂未启用）
+      minTotalLiquidity: 20.0        # 最小总流动性（预留字段，暂未启用）

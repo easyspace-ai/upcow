@@ -1,0 +1,71 @@
+market:
+  symbol: btc
+  timeframe: 15m
+  kind: updown
+
+# 建议先用纸交易跑通链路
+dry_run: true
+
+exchangeStrategies:
+  - on: polymarket
+    rangeboth:
+      # ===== 震荡触发参数 =====
+      # 注意：由于订单簿是镜像的（UP+DOWN=100分），只需要UP或DOWN其中一个满足窄幅条件即可
+      lookbackSeconds: 5
+      maxRangeCents: 3
+
+      warmupMs: 1500
+      cooldownMs: 1500
+      maxTriggersPerCycle: 0
+
+      # ===== 价格区间限制 =====
+      minPriceCents: 77  # 最小价格（分），低于此价格不交易
+      maxPriceCents: 97  # 最大价格（分），高于此价格不交易
+
+      # ===== 周期结束保护 =====
+      cycleEndProtectionSeconds: 100  # 周期结束前保护时间（秒），默认180（3分钟）
+
+      # ===== 双边挂单参数（shares）=====
+      orderSize: 5
+      # 可选：分别覆盖两边
+      # orderSizeUp: 6.5
+      # orderSizeDown: 6.5
+
+      # ===== 限价价格选择 =====
+      # 买价 = bestBid + offset，但会强制保证 < bestAsk（避免变成 taker）
+      # 支持小数，如 0.1 表示加 0.1 美分（更好成交）
+      limitPriceOffsetCents: 0
+      maxSpreadCents: 1
+
+      # ===== 并发/顺序（可配）=====
+      # parallel: 同时提交两笔 GTC
+      # sequential: 先下第一笔成功返回，再下第二笔
+      orderExecutionMode: sequential
+
+      # ===== 顺序优先级（可配）=====
+      # price_above: 优先买入“价格 >= sequentialPriorityPriceCents”的那一边
+      # higher_price: 优先价格更高的一边
+      # up_first/down_first: 固定顺序
+      sequentialPriorityMode: price_above
+      sequentialPriorityPriceCents: 55
+
+
+      # ===== 智能对冲参数（基于价格触发）=====
+      # 触发逻辑：
+      # - 当UP或DOWN价格达到 rebalanceTriggerPriceCents（默认90分）时，进入补仓阶段
+      # - 补仓阶段：智能撤单重新下单，确保无论UP/DOWN谁胜出都赚钱
+      # - 否则保持建仓阶段，正常挂单
+      rebalanceEnabled: true              # 是否启用智能对冲（默认true）
+      rebalanceTriggerPriceCents: 90      # 触发补仓的价格阈值（分），当UP或DOWN价格>=此值时进入补仓阶段
+      rebalanceMinProfit: 0.01            # 最小收益目标（USDC），默认0.01，确保>0
+      rebalanceCheckIntervalSeconds: 10   # 检查间隔（秒），默认10秒
+      rebalanceMaxOrderSize: 50           # 单次补单最大数量（shares），默认50，防止过度补单
+
+        # ====== 自动合并订单 ======
+      autoMerge:
+        enabled: false                 # 启用自动合并
+        minCompleteSets: 5            # 至少 5 shares 才触发合并
+        maxCompleteSetsPerRun: 10     # 每次最多合并 20 shares
+        mergeRatio: 1.0              # 100% 合并
+        intervalSeconds: 10          # 每 60 秒检查一次
+        onlyIfNoOpenOrders: false    # 不要求没有活跃订单

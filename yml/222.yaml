@@ -1,0 +1,132 @@
+# GoodLuck 策略配置（strategy file）
+# - 该文件会被 pkg/config.LoadStrategyFile 解析
+# - 仅包含 market/dry_run/exchangeStrategies（可与 base config 合并使用）
+
+# 可选：覆盖交易标的（不写则使用 base config 的 market）
+market:
+  symbol: btc
+  timeframe: 15m
+  kind: updown
+
+# 可选：覆盖是否纸交易（不写则使用 base config）
+dry_run: false
+
+exchangeStrategies:
+  - on: polymarket
+    goodluck:
+      # ====== 下单模式 ======
+      manualOrderMode: false
+
+      # ====== 交易参数（shares） ======
+      orderSize: 1.2
+      hedgeOrderSize: 0                # 0=自动跟随 entry 实际成交量（推荐）
+      enableDynamicSize: false
+
+      # ====== 速度参数 ======
+      windowSeconds: 10
+      minMoveCents: 3
+      minVelocityCentsPerSec: 0.3
+      cooldownMs: 1500
+      warmupMs: 800
+      maxTradesPerCycle: 6
+
+      # ====== 速度快慢判定 ======
+      fastVelocityThresholdCentsPerSec: 0.5
+      velocityHistoryWindowSeconds: 60
+      velocityComparisonMultiplier: 1.5
+
+      # ====== 慢速策略 ======
+      slowStrategyMaxSpreadCents: 3
+      slowStrategyPriceAggressiveness: 0.8
+
+      # ====== 下单安全参数 ======
+      hedgeOffsetCents: 1
+      minEntryPriceCents: 0
+      maxEntryPriceCents: 89
+      maxSpreadCents: 2
+      minOrderUSDC: 1.01
+
+      # ====== 周期保护 ======
+      cycleEndProtectionMinutes: 3
+
+      # ====== 订单执行模式 ======
+      orderExecutionMode: sequential    # sequential | parallel
+      sequentialCheckIntervalMs: 20
+      sequentialMaxWaitMs: 2000
+
+      # ====== 对冲单重下机制 ======
+      hedgeReorderTimeoutSeconds: 15
+      hedgeTimeoutFakSeconds: 0
+      allowNegativeProfitOnHedgeReorder: true
+      maxNegativeProfitCents: 5
+      inventoryThreshold: 0
+
+      # ====== 智能风险管理 ======
+      riskManagementEnabled: true
+      riskManagementCheckIntervalMs: 5000
+      aggressiveHedgeTimeoutSeconds: 60
+      maxAcceptableLossCents: 5
+
+      # ====== 价格盯盘止损/锁利 ======
+      priceStopEnabled: true
+      priceStopSoftLossCents: -5
+      priceStopHardLossCents: -10
+      priceTakeProfitCents: 5
+      priceTakeProfitConfirmTicks: 2
+      priceStopCheckIntervalMs: 0
+      priceStopConfirmTicks: 2
+
+      # ====== per-entry 执行预算 + 冷静期 ======
+      perEntryMaxHedgeReorders: 3
+      perEntryMaxHedgeCancels: 6
+      perEntryMaxHedgeFAK: 1
+      perEntryMaxAgeSeconds: 120
+      perEntryCooldownSeconds: 30
+
+      # ====== 套利分析 ======
+      arbitrageBrainEnabled: true
+      arbitrageBrainUpdateIntervalSeconds: 10
+
+      # ====== PositionMonitor（持仓监控/自动对冲）======
+      # 建议：
+      # - 小仓位/碎单环境把 minHedgeSize 设为 5，并适当提高 cooldown，避免抖动对冲
+      positionMonitorEnabled: true
+      positionMonitorCheckIntervalMs: 2000
+      positionMonitorMaxExposureThreshold: 1.0
+      positionMonitorMaxExposureRatio: 0.1
+      positionMonitorMaxLossCents: 50
+      positionMonitorMinHedgeSize: 0.0
+      positionMonitorCooldownMs: 1500
+
+      # ====== Dashboard ======
+      dashboardEnabled: true
+      dashboardUseNativeTUI: false
+      dashboardPositionReconcileIntervalSeconds: 15
+      dashboardRefreshIntervalMs: 100
+
+      # ====== 价格优先选择 ======
+      preferHigherPrice: false
+      minPreferredPriceCents: 50
+
+      # ====== 自动合并 complete sets ======
+      autoMerge:
+        enabled: true
+        mergeTriggerDelaySeconds: 15
+
+      # ====== 市场质量 gate ======
+      enableMarketQualityGate: true
+      marketQualityMinScore: 70
+      marketQualityMaxSpreadCents: 2
+      marketQualityMaxBookAgeMs: 3000
+
+      # ====== 价格稳定性 gate ======
+      priceStabilityCheckEnabled: true
+      maxPriceChangePercent: 2.0
+      priceChangeWindowSeconds: 5
+      maxSpreadVolatilityPercent: 50.0
+      priceStabilityMaxSpreadFilterCents: 15
+
+      # ====== （预留）流动性阈值 ======
+      minLiquidityScore: 2.0
+      minDepthAt1Percent: 10.0
+      minTotalLiquidity: 20.0

@@ -52,8 +52,7 @@ data/market-data.json
 # Build artifacts
 *.a
 
-yml/
-yml/
+
 data/
 
 docs/
