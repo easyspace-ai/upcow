@@ -999,6 +999,29 @@ func (e *OrderEngine) handleProcessTrade(cmd *ProcessTradeCommand) {
 	// 4. 更新仓位
 	e.updatePositionFromTrade(trade, order)
 
+	// 4.5. ✅ 修复：更新余额（仅对买入订单，在非纸交易模式下）
+	if trade.Side == types.SideBuy && !e.dryRun && order != nil {
+		// 计算实际成交成本（包括手续费）
+		actualCost := trade.Price.ToDecimal() * trade.Size
+		if trade.Fee > 0 {
+			actualCost += trade.Fee
+		}
+		
+		// 计算预留的资金（使用订单提交时的价格）
+		// 注意：这里使用本次成交的数量，而不是订单总数量
+		reservedAmount := order.Price.ToDecimal() * trade.Size
+		
+		// 调整余额：实际成本 - 预留资金
+		// 如果实际成本 > 预留资金，需要额外扣除
+		// 如果实际成本 < 预留资金，需要返还差额
+		balanceAdjustment := actualCost - reservedAmount
+		oldBalance := e.balance
+		e.balance -= balanceAdjustment
+		
+		orderEngineLog.Debugf("💰 [余额更新] 交易成交: orderID=%s size=%.2f 预留=%.2f 实际=%.2f(含手续费%.2f) 调整=%.2f 余额=%.2f→%.2f",
+			order.OrderID, trade.Size, reservedAmount, actualCost, trade.Fee, balanceAdjustment, oldBalance, e.balance)
+	}
+
 	// 5. 处理待处理的交易（如果有订单创建前的交易）
 	e.processPendingTrades()
 

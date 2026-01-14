@@ -70,13 +70,13 @@ func (os *OrderSyncService) startOrderStatusSyncImpl(ctx context.Context) {
 func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 	s := os.s
 	metrics.ReconcileRuns.Add(1)
-	
+
 	// 获取当前市场（只同步当前周期的订单）
 	currentMarketSlug := s.GetCurrentMarket()
-	
+
 	// 通过 OrderEngine 获取活跃订单
 	openOrders := s.GetActiveOrders()
-	
+
 	// 过滤：只处理当前周期的订单
 	filteredOrders := make([]*domain.Order, 0, len(openOrders))
 	for _, order := range openOrders {
@@ -92,7 +92,7 @@ func (os *OrderSyncService) syncAllOrderStatusImpl(ctx context.Context) {
 		}
 		filteredOrders = append(filteredOrders, order)
 	}
-	
+
 	orderIDs := make([]string, 0, len(filteredOrders))
 	for _, order := range filteredOrders {
 		orderIDs = append(orderIDs, order.OrderID)
@@ -543,14 +543,14 @@ func (os *OrderSyncService) syncOrderStatusImpl(ctx context.Context, orderID str
 		delta := sizeMatched - localOrder.FilledSize
 		if delta > 0 {
 			trade := &domain.Trade{
-				ID:      fmt.Sprintf("reconcile:%s:%.4f", orderID, sizeMatched),
-				OrderID: orderID,
-				AssetID: localOrder.AssetID,
-				Side:    localOrder.Side,
-				Price:   localOrder.Price,
-				Size:    delta,
+				ID:        fmt.Sprintf("reconcile:%s:%.4f", orderID, sizeMatched),
+				OrderID:   orderID,
+				AssetID:   localOrder.AssetID,
+				Side:      localOrder.Side,
+				Price:     localOrder.Price,
+				Size:      delta,
 				TokenType: localOrder.TokenType,
-				Time:    time.Now(),
+				Time:      time.Now(),
 			}
 			s.orderEngine.SubmitCommand(&ProcessTradeCommand{
 				id:    fmt.Sprintf("reconcile_trade_%d", time.Now().UnixNano()),
@@ -587,7 +587,7 @@ func (os *OrderSyncService) syncOrderStatusImpl(ctx context.Context, orderID str
 		if finalFilledSize <= 0 {
 			// 如果本地Size为0，才使用API返回的originalSize
 			finalFilledSize = originalSize
-		} else if originalSize > finalFilledSize * 1.5 {
+		} else if originalSize > finalFilledSize*1.5 {
 			// 如果API返回的originalSize与本地Size差异过大，使用本地Size
 			log.Warnf("⚠️ [订单状态同步] API返回的originalSize与本地Size差异过大，使用本地Size: orderID=%s localSize=%.2f apiOriginalSize=%.2f",
 				orderID, localOrder.Size, originalSize)
@@ -600,14 +600,14 @@ func (os *OrderSyncService) syncOrderStatusImpl(ctx context.Context, orderID str
 		delta := finalFilledSize - localOrder.FilledSize
 		if delta > 0 {
 			trade := &domain.Trade{
-				ID:      fmt.Sprintf("reconcile:%s:%.4f", orderID, finalFilledSize),
-				OrderID: orderID,
-				AssetID: localOrder.AssetID,
-				Side:    localOrder.Side,
-				Price:   localOrder.Price,
-				Size:    delta,
+				ID:        fmt.Sprintf("reconcile:%s:%.4f", orderID, finalFilledSize),
+				OrderID:   orderID,
+				AssetID:   localOrder.AssetID,
+				Side:      localOrder.Side,
+				Price:     localOrder.Price,
+				Size:      delta,
 				TokenType: localOrder.TokenType,
-				Time:    time.Now(),
+				Time:      time.Now(),
 			}
 			s.orderEngine.SubmitCommand(&ProcessTradeCommand{
 				id:    fmt.Sprintf("reconcile_trade_%d", time.Now().UnixNano()),
@@ -678,7 +678,7 @@ func (os *OrderSyncService) fetchUserPositionsFromAPIImpl(ctx context.Context) e
 		return fmt.Errorf("funder地址未设置，无法拉取持仓")
 	}
 
-	apiURL := fmt.Sprintf("https://data-api.polymarket.com/positions?user=%s&sizeThreshold=0.01&limit=500", s.funderAddress)
+	apiURL := fmt.Sprintf("https://data-api.polymarket.com/positions?user=%s&sizeThreshold=0.01&limit=10", s.funderAddress)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {

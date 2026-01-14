@@ -1,6 +1,0 @@
-[36mINFO[0m[26-01-09 01:31:20] 使用默认配置文件: yml/config.yaml                    
-[36mINFO[0m[26-01-09 01:31:20] 已加载策略配置: strategy=velocitypairlock file=yml/velocitypairlock.yaml 
-[36mINFO[0m[26-01-09 01:31:20] 策略配置文件覆盖 dry_run: false (来源: yml/velocitypairlock.yaml) 
-[36mINFO[0m[26-01-09 01:39:51] 使用默认配置文件: yml/config.yaml                    
-[36mINFO[0m[26-01-09 01:39:51] 已加载策略配置: strategy=velocitypairlock file=yml/velocitypairlock.yaml 
-[36mINFO[0m[26-01-09 01:39:51] 策略配置文件覆盖 dry_run: false (来源: yml/velocitypairlock.yaml) 

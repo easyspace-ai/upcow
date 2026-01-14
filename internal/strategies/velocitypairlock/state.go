@@ -57,6 +57,8 @@ type pairRuntime struct {
 	stopLevel       stopLevel
 	monitorCancel   context.CancelFunc
 	monitorRunning  bool
+	stopLossInProgress bool // 标记是否正在执行锁损流程（防止过早重置）
+	stopLossStartTime time.Time // 锁损流程开始时间（用于超时保护）
 
 	// 订单收敛 sweeper（防止挂单堆积）
 	sweeperCancel  context.CancelFunc

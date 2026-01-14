@@ -38,7 +38,42 @@ func Open(opts OpenOptions) (*Store, error) {
 	}
 	db, err := badger.Open(bopts)
 	if err != nil {
-		return nil, err
+		// 捕获原始错误信息
+		originalErr := err.Error()
+		
+		// 包装错误以提供更多上下文信息
+		errMsg := fmt.Sprintf("badger.Open 失败\n")
+		errMsg += fmt.Sprintf("原始错误: %v\n", err)
+		errMsg += fmt.Sprintf("错误类型: %T\n", err)
+		
+		if len(opts.EncryptionKey) > 0 {
+			errMsg += fmt.Sprintf("\n数据库路径: %s\n", opts.Path)
+			errMsg += fmt.Sprintf("加密模式: 是 (密钥长度: %d 字节)\n", len(opts.EncryptionKey))
+			
+			// 检查是否是 "invalid argument" 错误
+			if strings.Contains(strings.ToLower(originalErr), "invalid argument") {
+				errMsg += "\n⚠️  检测到 'invalid argument' 错误（常见于 macOS 加密数据库）\n"
+				errMsg += "\n可能的原因:\n"
+				errMsg += "  1. 加密密钥不匹配：数据库是用不同的密钥创建的\n"
+				errMsg += "  2. macOS 文件系统限制：某些文件系统不支持 badger 加密\n"
+				errMsg += "  3. 数据库文件损坏或不完整\n"
+				errMsg += "\n建议的解决方案:\n"
+				errMsg += "  1. 确认 GOBET_SECRET_KEY 与创建数据库时使用的密钥一致\n"
+				errMsg += "  2. 检查数据库是否在 APFS 文件系统上（badger 加密需要 APFS）\n"
+				errMsg += "  3. 如果密钥正确但仍失败，可能需要重新初始化数据库\n"
+				errMsg += "  4. 尝试将数据库移动到 APFS 文件系统\n"
+			} else {
+				errMsg += "\n可能的原因:\n"
+				errMsg += "  1. 加密密钥不正确（与创建数据库时使用的密钥不匹配）\n"
+				errMsg += "  2. 数据库文件损坏\n"
+				errMsg += "  3. 数据库文件权限问题\n"
+				errMsg += "  4. 在 macOS 上，加密的 badger 数据库可能需要特定的文件系统支持\n"
+			}
+		} else {
+			errMsg += fmt.Sprintf("\n数据库路径: %s\n", opts.Path)
+			errMsg += "加密模式: 否\n"
+		}
+		return nil, fmt.Errorf(errMsg)
 	}
 	return &Store{db: db}, nil
 }

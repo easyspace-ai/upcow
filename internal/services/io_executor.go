@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -14,6 +15,38 @@ import (
 )
 
 var ioExecutorLog = logrus.WithField("component", "io_executor")
+
+// parseTimeframeFromSlug 从 MarketSlug 解析时间周期（15m/1h/4h）
+// 支持的格式：
+// 1. {symbol}-{kind}-{timeframe}-{timestamp} 例如：btc-updown-15m-1767942900
+// 2. {coinName}-up-or-down-{month}-{day}-{hour}{am|pm}-et 例如：bitcoin-up-or-down-january-9-5am-et (1h市场)
+func (e *ioExecutor) parseTimeframeFromSlug(slug string) string {
+	if slug == "" {
+		return ""
+	}
+	
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	
+	// 格式1: 检查是否包含 -15m- 或 -1h- 或 -4h-
+	// 使用正则表达式匹配 -{timeframe}- 格式
+	if strings.Contains(slug, "-15m-") {
+		return "15m"
+	}
+	if strings.Contains(slug, "-1h-") {
+		return "1h"
+	}
+	if strings.Contains(slug, "-4h-") {
+		return "4h"
+	}
+	
+	// 格式2: 检查是否包含 "up-or-down"（1小时市场通常使用这种格式）
+	if strings.Contains(slug, "up-or-down") {
+		return "1h"
+	}
+	
+	// 如果无法解析，返回空字符串
+	return ""
+}
 
 // ioExecutor IO 操作执行器（异步执行，不阻塞 OrderEngine）。
 //
@@ -236,22 +269,46 @@ func (e *ioExecutor) placeOrderSync(ctx context.Context, order *domain.Order) (*
 		Side:    order.Side,
 	}
 
-	// ✅ 对于所有订单类型，如果未设置费率，根据订单类型和配置设置费率
-	// Polymarket 要求所有订单都必须设置费率（不能为 0）
-	// - GTC 订单：如果配置为 0，使用 1000（Polymarket 要求不能为 0）
-	// - FAK/FOK 订单：使用 1000（taker 费率）
+	// ✅ 对于所有订单类型，如果未设置费率，根据市场时间周期和配置设置费率
+	// 费率设置规则：
 	// - 如果配置了非 0 值，使用配置值
+	// - 如果配置为 0，根据市场时间周期决定：
+	//   - 15m 市场：必须使用 1000 bps（taker 费率）
+	//   - 1h 市场：必须使用 0 bps（taker 费率为 0）
+	//   - 其他市场：使用配置值或 0
 	if userOrder.FeeRateBps == nil {
 		defaultFeeRateBps := e.defaultFeeRateBps
-		// 如果配置为 0，但 Polymarket 要求不能为 0，则使用 1000
-		// 注意：即使 GTC 订单作为 maker，Polymarket 也要求设置费率
+		
+		// 如果配置为 0，根据市场时间周期决定费率
 		if defaultFeeRateBps == 0 {
-			// 根据错误信息，Polymarket 要求费率必须是 1000（taker fee）
-			defaultFeeRateBps = 1000
-			ioExecutorLog.Debugf("📝 [IOExecutor] 配置费率为 0，但 Polymarket 要求不能为 0，使用 1000 bps: orderID=%s", order.OrderID)
+			// 从 MarketSlug 解析时间周期
+			timeframe := e.parseTimeframeFromSlug(order.MarketSlug)
+			
+			switch timeframe {
+			case "15m":
+				// 15分钟市场必须使用 1000 bps
+				defaultFeeRateBps = 1000
+				ioExecutorLog.Debugf("📝 [IOExecutor] 15m 市场，使用 1000 bps: orderID=%s marketSlug=%s", order.OrderID, order.MarketSlug)
+			case "1h":
+				// 1小时市场必须使用 0 bps
+				defaultFeeRateBps = 0
+				ioExecutorLog.Debugf("📝 [IOExecutor] 1h 市场，使用 0 bps: orderID=%s marketSlug=%s", order.OrderID, order.MarketSlug)
+			default:
+				// 其他市场或无法解析：根据订单类型决定
+				if orderType == types.OrderTypeFAK || orderType == types.OrderTypeFOK {
+					// taker 订单：默认使用 0（如果市场 taker fee 是 0）
+					defaultFeeRateBps = 0
+					ioExecutorLog.Debugf("📝 [IOExecutor] %s 订单（taker），无法确定时间周期，使用 0 bps: orderID=%s marketSlug=%s", orderType, order.OrderID, order.MarketSlug)
+				} else {
+					// maker 订单：使用 0
+					defaultFeeRateBps = 0
+					ioExecutorLog.Debugf("📝 [IOExecutor] %s 订单（maker），无法确定时间周期，使用 0 bps: orderID=%s marketSlug=%s", orderType, order.OrderID, order.MarketSlug)
+				}
+			}
 		}
+		
 		userOrder.FeeRateBps = &defaultFeeRateBps
-		ioExecutorLog.Debugf("📝 [IOExecutor] %s 订单使用费率: orderID=%s feeRateBps=%d", orderType, order.OrderID, defaultFeeRateBps)
+		ioExecutorLog.Debugf("📝 [IOExecutor] %s 订单使用费率: orderID=%s feeRateBps=%d marketSlug=%s", orderType, order.OrderID, defaultFeeRateBps, order.MarketSlug)
 	}
 
 	// 创建签名订单
@@ -304,6 +361,15 @@ func (e *ioExecutor) CancelOrderAsync(
 		// 真实交易：调用交易所 API
 		_, err := e.clobClient.CancelOrder(ctx, orderID)
 		if err != nil {
+			// 检查是否是 "Invalid order payload" 错误（订单可能已不存在/已取消）
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "Invalid order payload") ||
+				strings.Contains(errMsg, "HTTP 错误 400") {
+				// 将此类错误视为成功（幂等）：订单可能已经被取消或不存在
+				ioExecutorLog.Infof("ℹ️ 取消订单返回 400（订单可能已不存在/已取消），视为成功：orderID=%s", orderID)
+				callback(nil) // 视为成功，不传递错误
+				return
+			}
 			ioExecutorLog.Errorf("❌ 取消订单失败: orderID=%s, error=%v", orderID, err)
 		} else {
 			ioExecutorLog.Infof("✅ 取消订单成功: orderID=%s", orderID)

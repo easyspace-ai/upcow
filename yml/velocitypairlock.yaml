@@ -20,8 +20,8 @@ exchangeStrategies:
 
       # ===== 速度触发 =====
       windowSeconds: 5
-      minMoveCents: 4
-      minVelocityCentsPerSec: 0.4
+      minMoveCents: 5
+      minVelocityCentsPerSec: 0.5
       # 速度方向策略：positive=只在价格上涨（正速率）时触发；abs=按绝对值触发
       velocityDirectionMode: positive
       # 当 UP/DOWN 同时满足触发条件时，选择正速率更大的那一侧作为主 leg
@@ -31,25 +31,25 @@ exchangeStrategies:
       # ===== 锁利挂单 =====
       # 示例：profitCents=3 时，如果 UP 参考价为 70，则 DOWN 会挂 27（锁 3 个点）
       profitCents: 3
-      orderSize: 6
-      minEntryPriceCents: 15
-      maxEntryPriceCents: 85
+      orderSize: 5.2
+      minEntryPriceCents: 30
+      maxEntryPriceCents: 70
       minOrderUSDC: 1.01
 
       # ===== 下单模式 =====
       # parallel: 并发下单（同时提交 UP+DOWN）
       # sequential: 顺序下单（先主 leg，主成交后再对冲）
-      orderExecutionMode: sequential
+      orderExecutionMode: parallel
       # 主/对冲下单方式：limit | taker
-      primaryOrderStyle: taker
+      primaryOrderStyle: limit
       hedgeOrderStyle: limit
       # taker 模式吃单价格：bestAsk + offset（分）
       takerOffsetCents: 1
       # 顺序模式 gate：只有主 leg 价格在区间内才允许先主后对冲
-      sequentialPrimaryMinCents: 70
-      sequentialPrimaryMaxCents: 88
+      sequentialPrimaryMinCents: 61
+      sequentialPrimaryMaxCents: 80
       # 主 leg 最多等 2 秒成交，超时撤单并回到 idle
-      sequentialPrimaryMaxWaitMs: 5000
+      sequentialPrimaryMaxWaitMs: 8000
 
       # ===== 成交确认（WS -> API 兜底）=====
       wsFillConfirmTimeoutSeconds: 5
@@ -66,9 +66,9 @@ exchangeStrategies:
       # ===== 对冲后实时盯盘锁损 =====
       priceStopEnabled: true
       priceStopCheckIntervalMs: 200
-      priceStopSoftLossCents: -20
-      priceStopHardLossCents: -40
-      maxAcceptableLossCents: 30
+      priceStopSoftLossCents: -15
+      priceStopHardLossCents: -30
+      maxAcceptableLossCents: 45
 
       # ===== 周期保护 =====
       cycleEndProtectionMinutes: 3
@@ -80,7 +80,7 @@ exchangeStrategies:
         minCompleteSets: 5
         maxCompleteSetsPerRun: 0
         mergeRatio: 1.0
-        intervalSeconds: 45
+        intervalSeconds: 15
         onlyIfNoOpenOrders: false
         reconcileAfterMerge: true
         reconcileMaxWaitSeconds: 30
