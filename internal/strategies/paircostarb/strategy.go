@@ -48,6 +48,22 @@ type candidate struct {
 	costEff     float64
 	newPairCost float64
 	newImb      float64
+	newQPair    float64
+	newGPUSD    float64
+}
+
+type Fill struct {
+	OrderID string
+	Time    time.Time
+	Qty     float64
+	Price   float64
+	FeeUSD  float64
+	CostUSD float64 // 含手续费的成本（USD）
+}
+
+type fifoCursor struct {
+	idx  int     // 当前 fill index
+	used float64 // 当前 fill 已被“配对消耗”的 qty
 }
 
 func (s *Strategy) Defaults() error {
@@ -96,6 +112,12 @@ func (s *Strategy) OnCycle(ctx context.Context, oldMarket *domain.Market, newMar
 	s.st.rt.filledSeen = make(map[string]float64)
 	s.st.rt.qu, s.st.rt.qd = 0, 0
 	s.st.rt.cu, s.st.rt.cd = 0, 0
+	s.st.rt.fillsUp = nil
+	s.st.rt.fillsDown = nil
+	s.st.rt.upCur = fifoCursor{}
+	s.st.rt.downCur = fifoCursor{}
+	s.st.rt.qPair = 0
+	s.st.rt.costPair = 0
 	s.st.rt.lastDecisionAt = time.Time{}
 
 	// 周期切换后：可选合并上一周期持仓（异步，不阻塞）
@@ -219,15 +241,30 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 	}
 
 	feeRate := float64(s.Config.FeeRateBps) / 10000.0
-	cost := price * delta * (1.0 + feeRate)
+	feeUSD := price * delta * feeRate
+	cost := price*delta + feeUSD
+
+	f := Fill{
+		OrderID: order.OrderID,
+		Time:    time.Now(),
+		Qty:     delta,
+		Price:   price,
+		FeeUSD:  feeUSD,
+		CostUSD: cost,
+	}
 
 	if order.TokenType == domain.TokenTypeUp {
 		s.st.rt.qu += delta
 		s.st.rt.cu += cost
+		s.st.rt.fillsUp = append(s.st.rt.fillsUp, f)
 	} else {
 		s.st.rt.qd += delta
 		s.st.rt.cd += cost
+		s.st.rt.fillsDown = append(s.st.rt.fillsDown, f)
 	}
+
+	// FIFO 配对：一旦两边都有“未配对库存”，立刻按时间顺序配对，得到严格的 qPair/costPair
+	s.pairAvailableLocked()
 
 	// 若该订单是当前 in-flight，且已进入终态，则释放 in-flight gate
 	if s.st.rt.inFlightOrderID != "" && order.OrderID == s.st.rt.inFlightOrderID {
@@ -256,6 +293,16 @@ type runtimeState struct {
 	qd float64
 	cu float64
 	cd float64
+
+	// FIFO 成交队列（用于精确计算“已配对部分”的成本）
+	fillsUp   []Fill
+	fillsDown []Fill
+	upCur     fifoCursor
+	downCur   fifoCursor
+
+	// 已配对份额与成本（严格 FIFO，costPair 含手续费）
+	qPair    float64
+	costPair float64
 
 	// 去重/增量统计
 	filledSeen map[string]float64 // orderID -> lastFilledSize accounted
@@ -286,6 +333,12 @@ func (s *Strategy) tickOnce() {
 	tradesThisCycle := s.st.rt.tradesThisCycle
 	qu, qd := s.st.rt.qu, s.st.rt.qd
 	cu, cd := s.st.rt.cu, s.st.rt.cd
+	qPair := s.st.rt.qPair
+	costPair := s.st.rt.costPair
+	upCur := s.st.rt.upCur
+	downCur := s.st.rt.downCur
+	fillsUp := s.st.rt.fillsUp
+	fillsDown := s.st.rt.fillsDown
 	s.st.mu.Unlock()
 
 	if market == nil || !market.IsValid() {
@@ -319,7 +372,7 @@ func (s *Strategy) tickOnce() {
 	}
 
 	// 止盈停止条件（用当前均价做保守估计）
-	if ok, profit := s.shouldStop(qu, qd, cu, cd); ok {
+	if ok, profit := s.shouldStopFIFO(qPair, costPair); ok {
 		s.st.mu.Lock()
 		s.st.rt.pausedUntil = time.Now().Add(time.Duration(s.Config.CooldownAfterStopSeconds) * time.Second)
 		mkt := s.st.rt.market
@@ -328,8 +381,9 @@ func (s *Strategy) tickOnce() {
 		ctl := &s.st.rt.autoMergeCtl
 		s.st.mu.Unlock()
 
-		s.log.Infof("🛑 达到保证利润阈值，停止本周期继续买入：profit=%.4fUSD qu=%.2f qd=%.2f pairCost=%.4f",
-			profit, qu, qd, s.currentPairCost(qu, qd, cu, cd))
+		pairCost := s.pairCostFIFO(qPair, costPair)
+		s.log.Infof("🛑 达到保证利润阈值，停止本周期继续买入：profit=%.4fUSD qPair=%.2f pairCost=%.4f qu=%.2f qd=%.2f",
+			profit, qPair, pairCost, qu, qd)
 
 		// 可选：自动合并 complete sets 释放资金
 		if cfg.Enabled && ts != nil && mkt != nil {
@@ -357,12 +411,32 @@ func (s *Strategy) tickOnce() {
 
 	var best *candidate
 	if okUp {
-		if c, ok := s.simulateCandidate(domain.TokenTypeUp, market.YesAssetID, vwapUpEff, costUpEff, dq, qu, qd, cu, cd); ok {
+		if c, ok := s.simulateCandidateFIFO(
+			domain.TokenTypeUp,
+			market.YesAssetID,
+			vwapUpEff,
+			costUpEff,
+			dq,
+			qu, qd, cu, cd,
+			qPair, costPair,
+			fillsUp, fillsDown,
+			upCur, downCur,
+		); ok {
 			best = &c
 		}
 	}
 	if okDown {
-		if c, ok := s.simulateCandidate(domain.TokenTypeDown, market.NoAssetID, vwapDownEff, costDownEff, dq, qu, qd, cu, cd); ok {
+		if c, ok := s.simulateCandidateFIFO(
+			domain.TokenTypeDown,
+			market.NoAssetID,
+			vwapDownEff,
+			costDownEff,
+			dq,
+			qu, qd, cu, cd,
+			qPair, costPair,
+			fillsUp, fillsDown,
+			upCur, downCur,
+		); ok {
 			if best == nil || c.newPairCost < best.newPairCost {
 				best = &c
 			}
@@ -399,8 +473,8 @@ func (s *Strategy) tickOnce() {
 	}
 
 	if s.Config.DecisionOnly {
-		s.log.Infof("🧪 decisionOnly：将下单 side=%s dq=%.2f vwapEff=%.4f pairCost'=%.4f imb'=%.3f limit=%.4f type=%s",
-			best.side, dq, best.vwapEff, best.newPairCost, best.newImb, limitPrice, orderType)
+		s.log.Infof("🧪 decisionOnly：将下单 side=%s dq=%.2f vwapEff=%.4f pairCost'=%.4f imb'=%.3f qPair'=%.2f gp'=%.4f limit=%.4f type=%s",
+			best.side, dq, best.vwapEff, best.newPairCost, best.newImb, best.newQPair, best.newGPUSD, limitPrice, orderType)
 		s.st.mu.Lock()
 		s.st.rt.tradesThisCycle++
 		s.st.rt.pausedUntil = time.Now().Add(250 * time.Millisecond)
@@ -486,13 +560,16 @@ func estimateBuyVWAP(asks []types.OrderSummary, qty float64) (vwap float64, ok b
 	return cost / qty, true
 }
 
-func (s *Strategy) simulateCandidate(
+func (s *Strategy) simulateCandidateFIFO(
 	side domain.TokenType,
 	assetID string,
 	vwapEff float64,
 	costEff float64,
 	dq float64,
 	qu, qd, cu, cd float64,
+	qPair, costPair float64,
+	fillsUp, fillsDown []Fill,
+	upCur, downCur fifoCursor,
 ) (candidate, bool) {
 	if dq <= 0 || vwapEff <= 0 || costEff <= 0 {
 		return candidate{}, false
@@ -507,16 +584,12 @@ func (s *Strategy) simulateCandidate(
 		newCd += costEff
 	}
 
-	// 单边先手：只有当另一边为 0，且当前 vwapEff 足够便宜，且不超过 MaxUnpairedShares 才允许
+	// 单边先手：另一边为 0 时，只允许“非常便宜”的先手，并限制单边未配对份额
 	if (side == domain.TokenTypeUp && qd <= 0) || (side == domain.TokenTypeDown && qu <= 0) {
 		if vwapEff > s.Config.FirstLegMaxPrice {
 			return candidate{}, false
 		}
-		unpaired := newQu
-		if side == domain.TokenTypeDown {
-			unpaired = newQd
-		}
-		if unpaired > s.Config.MaxUnpairedShares {
+		if math.Abs(newQu-newQd) > s.Config.MaxUnpairedShares {
 			return candidate{}, false
 		}
 		// 先手阶段无法计算 pair_cost，给一个“伪指标”用于比较（越便宜越优先）
@@ -527,20 +600,59 @@ func (s *Strategy) simulateCandidate(
 			costEff:     costEff,
 			newPairCost: vwapEff, // 仅用于比较
 			newImb:      math.Inf(1),
+			newQPair:    qPair,
+			newGPUSD:    s.guaranteedProfitFIFO(qPair, costPair),
 		}, true
 	}
 
-	// 两边都有仓位：计算 pair_cost 与 imbalance
+	// 两边都有仓位：基于 FIFO “已配对库存”计算 pair_cost；并用总库存计算 imbalance/unpaired
 	if newQu <= 0 || newQd <= 0 {
 		return candidate{}, false
 	}
-	avgUp := newCu / newQu
-	avgDown := newCd / newQd
-	pairCost := avgUp + avgDown + s.Config.PairCostBuffer
+
+	// 估算新增成交对 qPair/costPair 的影响：新成交会立即与对侧未配对库存按 FIFO 配对
+	newQPair, newCostPair := qPair, costPair
+	if side == domain.TokenTypeUp {
+		downUnpaired := qd - qPair
+		if downUnpaired > 0 {
+			pairDelta := math.Min(dq, downUnpaired)
+			if pairDelta > 0 {
+				// 新 fill 的配对成本（按均匀单价分摊）
+				newFillCostPer := costEff / dq
+				newCostPair += newFillCostPer * pairDelta
+				// 对侧被配对消耗的成本（从 down FIFO 游标开始）
+				consumedCost, _ := simulateConsumeCost(fillsDown, downCur, pairDelta)
+				newCostPair += consumedCost
+				newQPair += pairDelta
+			}
+		}
+	} else {
+		upUnpaired := qu - qPair
+		if upUnpaired > 0 {
+			pairDelta := math.Min(dq, upUnpaired)
+			if pairDelta > 0 {
+				newFillCostPer := costEff / dq
+				newCostPair += newFillCostPer * pairDelta
+				consumedCost, _ := simulateConsumeCost(fillsUp, upCur, pairDelta)
+				newCostPair += consumedCost
+				newQPair += pairDelta
+			}
+		}
+	}
+
+	pairCost := s.pairCostFIFO(newQPair, newCostPair)
+	if !isFinite(pairCost) {
+		// 若新增成交没有形成任何配对，则 pairCost 不可用：拒绝（避免盲目加单边库存）
+		return candidate{}, false
+	}
 
 	imb := math.Max(newQu, newQd) / math.Min(newQu, newQd)
 	if imb < 1.0 {
 		imb = 1.0
+	}
+	// 限制单边未配对库存（绝对值）
+	if math.Abs(newQu-newQd) > s.Config.MaxUnpairedShares {
+		return candidate{}, false
 	}
 	if pairCost > s.Config.MaxPairCost {
 		return candidate{}, false
@@ -555,30 +667,31 @@ func (s *Strategy) simulateCandidate(
 		costEff:     costEff,
 		newPairCost: pairCost,
 		newImb:      imb,
+		newQPair:    newQPair,
+		newGPUSD:    s.guaranteedProfitFIFO(newQPair, newCostPair),
 	}, true
 }
 
-func (s *Strategy) currentPairCost(qu, qd, cu, cd float64) float64 {
-	if qu <= 0 || qd <= 0 {
+func (s *Strategy) pairCostFIFO(qPair, costPair float64) float64 {
+	if qPair <= 0 || costPair <= 0 {
 		return math.Inf(1)
 	}
-	return (cu/qu + cd/qd) + s.Config.PairCostBuffer
+	return (costPair / qPair) + s.Config.PairCostBuffer
 }
 
-func (s *Strategy) shouldStop(qu, qd, cu, cd float64) (ok bool, profitUSD float64) {
-	if qu <= 0 || qd <= 0 {
+func (s *Strategy) guaranteedProfitFIFO(qPair, costPair float64) float64 {
+	if qPair <= 0 || costPair <= 0 {
+		return 0
+	}
+	// profit = QPair*1 - (CostPair + buffer*QPair)
+	return qPair*1.0 - (costPair + s.Config.PairCostBuffer*qPair)
+}
+
+func (s *Strategy) shouldStopFIFO(qPair, costPair float64) (ok bool, profitUSD float64) {
+	if qPair <= 0 || costPair <= 0 {
 		return false, 0
 	}
-	qPair := math.Min(qu, qd)
-	if qPair <= 0 {
-		return false, 0
-	}
-	avgUp := cu / qu
-	avgDown := cd / qd
-	costPerPair := avgUp + avgDown
-	// 保守：不把 PairCostBuffer 当作真实成本，但把它当作“利润安全垫子”扣掉
-	profitPerPair := 1.0 - costPerPair - s.Config.PairCostBuffer
-	profitUSD = qPair * profitPerPair
+	profitUSD = s.guaranteedProfitFIFO(qPair, costPair)
 	return profitUSD >= s.Config.MinProfitUSD, profitUSD
 }
 
@@ -624,3 +737,116 @@ var _ bbgo.StrategyDefaulter = (*Strategy)(nil)
 var _ bbgo.StrategyValidator = (*Strategy)(nil)
 var _ bbgo.CycleAwareStrategy = (*Strategy)(nil)
 var _ ports.OrderUpdateHandler = (*Strategy)(nil)
+
+func (s *Strategy) pairAvailableLocked() {
+	// 只在持锁状态下调用（来自 OnOrderUpdate/OnCycle）
+	for {
+		upAvail, upCostPer, okUp := fifoAvailCostPer(s.st.rt.fillsUp, s.st.rt.upCur)
+		downAvail, downCostPer, okDown := fifoAvailCostPer(s.st.rt.fillsDown, s.st.rt.downCur)
+		if !okUp || !okDown {
+			break
+		}
+		take := math.Min(upAvail, downAvail)
+		if take <= 1e-9 {
+			break
+		}
+		// 增加已配对份额与成本
+		s.st.rt.qPair += take
+		s.st.rt.costPair += take*upCostPer + take*downCostPer
+
+		// 推进游标
+		s.st.rt.upCur = fifoConsumeQty(s.st.rt.fillsUp, s.st.rt.upCur, take)
+		s.st.rt.downCur = fifoConsumeQty(s.st.rt.fillsDown, s.st.rt.downCur, take)
+
+		// 轻量压缩，防止 fills 无限增长
+		s.st.rt.fillsUp, s.st.rt.upCur = fifoCompact(s.st.rt.fillsUp, s.st.rt.upCur)
+		s.st.rt.fillsDown, s.st.rt.downCur = fifoCompact(s.st.rt.fillsDown, s.st.rt.downCur)
+	}
+}
+
+func fifoAvailCostPer(fills []Fill, cur fifoCursor) (avail float64, costPerShare float64, ok bool) {
+	if cur.idx < 0 || cur.idx >= len(fills) {
+		return 0, 0, false
+	}
+	f := fills[cur.idx]
+	if f.Qty <= 0 || f.CostUSD <= 0 {
+		return 0, 0, false
+	}
+	rem := f.Qty - cur.used
+	if rem <= 1e-9 {
+		return 0, 0, false
+	}
+	return rem, f.CostUSD / f.Qty, true
+}
+
+func fifoConsumeQty(fills []Fill, cur fifoCursor, qty float64) fifoCursor {
+	if qty <= 0 {
+		return cur
+	}
+	for qty > 1e-9 && cur.idx < len(fills) {
+		f := fills[cur.idx]
+		rem := f.Qty - cur.used
+		if rem <= 1e-9 {
+			cur.idx++
+			cur.used = 0
+			continue
+		}
+		take := math.Min(rem, qty)
+		cur.used += take
+		qty -= take
+		if f.Qty-cur.used <= 1e-9 {
+			cur.idx++
+			cur.used = 0
+		}
+	}
+	return cur
+}
+
+func fifoCompact(fills []Fill, cur fifoCursor) ([]Fill, fifoCursor) {
+	// 当头部已消耗很多时做一次切片压缩
+	if cur.idx <= 0 {
+		return fills, cur
+	}
+	if cur.idx < 256 && cur.idx < len(fills)/2 {
+		return fills, cur
+	}
+	// copy tail
+	newFills := append([]Fill(nil), fills[cur.idx:]...)
+	return newFills, fifoCursor{idx: 0, used: cur.used}
+}
+
+func simulateConsumeCost(fills []Fill, cur fifoCursor, qty float64) (cost float64, next fifoCursor) {
+	next = cur
+	if qty <= 0 {
+		return 0, next
+	}
+	for qty > 1e-9 && next.idx < len(fills) {
+		f := fills[next.idx]
+		if f.Qty <= 0 || f.CostUSD <= 0 {
+			// 跳过异常 fill
+			next.idx++
+			next.used = 0
+			continue
+		}
+		rem := f.Qty - next.used
+		if rem <= 1e-9 {
+			next.idx++
+			next.used = 0
+			continue
+		}
+		take := math.Min(rem, qty)
+		costPer := f.CostUSD / f.Qty
+		cost += take * costPer
+		next.used += take
+		qty -= take
+		if f.Qty-next.used <= 1e-9 {
+			next.idx++
+			next.used = 0
+		}
+	}
+	return cost, next
+}
+
+func isFinite(x float64) bool {
+	return !math.IsInf(x, 0) && !math.IsNaN(x)
+}
