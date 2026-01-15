@@ -2,6 +2,7 @@ package paircostarb
 
 import (
 	"context"
+	"math"
 	"time"
 )
 
@@ -26,8 +27,56 @@ func PlanNextAction(ctx context.Context, cfg Config, pc PlanContext, est BuyCost
 		return Plan{Kind: PlanStop, Reason: "min_profit_reached", PauseFor: time.Duration(cfg.CooldownAfterStopSeconds) * time.Second}
 	}
 
-	if cfg.ExecutionMode == "paired" {
-		return planPaired(ctx, cfg, pc, est)
+	// quality gate: if fill ratio is very low, skip (avoid trading in liquidity cliff)
+	if cfg.EnableAdaptiveBuffers && cfg.MinFillRatio > 0 && pc.FillRatioEWMA > 0 && pc.FillRatioEWMA < cfg.MinFillRatio {
+		return Plan{Kind: PlanStop, Reason: "low_fill_ratio", PauseFor: time.Duration(cfg.QualityCooldownSeconds) * time.Second}
 	}
-	return planSingle(ctx, cfg, pc, est)
+
+	// dynamic chunk scaling
+	dq := cfg.TradeChunkShares
+	if cfg.EnableDynamicChunk && dq > 0 {
+		scale := 1.0
+		if pc.FillRatioEWMA > 0 {
+			// 成交率越低，越缩小 chunk
+			scale = math.Max(cfg.DynamicChunkMinMultiplier, math.Min(1.0, pc.FillRatioEWMA))
+		}
+		if cfg.EnableAdaptiveBuffers && cfg.MaxAdaptiveSlippagePad > 0 && pc.SlipAbsMax > 0 {
+			// 滑点误差越大，越缩小 chunk（线性衰减）
+			slipScale := 1.0 - pc.SlipAbsMax/cfg.MaxAdaptiveSlippagePad
+			if slipScale < cfg.DynamicChunkMinMultiplier {
+				slipScale = cfg.DynamicChunkMinMultiplier
+			}
+			if slipScale > 1.0 {
+				slipScale = 1.0
+			}
+			if slipScale < scale {
+				scale = slipScale
+			}
+		}
+		dq = dq * scale
+		if cfg.MinTradeChunkShares > 0 && dq < cfg.MinTradeChunkShares {
+			dq = cfg.MinTradeChunkShares
+		}
+		if cfg.MaxTradeChunkShares > 0 && dq > cfg.MaxTradeChunkShares {
+			dq = cfg.MaxTradeChunkShares
+		}
+	}
+
+	// pass effective chunk to sub-planners by overriding cfg copy
+	cfg2 := cfg
+	cfg2.TradeChunkShares = dq
+
+	mode := cfg2.ExecutionMode
+	if mode == "auto" {
+		if pc.SigActive {
+			mode = "paired"
+		} else {
+			mode = "single"
+		}
+	}
+
+	if mode == "paired" {
+		return planPaired(ctx, cfg2, pc, est)
+	}
+	return planSingle(ctx, cfg2, pc, est)
 }

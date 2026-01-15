@@ -31,6 +31,10 @@ type PlanContext struct {
 
 	YesAsk float64
 	NoAsk  float64
+
+	// Execution quality snapshot (EWMA)
+	FillRatioEWMA float64
+	SlipAbsMax    float64
 }
 
 type Plan struct {

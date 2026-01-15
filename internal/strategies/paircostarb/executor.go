@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/betbot/gobet/internal/domain"
+	"github.com/betbot/gobet/internal/execution"
 )
 
 // executePlan 只做“计划执行 + 状态更新”，不参与决策计算。
@@ -58,12 +59,54 @@ func (s *Strategy) executePlan(ctx context.Context, plan Plan) {
 			return
 		}
 
-		submitCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
-		defer cancel()
-
-		created, err := s.orderExecutor.SubmitOrders(submitCtx, plan.Orders...)
-		if err != nil || len(created) == 0 {
-			return
+		var created []*domain.Order
+		// 专业化：paired 多腿优先走 ExecutionEngine 并发提交，减少腿间时差
+		if len(plan.Orders) >= 2 && s.TradingService != nil && s.TradingService.ExecutionEngine() != nil {
+			legs := make([]execution.LegIntent, 0, len(plan.Orders))
+			for _, o := range plan.Orders {
+				legs = append(legs, execution.LegIntent{
+					Name:              string(o.TokenType),
+					AssetID:           o.AssetID,
+					TokenType:         o.TokenType,
+					Side:              o.Side,
+					Price:             o.Price,
+					Size:              o.Size,
+					OrderType:         o.OrderType,
+					IsEntry:           o.IsEntryOrder,
+					BypassRiskOff:     o.BypassRiskOff,
+					DisableSizeAdjust: o.DisableSizeAdjust,
+				})
+			}
+			req := execution.MultiLegRequest{
+				Name:       "paircostarb",
+				MarketSlug: plan.Orders[0].MarketSlug,
+				Legs:       legs,
+			}
+			submitCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+			ticket, err := s.TradingService.ExecutionEngine().Submit(submitCtx, req)
+			if err != nil {
+				cancel()
+				return
+			}
+			select {
+			case res := <-ticket.ResultC:
+				cancel()
+				if res.Err != nil || len(res.Created) == 0 {
+					return
+				}
+				created = res.Created
+			case <-submitCtx.Done():
+				cancel()
+				return
+			}
+		} else {
+			submitCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+			defer cancel()
+			created2, err := s.orderExecutor.SubmitOrders(submitCtx, plan.Orders...)
+			if err != nil || len(created2) == 0 {
+				return
+			}
+			created = created2
 		}
 
 		s.st.mu.Lock()

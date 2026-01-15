@@ -275,6 +275,9 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 		if _, ok := s.st.rt.inFlightIDs[order.OrderID]; ok {
 			if order.IsFinalStatus() || order.Status == domain.OrderStatusPartial {
 				delete(s.st.rt.inFlightIDs, order.OrderID)
+				if s.st.rt.predictedByOrder != nil {
+					delete(s.st.rt.predictedByOrder, order.OrderID)
+				}
 			}
 		}
 	}
@@ -500,6 +503,10 @@ func (s *Strategy) tickOnce() {
 		SigActive:       sigActive,
 		YesAsk:          yesAsk.ToDecimal(),
 		NoAsk:           noAsk.ToDecimal(),
+		SlipAbsMax:      qs.MaxSlipAbs(),
+	}
+	if v, ok := qs.FillRatio.Value(); ok {
+		pc.FillRatioEWMA = v
 	}
 
 	feeRate := float64(s.Config.FeeRateBps) / 10000.0

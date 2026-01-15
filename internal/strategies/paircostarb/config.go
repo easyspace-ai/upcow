@@ -35,10 +35,18 @@ type Config struct {
 	// ExecutionMode:
 	// - "single": 每次只下单一边（沿用原 pair-cost 累计逻辑）
 	// - "paired": 每次同时下 UP + DOWN（信号为 UP 时“上涨买入UP，同时对冲DOWN”，信号为 DOWN 时反之）
+	// - "auto":  信号 ACTIVE 时走 paired，否则走 single（更像专业交易系统：信号只做激活/节奏）
 	ExecutionMode string `json:"executionMode" yaml:"executionMode"`
 
 	// TradeChunkShares 每次尝试买入的份额（shares）。
 	TradeChunkShares float64 `json:"tradeChunkShares" yaml:"tradeChunkShares"`
+
+	// ===== 动态下单 chunk（更专业：按执行质量缩放）=====
+	EnableDynamicChunk  bool    `json:"enableDynamicChunk" yaml:"enableDynamicChunk"`
+	MinTradeChunkShares float64 `json:"minTradeChunkShares" yaml:"minTradeChunkShares"`
+	MaxTradeChunkShares float64 `json:"maxTradeChunkShares" yaml:"maxTradeChunkShares"`
+	// DynamicChunkMinMultiplier: 没有质量数据时的最小缩放（避免直接缩到 0）
+	DynamicChunkMinMultiplier float64 `json:"dynamicChunkMinMultiplier" yaml:"dynamicChunkMinMultiplier"`
 
 	// MaxPairCost 配对成本上限（美元）。例如 0.98。
 	MaxPairCost float64 `json:"maxPairCost" yaml:"maxPairCost"`
@@ -124,13 +132,22 @@ func (c *Config) Defaults() {
 	}
 	if c.ExecutionMode == "" {
 		if c.EnableBinanceSignal {
-			c.ExecutionMode = "paired"
+			c.ExecutionMode = "auto"
 		} else {
 			c.ExecutionMode = "single"
 		}
 	}
 	if c.TradeChunkShares <= 0 {
 		c.TradeChunkShares = 5
+	}
+	if c.MinTradeChunkShares <= 0 {
+		c.MinTradeChunkShares = 1
+	}
+	if c.MaxTradeChunkShares <= 0 {
+		c.MaxTradeChunkShares = c.TradeChunkShares
+	}
+	if c.DynamicChunkMinMultiplier <= 0 {
+		c.DynamicChunkMinMultiplier = 0.3
 	}
 	if c.MaxPairCost <= 0 {
 		c.MaxPairCost = 0.98
@@ -215,12 +232,21 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("binanceActiveSeconds must be >= 0")
 	}
 	switch c.ExecutionMode {
-	case "", "single", "paired":
+	case "", "single", "paired", "auto":
 	default:
-		return fmt.Errorf("executionMode must be one of: single|paired")
+		return fmt.Errorf("executionMode must be one of: single|paired|auto")
 	}
 	if c.TradeChunkShares <= 0 {
 		return fmt.Errorf("tradeChunkShares must be > 0")
+	}
+	if c.MinTradeChunkShares < 0 {
+		return fmt.Errorf("minTradeChunkShares must be >= 0")
+	}
+	if c.MaxTradeChunkShares < 0 {
+		return fmt.Errorf("maxTradeChunkShares must be >= 0")
+	}
+	if c.DynamicChunkMinMultiplier < 0 || c.DynamicChunkMinMultiplier > 1.0 {
+		return fmt.Errorf("dynamicChunkMinMultiplier must be within [0,1]")
 	}
 	if c.MaxPairCost <= 0 || c.MaxPairCost >= 1.0 {
 		return fmt.Errorf("maxPairCost must be within (0,1)")
