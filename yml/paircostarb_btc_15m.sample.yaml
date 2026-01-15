@@ -1,0 +1,55 @@
+# pair-cost 套利（BTC 15m Up/Down）
+#
+# 思路：
+# - 通过 Polymarket CLOB 盘口深度估算买入 VWAP（含 slippagePad + feeRateBps）
+# - 维护运行期累计均价 avgUp/avgDown，计算 pair_cost = avgUp + avgDown + pairCostBuffer
+# - 满足 pair_cost 与不平衡约束后分批买入；达到 minProfitUSD 后停止并可选 autoMerge
+
+market:
+  symbol: btc
+  timeframe: 15m
+  kind: updown
+
+dry_run: true
+
+exchangeStrategies:
+  - on: polymarket
+    paircostarb:
+      enabled: true
+      decisionOnly: false
+
+      pollIntervalMs: 500
+      tradeChunkShares: 5
+
+      # 关键阈值
+      maxPairCost: 0.98
+      pairCostBuffer: 0.002
+      maxImbalance: 1.15
+      minProfitUSD: 0.10
+
+      # 成本估算（不确定费率时可先设 0，并把 buffer 留大）
+      feeRateBps: 0
+      slippagePad: 0.001
+
+      # 单边先手（另一边还没买到时）
+      firstLegMaxPrice: 0.10
+      maxUnpairedShares: 20
+
+      # 周期尾部保护
+      stopTimeBufferSeconds: 20
+      cooldownAfterStopSeconds: 30
+
+      # 下单方式：taker(FAK) 更贴合 VWAP 估算
+      orderType: taker
+      limitPricePadCents: 1
+
+      # 可选：成交后自动合并 complete sets 释放资金
+      autoMerge:
+        enabled: false
+        minCompleteSets: 5
+        intervalSeconds: 30
+        reconcileAfterMerge: true
+        reconcileMaxWaitSeconds: 30
+        mergeTriggerDelaySeconds: 30
+        metadata: "paircostarb:autoMerge"
+
