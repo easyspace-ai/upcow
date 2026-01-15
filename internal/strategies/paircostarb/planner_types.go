@@ -41,6 +41,9 @@ type Plan struct {
 	Orders []domain.Order
 	Sim    Snapshot // simulated snapshot after fills
 
+	// Execution quality: predicted prices for legs (vwapEff) used for slippage monitoring
+	Predicted map[domain.TokenType]float64
+
 	// For execution bookkeeping
 	PauseFor time.Duration
 }

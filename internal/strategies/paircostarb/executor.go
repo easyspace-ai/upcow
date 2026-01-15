@@ -70,11 +70,19 @@ func (s *Strategy) executePlan(ctx context.Context, plan Plan) {
 		if s.st.rt.inFlightIDs == nil {
 			s.st.rt.inFlightIDs = make(map[string]domain.TokenType, 4)
 		}
+		if s.st.rt.predictedByOrder == nil {
+			s.st.rt.predictedByOrder = make(map[string]float64, 64)
+		}
 		for _, o := range created {
 			if o == nil || o.OrderID == "" {
 				continue
 			}
 			s.st.rt.inFlightIDs[o.OrderID] = o.TokenType
+			if plan.Predicted != nil {
+				if p, ok := plan.Predicted[o.TokenType]; ok && p > 0 {
+					s.st.rt.predictedByOrder[o.OrderID] = p
+				}
+			}
 		}
 		s.st.rt.tradesThisCycle += len(created)
 		if plan.PauseFor > 0 {

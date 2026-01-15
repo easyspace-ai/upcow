@@ -279,6 +279,21 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 		}
 	}
 
+	// 执行质量：成交率（对 FAK/流动性差时很关键）
+	if order.IsFinalStatus() && order.Size > 0 {
+		ratio := order.FilledSize / order.Size
+		s.st.rt.quality.InitDefaults()
+		s.st.rt.quality.UpdateFillRatio(ratio)
+		// 若成交率过低，进入短暂冷却（更像交易员：遇到流动性突然变差先停）
+		if s.Config.EnableAdaptiveBuffers && s.Config.MinFillRatio > 0 {
+			if v, ok := s.st.rt.quality.FillRatio.Value(); ok && v > 0 && v < s.Config.MinFillRatio {
+				if s.Config.QualityCooldownSeconds > 0 {
+					s.st.rt.pausedUntil = time.Now().Add(time.Duration(s.Config.QualityCooldownSeconds) * time.Second)
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -320,6 +335,9 @@ func (s *Strategy) HandleTrade(ctx context.Context, trade *domain.Trade) {
 	if s.st.rt.tradeFilledByOrder == nil {
 		s.st.rt.tradeFilledByOrder = make(map[string]float64)
 	}
+	if s.st.rt.predictedByOrder == nil {
+		s.st.rt.predictedByOrder = make(map[string]float64)
+	}
 
 	price := trade.Price.ToDecimal()
 	qty := trade.Size
@@ -357,6 +375,15 @@ func (s *Strategy) HandleTrade(ctx context.Context, trade *domain.Trade) {
 	}
 	if trade.OrderID != "" {
 		s.st.rt.tradeFilledByOrder[trade.OrderID] += qty
+		// 执行质量：预测 vs 实际
+		if pred, ok := s.st.rt.predictedByOrder[trade.OrderID]; ok && pred > 0 {
+			absErr := price - pred
+			if absErr < 0 {
+				absErr = -absErr
+			}
+			s.st.rt.quality.InitDefaults()
+			s.st.rt.quality.UpdateSlipAbs(trade.TokenType, absErr)
+		}
 	}
 
 	pairAvailableRuntimeLocked(&s.st.rt)
@@ -394,6 +421,9 @@ type runtimeState struct {
 	// trade 级别累计：用于 order update 补缺口，避免 double count
 	tradeFilledByOrder     map[string]float64 // orderID -> sum(trade.Size)
 	syntheticFilledByOrder map[string]float64 // orderID -> sum(synthetic fills from order updates)
+	// 预测价格：用于执行质量监控（predicted vwapEff）
+	predictedByOrder map[string]float64 // orderID -> predicted vwapEff
+	quality          QualityState
 
 	// 控制策略节奏
 	pausedUntil     time.Time
@@ -423,6 +453,7 @@ func (s *Strategy) tickOnce() {
 	pausedUntil := s.st.rt.pausedUntil
 	inFlight := len(s.st.rt.inFlightIDs) > 0
 	tradesThisCycle := s.st.rt.tradesThisCycle
+	qs := s.st.rt.quality
 	baseSnap := Snapshot{
 		Qu:        s.st.rt.qu,
 		Qd:        s.st.rt.qd,
@@ -472,8 +503,19 @@ func (s *Strategy) tickOnce() {
 	}
 
 	feeRate := float64(s.Config.FeeRateBps) / 10000.0
+	qs.InitDefaults()
+	slipPadEff := s.Config.SlippagePad
+	if s.Config.EnableAdaptiveBuffers {
+		dyn := s.Config.SlippagePad + s.Config.AdaptiveSlipMultiplier*qs.MaxSlipAbs()
+		if dyn > slipPadEff {
+			slipPadEff = dyn
+		}
+		if s.Config.MaxAdaptiveSlippagePad > 0 && slipPadEff > s.Config.MaxAdaptiveSlippagePad {
+			slipPadEff = s.Config.MaxAdaptiveSlippagePad
+		}
+	}
 	est := func(ctx context.Context, assetID string, qty float64) (float64, float64, bool) {
-		return estimateBuyCostEff(ctx, s.TradingService.GetOrderBook, assetID, qty, feeRate, s.Config.SlippagePad)
+		return estimateBuyCostEff(ctx, s.TradingService.GetOrderBook, assetID, qty, feeRate, slipPadEff)
 	}
 
 	plan := PlanNextAction(context.Background(), s.Config, pc, est)

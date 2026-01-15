@@ -83,10 +83,13 @@ func planSingle(ctx context.Context, cfg Config, pc PlanContext, est BuyCostEsti
 	ot := orderTypeFromConfig(cfg)
 	order := makeBuyOrder(pc.Market, best.assetID, best.side, dq, best.limit, ot, false)
 	return Plan{
-		Kind:     PlanOrders,
-		Reason:   "single",
-		Orders:   []domain.Order{order},
-		Sim:      best.sim,
+		Kind:   PlanOrders,
+		Reason: "single",
+		Orders: []domain.Order{order},
+		Sim:    best.sim,
+		Predicted: map[domain.TokenType]float64{
+			best.side: best.vwapEff,
+		},
 		PauseFor: 150 * time.Millisecond,
 	}
 }

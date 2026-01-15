@@ -52,6 +52,17 @@ type Config struct {
 	// SlippagePad 深度估算之外的额外滑点垫子（美元），用于保守估计 VWAP。
 	SlippagePad float64 `json:"slippagePad" yaml:"slippagePad"`
 
+	// ===== 执行质量自适应（更专业：动态 buffer / 风控降频）=====
+	EnableAdaptiveBuffers bool `json:"enableAdaptiveBuffers" yaml:"enableAdaptiveBuffers"`
+	// AdaptiveSlipMultiplier: slippagePad_eff = slippagePad + multiplier*EWMA(abs(actual-predicted))
+	AdaptiveSlipMultiplier float64 `json:"adaptiveSlipMultiplier" yaml:"adaptiveSlipMultiplier"`
+	// MaxAdaptiveSlippagePad: slippagePad_eff 的上限（美元）
+	MaxAdaptiveSlippagePad float64 `json:"maxAdaptiveSlippagePad" yaml:"maxAdaptiveSlippagePad"`
+	// MinFillRatio: 最近 EWMA 成交率低于该阈值时，暂停开仓（尤其对 FAK/流动性差的场景）
+	MinFillRatio float64 `json:"minFillRatio" yaml:"minFillRatio"`
+	// QualityCooldownSeconds: 触发质量风控后进入冷却的秒数
+	QualityCooldownSeconds int `json:"qualityCooldownSeconds" yaml:"qualityCooldownSeconds"`
+
 	// FirstLegMaxPrice 当另一边仓位为 0 时，仅允许“非常便宜”的单边先手买入（美元）。
 	FirstLegMaxPrice float64 `json:"firstLegMaxPrice" yaml:"firstLegMaxPrice"`
 
@@ -133,6 +144,18 @@ func (c *Config) Defaults() {
 	if c.SlippagePad < 0 {
 		c.SlippagePad = 0
 	}
+	if c.AdaptiveSlipMultiplier < 0 {
+		c.AdaptiveSlipMultiplier = 0
+	}
+	if c.MaxAdaptiveSlippagePad <= 0 {
+		c.MaxAdaptiveSlippagePad = 0.01
+	}
+	if c.MinFillRatio <= 0 {
+		c.MinFillRatio = 0.65
+	}
+	if c.QualityCooldownSeconds <= 0 {
+		c.QualityCooldownSeconds = 5
+	}
 	if c.FirstLegMaxPrice <= 0 {
 		c.FirstLegMaxPrice = 0.10
 	}
@@ -210,6 +233,18 @@ func (c *Config) Validate() error {
 	}
 	if c.SlippagePad < 0 || c.SlippagePad >= 1.0 {
 		return fmt.Errorf("slippagePad must be within [0,1)")
+	}
+	if c.AdaptiveSlipMultiplier < 0 {
+		return fmt.Errorf("adaptiveSlipMultiplier must be >= 0")
+	}
+	if c.MaxAdaptiveSlippagePad < 0 || c.MaxAdaptiveSlippagePad >= 1.0 {
+		return fmt.Errorf("maxAdaptiveSlippagePad must be within [0,1)")
+	}
+	if c.MinFillRatio < 0 || c.MinFillRatio > 1.0 {
+		return fmt.Errorf("minFillRatio must be within [0,1]")
+	}
+	if c.QualityCooldownSeconds < 0 {
+		return fmt.Errorf("qualityCooldownSeconds must be >= 0")
 	}
 	if c.FirstLegMaxPrice <= 0 || c.FirstLegMaxPrice >= 1.0 {
 		return fmt.Errorf("firstLegMaxPrice must be within (0,1)")

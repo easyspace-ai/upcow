@@ -91,10 +91,14 @@ func planPaired(ctx context.Context, cfg Config, pc PlanContext, est BuyCostEsti
 	downOrder := makeBuyOrder(pc.Market, pc.Market.NoAssetID, domain.TokenTypeDown, dq, downLimit, ot, false)
 
 	return Plan{
-		Kind:     PlanOrders,
-		Reason:   "paired",
-		Orders:   []domain.Order{upOrder, downOrder},
-		Sim:      best.sim,
+		Kind:   PlanOrders,
+		Reason: "paired",
+		Orders: []domain.Order{upOrder, downOrder},
+		Sim:    best.sim,
+		Predicted: map[domain.TokenType]float64{
+			domain.TokenTypeUp:   vwapUpEff,
+			domain.TokenTypeDown: vwapDownEff,
+		},
 		PauseFor: 150 * time.Millisecond,
 	}
 }
