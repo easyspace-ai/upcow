@@ -1,0 +1,46 @@
+package paircostarb
+
+import (
+	"context"
+	"time"
+
+	"github.com/betbot/gobet/internal/domain"
+)
+
+type PlanKind string
+
+const (
+	PlanNone   PlanKind = "none"
+	PlanStop   PlanKind = "stop"
+	PlanOrders PlanKind = "orders"
+)
+
+// BuyCostEstimator returns (vwapEff, costEff, ok) for buying qty shares.
+type BuyCostEstimator func(ctx context.Context, assetID string, qty float64) (vwapEff float64, costEff float64, ok bool)
+
+type PlanContext struct {
+	Now             time.Time
+	Market          *domain.Market
+	Base            Snapshot
+	TradesThisCycle int
+	InFlight        bool
+	InEndProtection bool
+
+	SigDir    domain.TokenType
+	SigActive bool
+
+	YesAsk float64
+	NoAsk  float64
+}
+
+type Plan struct {
+	Kind   PlanKind
+	Reason string
+
+	// For orders
+	Orders []domain.Order
+	Sim    Snapshot // simulated snapshot after fills
+
+	// For execution bookkeeping
+	PauseFor time.Duration
+}

@@ -3,7 +3,6 @@ package paircostarb
 import (
 	"context"
 	"fmt"
-	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -337,243 +336,43 @@ func (s *Strategy) tickOnce() {
 		return
 	}
 
-	inEndProtection := isInCycleEndProtection(s.Config, now, market)
-
-	// ===== 信号模块（Binance 秒级 K 线）=====
+	// 信号（从 Binance 秒级K线）
 	sigDir := domain.TokenType("")
 	sigActive := false
 	if s.Config.EnableBinanceSignal && sig != nil {
 		sigDir, sigActive = sig.Evaluate(now)
 	}
 
-	// ===== 基础风控门禁（节奏/周期/信号）=====
-	if rr := allowTickBasic(s.Config, now, baseSnap, inFlight, tradesThisCycle, inEndProtection, s.Config.RequireBinanceSignal, sigActive); !rr.OK {
-		return
-	}
-
-	// ===== Top-of-book 快速筛选（避免频繁拉深度）=====
+	// top-of-book asks（用于 quick filter）
 	_, yesAsk, _, noAsk, _, err := s.TradingService.GetTopOfBook(context.Background(), market)
 	if err != nil {
 		return
 	}
-	if yesAsk.Pips <= 0 || noAsk.Pips <= 0 {
-		return
-	}
-	if yesAsk.ToDecimal()+noAsk.ToDecimal() > s.Config.MaxPairCost {
-		return
-	}
 
-	// ===== 止盈停止（严格 FIFO 指标）=====
-	if gp := baseSnap.GuaranteedProfitUSD(s.Config); gp >= s.Config.MinProfitUSD {
-		s.st.mu.Lock()
-		s.st.rt.pausedUntil = time.Now().Add(time.Duration(s.Config.CooldownAfterStopSeconds) * time.Second)
-		mkt := s.st.rt.market
-		cfg := s.Config.AutoMerge
-		ts := s.TradingService
-		ctl := &s.st.rt.autoMergeCtl
-		s.st.mu.Unlock()
-
-		s.log.Infof("🛑 达到保证利润阈值，停止本周期继续买入：profit=%.4fUSD qPair=%.2f pairCost=%.4f qu=%.2f qd=%.2f",
-			gp, baseSnap.QPairValue(), baseSnap.PairCost(s.Config), baseSnap.Qu, baseSnap.Qd)
-
-		if cfg.Enabled && ts != nil && mkt != nil {
-			ctl.MaybeAutoMerge(
-				context.Background(),
-				ts,
-				mkt,
-				cfg,
-				func(format string, args ...any) { s.log.Infof(format, args...) },
-				nil,
-			)
-		}
-		return
+	pc := PlanContext{
+		Now:             now,
+		Market:          market,
+		Base:            baseSnap,
+		TradesThisCycle: tradesThisCycle,
+		InFlight:        inFlight,
+		InEndProtection: isInCycleEndProtection(s.Config, now, market),
+		SigDir:          sigDir,
+		SigActive:       sigActive,
+		YesAsk:          yesAsk.ToDecimal(),
+		NoAsk:           noAsk.ToDecimal(),
 	}
 
-	dq := s.Config.TradeChunkShares
-	if dq <= 0 {
-		return
-	}
 	feeRate := float64(s.Config.FeeRateBps) / 10000.0
-
-	// 深度 VWAP 估算：UP/DOWN
-	vwapUpEff, costUpEff, okUp := estimateBuyCostEff(context.Background(), s.TradingService.GetOrderBook, market.YesAssetID, dq, feeRate, s.Config.SlippagePad)
-	vwapDownEff, costDownEff, okDown := estimateBuyCostEff(context.Background(), s.TradingService.GetOrderBook, market.NoAssetID, dq, feeRate, s.Config.SlippagePad)
-
-	orderType := orderTypeFromConfig(s.Config)
-
-	// ===== 执行模块：paired（同时下 UP+DOWN）=====
-	if s.Config.ExecutionMode == "paired" {
-		if !okUp || !okDown {
-			return
-		}
-
-		primary := preferredPrimary(sigDir, sigActive, vwapUpEff, vwapDownEff)
-		sim := baseSnap.Clone()
-
-		upFill := Fill{Qty: dq, Price: vwapUpEff, CostUSD: costUpEff, Time: now}
-		downFill := Fill{Qty: dq, Price: vwapDownEff, CostUSD: costDownEff, Time: now}
-
-		if primary == domain.TokenTypeUp {
-			sim.AddFill(domain.TokenTypeUp, upFill)
-			sim.AddFill(domain.TokenTypeDown, downFill)
-		} else {
-			sim.AddFill(domain.TokenTypeDown, downFill)
-			sim.AddFill(domain.TokenTypeUp, upFill)
-		}
-
-		if rr := shouldTradeSnapshot(s.Config, sim); !rr.OK {
-			return
-		}
-
-		upPad := applyPad(s.Config.LimitPricePadCents, s.Config.HedgePadCents)
-		downPad := applyPad(s.Config.LimitPricePadCents, s.Config.HedgePadCents)
-		if primary == domain.TokenTypeUp {
-			upPad = applyPad(s.Config.LimitPricePadCents, s.Config.PrimaryPadCents)
-		} else {
-			downPad = applyPad(s.Config.LimitPricePadCents, s.Config.PrimaryPadCents)
-		}
-
-		upLimit := clampPrice(vwapUpEff + upPad)
-		downLimit := clampPrice(vwapDownEff + downPad)
-		if upLimit <= 0 || downLimit <= 0 {
-			return
-		}
-
-		upOrder := makeBuyOrder(market, market.YesAssetID, domain.TokenTypeUp, dq, upLimit, orderType, false)
-		downOrder := makeBuyOrder(market, market.NoAssetID, domain.TokenTypeDown, dq, downLimit, orderType, false)
-
-		if s.Config.DecisionOnly {
-			s.log.Infof("🧪 decisionOnly：paired 下单 primary=%s dq=%.2f upVwap=%.4f upLimit=%.4f downVwap=%.4f downLimit=%.4f pairCost'=%.4f imb'=%.3f qPair'=%.2f gp'=%.4f",
-				primary, dq, vwapUpEff, upLimit, vwapDownEff, downLimit, sim.PairCost(s.Config), sim.Imbalance(), sim.QPairValue(), sim.GuaranteedProfitUSD(s.Config))
-			s.st.mu.Lock()
-			s.st.rt.tradesThisCycle += 2
-			s.st.rt.pausedUntil = time.Now().Add(250 * time.Millisecond)
-			s.st.mu.Unlock()
-			return
-		}
-
-		submitCtx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-		defer cancel()
-		created, err := s.orderExecutor.SubmitOrders(submitCtx, upOrder, downOrder)
-		if err != nil || len(created) == 0 {
-			return
-		}
-
-		s.st.mu.Lock()
-		if s.st.rt.inFlightIDs == nil {
-			s.st.rt.inFlightIDs = make(map[string]domain.TokenType, 4)
-		}
-		for _, o := range created {
-			if o == nil || o.OrderID == "" {
-				continue
-			}
-			s.st.rt.inFlightIDs[o.OrderID] = o.TokenType
-		}
-		s.st.rt.tradesThisCycle += len(created)
-		s.st.rt.pausedUntil = time.Now().Add(150 * time.Millisecond)
-		s.st.mu.Unlock()
-
-		s.log.Infof("✅ paired 已提交：primary=%s dq=%.2f upLimit=%.4f downLimit=%.4f pairCost'=%.4f imb'=%.3f",
-			primary, dq, upLimit, downLimit, sim.PairCost(s.Config), sim.Imbalance())
-		return
+	est := func(ctx context.Context, assetID string, qty float64) (float64, float64, bool) {
+		return estimateBuyCostEff(ctx, s.TradingService.GetOrderBook, assetID, qty, feeRate, s.Config.SlippagePad)
 	}
 
-	// ===== 执行模块：single（每次只下单一边，允许先手）=====
-	type singlePlan struct {
-		side      domain.TokenType
-		assetID   string
-		vwapEff   float64
-		costEff   float64
-		limit     float64
-		simSnap   Snapshot
-		pairCost  float64
-		imbalance float64
-		gp        float64
+	plan := PlanNextAction(context.Background(), s.Config, pc, est)
+	// 为 stop/日志补全当前快照
+	if plan.Kind == PlanStop {
+		plan.Sim = baseSnap
 	}
-
-	var best *singlePlan
-	try := func(side domain.TokenType, assetID string, vwapEff float64, costEff float64) {
-		if vwapEff <= 0 || costEff <= 0 {
-			return
-		}
-		sim := baseSnap.Clone()
-		sim.AddFill(side, Fill{Qty: dq, Price: vwapEff, CostUSD: costEff, Time: now})
-
-		// 先手：另一边为 0 时只用“非常便宜 + 未配对上限”门禁
-		if (side == domain.TokenTypeUp && baseSnap.Qd <= 0) || (side == domain.TokenTypeDown && baseSnap.Qu <= 0) {
-			if vwapEff > s.Config.FirstLegMaxPrice {
-				return
-			}
-			if math.Abs(sim.Qu-sim.Qd) > s.Config.MaxUnpairedShares {
-				return
-			}
-		} else {
-			if rr := shouldTradeSnapshot(s.Config, sim); !rr.OK {
-				return
-			}
-		}
-
-		pc := sim.PairCost(s.Config)
-		imb := sim.Imbalance()
-		gp := sim.GuaranteedProfitUSD(s.Config)
-		limit := clampPrice(vwapEff + applyPad(s.Config.LimitPricePadCents, 0))
-
-		plan := &singlePlan{
-			side:      side,
-			assetID:   assetID,
-			vwapEff:   vwapEff,
-			costEff:   costEff,
-			limit:     limit,
-			simSnap:   sim,
-			pairCost:  pc,
-			imbalance: imb,
-			gp:        gp,
-		}
-		if best == nil || plan.pairCost < best.pairCost || (!isFinite(best.pairCost) && isFinite(plan.pairCost)) {
-			best = plan
-		}
-	}
-
-	if okUp {
-		try(domain.TokenTypeUp, market.YesAssetID, vwapUpEff, costUpEff)
-	}
-	if okDown {
-		try(domain.TokenTypeDown, market.NoAssetID, vwapDownEff, costDownEff)
-	}
-	if best == nil || best.limit <= 0 {
-		return
-	}
-
-	order := makeBuyOrder(market, best.assetID, best.side, dq, best.limit, orderType, false)
-	if s.Config.DecisionOnly {
-		s.log.Infof("🧪 decisionOnly：single 下单 side=%s dq=%.2f vwapEff=%.4f limit=%.4f pairCost'=%.4f imb'=%.3f qPair'=%.2f gp'=%.4f",
-			best.side, dq, best.vwapEff, best.limit, best.simSnap.PairCost(s.Config), best.simSnap.Imbalance(), best.simSnap.QPairValue(), best.simSnap.GuaranteedProfitUSD(s.Config))
-		s.st.mu.Lock()
-		s.st.rt.tradesThisCycle++
-		s.st.rt.pausedUntil = time.Now().Add(250 * time.Millisecond)
-		s.st.mu.Unlock()
-		return
-	}
-
-	submitCtx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-	defer cancel()
-	created, err := s.orderExecutor.SubmitOrders(submitCtx, order)
-	if err != nil || len(created) == 0 || created[0] == nil || created[0].OrderID == "" {
-		return
-	}
-
-	oid := created[0].OrderID
-	s.st.mu.Lock()
-	if s.st.rt.inFlightIDs == nil {
-		s.st.rt.inFlightIDs = make(map[string]domain.TokenType, 4)
-	}
-	s.st.rt.inFlightIDs[oid] = best.side
-	s.st.rt.tradesThisCycle++
-	s.st.rt.pausedUntil = time.Now().Add(150 * time.Millisecond)
-	s.st.mu.Unlock()
-
-	s.log.Infof("✅ single 已提交 side=%s orderID=%s dq=%.2f limit=%.4f pairCost'=%.4f imb'=%.3f",
-		best.side, oid, dq, best.limit, best.simSnap.PairCost(s.Config), best.simSnap.Imbalance())
+	s.executePlan(context.Background(), plan)
 }
 
 // ===== compile-time guards =====
