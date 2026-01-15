@@ -16,7 +16,6 @@ import (
 	"github.com/betbot/gobet/internal/ports"
 	"github.com/betbot/gobet/internal/services"
 	"github.com/betbot/gobet/pkg/bbgo"
-	gcfg "github.com/betbot/gobet/pkg/config"
 )
 
 func init() {
@@ -41,20 +40,6 @@ type Strategy struct {
 
 func (s *Strategy) ID() string   { return "paircostarb" }
 func (s *Strategy) Name() string { return s.ID() }
-
-type Fill struct {
-	OrderID string
-	Time    time.Time
-	Qty     float64
-	Price   float64
-	FeeUSD  float64
-	CostUSD float64 // 含手续费的成本（USD）
-}
-
-type fifoCursor struct {
-	idx  int     // 当前 fill index
-	used float64 // 当前 fill 已被“配对消耗”的 qty
-}
 
 func (s *Strategy) Defaults() error {
 	s.Config.Defaults()
@@ -259,7 +244,7 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 	}
 
 	// FIFO 配对：一旦两边都有“未配对库存”，立刻按时间顺序配对，得到严格的 qPair/costPair
-	s.pairAvailableLocked()
+	pairAvailableRuntimeLocked(&s.st.rt)
 
 	// in-flight gate：订单进入终态/partial 时释放（对 FAK/并发下单更安全，避免卡死）
 	if s.st.rt.inFlightIDs != nil {
@@ -352,7 +337,7 @@ func (s *Strategy) tickOnce() {
 		return
 	}
 
-	inEndProtection := s.isInCycleEndProtection(now, market)
+	inEndProtection := isInCycleEndProtection(s.Config, now, market)
 
 	// ===== 信号模块（Binance 秒级 K 线）=====
 	sigDir := domain.TokenType("")
@@ -591,41 +576,6 @@ func (s *Strategy) tickOnce() {
 		best.side, oid, dq, best.limit, best.simSnap.PairCost(s.Config), best.simSnap.Imbalance())
 }
 
-func (s *Strategy) isInCycleEndProtection(now time.Time, market *domain.Market) bool {
-	if market == nil || market.Timestamp <= 0 {
-		return false
-	}
-	// 优先用 StopTimeBufferSeconds
-	if s.Config.StopTimeBufferSeconds > 0 {
-		cycleDur := 15 * time.Minute
-		if gc := gcfg.Get(); gc != nil {
-			if sp, err := gc.Market.Spec(); err == nil {
-				if d := sp.Duration(); d > 0 {
-					cycleDur = d
-				}
-			}
-		}
-		start := time.Unix(market.Timestamp, 0)
-		end := start.Add(cycleDur)
-		return end.Sub(now) <= time.Duration(s.Config.StopTimeBufferSeconds)*time.Second
-	}
-	if s.Config.CycleEndProtectionMinutes <= 0 {
-		return false
-	}
-	cycleDur := 15 * time.Minute
-	if gc := gcfg.Get(); gc != nil {
-		if sp, err := gc.Market.Spec(); err == nil {
-			if d := sp.Duration(); d > 0 {
-				cycleDur = d
-			}
-		}
-	}
-	start := time.Unix(market.Timestamp, 0)
-	end := start.Add(cycleDur)
-	protect := time.Duration(s.Config.CycleEndProtectionMinutes) * time.Minute
-	return end.Sub(now) <= protect
-}
-
 // ===== compile-time guards =====
 var _ bbgo.SingleExchangeStrategy = (*Strategy)(nil)
 var _ bbgo.ExchangeSessionSubscriber = (*Strategy)(nil)
@@ -633,116 +583,3 @@ var _ bbgo.StrategyDefaulter = (*Strategy)(nil)
 var _ bbgo.StrategyValidator = (*Strategy)(nil)
 var _ bbgo.CycleAwareStrategy = (*Strategy)(nil)
 var _ ports.OrderUpdateHandler = (*Strategy)(nil)
-
-func (s *Strategy) pairAvailableLocked() {
-	// 只在持锁状态下调用（来自 OnOrderUpdate/OnCycle）
-	for {
-		upAvail, upCostPer, okUp := fifoAvailCostPer(s.st.rt.fillsUp, s.st.rt.upCur)
-		downAvail, downCostPer, okDown := fifoAvailCostPer(s.st.rt.fillsDown, s.st.rt.downCur)
-		if !okUp || !okDown {
-			break
-		}
-		take := math.Min(upAvail, downAvail)
-		if take <= 1e-9 {
-			break
-		}
-		// 增加已配对份额与成本
-		s.st.rt.qPair += take
-		s.st.rt.costPair += take*upCostPer + take*downCostPer
-
-		// 推进游标
-		s.st.rt.upCur = fifoConsumeQty(s.st.rt.fillsUp, s.st.rt.upCur, take)
-		s.st.rt.downCur = fifoConsumeQty(s.st.rt.fillsDown, s.st.rt.downCur, take)
-
-		// 轻量压缩，防止 fills 无限增长
-		s.st.rt.fillsUp, s.st.rt.upCur = fifoCompact(s.st.rt.fillsUp, s.st.rt.upCur)
-		s.st.rt.fillsDown, s.st.rt.downCur = fifoCompact(s.st.rt.fillsDown, s.st.rt.downCur)
-	}
-}
-
-func fifoAvailCostPer(fills []Fill, cur fifoCursor) (avail float64, costPerShare float64, ok bool) {
-	if cur.idx < 0 || cur.idx >= len(fills) {
-		return 0, 0, false
-	}
-	f := fills[cur.idx]
-	if f.Qty <= 0 || f.CostUSD <= 0 {
-		return 0, 0, false
-	}
-	rem := f.Qty - cur.used
-	if rem <= 1e-9 {
-		return 0, 0, false
-	}
-	return rem, f.CostUSD / f.Qty, true
-}
-
-func fifoConsumeQty(fills []Fill, cur fifoCursor, qty float64) fifoCursor {
-	if qty <= 0 {
-		return cur
-	}
-	for qty > 1e-9 && cur.idx < len(fills) {
-		f := fills[cur.idx]
-		rem := f.Qty - cur.used
-		if rem <= 1e-9 {
-			cur.idx++
-			cur.used = 0
-			continue
-		}
-		take := math.Min(rem, qty)
-		cur.used += take
-		qty -= take
-		if f.Qty-cur.used <= 1e-9 {
-			cur.idx++
-			cur.used = 0
-		}
-	}
-	return cur
-}
-
-func fifoCompact(fills []Fill, cur fifoCursor) ([]Fill, fifoCursor) {
-	// 当头部已消耗很多时做一次切片压缩
-	if cur.idx <= 0 {
-		return fills, cur
-	}
-	if cur.idx < 256 && cur.idx < len(fills)/2 {
-		return fills, cur
-	}
-	// copy tail
-	newFills := append([]Fill(nil), fills[cur.idx:]...)
-	return newFills, fifoCursor{idx: 0, used: cur.used}
-}
-
-func simulateConsumeCost(fills []Fill, cur fifoCursor, qty float64) (cost float64, next fifoCursor) {
-	next = cur
-	if qty <= 0 {
-		return 0, next
-	}
-	for qty > 1e-9 && next.idx < len(fills) {
-		f := fills[next.idx]
-		if f.Qty <= 0 || f.CostUSD <= 0 {
-			// 跳过异常 fill
-			next.idx++
-			next.used = 0
-			continue
-		}
-		rem := f.Qty - next.used
-		if rem <= 1e-9 {
-			next.idx++
-			next.used = 0
-			continue
-		}
-		take := math.Min(rem, qty)
-		costPer := f.CostUSD / f.Qty
-		cost += take * costPer
-		next.used += take
-		qty -= take
-		if f.Qty-next.used <= 1e-9 {
-			next.idx++
-			next.used = 0
-		}
-	}
-	return cost, next
-}
-
-func isFinite(x float64) bool {
-	return !math.IsInf(x, 0) && !math.IsNaN(x)
-}
