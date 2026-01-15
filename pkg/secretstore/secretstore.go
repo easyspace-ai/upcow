@@ -40,16 +40,16 @@ func Open(opts OpenOptions) (*Store, error) {
 	if err != nil {
 		// 捕获原始错误信息
 		originalErr := err.Error()
-		
+
 		// 包装错误以提供更多上下文信息
 		errMsg := fmt.Sprintf("badger.Open 失败\n")
 		errMsg += fmt.Sprintf("原始错误: %v\n", err)
 		errMsg += fmt.Sprintf("错误类型: %T\n", err)
-		
+
 		if len(opts.EncryptionKey) > 0 {
 			errMsg += fmt.Sprintf("\n数据库路径: %s\n", opts.Path)
 			errMsg += fmt.Sprintf("加密模式: 是 (密钥长度: %d 字节)\n", len(opts.EncryptionKey))
-			
+
 			// 检查是否是 "invalid argument" 错误
 			if strings.Contains(strings.ToLower(originalErr), "invalid argument") {
 				errMsg += "\n⚠️  检测到 'invalid argument' 错误（常见于 macOS 加密数据库）\n"
@@ -73,7 +73,7 @@ func Open(opts OpenOptions) (*Store, error) {
 			errMsg += fmt.Sprintf("\n数据库路径: %s\n", opts.Path)
 			errMsg += "加密模式: 否\n"
 		}
-		return nil, fmt.Errorf(errMsg)
+		return nil, fmt.Errorf("%s", errMsg)
 	}
 	return &Store{db: db}, nil
 }
