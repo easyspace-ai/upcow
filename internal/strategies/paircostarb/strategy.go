@@ -69,6 +69,7 @@ func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
 	}
 	if session.UserDataStream != nil {
 		session.UserDataStream.OnOrderUpdate(s)
+		session.UserDataStream.OnTradeUpdate(s)
 	}
 }
 
@@ -196,6 +197,12 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 	if s.st.rt.filledSeen == nil {
 		s.st.rt.filledSeen = make(map[string]float64)
 	}
+	if s.st.rt.tradeFilledByOrder == nil {
+		s.st.rt.tradeFilledByOrder = make(map[string]float64)
+	}
+	if s.st.rt.syntheticFilledByOrder == nil {
+		s.st.rt.syntheticFilledByOrder = make(map[string]float64)
+	}
 
 	// 增量统计成交（处理 partial->filled 的多次回调）
 	curFilled := order.FilledSize
@@ -209,6 +216,23 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 	}
 	s.st.rt.filledSeen[order.OrderID] = curFilled
 
+	// 若已收到 trade 级别回填，则只用 order update 做“缺口补齐”，避免 double count
+	// missing = filledSize - sum(tradeSize) - sum(syntheticSize)
+	knownTrades := s.st.rt.tradeFilledByOrder[order.OrderID]
+	knownSynthetic := s.st.rt.syntheticFilledByOrder[order.OrderID]
+	missing := curFilled - knownTrades - knownSynthetic
+	if missing <= 1e-9 {
+		// 仍可用于释放 in-flight gate
+		if s.st.rt.inFlightIDs != nil {
+			if _, ok := s.st.rt.inFlightIDs[order.OrderID]; ok {
+				if order.IsFinalStatus() || order.Status == domain.OrderStatusPartial {
+					delete(s.st.rt.inFlightIDs, order.OrderID)
+				}
+			}
+		}
+		return nil
+	}
+
 	// 使用 FilledPrice 优先；否则用订单 Price 兜底
 	fillPrice := order.Price
 	if order.FilledPrice != nil && order.FilledPrice.Pips > 0 {
@@ -220,27 +244,28 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 	}
 
 	feeRate := float64(s.Config.FeeRateBps) / 10000.0
-	feeUSD := price * delta * feeRate
-	cost := price*delta + feeUSD
+	feeUSD := price * missing * feeRate
+	cost := price*missing + feeUSD
 
 	f := Fill{
 		OrderID: order.OrderID,
 		Time:    time.Now(),
-		Qty:     delta,
+		Qty:     missing,
 		Price:   price,
 		FeeUSD:  feeUSD,
 		CostUSD: cost,
 	}
 
 	if order.TokenType == domain.TokenTypeUp {
-		s.st.rt.qu += delta
+		s.st.rt.qu += missing
 		s.st.rt.cu += cost
 		s.st.rt.fillsUp = append(s.st.rt.fillsUp, f)
 	} else {
-		s.st.rt.qd += delta
+		s.st.rt.qd += missing
 		s.st.rt.cd += cost
 		s.st.rt.fillsDown = append(s.st.rt.fillsDown, f)
 	}
+	s.st.rt.syntheticFilledByOrder[order.OrderID] = knownSynthetic + missing
 
 	// FIFO 配对：一旦两边都有“未配对库存”，立刻按时间顺序配对，得到严格的 qPair/costPair
 	pairAvailableRuntimeLocked(&s.st.rt)
@@ -255,6 +280,86 @@ func (s *Strategy) OnOrderUpdate(ctx context.Context, order *domain.Order) error
 	}
 
 	return nil
+}
+
+// HandleTrade implements ports.TradeUpdateHandler.
+// 说明：trade 级别回填更接近真实成交（price/size），因此优先用于 FIFO 成本核算；
+// order update 仅作为“缺口补齐”（当 trade 丢失/延迟时）。
+func (s *Strategy) HandleTrade(ctx context.Context, trade *domain.Trade) {
+	_ = ctx
+	if trade == nil || !s.Config.Enabled {
+		return
+	}
+	if trade.ID == "" || trade.Size <= 0 || trade.Price.Pips <= 0 {
+		return
+	}
+	if trade.TokenType != domain.TokenTypeUp && trade.TokenType != domain.TokenTypeDown {
+		return
+	}
+
+	s.st.mu.Lock()
+	defer s.st.mu.Unlock()
+
+	mkt := s.st.rt.market
+	if mkt == nil || mkt.Slug == "" {
+		return
+	}
+	// 若 trade 带 market 且不匹配当前周期，则忽略
+	if trade.Market != nil && trade.Market.Slug != "" && trade.Market.Slug != mkt.Slug {
+		return
+	}
+
+	if s.st.rt.seenTradeIDs == nil {
+		s.st.rt.seenTradeIDs = make(map[string]struct{}, 1024)
+	}
+	if _, ok := s.st.rt.seenTradeIDs[trade.ID]; ok {
+		return
+	}
+	s.st.rt.seenTradeIDs[trade.ID] = struct{}{}
+
+	if s.st.rt.tradeFilledByOrder == nil {
+		s.st.rt.tradeFilledByOrder = make(map[string]float64)
+	}
+
+	price := trade.Price.ToDecimal()
+	qty := trade.Size
+	feeUSD := trade.Fee
+	if feeUSD < 0 {
+		feeUSD = 0
+	}
+	// 若 trade 未提供 fee，则用配置的 feeRate 做估算（至少不要为 0）
+	if feeUSD == 0 {
+		feeRate := float64(s.Config.FeeRateBps) / 10000.0
+		feeUSD = price * qty * feeRate
+	}
+	cost := price*qty + feeUSD
+
+	f := Fill{
+		OrderID: trade.OrderID,
+		Time:    trade.Time,
+		Qty:     qty,
+		Price:   price,
+		FeeUSD:  feeUSD,
+		CostUSD: cost,
+	}
+	if f.Time.IsZero() {
+		f.Time = time.Now()
+	}
+
+	if trade.TokenType == domain.TokenTypeUp {
+		s.st.rt.qu += qty
+		s.st.rt.cu += cost
+		s.st.rt.fillsUp = append(s.st.rt.fillsUp, f)
+	} else {
+		s.st.rt.qd += qty
+		s.st.rt.cd += cost
+		s.st.rt.fillsDown = append(s.st.rt.fillsDown, f)
+	}
+	if trade.OrderID != "" {
+		s.st.rt.tradeFilledByOrder[trade.OrderID] += qty
+	}
+
+	pairAvailableRuntimeLocked(&s.st.rt)
 }
 
 // ===== internals =====
@@ -284,7 +389,11 @@ type runtimeState struct {
 	costPair float64
 
 	// 去重/增量统计
-	filledSeen map[string]float64 // orderID -> lastFilledSize accounted
+	filledSeen   map[string]float64 // orderID -> lastFilledSize accounted
+	seenTradeIDs map[string]struct{}
+	// trade 级别累计：用于 order update 补缺口，避免 double count
+	tradeFilledByOrder     map[string]float64 // orderID -> sum(trade.Size)
+	syntheticFilledByOrder map[string]float64 // orderID -> sum(synthetic fills from order updates)
 
 	// 控制策略节奏
 	pausedUntil     time.Time
@@ -382,3 +491,4 @@ var _ bbgo.StrategyDefaulter = (*Strategy)(nil)
 var _ bbgo.StrategyValidator = (*Strategy)(nil)
 var _ bbgo.CycleAwareStrategy = (*Strategy)(nil)
 var _ ports.OrderUpdateHandler = (*Strategy)(nil)
+var _ ports.TradeUpdateHandler = (*Strategy)(nil)

@@ -42,25 +42,6 @@ func makeBuyOrder(market *domain.Market, assetID string, token domain.TokenType,
 	}
 }
 
-// preferredPrimary 在 paired 模式下决定“先模拟/先下单”的主腿。
-// - 若 signalActive，优先使用信号方向（上涨=>UP，回落=>DOWN）
-// - 否则优先选择更便宜的那一侧（vwapEff 更低）
-func preferredPrimary(signalDir domain.TokenType, signalActive bool, vwapUpEff, vwapDownEff float64) domain.TokenType {
-	if signalActive && (signalDir == domain.TokenTypeUp || signalDir == domain.TokenTypeDown) {
-		return signalDir
-	}
-	if vwapUpEff > 0 && vwapDownEff > 0 {
-		if vwapUpEff <= vwapDownEff {
-			return domain.TokenTypeUp
-		}
-		return domain.TokenTypeDown
-	}
-	if vwapUpEff > 0 {
-		return domain.TokenTypeUp
-	}
-	return domain.TokenTypeDown
-}
-
 func applyPad(baseCents, extraCents int) float64 {
 	return float64(baseCents+extraCents) / 100.0
 }
