@@ -17,6 +17,26 @@ type Config struct {
 	// PollIntervalMs 主循环频率（毫秒）。建议 200~1000ms。
 	PollIntervalMs int `json:"pollIntervalMs" yaml:"pollIntervalMs"`
 
+	// ===== 信号模块（Binance 秒级 K 线）=====
+	// EnableBinanceSignal: 启用 Binance Futures 1s K 线信号（从 Environment 注入 BinanceFuturesKlines）。
+	EnableBinanceSignal bool `json:"enableBinanceSignal" yaml:"enableBinanceSignal"`
+	// RequireBinanceSignal: true 时仅在信号窗口内允许开仓（否则只做内部 pair-cost 逻辑）。
+	RequireBinanceSignal bool `json:"requireBinanceSignal" yaml:"requireBinanceSignal"`
+	// BinanceInterval: "1s" 或 "1m"（默认 1s）。
+	BinanceInterval string `json:"binanceInterval" yaml:"binanceInterval"`
+	// BinanceLookbackSeconds: 计算动量/涨跌幅的回看窗口（秒）。
+	BinanceLookbackSeconds int `json:"binanceLookbackSeconds" yaml:"binanceLookbackSeconds"`
+	// BinanceReturnThresholdBps: 触发阈值（bps）。例如 10 = 0.10%。
+	BinanceReturnThresholdBps float64 `json:"binanceReturnThresholdBps" yaml:"binanceReturnThresholdBps"`
+	// BinanceActiveSeconds: 触发后保持 ACTIVE 的秒数（防抖/窗口）。
+	BinanceActiveSeconds int `json:"binanceActiveSeconds" yaml:"binanceActiveSeconds"`
+
+	// ===== 执行模块 =====
+	// ExecutionMode:
+	// - "single": 每次只下单一边（沿用原 pair-cost 累计逻辑）
+	// - "paired": 每次同时下 UP + DOWN（信号为 UP 时“上涨买入UP，同时对冲DOWN”，信号为 DOWN 时反之）
+	ExecutionMode string `json:"executionMode" yaml:"executionMode"`
+
 	// TradeChunkShares 每次尝试买入的份额（shares）。
 	TradeChunkShares float64 `json:"tradeChunkShares" yaml:"tradeChunkShares"`
 
@@ -58,6 +78,10 @@ type Config struct {
 	// LimitPricePadCents 限价单（或 taker 的最大可成交价）在 VWAP_eff 上再加的 pad（分）。
 	LimitPricePadCents int `json:"limitPricePadCents" yaml:"limitPricePadCents"`
 
+	// PrimaryPadCents/HedgePadCents：在 LimitPricePadCents 基础上，分别对主腿/对冲腿增加额外 pad（分）。
+	PrimaryPadCents int `json:"primaryPadCents" yaml:"primaryPadCents"`
+	HedgePadCents   int `json:"hedgePadCents" yaml:"hedgePadCents"`
+
 	// CycleEndProtectionMinutes 周期结束前 N 分钟停止开新仓（与 StopTimeBufferSeconds 二选一/叠加）。
 	CycleEndProtectionMinutes int `json:"cycleEndProtectionMinutes" yaml:"cycleEndProtectionMinutes"`
 
@@ -74,6 +98,25 @@ func (c *Config) Defaults() {
 	}
 	if c.PollIntervalMs <= 0 {
 		c.PollIntervalMs = 500
+	}
+	if c.BinanceInterval == "" {
+		c.BinanceInterval = "1s"
+	}
+	if c.BinanceLookbackSeconds <= 0 {
+		c.BinanceLookbackSeconds = 5
+	}
+	if c.BinanceReturnThresholdBps <= 0 {
+		c.BinanceReturnThresholdBps = 10
+	}
+	if c.BinanceActiveSeconds <= 0 {
+		c.BinanceActiveSeconds = 15
+	}
+	if c.ExecutionMode == "" {
+		if c.EnableBinanceSignal {
+			c.ExecutionMode = "paired"
+		} else {
+			c.ExecutionMode = "single"
+		}
 	}
 	if c.TradeChunkShares <= 0 {
 		c.TradeChunkShares = 5
@@ -114,6 +157,12 @@ func (c *Config) Defaults() {
 	if c.LimitPricePadCents < 0 {
 		c.LimitPricePadCents = 0
 	}
+	if c.PrimaryPadCents < 0 {
+		c.PrimaryPadCents = 0
+	}
+	if c.HedgePadCents < 0 {
+		c.HedgePadCents = 0
+	}
 	if c.CycleEndProtectionMinutes < 0 {
 		c.CycleEndProtectionMinutes = 0
 	}
@@ -132,6 +181,20 @@ func (c *Config) Validate() error {
 	}
 	if c.PollIntervalMs <= 0 {
 		return fmt.Errorf("pollIntervalMs must be > 0")
+	}
+	if c.BinanceLookbackSeconds < 0 {
+		return fmt.Errorf("binanceLookbackSeconds must be >= 0")
+	}
+	if c.BinanceReturnThresholdBps < 0 {
+		return fmt.Errorf("binanceReturnThresholdBps must be >= 0")
+	}
+	if c.BinanceActiveSeconds < 0 {
+		return fmt.Errorf("binanceActiveSeconds must be >= 0")
+	}
+	switch c.ExecutionMode {
+	case "", "single", "paired":
+	default:
+		return fmt.Errorf("executionMode must be one of: single|paired")
 	}
 	if c.TradeChunkShares <= 0 {
 		return fmt.Errorf("tradeChunkShares must be > 0")
@@ -173,6 +236,12 @@ func (c *Config) Validate() error {
 	}
 	if c.LimitPricePadCents < 0 {
 		return fmt.Errorf("limitPricePadCents must be >= 0")
+	}
+	if c.PrimaryPadCents < 0 {
+		return fmt.Errorf("primaryPadCents must be >= 0")
+	}
+	if c.HedgePadCents < 0 {
+		return fmt.Errorf("hedgePadCents must be >= 0")
 	}
 	if c.CycleEndProtectionMinutes < 0 {
 		return fmt.Errorf("cycleEndProtectionMinutes must be >= 0")
